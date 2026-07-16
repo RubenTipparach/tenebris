@@ -5187,6 +5187,29 @@ fn frame_inner(app: &mut App) {
         }
     });
 
+    /* Dev physics aid (TENEBRIS_DEV_STATION_DROP): once in-game, drop
+     * the player 12 m over the casino hotel roof, co-moving with the
+     * station - the artificial-gravity field should capture them and
+     * set them down standing on the roof deck (watch for grounded=1 at
+     * orbit radius in the pos log). One-shot. */
+    thread_local! {
+        static STATION_DROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if std::env::var("TENEBRIS_DEV_STATION_DROP").is_ok()
+        && menu::state() == GameState::InGameSp
+        && !STATION_DROPPED.with(|c| c.get())
+    {
+        STATION_DROPPED.with(|c| c.set(true));
+        let t = tenebris_core::world_time::seconds();
+        let anchor = tenebris_core::station::orbit_pos(t);
+        let sf = tenebris_core::station::frame_sample(anchor, t);
+        let roof = sf.deck_top_m.unwrap_or(0.0);
+        let mut p = app.player.borrow_mut();
+        p.position = sf.local_to_world(dvec3_make(0.0, roof + 12.0, 0.0));
+        p.velocity = sf.station_vel;
+        println!("[dev] station drop: released 12 m over the hotel roof");
+    }
+
     /* Dev screenshot aid (TENEBRIS_DEV_STATION_CAM): fly formation with
      * the orbital station - re-pin the camera in the station's orbit
      * frame every frame (trailing prograde, above the deck) and aim at

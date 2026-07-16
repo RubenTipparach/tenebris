@@ -1,31 +1,34 @@
-//! Orbital station drum rendering.
+//! Orbital station rendering.
 //!
-//! Draws the trading station's hex-prism shell (`core::station::shell`) at
-//! its on-rails orbital anchor (`core::station::orbit_pos`), textured with
-//! the casino tech tile set baked by tools/gen-casino-textures.py. Rendered
+//! Draws the trading station's wheel structure (`core::station::shell` -
+//! ring deck, spokes, casino hotel tower, docking pads) at its on-rails
+//! orbital anchor (`core::station::orbit_pos`), textured with the casino
+//! tech tile set baked by tools/gen-casino-textures.py. Rendered
 //! immediate-mode into the renderer's world sgl context (same as
 //! `rocket_fx` / `animals`) so it depth-sorts against terrain and gets the
-//! composite/fog - the drum is visible sweeping overhead from the surface.
+//! composite/fog - the wheel is visible sweeping overhead from the surface.
 //!
-//! Face culling comes from each prism's [`PrismRole`]: interior disk cells
-//! only show caps (their sides face neighbouring prisms), wall cells only
-//! show sides plus rim caps on the keel / crown layers. That keeps the
-//! whole 900-prism drum around ~30k sgl vertices.
+//! Face culling is generic neighbour-occupancy over the prism grid: a face
+//! is emitted only when no prism occupies the adjacent (q, r, layer) cell,
+//! so any shell layout renders watertight and lean without per-shape role
+//! logic.
 //!
-//! Orientation: station-local +y points radially away from Tenebris (decks
-//! face the sky), +x rides prograde along the orbit, +z is the orbit
-//! normal. The anchor sits at the drum's volumetric centre.
+//! Orientation matches `core::station::frame_sample`: station-local +y
+//! points radially away from Tenebris (decks face the sky), +x rides
+//! prograde, +z is the orbit normal, and the local origin (keel plane,
+//! y = 0) sits AT the anchor - physics and rendering share one frame.
 
 #![allow(dead_code)]
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use sokol::gl as sgl;
 
 use tenebris_core::blocks::Block;
-use tenebris_core::math::{dvec3_cross, dvec3_normalize, dvec3_sub, dvec3_make};
+use tenebris_core::math::{dvec3_cross, dvec3_make, dvec3_normalize, dvec3_sub};
 use tenebris_core::planet::{self, BodyId};
-use tenebris_core::station::{self, Prism, PrismRole};
+use tenebris_core::station::{self, Prism, HEX_DIRS};
 
 use crate::gfx_math::Mat4;
 use crate::renderer;
@@ -36,6 +39,7 @@ const TEX_FLOOR: usize = 1;
 const TEX_CARPET: usize = 2;
 const TEX_NEON: usize = 3;
 const TEX_SIGN: usize = 4;
+const TEX_WALL: usize = 5;
 
 /// Face shading (multiplied by the sun term): caps bright, keels dark,
 /// sides alternating so the hex facets read in silhouette.
@@ -50,22 +54,30 @@ fn tex_for(b: Block) -> usize {
         Block::CasinoCarpet => TEX_CARPET,
         Block::NeonTrim => TEX_NEON,
         Block::CasinoSign => TEX_SIGN,
+        Block::CasinoWall => TEX_WALL,
         _ => TEX_HULL,
     }
 }
 
-thread_local! {
-    /// Shell geometry grouped by texture slot, built once from config.
-    static SHELL: RefCell<Option<[Vec<Prism>; 5]>> = const { RefCell::new(None) };
+struct ShellCache {
+    groups: [Vec<Prism>; 6],
+    occupied: HashSet<(i32, i32, i32)>,
 }
 
-fn shell_groups() -> [Vec<Prism>; 5] {
+thread_local! {
+    /// Shell geometry grouped by texture slot + occupancy, built once.
+    static SHELL: RefCell<Option<ShellCache>> = const { RefCell::new(None) };
+}
+
+fn build_cache() -> ShellCache {
     let cfg = station::config();
-    let mut groups: [Vec<Prism>; 5] = Default::default();
+    let mut groups: [Vec<Prism>; 6] = Default::default();
+    let mut occupied = HashSet::new();
     for p in station::shell(&cfg) {
+        occupied.insert((p.q, p.r, p.layer));
         groups[tex_for(p.block)].push(p);
     }
-    groups
+    ShellCache { groups, occupied }
 }
 
 /// Hex corner k (pointy-top) at circumradius `a`, in the local xz plane.
@@ -86,31 +98,30 @@ fn emit_cap(p: &Prism, a: f32, y: f32, shade: f32) {
     }
 }
 
-/// Emit the six side quads (as triangles) of a prism spanning y0..y1.
-fn emit_sides(p: &Prism, a: f32, y0: f32, y1: f32, lit: f32) {
-    for k in 0..6 {
-        let (x0, z0) = corner(a, k);
-        let (x1, z1) = corner(a, (k + 1) % 6);
-        let s = if k % 2 == 0 { SHADE_SIDE_A } else { SHADE_SIDE_B } * lit;
-        sgl::c3f(s, s, s);
-        let (bx0, bz0, bx1, bz1) = (p.x + x0, p.z + z0, p.x + x1, p.z + z1);
-        sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
-        sgl::v3f_t2f(bx1, y0, bz1, 1.0, 1.0);
-        sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
-        sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
-        sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
-        sgl::v3f_t2f(bx0, y1, bz0, 0.0, 0.0);
-    }
+/// Emit side quad k (two triangles) of a prism spanning y0..y1.
+fn emit_side(p: &Prism, a: f32, k: usize, y0: f32, y1: f32, lit: f32) {
+    let (x0, z0) = corner(a, k);
+    let (x1, z1) = corner(a, (k + 1) % 6);
+    let s = if k % 2 == 0 { SHADE_SIDE_A } else { SHADE_SIDE_B } * lit;
+    sgl::c3f(s, s, s);
+    let (bx0, bz0, bx1, bz1) = (p.x + x0, p.z + z0, p.x + x1, p.z + z1);
+    sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
+    sgl::v3f_t2f(bx1, y0, bz1, 1.0, 1.0);
+    sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
+    sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
+    sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
+    sgl::v3f_t2f(bx0, y1, bz0, 0.0, 0.0);
 }
 
-/// Draw the orbital station drum for this frame. `sim_t` is the world
-/// clock the on-rails orbit is a function of.
+/// Draw the orbital station for this frame. `sim_t` is the world clock
+/// the on-rails orbit is a function of.
 pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
     let cfg = station::config();
     let anchor = station::orbit_pos(sim_t);
     let b = planet::get(BodyId::Tenebris);
 
-    /* Orbit frame: +y radial out, +x prograde, +z the orbit normal. */
+    /* Orbit frame: +y radial out, +x prograde, +z the orbit normal -
+     * identical to core::station::frame_sample. */
     let center = dvec3_make(b.pos_x, b.pos_y, b.pos_z);
     let up = dvec3_normalize(dvec3_sub(anchor, center));
     let prograde = dvec3_normalize(station::orbit_vel(sim_t));
@@ -123,8 +134,7 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
     ];
 
     let lit = renderer::entity_sun_brightness(anchor).clamp(0.15, 1.5);
-    let layer_h = cfg.height_m / cfg.layers.max(1) as f32;
-    let top_y = (cfg.layers - 1) as f32 * layer_h;
+    let lh = station::layer_h(&cfg);
     let a = cfg.hex_size_m;
 
     renderer::sgl_world_begin();
@@ -135,9 +145,8 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
     sgl::load_matrix(&view.m[0]);
 
     thread_local! {
-        /* Opaque, double-sided: the drum is watertight from culled faces
-         * alone, and double-sided keeps the interior visible when the
-         * player flies inside the hollow. */
+        /* Opaque, double-sided: occupancy culling keeps the mesh lean and
+         * double-sided keeps interiors visible from inside the hotel. */
         static PIP: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
     }
     let pip = PIP.with(|p| {
@@ -157,15 +166,15 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
     sgl::load_pipeline(pip);
 
     sgl::push_matrix();
+    /* Keel plane (local y = 0) at the anchor - same origin the physics
+     * frame_sample uses. */
     sgl::translate(anchor.x as f32, anchor.y as f32, anchor.z as f32);
     sgl::mult_matrix(&basis[0]);
-    /* Anchor at the drum's volumetric centre. */
-    sgl::translate(0.0, -cfg.height_m * 0.5, 0.0);
 
     SHELL.with(|cell| {
         let mut cache = cell.borrow_mut();
-        let groups = cache.get_or_insert_with(shell_groups);
-        for (tex, prisms) in groups.iter().enumerate() {
+        let cache = cache.get_or_insert_with(build_cache);
+        for (tex, prisms) in cache.groups.iter().enumerate() {
             if prisms.is_empty() {
                 continue;
             }
@@ -176,21 +185,19 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
             );
             sgl::begin_triangles();
             for p in prisms {
-                match p.role {
-                    /* Disk cells: caps only - sides face neighbours. */
-                    PrismRole::Floor | PrismRole::Ceiling => {
-                        emit_cap(p, a, p.y + layer_h, SHADE_TOP * lit);
-                        emit_cap(p, a, p.y, SHADE_BOTTOM * lit);
-                    }
-                    /* Wall cells: sides, plus rim caps on keel + crown. */
-                    PrismRole::Wall => {
-                        emit_sides(p, a, p.y, p.y + layer_h, lit);
-                        if p.y >= top_y - 1e-4 {
-                            emit_cap(p, a, p.y + layer_h, SHADE_TOP * lit);
-                        }
-                        if p.y <= 1e-4 {
-                            emit_cap(p, a, p.y, SHADE_BOTTOM * lit);
-                        }
+                let (y0, y1) = (p.y, p.y + lh);
+                if !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
+                    emit_cap(p, a, y1, SHADE_TOP * lit);
+                }
+                if !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
+                    emit_cap(p, a, y0, SHADE_BOTTOM * lit);
+                }
+                for k in 0..6 {
+                    /* Side k's outward normal points at 60(k+1) degrees,
+                     * which is axial direction HEX_DIRS[(k+1) % 6]. */
+                    let (dq, dr) = HEX_DIRS[(k + 1) % 6];
+                    if !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
+                        emit_side(p, a, k, y0, y1, lit);
                     }
                 }
             }

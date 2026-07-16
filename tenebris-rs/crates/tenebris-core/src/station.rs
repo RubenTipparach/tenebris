@@ -29,11 +29,11 @@ use std::sync::Mutex;
 /// rails and a coasting rocket obey the same physics.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StationConfig {
-    /// Deck radius in hex rings (a deck holds `3n(n+1)+1` hexes).
+    /// Outer radius of the ring deck, in hex rings.
     pub radius_hexes: u32,
-    /// Prism layers stacked into the drum wall.
+    /// Reference layer stack: prism layer height = height_m / layers.
     pub layers: u32,
-    /// Total drum height in metres (prism height = height_m / layers).
+    /// Reference stack height in metres (see `layers`).
     pub height_m: f32,
     /// Hex circumradius (centre -> corner) of one prism, metres.
     pub hex_size_m: f32,
@@ -43,6 +43,23 @@ pub struct StationConfig {
     pub dock_radius_m: f32,
     /// Max relative speed (m/s) the dock accepts - the rendezvous gate.
     pub dock_max_rel_mps: f32,
+    /// Ring deck width in hex rings (annulus radius_hexes-ring_width+1..).
+    pub ring_width: u32,
+    /// Deck slab thickness in layers (ring, spokes, pads).
+    pub slab_layers: u32,
+    /// Casino hotel tower footprint radius, hex rings.
+    pub tower_radius: u32,
+    /// Casino hotel tower height, layers.
+    pub tower_layers: u32,
+    /// Artificial-gravity field reach above each deck column, metres
+    /// ("about 20 blocks" at the default 2 m hex).
+    pub gravity_field_m: f32,
+    /// Artificial-gravity strength inside the field, m/s^2 (pulls toward
+    /// the deck in the station's orbit frame).
+    pub artificial_gravity_mps2: f32,
+    /// Exponential damping rate (1/s) of relative slide while standing
+    /// on a deck - how quickly you come to rest on the moving station.
+    pub deck_friction: f32,
 }
 
 impl StationConfig {
@@ -52,8 +69,15 @@ impl StationConfig {
         height_m: 15.0,
         hex_size_m: 2.0,
         altitude_m: 120.0,
-        dock_radius_m: 40.0,
+        dock_radius_m: 60.0,
         dock_max_rel_mps: 8.0,
+        ring_width: 3,
+        slab_layers: 2,
+        tower_radius: 3,
+        tower_layers: 10,
+        gravity_field_m: 40.0,
+        artificial_gravity_mps2: 15.0,
+        deck_friction: 6.0,
     };
 }
 
@@ -90,6 +114,17 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
             "dock_max_rel_mps" => {
                 c.dock_max_rel_mps = if f > 0.0 { f } else { c.dock_max_rel_mps }
             }
+            "ring_width" => c.ring_width = if f > 0.0 { f as u32 } else { c.ring_width },
+            "slab_layers" => c.slab_layers = if f > 0.0 { f as u32 } else { c.slab_layers },
+            "tower_radius" => c.tower_radius = if f > 0.0 { f as u32 } else { c.tower_radius },
+            "tower_layers" => c.tower_layers = if f > 0.0 { f as u32 } else { c.tower_layers },
+            "gravity_field_m" => {
+                c.gravity_field_m = if f > 0.0 { f } else { c.gravity_field_m }
+            }
+            "artificial_gravity_mps2" => {
+                c.artificial_gravity_mps2 = if f > 0.0 { f } else { c.artificial_gravity_mps2 }
+            }
+            "deck_friction" => c.deck_friction = if f > 0.0 { f } else { c.deck_friction },
             _ => println!("[station] {}: unknown key '{}'", path, key),
         }
     }
@@ -104,122 +139,191 @@ pub fn load_config(path: &str) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Drum shell geometry - a hollow cylinder of hex prisms.              */
+/* Ring-station geometry: outer ring deck + spokes + casino hotel      */
+/* tower + external docking pads (the classic wheel-station look).     */
 
-/// Structural role of a shell prism - the renderer uses it to cull the
-/// faces that neighbouring prisms hide (interior disk cells never show
-/// their sides; wall cells never show caps except on the rim layers).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrismRole {
-    Floor,
-    Ceiling,
-    Wall,
-}
-
-/// One hex prism of the station structure, in STATION-LOCAL metres:
-/// x/z span the deck plane (pointy-top axial hex grid), y is the drum
-/// axis (0 at the keel). The client orients local +y radially away from
-/// the planet at the orbital anchor.
+/// One hex prism of the station structure. `q`/`r`/`layer` are the
+/// axial-grid + stack coordinates (the renderer culls faces against
+/// neighbouring occupancy with them); `x`/`y`/`z` are the precomputed
+/// STATION-LOCAL metres - x/z span the deck plane (pointy-top axial hex
+/// grid), y is the station axis with 0 at the keel. The client orients
+/// local +y radially away from the planet at the orbital anchor, so
+/// "down" on deck is toward the planet.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Prism {
+    pub q: i32,
+    pub r: i32,
+    pub layer: i32,
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub block: Block,
-    pub role: PrismRole,
 }
 
-/// Centered hexagonal number: hexes in a full deck of radius `n` rings.
+/// Centered hexagonal number: hexes in a full disk of radius `n` rings.
 pub fn hexes_per_deck(n: u32) -> u32 {
     3 * n * (n + 1) + 1
 }
 
-/// Prism count of the hollow drum: two full disks + the wall ring on
-/// every layer between them. Pinned against `shell().len()` in tests
-/// (and against tools/station-math.py).
-pub fn shell_prism_count(n: u32, layers: u32) -> u32 {
-    2 * hexes_per_deck(n) + 6 * n * layers.saturating_sub(2)
+/// Height of one prism layer (m).
+pub fn layer_h(cfg: &StationConfig) -> f32 {
+    cfg.height_m / cfg.layers.max(1) as f32
 }
 
-/// Which block a wall-ring prism gets: a NeonTrim band runs the whole
-/// equator layer, CasinoSign tiles mark the six ring corners one layer
-/// up (visible beacons on approach), hull everywhere else.
-fn wall_block(q: i32, r: i32, layer: u32, cfg: &StationConfig) -> Block {
-    let band = cfg.layers / 2;
-    if layer == band {
-        return Block::NeonTrim;
-    }
-    let n = cfg.radius_hexes as i32;
-    let corner = (q == n && r == 0)
-        || (q == 0 && r == n)
-        || (q == -n && r == n)
-        || (q == -n && r == 0)
-        || (q == 0 && r == -n)
-        || (q == n && r == -n);
-    if corner && layer == band + 1 {
-        Block::CasinoSign
-    } else {
-        Block::StationHull
-    }
+/// The six axial hex directions (pointy-top).
+pub const HEX_DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)];
+
+/// Hex-grid distance from the origin.
+pub fn hex_dist(q: i32, r: i32) -> i32 {
+    (q.abs() + r.abs() + (q + r).abs()) / 2
 }
 
-/// Floor-disk block: the casino occupies the inner half of the deck
-/// (carpet), the outer annulus is bare deck plating.
-fn floor_block(dist: u32, cfg: &StationConfig) -> Block {
-    if dist * 2 <= cfg.radius_hexes {
-        Block::CasinoCarpet
-    } else {
-        Block::StationFloor
-    }
+/// Axial cell -> station-local metres (pointy-top layout).
+pub fn axial_to_local(q: i32, r: i32, a: f32) -> (f32, f32) {
+    (a * 3.0f32.sqrt() * (q as f32 + r as f32 * 0.5), a * 1.5 * r as f32)
 }
 
-/// Generate the hollow drum: floor disk (layer 0), ceiling disk (top
-/// layer), and the outer wall ring on every layer. Pure function of the
-/// config - the client meshes this once and re-poses it per frame.
+/// Station-local metres -> the axial cell containing the point (cube
+/// rounding, the standard hex pick). Inverse of [`axial_to_local`].
+pub fn local_to_axial(x: f32, z: f32, a: f32) -> (i32, i32) {
+    let qf = (3.0f32.sqrt() / 3.0 * x - z / 3.0) / a;
+    let rf = (2.0 / 3.0 * z) / a;
+    let sf = -qf - rf;
+    let (mut qi, mut ri, si) = (qf.round(), rf.round(), sf.round());
+    let (dq, dr, ds) = ((qi - qf).abs(), (ri - rf).abs(), (si - sf).abs());
+    if dq > dr && dq > ds {
+        qi = -ri - si;
+    } else if dr > ds {
+        ri = -qi - si;
+    }
+    (qi as i32, ri as i32)
+}
+
+/// Inner radius of the ring deck annulus.
+fn ring_inner(cfg: &StationConfig) -> i32 {
+    (cfg.radius_hexes as i32 - cfg.ring_width as i32 + 1).max(1)
+}
+
+/// Generate the wheel station. Pure function of the config; the client
+/// meshes it once and re-poses it per frame. Layout (all radii in hex
+/// rings, heights in layers of [`layer_h`]):
+///
+/// - **Ring deck**: annulus `ring_inner..=radius_hexes`, a slab
+///   `slab_layers` tall (deck plating on top, hull keel), with a neon
+///   parapet running the outer rim.
+/// - **Spokes**: six 1-hex-wide slab walkways from the tower to the ring.
+/// - **Casino hotel tower** (centre): `tower_radius` disk, walls
+///   `tower_layers` tall - plum casino wall with neon bands every third
+///   layer and lucky-7 marquees around the crown - carpeted lobby floor,
+///   hull roof deck, and a 2-layer sign spire on top.
+/// - **Docking pads**: six 7-hex pads bridged off the ring corners, deck
+///   plating with a neon centre marker to land on.
 pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
-    let n = cfg.radius_hexes as i32;
     let a = cfg.hex_size_m;
-    let layer_h = cfg.height_m / cfg.layers.max(1) as f32;
-    let sqrt3 = 3.0f32.sqrt();
-    let mut out = Vec::with_capacity(shell_prism_count(cfg.radius_hexes, cfg.layers) as usize);
-    for q in -n..=n {
-        let r_lo = (-n).max(-q - n);
-        let r_hi = n.min(-q + n);
-        for r in r_lo..=r_hi {
-            let dist = ((q.abs() + r.abs() + (q + r).abs()) / 2) as u32;
-            let x = a * sqrt3 * (q as f32 + r as f32 * 0.5);
-            let z = a * 1.5 * r as f32;
-            if dist == cfg.radius_hexes {
-                /* Wall column: every layer. */
-                for layer in 0..cfg.layers {
-                    out.push(Prism {
-                        x,
-                        y: layer as f32 * layer_h,
-                        z,
-                        block: wall_block(q, r, layer, cfg),
-                        role: PrismRole::Wall,
-                    });
-                }
-            } else {
-                /* Interior column: floor + ceiling only (hollow). */
-                out.push(Prism {
-                    x,
-                    y: 0.0,
-                    z,
-                    block: floor_block(dist, cfg),
-                    role: PrismRole::Floor,
-                });
-                out.push(Prism {
-                    x,
-                    y: (cfg.layers - 1) as f32 * layer_h,
-                    z,
-                    block: Block::StationHull,
-                    role: PrismRole::Ceiling,
-                });
+    let lh = layer_h(cfg);
+    let n_out = cfg.radius_hexes as i32;
+    let n_in = ring_inner(cfg);
+    let slab = cfg.slab_layers.max(1) as i32;
+    let t_rad = cfg.tower_radius as i32;
+    let t_lay = cfg.tower_layers.max(2) as i32;
+
+    let mut out: Vec<Prism> = Vec::new();
+    let mut occupied = std::collections::HashSet::new();
+    /* First writer wins; overlapping sections (e.g. a pad ring touching
+     * its bridge cell) stay watertight without duplicate prisms. */
+    let mut push = |q: i32, r: i32, layer: i32, block: Block| {
+        if !occupied.insert((q, r, layer)) {
+            return;
+        }
+        let (x, z) = axial_to_local(q, r, a);
+        out.push(Prism { q, r, layer, x, y: layer as f32 * lh, z, block });
+    };
+
+    /* Slab column: hull keel layers with a chosen deck block on top. */
+    let slab_col = |push: &mut dyn FnMut(i32, i32, i32, Block), q: i32, r: i32, top: Block| {
+        for l in 0..slab {
+            push(q, r, l, if l == slab - 1 { top } else { Block::StationHull });
+        }
+    };
+
+    /* 1. Ring deck annulus + neon parapet on the outer rim. */
+    for q in -n_out..=n_out {
+        for r in (-n_out).max(-q - n_out)..=n_out.min(-q + n_out) {
+            let d = hex_dist(q, r);
+            if d < n_in || d > n_out {
+                continue;
+            }
+            slab_col(&mut push, q, r, Block::StationFloor);
+            if d == n_out {
+                push(q, r, slab, Block::NeonTrim);
             }
         }
     }
+
+    /* 2. Spokes: tower edge -> ring inner edge, one hex wide. */
+    for (dq, dr) in HEX_DIRS {
+        for k in (t_rad + 1)..n_in {
+            slab_col(&mut push, dq * k, dr * k, Block::StationFloor);
+        }
+    }
+
+    /* 3. Casino hotel tower. */
+    for q in -t_rad..=t_rad {
+        for r in (-t_rad).max(-q - t_rad)..=t_rad.min(-q + t_rad) {
+            let d = hex_dist(q, r);
+            if d == t_rad {
+                /* Hotel facade: plum casino wall, neon band every third
+                 * layer, lucky-7 marquees ringing the crown layer. */
+                for l in 0..t_lay {
+                    let block = if l == t_lay - 1 {
+                        Block::CasinoSign
+                    } else if l % 3 == 2 {
+                        Block::NeonTrim
+                    } else if l == 0 {
+                        Block::StationHull
+                    } else {
+                        Block::CasinoWall
+                    };
+                    push(q, r, l, block);
+                }
+            } else {
+                /* Lobby floor + roof deck; hollow hotel in between. */
+                push(q, r, 0, Block::CasinoCarpet);
+                push(q, r, t_lay - 1, Block::StationHull);
+            }
+        }
+    }
+    /* Sign spire on the roof. */
+    push(0, 0, t_lay, Block::CasinoSign);
+    push(0, 0, t_lay + 1, Block::CasinoSign);
+
+    /* 4. Docking pads: bridge cell + 7-hex pad off each ring corner. */
+    for (dq, dr) in HEX_DIRS {
+        slab_col(&mut push, dq * (n_out + 1), dr * (n_out + 1), Block::StationFloor);
+        let (cq, cr) = (dq * (n_out + 2), dr * (n_out + 2));
+        slab_col(&mut push, cq, cr, Block::NeonTrim);
+        for (nq, nr) in HEX_DIRS {
+            slab_col(&mut push, cq + nq, cr + nr, Block::StationFloor);
+        }
+    }
+
     out
+}
+
+/// Highest walkable support height per occupied column, in station-local
+/// metres (top face of the topmost prism). The artificial-gravity field
+/// and deck landing sample this - one entry per (q, r) column.
+pub fn deck_map(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32), f32> {
+    let lh = layer_h(cfg);
+    let mut map = std::collections::HashMap::new();
+    for p in shell(cfg) {
+        let top = (p.layer + 1) as f32 * lh;
+        let e = map.entry((p.q, p.r)).or_insert(top);
+        if top > *e {
+            *e = top;
+        }
+    }
+    map
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,6 +368,103 @@ pub fn orbit_vel(t: f64) -> DVec3 {
     let v = orbit_speed_mps();
     let ph = (v / r) * t;
     dvec3_make(-v * ph.sin(), 0.0, v * ph.cos())
+}
+
+/* ------------------------------------------------------------------ */
+/* Station frame + artificial-gravity field (physics support).         */
+
+/// A world-position sample expressed in the station's orbit frame, plus
+/// the deck support and artificial-gravity field test under it. The
+/// player integrator uses this to land on and walk the station: the
+/// basis carries the sample around the orbit, `deck_top_m` is the floor,
+/// and while `in_field` the integrator applies `artificial_gravity_mps2`
+/// toward the deck IN THE STATION FRAME (the frame itself is in free
+/// fall, so real gravity drops out of relative motion).
+#[derive(Clone, Copy, Debug)]
+pub struct StationFrame {
+    pub anchor: DVec3,
+    /// Orbit-frame basis, world-space: local +x.
+    pub prograde: DVec3,
+    /// Radially away from the planet: local +y ("up" on deck).
+    pub up: DVec3,
+    /// Orbit normal: local +z.
+    pub normal: DVec3,
+    /// Station velocity at the sample time.
+    pub station_vel: DVec3,
+    /// The sampled position in station-local metres.
+    pub local: DVec3,
+    /// Walkable support height (local y, m) of the occupied deck column
+    /// under the sample, or `None` off the structure.
+    pub deck_top_m: Option<f64>,
+    /// True inside the artificial-gravity capture band: over a deck
+    /// column, from just under its top to `gravity_field_m` above it.
+    pub in_field: bool,
+}
+
+/// Deck-map cache - rebuilt when the config changes (boot / yaml edit).
+static S_DECK_CACHE: Mutex<Option<(StationConfig, std::collections::HashMap<(i32, i32), f32>)>> =
+    Mutex::new(None);
+
+fn deck_lookup(cfg: &StationConfig, q: i32, r: i32) -> Option<f32> {
+    let mut cache = S_DECK_CACHE.lock().unwrap();
+    let rebuild = match cache.as_ref() {
+        Some((c, _)) => c != cfg,
+        None => true,
+    };
+    if rebuild {
+        *cache = Some((*cfg, deck_map(cfg)));
+    }
+    cache.as_ref().unwrap().1.get(&(q, r)).copied()
+}
+
+/// Sample `world_pos` against the station at world-time `t`.
+pub fn frame_sample(world_pos: DVec3, t: f64) -> StationFrame {
+    use crate::math::{dvec3_cross, dvec3_dot, dvec3_normalize};
+    let cfg = config();
+    let anchor = orbit_pos(t);
+    let station_vel = orbit_vel(t);
+    let b = planet::get(BodyId::Tenebris);
+    let up = dvec3_normalize(dvec3_make(
+        anchor.x - b.pos_x,
+        anchor.y - b.pos_y,
+        anchor.z - b.pos_z,
+    ));
+    let prograde = dvec3_normalize(station_vel);
+    let normal = dvec3_cross(prograde, up);
+    let d = dvec3_make(world_pos.x - anchor.x, world_pos.y - anchor.y, world_pos.z - anchor.z);
+    let local = dvec3_make(dvec3_dot(d, prograde), dvec3_dot(d, up), dvec3_dot(d, normal));
+    let (q, r) = local_to_axial(local.x as f32, local.z as f32, cfg.hex_size_m);
+    let deck_top_m = deck_lookup(&cfg, q, r).map(|v| v as f64);
+    let in_field = deck_top_m.is_some_and(|top| {
+        local.y >= top - 2.0 && local.y <= top + cfg.gravity_field_m as f64
+    });
+    StationFrame { anchor, prograde, up, normal, station_vel, local, deck_top_m, in_field }
+}
+
+impl StationFrame {
+    /// Station-local metres -> world position through this frame.
+    pub fn local_to_world(&self, local: DVec3) -> DVec3 {
+        dvec3_make(
+            self.anchor.x + self.prograde.x * local.x + self.up.x * local.y + self.normal.x * local.z,
+            self.anchor.y + self.prograde.y * local.x + self.up.y * local.y + self.normal.y * local.z,
+            self.anchor.z + self.prograde.z * local.x + self.up.z * local.y + self.normal.z * local.z,
+        )
+    }
+
+    /// Station-local vector -> world vector (no anchor translation).
+    pub fn local_vec_to_world(&self, v: DVec3) -> DVec3 {
+        dvec3_make(
+            self.prograde.x * v.x + self.up.x * v.y + self.normal.x * v.z,
+            self.prograde.y * v.x + self.up.y * v.y + self.normal.y * v.z,
+            self.prograde.z * v.x + self.up.z * v.y + self.normal.z * v.z,
+        )
+    }
+
+    /// World vector -> station-local vector.
+    pub fn world_vec_to_local(&self, v: DVec3) -> DVec3 {
+        use crate::math::dvec3_dot;
+        dvec3_make(dvec3_dot(v, self.prograde), dvec3_dot(v, self.up), dvec3_dot(v, self.normal))
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -676,27 +877,86 @@ mod tests {
     }
 
     #[test]
-    fn shell_matches_centered_hex_formula() {
-        /* The user-specced drum: radius 10 rings, 6 layers, 15 m tall.
-         * Same numbers tools/station-math.py prints. */
+    fn wheel_station_shell_counts_by_section() {
+        /* Default wheel: outer ring 10, 3 wide, 2-layer slab; six spokes;
+         * radius-3 hotel, 10 layers; six 7-hex pads + bridges. All counts
+         * derived from the centered-hex identities, not eyeballed. */
         let cfg = StationConfig::DEFAULT;
-        assert_eq!(hexes_per_deck(10), 331);
-        assert_eq!(shell_prism_count(10, 6), 902);
         let prisms = shell(&cfg);
-        assert_eq!(prisms.len(), 902);
-        /* Palette split: one 60-hex neon equator band; six sign corner
-         * tiles; carpet only on the floor disk's inner half. */
+        let annulus = hexes_per_deck(10) - hexes_per_deck(7); /* 162 ring cells */
+        assert_eq!(annulus, 162);
+        let ring = annulus * 2 + 60; /* slab x2 + neon parapet */
+        let spokes = 6 * 4 * 2; /* k = 4..7, 2 slab layers */
+        let tower = 18 * 10 + 19 * 2 + 2; /* walls + floor/roof + spire */
+        /* Bridge + centre + 6 neighbours, minus the neighbour that lands
+         * back on the bridge cell (dedup keeps the first writer). */
+        let pads = 6 * (2 + 2 + 6 * 2 - 2);
+        assert_eq!(prisms.len() as u32, ring + spokes as u32 + tower + pads as u32);
+        assert_eq!(prisms.len(), 736);
+        /* Palette: neon = parapet 60 + hotel bands 3x18 + pad markers 6;
+         * signs = crown ring 18 + spire 2; carpet = hotel lobby 19. */
         let count = |b: Block| prisms.iter().filter(|p| p.block == b).count();
-        assert_eq!(count(Block::NeonTrim), 60);
-        assert_eq!(count(Block::CasinoSign), 6);
-        let inner = 3 * 5 * 6 + 1; /* hexes_per_deck(5) = 91 carpet cells */
-        assert_eq!(count(Block::CasinoCarpet), inner);
-        /* Everything sits inside the physical drum bounds. */
-        let rad = 3.0f32.sqrt() * cfg.hex_size_m * cfg.radius_hexes as f32 + cfg.hex_size_m;
+        assert_eq!(count(Block::NeonTrim), 60 + 54 + 6);
+        assert_eq!(count(Block::CasinoSign), 20);
+        assert_eq!(count(Block::CasinoCarpet), 19);
+        assert_eq!(count(Block::CasinoWall), 5 * 18); /* facade minus bands/base/crown */
+        /* No duplicate cells: every (q, r, layer) appears once. */
+        let mut seen = std::collections::HashSet::new();
         for p in &prisms {
-            assert!((p.x * p.x + p.z * p.z).sqrt() <= rad + 1e-3);
-            assert!(p.y >= 0.0 && p.y <= cfg.height_m);
+            assert!(seen.insert((p.q, p.r, p.layer)), "dup at {:?}", (p.q, p.r, p.layer));
         }
+    }
+
+    #[test]
+    fn deck_map_and_axial_roundtrip() {
+        let cfg = StationConfig::DEFAULT;
+        let map = deck_map(&cfg);
+        let lh = layer_h(&cfg); /* 2.5 m */
+        /* Spire column tops the hotel; ring deck 5 m; parapet 7.5 m;
+         * pad centre 5 m; hotel wall/roof 25 m; between-spoke gap: none. */
+        assert_eq!(map.get(&(0, 0)).copied(), Some(12.0 * lh)); /* spire top 30 m */
+        assert_eq!(map.get(&(9, 0)).copied(), Some(2.0 * lh));
+        assert_eq!(map.get(&(10, 0)).copied(), Some(3.0 * lh));
+        assert_eq!(map.get(&(12, 0)).copied(), Some(2.0 * lh));
+        assert_eq!(map.get(&(3, 0)).copied(), Some(10.0 * lh));
+        assert_eq!(map.get(&(1, 1)).copied(), Some(10.0 * lh)); /* under the roof */
+        /* (4,2) is dist 6: inside the wheel but off every spoke line -
+         * open space between spokes. ((5,3) would be ring deck, dist 8.) */
+        assert!(map.get(&(4, 2)).is_none(), "gap between spokes is open space");
+        /* local_to_axial inverts axial_to_local across the structure. */
+        for (q, r) in [(0, 0), (10, 0), (-7, 3), (4, -9), (12, 0), (0, -12)] {
+            let (x, z) = axial_to_local(q, r, cfg.hex_size_m);
+            assert_eq!(local_to_axial(x, z, cfg.hex_size_m), (q, r));
+        }
+    }
+
+    #[test]
+    fn frame_sample_field_and_deck_support() {
+        set_config(StationConfig::DEFAULT);
+        let t = 12.34;
+        let anchor = orbit_pos(t);
+        /* Directly over the hotel spire: deck under us, inside the field. */
+        let f0 = frame_sample(anchor, t);
+        /* The anchor itself sits at local origin: over column (0,0). */
+        assert_eq!(f0.deck_top_m.map(|v| v as f32), Some(30.0));
+        let over = f0.local_to_world(dvec3_make(0.0, 40.0, 0.0));
+        let f = frame_sample(over, t);
+        assert!(f.in_field, "10 m over the spire top is inside the field");
+        assert!((f.local.y - 40.0).abs() < 1e-6);
+        /* 100 m above: out of the field. */
+        let high = f0.local_to_world(dvec3_make(0.0, 130.0, 0.0));
+        assert!(!frame_sample(high, t).in_field);
+        /* Off the structure (between spokes): no deck, no field. */
+        let (x, z) = axial_to_local(4, 2, config().hex_size_m);
+        let gap = f0.local_to_world(dvec3_make(x as f64, 10.0, z as f64));
+        let fg = frame_sample(gap, t);
+        assert!(fg.deck_top_m.is_none() && !fg.in_field);
+        /* Round trip: local -> world -> local. */
+        let p = f0.local_to_world(dvec3_make(7.0, 9.0, -3.0));
+        let fr = frame_sample(p, t);
+        assert!((fr.local.x - 7.0).abs() < 1e-6);
+        assert!((fr.local.y - 9.0).abs() < 1e-6);
+        assert!((fr.local.z - (-3.0)).abs() < 1e-6);
     }
 
     #[test]

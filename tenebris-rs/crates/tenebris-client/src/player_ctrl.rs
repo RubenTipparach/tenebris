@@ -1172,7 +1172,16 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     let l = config::lod();
     let gq = planet::gravity_at(p.position, l.gravity_full_mult, l.gravity_falloff_mult);
     let was_in_space = p.is_in_space;
-    p.is_in_space = gq.body.is_none();
+    /* Inside the orbital station's artificial-gravity field the 6DOF
+     * space integrator takes over even though Tenebris's anchor band
+     * still covers the station altitude - that's where the deck landing
+     * + station-frame gravity live (see the space branch below). The
+     * field only exists over the station's deck columns 120 m up, so a
+     * surface walker can never trip it. */
+    let sim_t = tenebris_core::world_time::seconds();
+    let station_field =
+        tenebris_core::station::frame_sample(p.position, sim_t).in_field;
+    p.is_in_space = gq.body.is_none() || station_field;
     if let Some(gb) = &gq.body {
         if p.body.map(|b| b.id) != Some(gb.id) {
             /* Mid-flight body swap - keep the basis as-is and arm the
@@ -1505,6 +1514,20 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * to a moon costs the fuel the tanks actually carry. */
         let og = planet::orbital_gravity_at(p.position);
         p.velocity = dvec3_add(p.velocity, dvec3_scale(og, dt as f64));
+        /* Artificial gravity inside the orbital station's field: an
+         * extra anti-radial pull toward the deck. The station frame is
+         * free-falling (real gravity is exactly its centripetal budget),
+         * so relative to the station this reads as plain downward
+         * gravity - hover a rocket over the casino and it settles onto
+         * the deck. */
+        let scfg = tenebris_core::station::config();
+        let sf = tenebris_core::station::frame_sample(p.position, sim_t);
+        if sf.in_field {
+            p.velocity = dvec3_sub(
+                p.velocity,
+                dvec3_scale(sf.up, scfg.artificial_gravity_mps2 as f64 * dt as f64),
+            );
+        }
         /* Flight-assist drag ONLY while steering with RCS: it makes small
          * manual corrections controllable without killing orbits - a
          * hands-off coast (or a rocket burn) is drag-free Newtonian, so
@@ -1515,6 +1538,29 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
         }
         p.position = dvec3_add(p.position, dvec3_scale(p.velocity, dt as f64));
         p.grounded = false;
+        /* Deck landing: resample at the integrated position; if the feet
+         * crossed the deck column's top while moving deck-ward RELATIVE
+         * to the station, clamp onto the deck, kill the vertical relative
+         * velocity, and bleed the tangential slide (deck friction) - the
+         * player stands on the station and rides its orbit. */
+        if sf.in_field {
+            let sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
+            if let Some(top) = sf2.deck_top_m {
+                let mut rel =
+                    sf2.world_vec_to_local(dvec3_sub(p.velocity, sf2.station_vel));
+                if sf2.local.y <= top + 0.05 && rel.y <= 0.0 {
+                    let mut lp = sf2.local;
+                    lp.y = top;
+                    rel.y = 0.0;
+                    let damp = (-(scfg.deck_friction as f64) * dt as f64).exp();
+                    rel.x *= damp;
+                    rel.z *= damp;
+                    p.position = sf2.local_to_world(lp);
+                    p.velocity = dvec3_add(sf2.station_vel, sf2.local_vec_to_world(rel));
+                    p.grounded = true;
+                }
+            }
+        }
         p.last_tile = -1;
         jerk_log(p, &before, w, dt);
         return;
