@@ -50,7 +50,12 @@ station:
   layers: 12
   height_m: 15.0
   hex_size_m: 2.0
-  altitude_m: 120.0
+  # 9700 m above the 300 m surface = a 10,000 m orbit RADIUS, which the
+  # derived-speed rule (see the header) turns into exactly 15.00 m/s and a
+  # ~70 min lap. The old 120 m altitude orbited at 73 m/s / 10 deg/s - it
+  # lapped the planet every 36 s, far too fast to rendezvous with, and well
+  # over the 8 m/s dock gate even flying alongside it.
+  altitude_m: 9700.0
   dock_radius_m: 60.0
   dock_max_rel_mps: 8.0
   gravity_field_m: 40.0

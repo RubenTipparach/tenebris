@@ -165,6 +165,10 @@ pub struct FlightConstants {
     pub safe_landing_mps: f32,
     pub drag_coef: f32,
     pub parachute_drag: f32,
+    /// Attitude authority while flying a rocket, radians/sec: how fast
+    /// WASD pitches and yaws the ship. The mouse orbits the chase camera
+    /// in this mode, so steering is entirely on the keys.
+    pub steer_rate_rads: f32,
 }
 
 /// Reentry-FX thresholds (client visual; `[reentry]` in rocket.yaml).
@@ -202,6 +206,30 @@ pub struct SalvageConstants {
     pub scrap_max: f32,
 }
 
+/// Third-person rocket chase camera (`[camera]` in rocket.yaml).
+///
+/// Values ported from the JS reference's `ROCKET_CONFIG.CAMERA`
+/// (`src/config/RocketConfig.ts`) so the chase cam flies with the same
+/// feel it had there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraConstants {
+    /// Resting distance from the rocket, metres.
+    pub distance_m: f32,
+    /// Zoom clamp (scroll wheel).
+    pub min_distance_m: f32,
+    pub max_distance_m: f32,
+    /// Starting elevation above the rocket's "horizon", radians. Positive
+    /// looks down at it from behind-and-above.
+    pub elevation_rad: f32,
+    /// Exponential follow rate (1/s) for the orbit params. The lerp is
+    /// `1 - exp(-rate * dt)`, so it's frame-rate independent.
+    pub smooth_rate: f32,
+    /// Mouse orbit sensitivity, radians per pixel.
+    pub mouse_sens: f32,
+    /// Fraction of the current distance one scroll notch adds/removes.
+    pub zoom_step: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RocketConfig {
     /// Atmospheric engine: high thrust, thirsty (the lift-off stage).
@@ -213,6 +241,7 @@ pub struct RocketConfig {
     pub flight: FlightConstants,
     pub reentry: ReentryConstants,
     pub salvage: SalvageConstants,
+    pub camera: CameraConstants,
 }
 
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
@@ -235,6 +264,12 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         safe_landing_mps: 2.0,
         drag_coef: 0.5,
         parachute_drag: 0.95,
+        /* The JS torqued the ship at 1.0 rad/s into an angular velocity it
+         * then bled off with a PER-FRAME 0.95 multiply, settling near
+         * ~0.33 rad/s at 60 fps - i.e. its handling was frame-rate
+         * dependent. We apply the rate directly (dt-correct), landing in
+         * the same ballpark without the fps coupling. */
+        steer_rate_rads: 0.9,
     },
     reentry: ReentryConstants { min_speed_mps: 45.0, full_speed_mps: 95.0, max_alt_m: 120.0 },
     salvage: SalvageConstants {
@@ -245,6 +280,17 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         spin_rate: 1.4,
         scrap_min: 2.0,
         scrap_max: 4.0,
+    },
+    /* JS ROCKET_CONFIG.CAMERA verbatim, plus the 0.3 rad default elevation
+     * that lived in RocketCamera.ts rather than its config. */
+    camera: CameraConstants {
+        distance_m: 20.0,
+        min_distance_m: 8.0,
+        max_distance_m: 100.0,
+        elevation_rad: 0.3,
+        smooth_rate: 15.0,
+        mouse_sens: 0.005,
+        zoom_step: 0.1,
     },
 };
 
@@ -289,6 +335,14 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
         let key = line[..colon].trim();
         let Ok(val) = line[colon + 1..].trim().parse::<f32>() else { continue };
         match (section.as_str(), key) {
+            ("camera", "distance_m") => c.camera.distance_m = val,
+            ("camera", "min_distance_m") => c.camera.min_distance_m = val,
+            ("camera", "max_distance_m") => c.camera.max_distance_m = val,
+            ("camera", "elevation_rad") => c.camera.elevation_rad = val,
+            ("camera", "smooth_rate") => c.camera.smooth_rate = val,
+            ("camera", "mouse_sens") => c.camera.mouse_sens = val,
+            ("camera", "zoom_step") => c.camera.zoom_step = val,
+            ("flight", "steer_rate_rads") => c.flight.steer_rate_rads = val,
             ("engine", "thrust_n") => c.engine.thrust_n = val,
             ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
             ("engine", "mass_kg") => c.engine.mass_kg = val,

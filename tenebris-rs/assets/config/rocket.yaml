@@ -39,6 +39,32 @@ launch_alt_m: 5         # LAUNCHING -> IN_FLIGHT threshold altitude
 safe_landing_mps: 2
 drag_coef: 0.5
 parachute_drag: 0.95
+# Attitude authority, rad/s: how fast WASD pitches/yaws the ship. The mouse
+# orbits the chase camera in rocket mode, so steering is all on the keys.
+steer_rate_rads: 0.9
+
+# Third-person chase camera (client). Ported from the JS RocketCamera
+# (src/rocket/RocketCamera.ts + ROCKET_CONFIG.CAMERA). The camera orbits the
+# rocket on a sphere and always looks at it:
+#
+#   mouse         - orbit around the rocket (azimuth + elevation)
+#   scroll wheel  - zoom, one notch = zoom_step of the current distance
+#   W/S A/D       - pitch / yaw the ROCKET (not the camera)
+#   Q/R           - roll
+#   Space (hold)  - burn the active engine along the nose
+#   X             - jettison the spent stage
+#
+# Only distance/azimuth/elevation are smoothed - the camera's anchor and up
+# are read rigidly off the rocket, so it stays welded to the ship and only
+# your own input eases in.
+[camera]
+distance_m: 20         # resting distance behind the rocket
+min_distance_m: 8      # zoom-in clamp
+max_distance_m: 100    # zoom-out clamp
+elevation_rad: 0.3     # start angle above the rocket's horizon (~17 deg)
+smooth_rate: 15.0      # orbit follow rate, 1/s: lerp = 1 - exp(-rate * dt)
+mouse_sens: 0.005      # radians per mouse pixel
+zoom_step: 0.1         # fraction of current distance per scroll notch
 
 # Reentry FX (client visual): plasma streaks when falling fast inside the
 # lower atmosphere. Ramps min_speed -> full_speed; only below max_alt_m.

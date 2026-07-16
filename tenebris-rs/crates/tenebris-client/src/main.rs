@@ -19,6 +19,7 @@ mod falling_stage;
 mod furnace_screen;
 mod power_ui;
 mod rocket_screen;
+mod rocket_cam;
 mod rocket_fx;
 mod station_fx;
 mod rocket_ride;

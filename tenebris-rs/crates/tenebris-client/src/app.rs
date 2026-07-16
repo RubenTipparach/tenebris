@@ -71,6 +71,8 @@ use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
 use crate::pixel_ui;
 use crate::player_ctrl::{self, PlayerCtrl};
+use crate::rocket_cam;
+use crate::rocket_ride;
 use crate::rocket_screen;
 use crate::profile;
 use crate::profiler;
@@ -5882,7 +5884,24 @@ fn frame_inner(app: &mut App) {
     }
 
     let aspect = sapp::widthf() / sapp::heightf();
-    let view: Mat4 = player_ctrl::view(&app.player.borrow());
+    /* Flying a rocket swaps the FPS eye for the third-person chase camera
+     * (see rocket_cam): you fly the rocket with the keys and the mouse
+     * orbits the camera around it. `cam_eye` is where the camera actually
+     * is - NOT the player - and the FX below that need an eye position take
+     * it from here rather than re-deriving it from the player. */
+    let (view, cam_eye): (Mat4, DVec3) = {
+        let p = app.player.borrow();
+        if rocket_ride::is_riding() {
+            let (f, u, r) = (p.basis.fwd, p.basis.up, p.basis.right);
+            let anchor = p.position;
+            (rocket_cam::view(anchor, f, u, r), rocket_cam::eye(anchor, f, u, r))
+        } else {
+            (
+                player_ctrl::view(&p),
+                dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64)),
+            )
+        }
+    };
     /* zfar = 20 km - covers the sun (8 km) + far asteroids with
      * margin. */
     let zfar = 20000.0f32;
@@ -5956,11 +5975,10 @@ fn frame_inner(app: &mut App) {
         ..Default::default()
     };
     /* Camera world pos for the water-shader fresnel - the player's
-     * parallel-transported basis keeps it continuous. */
-    let cam_world_d = {
-        let p = app.player.borrow();
-        dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6))
-    };
+     * parallel-transported basis keeps it continuous. Reuses the eye the
+     * view matrix was actually built from, so the fresnel tracks the chase
+     * camera while flying a rocket instead of a point 20 m in front of it. */
+    let cam_world_d = cam_eye;
     let cam_world = dvec3_to_vec3(cam_world_d);
     env.camera_world = cam_world;
     /* Spin the starfield with the planet's rotation so the sky wheels
@@ -6161,6 +6179,11 @@ fn frame_inner(app: &mut App) {
     /* Rocket assembly + test-flight screen. update() steps the live test
      * flight; the panel itself draws via egui_ui(). */
     rocket_screen::update(dt);
+    /* Ease the chase camera's orbit toward where the mouse asked it to be.
+     * Cheap and self-gating when not flying. */
+    if rocket_ride::is_riding() {
+        rocket_cam::update(dt);
+    }
     if app.debug_ui_visible {
         draw_error_overlay();
         profiler::draw();

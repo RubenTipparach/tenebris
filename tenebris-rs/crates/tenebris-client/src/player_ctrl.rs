@@ -1398,7 +1398,18 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             inventory::select(&mut p.inventory, i as i32);
         }
     }
-    p.hotbar_scroll_accum += inp.wheel_dy;
+    /* Flying a rocket, the wheel zooms the chase camera instead of cycling
+     * the hotbar - you can't place blocks from a rocket anyway, and pulling
+     * the view back is what the wheel is for in that mode. */
+    if crate::rocket_ride::is_riding() {
+        if inp.wheel_dy != 0.0 {
+            /* Notches, not raw scroll: one detent = one zoom step, matching
+             * the JS (which passed sign only). */
+            crate::rocket_cam::zoom(-inp.wheel_dy.signum());
+        }
+    } else {
+        p.hotbar_scroll_accum += inp.wheel_dy;
+    }
     while p.hotbar_scroll_accum >= 1.0 {
         let mut s = p.inventory.selected - 1;
         if s < 0 {
@@ -1431,6 +1442,40 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     /* SPACE MODE - 6DOF orientation, thrust + drag flight.           */
     /* ============================================================== */
     if p.is_in_space {
+        /* Flying a rocket rebinds the whole scheme (ported from the JS
+         * reference - see rocket_cam): the MOUSE orbits the third-person
+         * chase camera and no longer points the ship, so attitude moves onto
+         * WASD. W/S pitch the nose down/up, A/D yaw, Q/R still roll. The
+         * mouse deltas are consumed here so the basis doesn't turn with the
+         * camera - look wherever you like while the burn holds its heading,
+         * which is the entire reason the mode exists.
+         *
+         * Rate-based rather than the JS's torque-into-damped-angular-
+         * velocity: theirs decayed by a fixed 0.95 PER FRAME, making the
+         * handling fps-dependent. Rust leads; this is dt-correct. */
+        let riding = crate::rocket_ride::is_riding();
+        let (yaw_delta, pitch_delta) = if riding {
+            crate::rocket_cam::orbit(inp.mouse_dx, inp.mouse_dy);
+            let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
+            let mut yd = 0.0f64;
+            let mut pd = 0.0f64;
+            if inp.phys.left {
+                yd -= rate;
+            }
+            if inp.phys.right {
+                yd += rate;
+            }
+            if inp.phys.forward {
+                pd -= rate; /* W: nose down */
+            }
+            if inp.phys.backward {
+                pd += rate; /* S: nose up */
+            }
+            (yd, pd)
+        } else {
+            (yaw_delta, pitch_delta)
+        };
+
         /* Rotate basis directly around its own axes. Yaw around
          * basis.up turns left/right; pitch around basis.right looks
          * up/down (no clamp - full 6DOF allows looping); roll around
@@ -1467,19 +1512,27 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
         /* Thrust acts along basis axes - fwd/back, strafe via
          * basis.right, up/down via basis.up (Space/C). Velocity is
          * world-space and decays exponentially toward zero so the
-         * ship coasts to a stop. */
+         * ship coasts to a stop.
+         *
+         * WASD is the spacewalk RCS only. In a rocket those same keys are
+         * the attitude controls above, and letting them ALSO fire the
+         * jetpack would mean every turn came with a shove sideways. The
+         * rocket flies on its engine (hold Jump) - fly_up/fly_down stay
+         * live either way. */
         let mut accel = dvec3_make(0.0, 0.0, 0.0);
-        if inp.phys.forward {
-            accel = dvec3_add(accel, p.basis.fwd);
-        }
-        if inp.phys.backward {
-            accel = dvec3_sub(accel, p.basis.fwd);
-        }
-        if inp.phys.right {
-            accel = dvec3_add(accel, p.basis.right);
-        }
-        if inp.phys.left {
-            accel = dvec3_sub(accel, p.basis.right);
+        if !riding {
+            if inp.phys.forward {
+                accel = dvec3_add(accel, p.basis.fwd);
+            }
+            if inp.phys.backward {
+                accel = dvec3_sub(accel, p.basis.fwd);
+            }
+            if inp.phys.right {
+                accel = dvec3_add(accel, p.basis.right);
+            }
+            if inp.phys.left {
+                accel = dvec3_sub(accel, p.basis.right);
+            }
         }
         if inp.phys.fly_up {
             accel = dvec3_add(accel, p.basis.up);

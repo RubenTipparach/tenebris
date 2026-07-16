@@ -18,8 +18,13 @@ thread_local! {
 }
 
 /// Begin flying a rocket (from the launch button). Replaces any current ride.
+///
+/// Re-seeds the chase camera here rather than at the call sites, so every
+/// way of boarding starts parked behind the rocket instead of wherever the
+/// last flight's mouse left it.
 pub fn begin(ride: RocketRide) {
     RIDE.with(|c| *c.borrow_mut() = Some(ride));
+    crate::rocket_cam::reset();
 }
 
 /// Stop flying (landed / recovered / world exit).

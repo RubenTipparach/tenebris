@@ -81,7 +81,12 @@ impl StationConfig {
         layers: 12,
         height_m: 15.0,
         hex_size_m: 2.0,
-        altitude_m: 120.0,
+        /* 9700 m over the 300 m surface = a 10 km orbit radius -> exactly
+         * 15.00 m/s by `orbit_speed_mps`, lapping in ~70 min. Low orbits
+         * are unreachable rather than hard: at the old 120 m the station
+         * crossed the sky at 73 m/s / 10 deg/s, which no rocket could
+         * bring inside the 8 m/s dock gate. */
+        altitude_m: 9700.0,
         dock_radius_m: 60.0,
         dock_max_rel_mps: 8.0,
         ring_width: 3,
@@ -1420,18 +1425,85 @@ mod tests {
         set_config(StationConfig::DEFAULT);
         let b = crate::planet::get(BodyId::Tenebris);
         let r = orbit_radius_m();
-        assert_eq!(r, b.radius_m + 120.0);
+        /* Re-pinned when the station moved from a 120 m altitude (420 m
+         * orbit, 73.19 m/s, 36 s a lap) out to a 10 km orbit. The old one
+         * was unreachable: it crossed the sky at 10 deg/s and no rocket
+         * could get inside the 8 m/s dock gate. Speed is derived, so
+         * raising the orbit is what slows it - these numbers are that one
+         * altitude change, not a retune. */
+        assert_eq!(r, b.radius_m + 9700.0);
+        assert_eq!(r, 10_000.0, "the orbit is the round 10 km the design asks for");
         /* v = sqrt(g R^2 / r): centripetal balance in the inverse-square
          * field orbital_gravity_at applies. Pinned via station-math.py. */
         let g = (crate::planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64;
         let v = orbit_speed_mps();
         assert!((v - (g * b.radius_m * b.radius_m / r).sqrt()).abs() < 1e-9);
-        assert!((v - 73.19).abs() < 0.01, "420 m circular speed ~73.19 m/s, got {v}");
-        assert!((orbit_period_s() - 36.05).abs() < 0.05);
+        assert!((v - 15.00).abs() < 0.01, "10 km circular speed ~15.00 m/s, got {v}");
+        assert!((orbit_period_s() - 4188.79).abs() < 0.05);
         /* The rails and the field agree: centripetal accel at the track
          * equals the sampled gravity magnitude there. */
         let a_field = g * (b.radius_m / r) * (b.radius_m / r);
         assert!((v * v / r - a_field).abs() < 1e-9);
+    }
+
+    /// The station has to be catchable: the dock only accepts a relative
+    /// speed under `dock_max_rel_mps`, so if the track itself outruns that
+    /// by a wide margin the casino is decorative. Guards the reachability
+    /// of the whole thing against a future altitude tweak.
+    #[test]
+    fn the_station_orbits_slowly_enough_to_rendezvous_with() {
+        set_config(StationConfig::DEFAULT);
+        let v = orbit_speed_mps();
+        assert!(v < 20.0, "orbit speed {v} m/s is too fast to fly alongside");
+        /* ~70 minutes a lap: it drifts across the sky rather than strobing
+         * past. At the old 120 m altitude a lap took 36 SECONDS. */
+        assert!(orbit_period_s() > 3600.0, "a lap should take over an hour");
+    }
+
+    /// Kepler's third law: `T^2 / r^3` is the same constant at every
+    /// altitude, and equals `4*pi^2 / GM`.
+    ///
+    /// This is WHY one altitude knob is enough. `orbit_speed_mps` derives
+    /// `v = sqrt(g_surf * R^2 / r)`, and `g_surf * R^2` IS `GM` - so the
+    /// field is honestly inverse-square and the period follows
+    /// `T ∝ r^(3/2)` for free. Going from a 420 m to a 10 km orbit is 23.8x
+    /// the radius and therefore 23.8^1.5 = 116x the period: the station
+    /// slows down because gravity out there is genuinely weaker, not
+    /// because anything was hand-tuned.
+    #[test]
+    fn orbit_obeys_keplers_third_law() {
+        let b = crate::planet::get(BodyId::Tenebris);
+        let gm = (crate::planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64
+            * b.radius_m
+            * b.radius_m;
+        let expect = std::f64::consts::TAU.powi(2) / gm; /* 4*pi^2 / GM */
+
+        for alt in [50.0, 120.0, 1_000.0, 9_700.0, 50_000.0] {
+            let mut c = StationConfig::DEFAULT;
+            c.altitude_m = alt;
+            set_config(c);
+            let (r, t) = (orbit_radius_m(), orbit_period_s());
+            let k = t * t / (r * r * r);
+            let err = (k - expect).abs() / expect;
+            assert!(err < 1e-9, "alt {alt}: T^2/r^3 = {k}, expected 4pi^2/GM = {expect}");
+        }
+        set_config(StationConfig::DEFAULT);
+    }
+
+    /// Raising the orbit must SLOW it - the property that lets one knob
+    /// serve both "further out" and "easier to catch".
+    #[test]
+    fn a_higher_orbit_is_a_slower_orbit() {
+        let mut low = StationConfig::DEFAULT;
+        low.altitude_m = 120.0;
+        set_config(low);
+        let (v_low, w_low) = (orbit_speed_mps(), orbit_speed_mps() / orbit_radius_m());
+
+        set_config(StationConfig::DEFAULT); /* 9700 m */
+        let (v_hi, w_hi) = (orbit_speed_mps(), orbit_speed_mps() / orbit_radius_m());
+
+        assert!(v_hi < v_low, "10 km orbit ({v_hi}) must be slower than 120 m ({v_low})");
+        assert!(w_hi < w_low, "and sweep less angle per second");
     }
 
     #[test]
