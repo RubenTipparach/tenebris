@@ -4505,8 +4505,10 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
     persistence::save_tech(&world, &p.discovered.serialize());
     /* Mid-flight rocket ride: stages + fuel survive a quit. The ride edges
      * (board / stage / exit / respawn / refuel) save same-frame; this
-     * cadence just keeps the burning fuel level fresh. Writes None when
-     * not riding, so a landed save can't re-strap the player. */
+     * cadence keeps the burning fuel level AND the orbit (velocity IS the
+     * orbit) fresh. Writes None when not riding, so a landed save can't
+     * re-strap the player. */
+    rocket_ride::note_velocity(p.velocity);
     persistence::save_ride(&world, rocket_ride::save_snapshot().as_ref());
 }
 
@@ -6256,6 +6258,11 @@ fn frame_inner(app: &mut App) {
      * Stacked along basis.fwd - the nose, the axis thrust fires along - and
      * centred so the player sits inside the stack rather than at its foot. */
     if rocket_ride::is_riding() {
+        /* One-shot after a mid-flight restore: reapply the saved velocity
+         * (the ORBIT) that world-enter zeroed. Drained exactly once. */
+        if let Some(v) = rocket_ride::take_restored_velocity() {
+            app.player.borrow_mut().velocity = v;
+        }
         let parts = rocket_ride::remaining_parts();
         if !parts.is_empty() {
             let p = app.player.borrow();

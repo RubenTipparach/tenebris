@@ -492,6 +492,10 @@ pub struct PersistenceRide {
     /// Boarding pose (respawn target), world space.
     pub pos: [f64; 3],
     pub up: [f64; 3],
+    /// Player velocity at save time - the ORBIT. Without it a reload at
+    /// altitude resumed stationary and fell straight down instead of
+    /// coasting the orbit it was on.
+    pub vel: [f64; 3],
     /// Parts still attached to the ridden rocket, bottom -> top.
     pub parts: Vec<u16>,
     /// Per-stage fuel, bottom stage first.
@@ -520,8 +524,19 @@ pub fn save_ride(world_name: &str, ride: Option<&PersistenceRide>) -> bool {
     let ids = |v: &[u16]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(";");
     let fuels = r.fuels.iter().map(|f| format!("{:.3}", f)).collect::<Vec<_>>().join(";");
     let head = format!(
-        "{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6}",
-        r.body_id, r.tile, r.depth, r.pos[0], r.pos[1], r.pos[2], r.up[0], r.up[1], r.up[2]
+        "{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4}",
+        r.body_id,
+        r.tile,
+        r.depth,
+        r.pos[0],
+        r.pos[1],
+        r.pos[2],
+        r.up[0],
+        r.up[1],
+        r.up[2],
+        r.vel[0],
+        r.vel[1],
+        r.vel[2]
     );
     client_kv::set(&key, &format!("{}|{}|{}|{}", head, ids(&r.parts), fuels, ids(&r.pad_stack)));
     true
@@ -535,7 +550,9 @@ pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
     let s = client_kv::get(&build_ride_key(world_name))?;
     let mut groups = s.split('|');
     let head: Vec<&str> = groups.next()?.split(',').collect();
-    if head.len() != 9 {
+    /* 9 fields = the pre-velocity format (reads as vel 0 - the old
+     * behaviour); 12 carries the orbit. */
+    if head.len() != 9 && head.len() != 12 {
         return None;
     }
     let ids = |g: &str| -> Vec<u16> {
@@ -562,6 +579,15 @@ pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
             head[7].trim().parse().ok()?,
             head[8].trim().parse().ok()?,
         ],
+        vel: if head.len() == 12 {
+            [
+                head[9].trim().parse().ok()?,
+                head[10].trim().parse().ok()?,
+                head[11].trim().parse().ok()?,
+            ]
+        } else {
+            [0.0; 3]
+        },
         parts,
         fuels,
         pad_stack,
@@ -1201,12 +1227,16 @@ mod tests {
             depth: 71,
             pos: [301.5, -2.25, 10.125],
             up: [0.996195, 0.087156, 0.0],
+            vel: [15.0, -0.25, 3.5],
             parts: vec![101, 102, 102, 104],
             fuels: vec![37.5, 100.0],
             pad_stack: vec![101, 102, 102, 104],
         };
         assert!(save_ride("home", Some(&r)));
         let back = load_ride("home").expect("ride loads");
+        for k in 0..3 {
+            assert!((back.vel[k] - r.vel[k]).abs() < 1e-3, "vel[{k}] - the orbit survives");
+        }
         assert_eq!(back.body_id, r.body_id);
         assert_eq!(back.tile, r.tile);
         assert_eq!(back.depth, r.depth);

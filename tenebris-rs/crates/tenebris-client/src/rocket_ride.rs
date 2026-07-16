@@ -40,6 +40,16 @@ thread_local! {
     /// firing - set by `burn` whenever fuel actually burned this frame. The
     /// short grace keeps the plume from strobing on frame-time jitter.
     static BURN_UNTIL_S: std::cell::Cell<f64> = const { std::cell::Cell::new(-1e9) };
+    /// Last known flight velocity (noted by the autosave with the player
+    /// borrowed) - the ORBIT the ride save serializes. Saving position
+    /// without velocity resumed a reload stationary at altitude, falling
+    /// straight down instead of coasting its orbit.
+    static LAST_VEL: std::cell::Cell<DVec3> =
+        const { std::cell::Cell::new(DVec3 { x: 0.0, y: 0.0, z: 0.0 }) };
+    /// Velocity waiting to be applied to the player after a mid-flight
+    /// restore (the restore site has no player borrow; the frame loop
+    /// drains this once).
+    static PENDING_VEL: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
 }
 
 /// Board a rocket assembled on the pad at (`tile`, `depth`). `pos`/`up` are
@@ -227,6 +237,19 @@ pub fn refuel(units: f32) -> f32 {
  * quietly refunds a full rocket. */
 /* ------------------------------------------------------------------ */
 
+/// Note the current flight velocity for the ride save - the ORBIT. Called
+/// by the autosave (which holds the player borrow) so the snapshot always
+/// carries a fresh vector.
+pub fn note_velocity(v: DVec3) {
+    LAST_VEL.with(|c| c.set(v));
+}
+
+/// Velocity restored from a saved mid-flight ride, handed to the frame
+/// loop ONCE to reapply to the player (the restore site has no player).
+pub fn take_restored_velocity() -> Option<DVec3> {
+    PENDING_VEL.with(|c| c.take())
+}
+
 /// The current ride as a persistence snapshot, `None` when not riding.
 pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
     RIDE.with(|c| {
@@ -235,6 +258,7 @@ pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
         ORIGIN.with(|o| {
             let ob = o.borrow();
             let org = ob.as_ref()?;
+            let vel = LAST_VEL.with(|v| v.get());
             Some(crate::persistence::PersistenceRide {
                 /* The ride flies over the origin pad's body. */
                 body_id: 0,
@@ -242,6 +266,7 @@ pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
                 depth: org.depth,
                 pos: [org.pos.x, org.pos.y, org.pos.z],
                 up: [org.up.x, org.up.y, org.up.z],
+                vel: [vel.x, vel.y, vel.z],
                 parts: r.remaining_parts(),
                 fuels: r.stage_fuels(),
                 pad_stack: org.stack.clone(),
@@ -282,6 +307,10 @@ pub fn restore_snapshot(s: &crate::persistence::PersistenceRide) -> bool {
             up: dvec3_make(s.up[0], s.up[1], s.up[2]),
         })
     });
+    /* The orbit: queue the saved velocity for the frame loop to reapply
+     * to the player (world enter zeroes it). */
+    PENDING_VEL.with(|c| c.set(Some(dvec3_make(s.vel[0], s.vel[1], s.vel[2]))));
+    LAST_VEL.with(|c| c.set(dvec3_make(s.vel[0], s.vel[1], s.vel[2])));
     /* Same entry conditions as begin(): chase cam parked behind the
      * rocket, cursor free for the flight panel. */
     crate::rocket_cam::reset();
