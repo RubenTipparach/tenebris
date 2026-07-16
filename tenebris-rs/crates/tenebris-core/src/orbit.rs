@@ -281,6 +281,45 @@ pub fn moon_track(active: BodyId, moon: BodyId, t: f64, segs: usize) -> Option<V
     Some(out)
 }
 
+/// Where the STAR sits in the active body's render frame - the sun's
+/// true position for the map view (the surface game draws an
+/// angular-correct billboard instead; see app.rs).
+pub fn apparent_star_pos(active: BodyId, t: f64) -> DVec3 {
+    let rel = dvec3_scale(heliocentric_pos(active, t), -1.0);
+    dvec3_add(body_center(active), rotate_about(rel, SPIN_AXIS, spin_angle(active, t)))
+}
+
+/// Orbit ring of ANY body, in the `active` body's render frame - the
+/// generalisation of [`moon_track`] the 3D map view draws: planets trace
+/// their (system-scaled) circle about the star's apparent position,
+/// moons trace theirs about their parent's CURRENT apparent position.
+/// `None` for bodies without an orbit.
+pub fn body_track(active: BodyId, body: BodyId, t: f64, segs: usize) -> Option<Vec<DVec3>> {
+    let e = elements(body);
+    if e.orbit_radius_m <= 0.0 {
+        return None;
+    }
+    let r = e.orbit_radius_m * if e.parent.is_none() { star_orbit_scale() } else { 1.0 };
+    let base = match e.parent {
+        Some(p) => heliocentric_pos(p, t),
+        None => dvec3_make(0.0, 0.0, 0.0),
+    };
+    let h_active = heliocentric_pos(active, t);
+    let c_active = body_center(active);
+    let spin = spin_angle(active, t);
+    let (si, ci) = e.inclination.sin_cos();
+    let mut out = Vec::with_capacity(segs + 1);
+    for k in 0..=segs {
+        let a = TAU * k as f64 / segs as f64;
+        let (sa, ca) = a.sin_cos();
+        let local = dvec3_make(r * ca, 0.0, r * sa);
+        let tilted = dvec3_make(local.x, -local.z * si, local.z * ci);
+        let rel = dvec3_sub(dvec3_add(base, tilted), h_active);
+        out.push(dvec3_add(c_active, rotate_about(rel, SPIN_AXIS, spin)));
+    }
+    Some(out)
+}
+
 /// Spin angle (radians) of a body at sim-time `t`.
 pub fn spin_angle(id: BodyId, t: f64) -> f64 {
     let e = elements(id);
@@ -421,6 +460,44 @@ mod tests {
                 let d = dvec3_length(dvec3_sub(back, truth));
                 assert!(d < 1e-6, "{body:?} t={t}: roundtrip off by {d} m");
             }
+        }
+    }
+
+    #[test]
+    fn body_track_ring_passes_through_the_body() {
+        setup();
+        // The map draws body_track rings and expects the body's apparent
+        // position to sit ON its own ring (else the chart lies). True for
+        // planets about the star and moons about their parent.
+        for (body, tol) in [(BodyId::Sequoia, 2.0), (BodyId::Luna, 1.0), (BodyId::Rime, 1.0)] {
+            let t = 123.0;
+            let pts = body_track(BodyId::Tenebris, body, t, 512).expect("orbiting body");
+            let ap = apparent_pos(BodyId::Tenebris, body, t);
+            let closest = pts
+                .iter()
+                .map(|p| dvec3_length(dvec3_sub(*p, ap)))
+                .fold(f64::INFINITY, f64::min);
+            // 512 segments quantize the circle; allow a chord's sag.
+            let e = elements(body);
+            let scale = if e.parent.is_none() { 150_000.0 / 30_000.0 } else { 1.0 };
+            let chord = e.orbit_radius_m * scale * (TAU / 512.0);
+            assert!(
+                closest < chord + tol,
+                "{body:?}: ring misses the body by {closest} m (chord {chord})"
+            );
+        }
+        // And the star sits at the centre of a planet's ring: apparent
+        // star pos == ring centroid (radius check both sides).
+        let star = apparent_star_pos(BodyId::Tenebris, 123.0);
+        let pts = body_track(BodyId::Tenebris, BodyId::Sequoia, 123.0, 4).unwrap();
+        let r_expect = elements(BodyId::Sequoia).orbit_radius_m * 5.0;
+        for p in &pts {
+            let r = dvec3_length(dvec3_sub(*p, star));
+            /* Inclination tilts the ring, so allow its vertical spread. */
+            assert!(
+                (r - r_expect).abs() < r_expect * 0.01,
+                "ring radius {r} != {r_expect}"
+            );
         }
     }
 

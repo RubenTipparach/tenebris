@@ -5515,10 +5515,12 @@ fn frame_inner(app: &mut App) {
                 "sequoia" => Some(tenebris_core::planet::BodyId::Sequoia),
                 "luna" => Some(tenebris_core::planet::BodyId::Luna),
                 "crag" => Some(tenebris_core::planet::BodyId::Crag),
+                "tenebris" => Some(tenebris_core::planet::BodyId::Tenebris),
                 _ => None,
             };
             if let Some(id) = t {
                 crate::nav_ui::set_target(Some(crate::nav_ui::Target::Body(id)));
+                solar_map::set_focus(solar_map::Focus::Body(id));
             }
         }
     }
@@ -6154,6 +6156,16 @@ fn frame_inner(app: &mut App) {
     let zfar = 20000.0f32;
     let proj = mat4_perspective(60.0 * (std::f32::consts::PI / 180.0), aspect, 0.3, zfar);
 
+    /* MAP MODE (O): the solar map detaches the scene camera - drag-orbit
+     * around the focused body / ship with a system-scale far plane, so
+     * the real 3D world becomes the orbital chart. Controls stay live. */
+    let map_cam = solar_map::camera(aspect);
+    let map_open = map_cam.is_some();
+    let (view, proj, cam_eye) = match map_cam {
+        Some((mv, mp, me)) => (mv, mp, me),
+        None => (view, proj, cam_eye),
+    };
+
     /* Atmosphere + sky are anchored to whatever body the player is
      * currently standing on. Zeroed per-body fields fall back to the tuned
      * defaults (see the C commentary). */
@@ -6166,15 +6178,26 @@ fn frame_inner(app: &mut App) {
      * billboard at sun_visual_dist_m along the sun direction: same look,
      * safe depth. */
     let solar = tenebris_core::config::solar();
-    let sun_disc_dist = solar.sun_visual_dist_m;
-    let sun_disc_radius =
-        solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0));
     let sim_t = tenebris_core::world_time::seconds();
     let sun_dir = vec3_normalize(dvec3_to_vec3(orbit::sun_direction(active_body.id, sim_t)));
-    let sun_pos = Vec3 {
-        x: active_body.pos_x as f32 + sun_dir.x * sun_disc_dist,
-        y: active_body.pos_y as f32 + sun_dir.y * sun_disc_dist,
-        z: active_body.pos_z as f32 + sun_dir.z * sun_disc_dist,
+    /* Map mode draws the star at its TRUE render-frame position and
+     * physical radius (the far plane covers the system there); the
+     * surface game keeps the angular-correct billboard inside zfar. */
+    let (sun_pos, sun_disc_radius) = if map_open {
+        (
+            dvec3_to_vec3(orbit::apparent_star_pos(active_body.id, sim_t)),
+            solar.sun_radius_m,
+        )
+    } else {
+        let sun_disc_dist = solar.sun_visual_dist_m;
+        (
+            Vec3 {
+                x: active_body.pos_x as f32 + sun_dir.x * sun_disc_dist,
+                y: active_body.pos_y as f32 + sun_dir.y * sun_disc_dist,
+                z: active_body.pos_z as f32 + sun_dir.z * sun_disc_dist,
+            },
+            solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0)),
+        )
     };
     let has_atmo = active_body.has_water;
     let planet_r = active_body.radius_m as f32;
@@ -6351,10 +6374,25 @@ fn frame_inner(app: &mut App) {
             p.basis.right,
             p.basis.fwd,
             p.basis.up,
-            rocket_ride::is_riding(),
+            rocket_ride::is_riding() && !map_open,
             p.is_in_space,
             sim_t,
         );
+        /* Map mode swaps the flight HUD's lean orbit layer for the full
+         * system chart: every planet + moon ring, the belt band, the
+         * maneuver-target halo, and the ship marker + live conic. */
+        if map_open {
+            crate::nav_ui::draw_map_orbits(
+                view,
+                proj,
+                cam_eye,
+                active_body.id,
+                crate::rocket_fx::ride_center(p.position, p.basis.up),
+                p.velocity,
+                rocket_ride::is_riding(),
+                sim_t,
+            );
+        }
     }
     /* The rocket the player is FLYING. A ridden rocket is the same thing as
      * a jettisoned one - a part stack posed in the world - so it draws

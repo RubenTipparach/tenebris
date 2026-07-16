@@ -1,55 +1,60 @@
-//! Solar-system map (egui overlay, toggled with O) - the navigation
-//! scene for interplanetary flight.
+//! 3D orbital map mode (toggled with O) - the navigation scene for
+//! interplanetary flight.
 //!
-//! A live top-down chart of the whole star system, driven by the same
-//! on-rails orbit sim the sky uses (`core::orbit`), so what the map shows
-//! IS where the bodies are: the star, each planet's orbit ring, every
-//! major planet + its moons, the asteroid belt, and the player's OWN
-//! live position (via `orbit::world_to_heliocentric`) - so a rocket
-//! coasting between planets watches its marker crawl across the chart.
+//! Not a menu: toggling the map detaches the REAL scene camera and hands
+//! it to this module. The world keeps rendering (and the rocket keeps
+//! flying - key controls stay live), but the eye pulls out to a
+//! drag-orbit / wheel-zoom camera framing whatever body is focused, with
+//! the whole system's orbit rings drawn in 3D (`nav_ui::draw_map_orbits`)
+//! and the sun rendered at its TRUE position and scale. KSP's map view,
+//! Tenebris flavour.
 //!
-//! Navigation controls:
-//! - **Camera target**: pick any body in the side menu (thumbnail cards,
-//!   baked from the same colour sampling the distant LOD uses) or click
-//!   it on the chart - the view centres and follows it. SUN resets.
-//! - **Maneuver target**: the TGT button on a card (or right-click on
-//!   the chart) routes through `nav_ui::set_target`, the same target
-//!   the in-flight halo cage + navball marker highlight - one target
-//!   system, two views. The map highlights it with a pulsing ring.
-//! - **Zoom**: +/- buttons or mouse wheel over the chart.
+//! The fly-out panel on the right lists every body - baked lit-globe
+//! thumbnail, FOCUS button (centre the camera there) and TGT button (set
+//! the maneuver target, shared with the navball + in-world halo via
+//! `nav_ui::set_target`) - plus a MY SHIP row at the top so the camera
+//! can always come home to the player.
 //!
-//! Moons orbit metres-scale distances in a system that spans hundreds of
-//! kilometres, so at true scale they'd vanish into their planet's dot.
-//! They're drawn on a small DISPLAY ring around their parent - position
-//! angle real (from the orbit sim), radius legible fiction - EXCEPT when
-//! the camera targets a moon or its parent and the zoom is deep enough
-//! for true offsets to be readable.
+//! Camera model: spherical orbit around the focus - yaw/pitch from mouse
+//! drag anywhere outside the panel, distance from the wheel, limits and
+//! sensitivities from solar.yaml (`map_*`).
 
 #![allow(dead_code)]
 
 use sokol::app as sapp;
 
-use tenebris_core::math::{dvec3_sub, DVec3};
+use tenebris_core::math::{dvec3_add, dvec3_make, dvec3_sub, dvec3_to_vec3, DVec3};
 use tenebris_core::orbit;
-use tenebris_core::planet::{self, BodyId, Tileset};
+use tenebris_core::planet::{self, BodyId};
 
+use crate::gfx_math::{mat4_look_at, mat4_perspective, Mat4};
 use crate::nav_ui::{self, Target};
 
 use std::cell::RefCell;
 
 /* ---------------------------------------------------------------------- */
-/* Open / close plumbing - mirrors tech_tree so screens.rs can manage it.  */
+/* State.                                                                  */
+
+/// What the map camera is centred on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    /// The player / rocket - the map's home view.
+    Ship,
+    Body(BodyId),
+}
 
 struct MapScreen {
     open: bool,
-    /// Body the player is anchored to (frame of world_to_heliocentric).
+    /// Body the player is anchored to (frame for the orbit transforms).
     active: BodyId,
-    /// Player position in the render frame, for the live marker.
+    /// Player position in the render frame (the SHIP focus + marker).
     player_world: DVec3,
-    /// Chart centre: None = the star.
-    camera_target: Option<BodyId>,
-    /// Chart zoom multiplier (1 = whole system fits).
-    zoom: f64,
+    focus: Focus,
+    /// Camera spherical angles about the focus, radians.
+    yaw: f32,
+    pitch: f32,
+    /// Camera distance from the focus, metres.
+    dist_m: f64,
 }
 
 thread_local! {
@@ -58,8 +63,10 @@ thread_local! {
             open: false,
             active: BodyId::Tenebris,
             player_world: DVec3 { x: 0.0, y: 0.0, z: 0.0 },
-            camera_target: None,
-            zoom: 1.0,
+            focus: Focus::Ship,
+            yaw: 0.7,
+            pitch: 0.55,
+            dist_m: 0.0, /* 0 = "apply default on open" */
         })
     };
 }
@@ -72,12 +79,15 @@ pub fn close() {
     G.with(|c| c.borrow_mut().open = false);
 }
 
-/// Toggle the overlay (wired to O in app). Releases pointer lock on open,
-/// re-locks on close - same flow as the tech tree.
+/// Toggle map mode (wired to O in app). Releases pointer lock on open so
+/// the fly-out + drag work; re-locks on close.
 pub fn toggle() {
     let now_open = G.with(|c| {
         let mut g = c.borrow_mut();
         g.open = !g.open;
+        if g.open && g.dist_m <= 0.0 {
+            g.dist_m = tenebris_core::config::solar().map_ship_default_dist_m as f64;
+        }
         g.open
     });
     if now_open {
@@ -87,8 +97,7 @@ pub fn toggle() {
     }
 }
 
-/// Per-frame state feed: which body the player is anchored to + where
-/// they are in the render frame (drives the live YOU marker).
+/// Per-frame state feed from app: anchor body + player position.
 pub fn set_active(id: BodyId, player_world: DVec3) {
     G.with(|c| {
         let mut g = c.borrow_mut();
@@ -97,67 +106,128 @@ pub fn set_active(id: BodyId, player_world: DVec3) {
     });
 }
 
-/// Swallow input while open; Esc / the toggle key close. Returns true when
-/// the event was consumed.
+/// Point the camera at a body (dev hook + panel FOCUS buttons).
+pub fn set_focus(f: Focus) {
+    G.with(|c| {
+        let mut g = c.borrow_mut();
+        g.focus = f;
+        /* Re-seat the distance to frame the new subject. */
+        let sc = tenebris_core::config::solar();
+        g.dist_m = match f {
+            Focus::Ship => sc.map_ship_default_dist_m as f64,
+            Focus::Body(id) => planet::get(id).radius_m * 8.0,
+        };
+    });
+}
+
+/// While open: swallow mouse events (egui + the drag-orbit own the
+/// pointer) and the close keys; let every OTHER key through so the
+/// rocket keeps flying while you watch the map. Returns true when
+/// consumed.
 pub fn event(e: &sapp::Event) -> bool {
     G.with(|c| {
         let mut g = c.borrow_mut();
         if !g.open {
             return false;
         }
-        let toggle_key = e._type == sapp::EventType::KeyDown
-            && crate::controls::action_for_key(e.key_code)
-                == Some(crate::controls::Action::OpenSolarMap);
-        if e._type == sapp::EventType::KeyDown
-            && (e.key_code == sapp::Keycode::Escape || toggle_key)
-        {
-            g.open = false;
-            crate::screens::grab_pointer();
+        match e._type {
+            sapp::EventType::KeyDown => {
+                let toggle_key = crate::controls::action_for_key(e.key_code)
+                    == Some(crate::controls::Action::OpenSolarMap);
+                if e.key_code == sapp::Keycode::Escape || toggle_key {
+                    g.open = false;
+                    crate::screens::grab_pointer();
+                    return true;
+                }
+                false /* flight keys stay live in map view */
+            }
+            sapp::EventType::KeyUp | sapp::EventType::Char => false,
+            /* Mouse is the map's: egui panel + drag-orbit + wheel (all
+             * handled in egui_ui via the ctx input state). */
+            _ => true,
         }
-        true
     })
 }
 
 /* ---------------------------------------------------------------------- */
-/* Chart layout + palette (UI constants, same style as tech_tree's).       */
+/* Camera.                                                                 */
 
-const MAP_SIZE: f32 = 620.0;
-const MENU_W: f32 = 250.0;
-/// Margin between the outermost orbit ring and the panel edge, px.
-const MAP_MARGIN: f32 = 42.0;
-/// Display ring radius for the innermost moon of a planet, px.
-const MOON_RING_PX: f32 = 14.0;
-/// Extra display ring per additional moon, px.
-const MOON_RING_STEP_PX: f32 = 8.0;
-/// Planet dot radius bounds, px (log-scaled by body radius between them).
-const DOT_MIN_PX: f32 = 4.0;
-const DOT_MAX_PX: f32 = 9.0;
-/// Chart-click hit radius around a body, px.
-const PICK_R_PX: f32 = 14.0;
-/// Zoom limits (1 = whole system in frame).
-const ZOOM_MIN: f64 = 0.5;
-const ZOOM_MAX: f64 = 4000.0;
-/// Thumbnail edge in the menu cards, px.
-const CARD_THUMB_PX: f32 = 40.0;
-
-/// Maneuver-target highlight - matches nav_ui's TARGET_COL so the map,
-/// the navball marker, and the in-world halo read as one system.
-const TGT_COL: egui::Color32 = egui::Color32::from_rgb(0xfa, 0x59, 0xbf);
-
-fn body_color(t: Tileset, icy: bool) -> egui::Color32 {
-    if icy {
-        return egui::Color32::from_rgb(0xa8, 0xd4, 0xe8);
-    }
-    match t {
-        Tileset::Earth => egui::Color32::from_rgb(0x4f, 0x8f, 0xd4),
-        Tileset::Sequoia => egui::Color32::from_rgb(0x5f, 0xb8, 0x5a),
-        Tileset::Crag => egui::Color32::from_rgb(0xc0, 0x6a, 0x48),
-        Tileset::Frost => egui::Color32::from_rgb(0xa8, 0xd4, 0xe8),
-        Tileset::Asteroid => egui::Color32::from_rgb(0x80, 0x80, 0x88),
+/// Focus position in the render frame right now.
+fn focus_pos(g: &MapScreen, t: f64) -> DVec3 {
+    match g.focus {
+        Focus::Ship => g.player_world,
+        Focus::Body(id) => orbit::apparent_pos(g.active, id, t),
     }
 }
 
-/// The star-orbiting planets, in orbit order (the map's ring order).
+/// Distance limits for the current focus.
+fn dist_limits(f: Focus) -> (f64, f64) {
+    let sc = tenebris_core::config::solar();
+    let min = match f {
+        Focus::Ship => sc.map_ship_min_dist_m as f64,
+        Focus::Body(id) => planet::get(id).radius_m * sc.map_min_dist_mult as f64,
+    };
+    (min, sc.map_max_dist_m as f64)
+}
+
+/// The map camera for this frame: (view, proj, eye). `None` when the map
+/// is closed - app.rs falls through to the normal player/chase camera.
+pub fn camera(aspect: f32) -> Option<(Mat4, Mat4, DVec3)> {
+    let (open, focus, yaw, pitch, dist, active, player_world) = G.with(|c| {
+        let g = c.borrow();
+        (g.open, g.focus, g.yaw, g.pitch, g.dist_m, g.active, g.player_world)
+    });
+    if !open {
+        return None;
+    }
+    let t = tenebris_core::world_time::seconds();
+    let f = focus_pos(
+        &MapScreen {
+            open,
+            active,
+            player_world,
+            focus,
+            yaw,
+            pitch,
+            dist_m: dist,
+        },
+        t,
+    );
+    let (cy, sy) = (yaw.cos() as f64, yaw.sin() as f64);
+    let (cp, sp) = (pitch.cos() as f64, pitch.sin() as f64);
+    let off = dvec3_make(cp * cy * dist, sp * dist, cp * sy * dist);
+    let eye = dvec3_add(f, off);
+    let eye_f = dvec3_to_vec3(eye);
+    let focus_f = dvec3_to_vec3(f);
+    let view = mat4_look_at(
+        eye_f,
+        focus_f,
+        tenebris_core::math::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
+    );
+    let sc = tenebris_core::config::solar();
+    /* Near plane scales with distance to keep depth precision sane from
+     * 20 m ship views out to 800 km system views. */
+    let znear = (dist as f32 * 0.001).clamp(0.5, 500.0);
+    let proj = mat4_perspective(
+        60.0 * (std::f32::consts::PI / 180.0),
+        aspect,
+        znear,
+        sc.map_zfar_m,
+    );
+    Some((view, proj, eye))
+}
+
+/* ---------------------------------------------------------------------- */
+/* Fly-out panel + drag/zoom input (egui).                                 */
+
+const CARD_THUMB_PX: f32 = 40.0;
+const PANEL_W: f32 = 240.0;
+
+/// Maneuver-target pink - matches nav_ui's TARGET_COL so the panel, the
+/// navball marker, and the in-world halo read as one system.
+const TGT_COL: egui::Color32 = egui::Color32::from_rgb(0xfa, 0x59, 0xbf);
+
+/// The star-orbiting planets, in orbit order.
 const PLANETS: [BodyId; 4] = [BodyId::Crag, BodyId::Tenebris, BodyId::Sequoia, BodyId::Frostbite];
 
 /// Moons per planet (parented in orbit::elements).
@@ -175,355 +245,214 @@ fn asteroids() -> impl Iterator<Item = BodyId> {
     (0..10).filter_map(|i| BodyId::from_index(BodyId::Asteroid0 as i32 + i))
 }
 
-/* ---------------------------------------------------------------------- */
-/* egui overlay.                                                           */
-
 pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;
     }
-    let (active, player_world, camera_target, zoom) = G.with(|c| {
+    let (focus, dist) = G.with(|c| {
         let g = c.borrow();
-        (g.active, g.player_world, g.camera_target, g.zoom)
+        (g.focus, g.dist_m)
     });
-    let t = tenebris_core::world_time::seconds();
-    let day_len = tenebris_core::config::time().day_length_s as f64;
-    let day_n = if day_len > 0.0 { (t / day_len).floor() as i64 } else { 0 };
 
-    egui::Window::new("Solar System")
-        .collapsible(false)
+    /* ---- Fly-out body panel (right edge, slides in with the mode). ---- */
+    egui::SidePanel::right("solar-bodies")
+        .exact_width(PANEL_W)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            /* Header: day, camera centre, zoom controls. */
-            let centre_name = match camera_target {
-                None => "Sun",
-                Some(id) => planet::get(id).name,
-            };
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Day {} - centre: {} - zoom {:.1}x",
-                        day_n, centre_name, zoom
-                    ))
+        .show_animated(ctx, true, |ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("SYSTEM BODIES")
                     .small()
-                    .color(egui::Color32::from_rgb(0x90, 0x98, 0xa8)),
+                    .color(egui::Color32::from_rgb(0x8a, 0x94, 0xa8)),
+            );
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ship_card(ui, focus);
+                ui.add_space(2.0);
+                for &id in &PLANETS {
+                    body_card(ui, id, focus, 0.0);
+                    for &mid in moons_of(id) {
+                        body_card(ui, mid, focus, 14.0);
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("ASTEROID BELT")
+                        .small()
+                        .color(egui::Color32::from_rgb(0x6a, 0x74, 0x88)),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("SUN").clicked() {
-                        G.with(|c| {
-                            let mut g = c.borrow_mut();
-                            g.camera_target = None;
-                            g.zoom = 1.0;
-                        });
-                    }
-                    if ui.small_button("-").clicked() {
-                        G.with(|c| {
-                            let mut g = c.borrow_mut();
-                            g.zoom = (g.zoom * 0.5).clamp(ZOOM_MIN, ZOOM_MAX);
-                        });
-                    }
-                    if ui.small_button("+").clicked() {
-                        G.with(|c| {
-                            let mut g = c.borrow_mut();
-                            g.zoom = (g.zoom * 2.0).clamp(ZOOM_MIN, ZOOM_MAX);
-                        });
-                    }
+                for id in asteroids() {
+                    body_card(ui, id, focus, 0.0);
+                }
+            });
+        });
+
+    /* ---- HUD strip: focus / distance / target + hints. ---- */
+    egui::Area::new(egui::Id::new("solar-hud"))
+        .fixed_pos(egui::pos2(12.0, 10.0))
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(0x07, 0x09, 0x10, 200))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    let focus_name = match focus {
+                        Focus::Ship => "My Ship",
+                        Focus::Body(id) => planet::get(id).name,
+                    };
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "MAP - focus: {}  -  {}",
+                            focus_name,
+                            fmt_dist(dist)
+                        ))
+                        .color(egui::Color32::from_rgb(0xd8, 0xde, 0xe8)),
+                    );
                     let tname = nav_ui::target_name();
                     if tname != "none" {
                         if ui
                             .small_button(
-                                egui::RichText::new(format!("TGT {} [x]", tname)).color(TGT_COL),
+                                egui::RichText::new(format!("TGT {} [clear]", tname))
+                                    .color(TGT_COL),
                             )
                             .clicked()
                         {
                             nav_ui::set_target(None);
                         }
                     }
+                    ui.label(
+                        egui::RichText::new("drag orbits - wheel zooms - O/Esc exits")
+                            .small()
+                            .color(egui::Color32::from_rgb(0x70, 0x76, 0x84)),
+                    );
                 });
-            });
-            ui.add_space(2.0);
-
-            ui.horizontal_top(|ui| {
-                draw_chart(ui, active, player_world, camera_target, zoom, t);
-                draw_body_menu(ui, camera_target, t);
-            });
-
-            ui.label(
-                egui::RichText::new(
-                    "Click a card or chart body to centre the camera; TGT sets the \
-                     maneuver target (right-click on the chart works too). Wheel zooms. \
-                     O or Esc closes.",
-                )
-                .small()
-                .color(egui::Color32::from_rgb(0x70, 0x76, 0x84)),
-            );
         });
-}
 
-/// Where the chart centres, in heliocentric metres.
-fn centre_helio(camera_target: Option<BodyId>, t: f64) -> DVec3 {
-    match camera_target {
-        None => DVec3 { x: 0.0, y: 0.0, z: 0.0 },
-        Some(id) => orbit::heliocentric_pos(id, t),
+    /* ---- Drag-orbit + wheel zoom over the 3D view. ---- */
+    let pointer_over_ui = ctx.wants_pointer_input() && ctx.is_pointer_over_area();
+    if !pointer_over_ui {
+        let (drag, scroll) = ctx.input(|i| {
+            let drag = if i.pointer.primary_down() { i.pointer.delta() } else { egui::Vec2::ZERO };
+            (drag, i.smooth_scroll_delta.y)
+        });
+        let sc = tenebris_core::config::solar();
+        if drag != egui::Vec2::ZERO || scroll.abs() > 0.0 {
+            G.with(|c| {
+                let mut g = c.borrow_mut();
+                g.yaw += drag.x * sc.map_drag_sens;
+                g.pitch = (g.pitch + drag.y * sc.map_drag_sens)
+                    .clamp(-1.45, 1.45);
+                if scroll.abs() > 0.0 {
+                    let k = if scroll > 0.0 {
+                        1.0 / sc.map_zoom_step as f64
+                    } else {
+                        sc.map_zoom_step as f64
+                    };
+                    let (min, max) = dist_limits(g.focus);
+                    g.dist_m = (g.dist_m * k).clamp(min, max);
+                }
+            });
+        }
     }
 }
 
-/* ------------------------------ the chart ----------------------------- */
+fn fmt_dist(m: f64) -> String {
+    if m >= 1000.0 {
+        format!("{:.1} km", m / 1000.0)
+    } else {
+        format!("{:.0} m", m)
+    }
+}
 
-fn draw_chart(
-    ui: &mut egui::Ui,
-    active: BodyId,
-    player_world: DVec3,
-    camera_target: Option<BodyId>,
-    zoom: f64,
-    t: f64,
-) {
-    let (region, resp) = ui.allocate_exact_size(
-        egui::vec2(MAP_SIZE, MAP_SIZE),
+/// The MY SHIP row: focus-only (targeting yourself is a maneuver no one
+/// needs).
+fn ship_card(ui: &mut egui::Ui, focus: Focus) {
+    let is_focus = focus == Focus::Ship;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(PANEL_W - 16.0, CARD_THUMB_PX + 6.0),
         egui::Sense::click(),
     );
-    let p = ui.painter_at(region);
-    let c = region.center();
-
-    /* Space-black backdrop with a faint border. */
-    p.rect_filled(region, 6.0, egui::Color32::from_rgb(0x07, 0x09, 0x10));
-    p.rect_stroke(
-        region,
-        6.0,
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x2e, 0x3a)),
-        egui::StrokeKind::Inside,
-    );
-
-    /* Scale: zoom 1 fits the outermost planet's orbit; the camera target
-     * offsets everything so the chart FOLLOWS the chosen body. */
-    let max_r = PLANETS
-        .iter()
-        .map(|&id| dvec_len_xz(orbit::heliocentric_pos(id, t)))
-        .fold(1.0f64, f64::max);
-    let px_per_m = ((MAP_SIZE * 0.5 - MAP_MARGIN) as f64) / max_r * zoom;
-    let centre = centre_helio(camera_target, t);
-    let to_px = |v: DVec3| -> egui::Pos2 {
-        let d = dvec3_sub(v, centre);
-        c + egui::vec2((d.x * px_per_m) as f32, (d.z * px_per_m) as f32)
+    let p = ui.painter_at(rect);
+    let bg = if is_focus {
+        egui::Color32::from_rgb(0x26, 0x2c, 0x3a)
+    } else if resp.hovered() {
+        egui::Color32::from_rgb(0x1e, 0x22, 0x2c)
+    } else {
+        egui::Color32::from_rgb(0x14, 0x17, 0x1e)
     };
-
-    /* Wheel zoom while hovering the chart. */
-    if resp.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll.abs() > 0.0 {
-            G.with(|cell| {
-                let mut g = cell.borrow_mut();
-                let k = if scroll > 0.0 { 1.25 } else { 0.8 };
-                g.zoom = (g.zoom * k as f64).clamp(ZOOM_MIN, ZOOM_MAX);
-            });
-        }
-    }
-
-    /* Orbit rings about the star (drawn as circles offset by the chart
-     * centre - accurate for these circular on-rails orbits). */
-    let sun_px = to_px(DVec3 { x: 0.0, y: 0.0, z: 0.0 });
-    for &id in &PLANETS {
-        let r = (dvec_len_xz(orbit::heliocentric_pos(id, t)) * px_per_m) as f32;
-        p.circle_stroke(
-            sun_px,
-            r,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x1c, 0x22, 0x30)),
-        );
-    }
-
-    /* The star. */
-    p.circle_filled(sun_px, 11.0, egui::Color32::from_rgb(0xff, 0xd8, 0x66));
-    p.circle_stroke(
-        sun_px,
-        14.0,
-        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(0xff, 0xd8, 0x66, 60)),
-    );
-    p.text(
-        sun_px + egui::vec2(0.0, 24.0),
-        egui::Align2::CENTER_CENTER,
-        "Sun",
-        egui::FontId::proportional(11.0),
-        egui::Color32::from_rgb(0xc8, 0xa8, 0x50),
-    );
-
-    /* Bodies: collect (id, screen pos) for click-picking as we draw. */
-    let mut picks: Vec<(BodyId, egui::Pos2)> = Vec::new();
-    let man_target = nav_ui::target();
-
-    /* Asteroid belt - ten real rocks, faint specks. */
-    for id in asteroids() {
-        let pos = to_px(orbit::heliocentric_pos(id, t));
-        p.circle_filled(pos, 1.5, egui::Color32::from_rgb(0x55, 0x58, 0x60));
-        if man_target == Some(Target::Body(id)) {
-            tgt_highlight(&p, pos, 6.0, t);
-        }
-        picks.push((id, pos));
-    }
-
-    /* Planets + moons. */
-    for &id in &PLANETS {
-        let b = planet::get(id);
-        let pos = to_px(orbit::heliocentric_pos(id, t));
-        let dot = dot_radius(b.radius_m);
-        p.circle_filled(pos, dot, body_color(b.tileset, b.icy));
-        picks.push((id, pos));
-
-        /* Moons: true orbit angle from the sim; display radius is the
-         * larger of the true scaled offset and the legible minimum ring,
-         * so deep zoom transitions to truth. */
-        for (mi, &mid) in moons_of(id).iter().enumerate() {
-            let rel = dvec3_sub(orbit::heliocentric_pos(mid, t), orbit::heliocentric_pos(id, t));
-            let true_px = (dvec_len_xz(rel) * px_per_m) as f32;
-            let ring = true_px.max(MOON_RING_PX + mi as f32 * MOON_RING_STEP_PX + dot);
-            p.circle_stroke(
-                pos,
-                ring,
-                egui::Stroke::new(
-                    0.5,
-                    egui::Color32::from_rgba_unmultiplied(0x88, 0x8c, 0x98, 50),
-                ),
-            );
-            let ang = (rel.z).atan2(rel.x) as f32;
-            let mpos = pos + egui::vec2(ang.cos() * ring, ang.sin() * ring);
-            let mb = planet::get(mid);
-            p.circle_filled(mpos, 2.5, body_color(mb.tileset, mb.icy));
-            if man_target == Some(Target::Body(mid)) {
-                tgt_highlight(&p, mpos, 7.0, t);
-            }
-            picks.push((mid, mpos));
-        }
-
-        if man_target == Some(Target::Body(id)) {
-            tgt_highlight(&p, pos, dot + 5.0, t);
-        }
-        p.text(
-            pos + egui::vec2(0.0, dot + 11.0),
-            egui::Align2::CENTER_CENTER,
-            b.name,
-            egui::FontId::proportional(11.0),
-            egui::Color32::from_rgb(0x9a, 0xa2, 0xb2),
-        );
-    }
-
-    /* The player - live heliocentric position, so a coasting rocket
-     * watches its own marker crawl between the rings. Drawn last (on
-     * top): white diamond + YOU. */
-    let ppos = to_px(orbit::world_to_heliocentric(active, player_world, t));
-    let d = 4.0;
+    p.rect_filled(rect, 4.0, bg);
+    /* A little ship glyph: white diamond, echoing the map marker. */
+    let cx = rect.min + egui::vec2(4.0 + CARD_THUMB_PX * 0.5, 3.0 + CARD_THUMB_PX * 0.5);
+    let d = 9.0;
     p.add(egui::Shape::convex_polygon(
         vec![
-            ppos + egui::vec2(0.0, -d),
-            ppos + egui::vec2(d, 0.0),
-            ppos + egui::vec2(0.0, d),
-            ppos + egui::vec2(-d, 0.0),
+            cx + egui::vec2(0.0, -d),
+            cx + egui::vec2(d, 0.0),
+            cx + egui::vec2(0.0, d),
+            cx + egui::vec2(-d, 0.0),
         ],
         egui::Color32::WHITE,
         egui::Stroke::NONE,
     ));
     p.text(
-        ppos + egui::vec2(0.0, -12.0),
-        egui::Align2::CENTER_CENTER,
-        "YOU",
-        egui::FontId::proportional(10.0),
-        egui::Color32::WHITE,
+        egui::pos2(rect.min.x + CARD_THUMB_PX + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "My Ship",
+        egui::FontId::proportional(13.0),
+        if is_focus { egui::Color32::WHITE } else { egui::Color32::from_rgb(0xc2, 0xc8, 0xd4) },
     );
-
-    /* Chart picking: left-click = camera target, right-click = maneuver
-     * target. Nearest body within the pick radius wins. */
-    let clicked = resp.clicked();
-    let r_clicked = resp.secondary_clicked();
-    if clicked || r_clicked {
-        if let Some(mp) = resp.interact_pointer_pos() {
-            let mut best: Option<(BodyId, f32)> = None;
-            for &(id, sp) in &picks {
-                let d2 = (sp - mp).length();
-                if d2 <= PICK_R_PX && best.map(|(_, bd)| d2 < bd).unwrap_or(true) {
-                    best = Some((id, d2));
-                }
-            }
-            if let Some((id, _)) = best {
-                if r_clicked {
-                    nav_ui::set_target(Some(Target::Body(id)));
-                } else {
-                    G.with(|cell| cell.borrow_mut().camera_target = Some(id));
-                }
-            }
-        }
+    let btn = focus_btn_rect(rect);
+    let btn_resp = ui.interact(btn, resp.id.with("focus"), egui::Sense::click());
+    draw_pill(&p, btn, "FOCUS", btn_resp.hovered(), is_focus);
+    if btn_resp.clicked() || resp.clicked() {
+        set_focus(Focus::Ship);
     }
 }
 
-/// Pulsing maneuver-target highlight: ring + four corner ticks.
-fn tgt_highlight(p: &egui::Painter, at: egui::Pos2, r: f32, t: f64) {
-    let pulse = 1.0 + 0.25 * ((t * 4.0).sin() as f32);
-    let rr = r * pulse;
-    p.circle_stroke(at, rr, egui::Stroke::new(1.5, TGT_COL));
-    for (dx, dy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-        let dir = egui::vec2(dx, dy) * std::f32::consts::FRAC_1_SQRT_2;
-        p.line_segment(
-            [at + dir * (rr + 2.0), at + dir * (rr + 6.0)],
-            egui::Stroke::new(1.5, TGT_COL),
-        );
-    }
+fn focus_btn_rect(card: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(card.max.x - 88.0, card.center().y - 10.0),
+        egui::vec2(44.0, 20.0),
+    )
+}
+
+fn tgt_btn_rect(card: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(card.max.x - 40.0, card.center().y - 10.0),
+        egui::vec2(34.0, 20.0),
+    )
+}
+
+fn draw_pill(p: &egui::Painter, r: egui::Rect, label: &str, hovered: bool, lit: bool) {
+    let bg = if lit {
+        egui::Color32::from_rgb(0x3a, 0x62, 0x8f)
+    } else if hovered {
+        egui::Color32::from_rgb(0x2a, 0x33, 0x44)
+    } else {
+        egui::Color32::from_rgb(0x1c, 0x22, 0x2e)
+    };
+    p.rect_filled(r, 3.0, bg);
     p.text(
-        at + egui::vec2(0.0, rr + 12.0),
+        r.center(),
         egui::Align2::CENTER_CENTER,
-        "TGT",
+        label,
         egui::FontId::proportional(10.0),
-        TGT_COL,
+        if lit { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x9c, 0xb4, 0xd4) },
     );
 }
 
-/* ----------------------------- body menu ------------------------------ */
-
-/// One clickable card per body: baked thumbnail, name, TGT button.
-/// Clicking the card centres the camera on the body.
-fn draw_body_menu(ui: &mut egui::Ui, camera_target: Option<BodyId>, _t: f64) {
-    ui.vertical(|ui| {
-        ui.set_width(MENU_W);
-        egui::ScrollArea::vertical()
-            .max_height(MAP_SIZE)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                section_label(ui, "PLANETS + MOONS");
-                for &id in &PLANETS {
-                    body_card(ui, id, camera_target, 0.0);
-                    for &mid in moons_of(id) {
-                        body_card(ui, mid, camera_target, 14.0);
-                    }
-                }
-                ui.add_space(4.0);
-                section_label(ui, "ASTEROID BELT");
-                for id in asteroids() {
-                    body_card(ui, id, camera_target, 0.0);
-                }
-            });
-    });
-}
-
-fn section_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .small()
-            .color(egui::Color32::from_rgb(0x6a, 0x74, 0x88)),
-    );
-}
-
-fn body_card(ui: &mut egui::Ui, id: BodyId, camera_target: Option<BodyId>, indent: f32) {
+/// One body row: thumbnail + name + FOCUS + TGT.
+fn body_card(ui: &mut egui::Ui, id: BodyId, focus: Focus, indent: f32) {
     let b = planet::get(id);
-    let is_cam = camera_target == Some(id);
+    let is_focus = focus == Focus::Body(id);
     let is_tgt = nav_ui::target() == Some(Target::Body(id));
 
-    let card_h = CARD_THUMB_PX + 6.0;
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(MENU_W - 8.0, card_h),
+        egui::vec2(PANEL_W - 16.0, CARD_THUMB_PX + 6.0),
         egui::Sense::click(),
     );
     let p = ui.painter_at(rect);
-
-    /* Card background: highlighted when it's the camera centre, outlined
-     * pink when it's the maneuver target, lighter on hover. */
-    let bg = if is_cam {
+    let bg = if is_focus {
         egui::Color32::from_rgb(0x26, 0x2c, 0x3a)
     } else if resp.hovered() {
         egui::Color32::from_rgb(0x1e, 0x22, 0x2c)
@@ -535,7 +464,7 @@ fn body_card(ui: &mut egui::Ui, id: BodyId, camera_target: Option<BodyId>, inden
         p.rect_stroke(rect, 4.0, egui::Stroke::new(1.5, TGT_COL), egui::StrokeKind::Inside);
     }
 
-    /* Thumbnail (the baked "screenshot" globe). */
+    /* Baked lit-globe thumbnail. */
     let thumb = egui::Rect::from_min_size(
         rect.min + egui::vec2(4.0 + indent, 3.0),
         egui::vec2(CARD_THUMB_PX, CARD_THUMB_PX),
@@ -548,61 +477,41 @@ fn body_card(ui: &mut egui::Ui, id: BodyId, camera_target: Option<BodyId>, inden
         egui::Color32::WHITE,
     );
 
-    /* Name + radius line. */
     p.text(
-        egui::pos2(thumb.max.x + 8.0, rect.center().y - 7.0),
+        egui::pos2(thumb.max.x + 8.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         b.name,
         egui::FontId::proportional(13.0),
-        if is_cam { egui::Color32::WHITE } else { egui::Color32::from_rgb(0xc2, 0xc8, 0xd4) },
-    );
-    p.text(
-        egui::pos2(thumb.max.x + 8.0, rect.center().y + 8.0),
-        egui::Align2::LEFT_CENTER,
-        format!("r {:.0} m", b.radius_m),
-        egui::FontId::proportional(10.0),
-        egui::Color32::from_rgb(0x7a, 0x82, 0x92),
+        if is_focus { egui::Color32::WHITE } else { egui::Color32::from_rgb(0xc2, 0xc8, 0xd4) },
     );
 
-    /* TGT button on the right edge of the card. */
-    let btn = egui::Rect::from_min_size(
-        egui::pos2(rect.max.x - 40.0, rect.center().y - 10.0),
-        egui::vec2(34.0, 20.0),
-    );
-    let btn_resp = ui.interact(btn, resp.id.with("tgt"), egui::Sense::click());
-    let btn_bg = if is_tgt {
+    let fbtn = focus_btn_rect(rect);
+    let fresp = ui.interact(fbtn, resp.id.with("focus"), egui::Sense::click());
+    draw_pill(&p, fbtn, "FOCUS", fresp.hovered(), is_focus);
+
+    let tbtn = tgt_btn_rect(rect);
+    let tresp = ui.interact(tbtn, resp.id.with("tgt"), egui::Sense::click());
+    let tbg = if is_tgt {
         TGT_COL
-    } else if btn_resp.hovered() {
+    } else if tresp.hovered() {
         egui::Color32::from_rgb(0x3a, 0x2c, 0x38)
     } else {
         egui::Color32::from_rgb(0x22, 0x1c, 0x24)
     };
-    p.rect_filled(btn, 3.0, btn_bg);
+    p.rect_filled(tbtn, 3.0, tbg);
     p.text(
-        btn.center(),
+        tbtn.center(),
         egui::Align2::CENTER_CENTER,
         "TGT",
         egui::FontId::proportional(10.0),
         if is_tgt { egui::Color32::BLACK } else { TGT_COL },
     );
-    if btn_resp.clicked() {
+
+    if tresp.clicked() {
         nav_ui::set_target(if is_tgt { None } else { Some(Target::Body(id)) });
-    } else if resp.clicked() {
-        G.with(|c| c.borrow_mut().camera_target = Some(id));
+    } else if fresp.clicked() || resp.clicked() {
+        set_focus(Focus::Body(id));
     }
-}
-
-/* ------------------------------- helpers ------------------------------ */
-
-fn dvec_len_xz(v: DVec3) -> f64 {
-    (v.x * v.x + v.z * v.z).sqrt()
-}
-
-/// Log-scale a body radius into the dot-size band so Frostbite doesn't
-/// dwarf the moons off the chart.
-fn dot_radius(radius_m: f64) -> f32 {
-    let t = ((radius_m / 50.0).ln() / (400.0f64 / 50.0).ln()).clamp(0.0, 1.0) as f32;
-    DOT_MIN_PX + (DOT_MAX_PX - DOT_MIN_PX) * t
 }
 
 /* ---------------------------------------------------------------------- */
@@ -623,37 +532,26 @@ mod tests {
     #[test]
     fn every_planet_has_its_moons_charted() {
         // The moons_of table must cover every parented body in the orbit
-        // sim, or the map silently drops a moon.
+        // sim, or the fly-out silently drops a moon.
         for &pid in &PLANETS {
             for &mid in moons_of(pid) {
                 let e = orbit::elements(mid);
-                assert_eq!(e.parent, Some(pid), "{mid:?} charted under wrong parent");
+                assert_eq!(e.parent, Some(pid), "{mid:?} listed under wrong parent");
             }
         }
-        // And the reverse: every moon in BodyId::ALL appears on some ring.
         let charted: Vec<BodyId> =
             PLANETS.iter().flat_map(|&p| moons_of(p).iter().copied()).collect();
         for id in BodyId::ALL {
             if let Some(parent) = orbit::elements(id).parent {
                 assert!(
                     charted.contains(&id),
-                    "moon {id:?} (parent {parent:?}) missing from the map"
+                    "moon {id:?} (parent {parent:?}) missing from the fly-out"
                 );
             }
         }
     }
 
-    #[test]
-    fn dot_radius_stays_in_band() {
-        for r in [10.0, 50.0, 120.0, 400.0, 4000.0] {
-            let d = dot_radius(r);
-            assert!((DOT_MIN_PX..=DOT_MAX_PX).contains(&d), "dot {d} out of band for r={r}");
-        }
-    }
-
-    /// Every body the picker lists (planets, moons, asteroids) must have
-    /// a thumbnail cell in the gallery atlas - a missing UV means a card
-    /// silently shows the wrong body.
+    /// Every body the fly-out lists must have a thumbnail cell.
     #[test]
     fn gallery_covers_every_pickable_body() {
         let mut listed: Vec<BodyId> = Vec::new();
@@ -667,5 +565,27 @@ mod tests {
             assert!(u1 > u0 && v1 > v0, "{id:?} has a degenerate gallery uv");
             assert!(u1 <= 1.0 && v1 <= 1.0, "{id:?} uv out of atlas");
         }
+    }
+
+    /// The map camera only exists while the mode is on, orbits the focus
+    /// at the configured distance, and clamps zoom per focus.
+    #[test]
+    fn camera_exists_only_when_open_and_respects_limits() {
+        assert!(camera(1.6).is_none(), "closed map must not hijack the camera");
+        G.with(|c| {
+            let mut g = c.borrow_mut();
+            g.open = true;
+            g.focus = Focus::Body(BodyId::Tenebris);
+            g.dist_m = 5_000.0;
+            g.player_world = DVec3 { x: 0.0, y: 0.0, z: 0.0 };
+        });
+        let (_, _, eye) = camera(1.6).expect("open map provides the camera");
+        let t = tenebris_core::world_time::seconds();
+        let f = orbit::apparent_pos(BodyId::Tenebris, BodyId::Tenebris, t);
+        let d = ((eye.x - f.x).powi(2) + (eye.y - f.y).powi(2) + (eye.z - f.z).powi(2)).sqrt();
+        assert!((d - 5_000.0).abs() < 1.0, "eye sits at dist_m from the focus, got {d}");
+        let (min, max) = dist_limits(Focus::Body(BodyId::Tenebris));
+        assert!(min > 0.0 && max > min, "sane zoom band: {min}..{max}");
+        G.with(|c| c.borrow_mut().open = false);
     }
 }

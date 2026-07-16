@@ -154,6 +154,112 @@ pub fn target_state(sim_t: f64) -> Option<(DVec3, DVec3)> {
     }
 }
 
+/* --------------------------- map-view lines --------------------------- */
+
+/// Faint system-scale ring colour for the planets' star orbits.
+const PLANET_TRACK_COL: [f32; 4] = [0.45, 0.55, 0.75, 0.4];
+/// The asteroid belt band.
+const BELT_TRACK_COL: [f32; 4] = [0.5, 0.5, 0.55, 0.2];
+
+/// The 3D map view's orbit layer: every planet's ring about the star,
+/// every moon's ring about its planet, the asteroid belt, the station
+/// track, a halo cage on the maneuver target, and a marker at the SHIP.
+/// Drawn only while the solar map is open (the flight HUD keeps its own
+/// leaner `draw_world` pass). Same eye-shell remap trick, so the rings
+/// survive any zoom.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_map_orbits(
+    view: Mat4,
+    proj: Mat4,
+    eye: DVec3,
+    active: BodyId,
+    ship_pos: DVec3,
+    ship_vel: DVec3,
+    riding: bool,
+    sim_t: f64,
+) {
+    REMAP_EYE.with(|c| c.set(eye));
+    renderer::sgl_overlay_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+    sgl::load_pipeline(line_pip());
+
+    use tenebris_core::orbit;
+
+    /* Planets about the star + their moons about them. */
+    for id in [BodyId::Crag, BodyId::Tenebris, BodyId::Sequoia, BodyId::Frostbite] {
+        if let Some(pts) = orbit::body_track(active, id, sim_t, ORBIT_SEGS) {
+            line_strip(&pts, PLANET_TRACK_COL);
+        }
+    }
+    for id in [
+        BodyId::Luna,
+        BodyId::Selene,
+        BodyId::Verdant,
+        BodyId::Sprout,
+        BodyId::Quartz,
+        BodyId::Rime,
+    ] {
+        if let Some(pts) = orbit::body_track(active, id, sim_t, 128) {
+            line_strip(&pts, MOON_TRACK_COL);
+        }
+    }
+    /* Belt: first + last rock's rings bound the band. */
+    for id in [BodyId::Asteroid0, BodyId::Asteroid9] {
+        if let Some(pts) = orbit::body_track(active, id, sim_t, ORBIT_SEGS) {
+            line_strip(&pts, BELT_TRACK_COL);
+        }
+    }
+
+    /* Station track (it orbits Tenebris's render anchor). */
+    let ten = planet::get(BodyId::Tenebris);
+    let ten_c = dvec3_make(ten.pos_x, ten.pos_y, ten.pos_z);
+    let x_axis = dvec3_make(1.0, 0.0, 0.0);
+    let z_axis = dvec3_make(0.0, 0.0, 1.0);
+    if active == BodyId::Tenebris {
+        circle(ten_c, x_axis, z_axis, station::orbit_radius_m(), STATION_TRACK_COL, ORBIT_SEGS);
+        cross_marker(station::orbit_pos(sim_t), 40.0, STATION_TRACK_COL);
+    }
+
+    /* Maneuver-target halo cage - the map's highlight for "fly here". */
+    match target() {
+        Some(Target::Station) => cross_marker(station::orbit_pos(sim_t), 80.0, TARGET_COL),
+        Some(Target::Body(id)) => {
+            let c = orbit::apparent_pos(active, id, sim_t);
+            let r = planet::get(id).radius_m * 1.5;
+            let y_axis = dvec3_make(0.0, 1.0, 0.0);
+            circle(c, x_axis, z_axis, r, TARGET_COL, 96);
+            circle(c, x_axis, y_axis, r, TARGET_COL, 96);
+            circle(c, y_axis, z_axis, r, TARGET_COL, 96);
+        }
+        None => {}
+    }
+
+    /* The ship: a white cross that scales with camera distance so it
+     * reads at any zoom, plus the live conic when actually flying. */
+    let cam_d = dvec3_length(dvec3_sub(ship_pos, eye)).max(1.0);
+    cross_marker(ship_pos, (cam_d * 0.02).clamp(2.0, 4_000.0), [1.0, 1.0, 1.0, 0.95]);
+    if riding {
+        let focus = nav::dominant_body(ship_pos);
+        if let Some(conic) = Conic::from_state(&focus, ship_pos, ship_vel) {
+            let col = if conic.e < 1.0 { ELLIPSE_COL } else { ESCAPE_COL };
+            let pts = conic.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M);
+            line_strip(&pts, col);
+            let pe = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, conic.periapsis_m));
+            cross_marker(pe, 25.0, col);
+            if conic.apoapsis_m.is_finite() {
+                let ap = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, -conic.apoapsis_m));
+                cross_marker(ap, 25.0, col);
+            }
+        }
+    }
+
+    renderer::sgl_overlay_end();
+}
+
 /* ---------------------------- world lines ----------------------------- */
 
 thread_local! {

@@ -34,6 +34,15 @@
 #   sun_spot_sharpness  sunspot edge band width
 #   sun_warp_amount     domain-warp amount (0 = calm, 2 = boiling)
 #   sun_brightness      overall surface brightness multiplier
+#
+# 3D orbital map view (O key) camera:
+#   map_zfar_m               map camera far plane (must cover the system)
+#   map_min_dist_mult        closest approach to a body, x its radius
+#   map_ship_min_dist_m      closest approach to the ship, metres
+#   map_max_dist_m           zoom-out ceiling, metres from the focus
+#   map_ship_default_dist_m  camera distance when the map opens on the ship
+#   map_drag_sens            drag-orbit sensitivity, radians per pixel
+#   map_zoom_step            wheel zoom step multiplier per notch
 solar:
   sun_distance_m: 150000
   sun_visual_dist_m: 18000
@@ -50,3 +59,10 @@ solar:
   sun_spot_sharpness: 0.08
   sun_warp_amount: 1.6
   sun_brightness: 0.7
+  map_zfar_m: 1500000
+  map_min_dist_mult: 2.5
+  map_ship_min_dist_m: 20
+  map_max_dist_m: 800000
+  map_ship_default_dist_m: 300
+  map_drag_sens: 0.008
+  map_zoom_step: 1.25

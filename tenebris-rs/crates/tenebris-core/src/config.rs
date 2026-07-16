@@ -2048,6 +2048,23 @@ pub struct SolarConfig {
     pub sun_warp_amount: f32,
     /// Overall surface brightness multiplier.
     pub sun_brightness: f32,
+
+    /* ---- 3D orbital map view (solar_map) camera knobs. ---- */
+    /// Map camera far plane, metres. Must cover the whole system from a
+    /// fully zoomed-out vantage (Frostbite orbits ~275 km out).
+    pub map_zfar_m: f32,
+    /// Closest approach to a focused BODY, as a multiple of its radius.
+    pub map_min_dist_mult: f32,
+    /// Closest approach when the SHIP is focused, metres.
+    pub map_ship_min_dist_m: f32,
+    /// Zoom-out ceiling, metres from the focus.
+    pub map_max_dist_m: f32,
+    /// Default camera distance when the map opens on the ship, metres.
+    pub map_ship_default_dist_m: f32,
+    /// Mouse-drag orbit sensitivity, radians per pixel.
+    pub map_drag_sens: f32,
+    /// Wheel zoom step multiplier per notch.
+    pub map_zoom_step: f32,
 }
 
 const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
@@ -2072,6 +2089,13 @@ const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
     sun_spot_sharpness: 0.08,
     sun_warp_amount: 1.6,
     sun_brightness: 0.7,
+    map_zfar_m: 1_500_000.0,
+    map_min_dist_mult: 2.5,
+    map_ship_min_dist_m: 20.0,
+    map_max_dist_m: 800_000.0,
+    map_ship_default_dist_m: 300.0,
+    map_drag_sens: 0.008,
+    map_zoom_step: 1.25,
 };
 
 static S_SOLAR: Mutex<SolarConfig> = Mutex::new(SOLAR_DEFAULTS);
@@ -2125,6 +2149,13 @@ pub fn parse_solar(src: &str, path: &str) -> i32 {
             "sun_spot_sharpness" => cfg.sun_spot_sharpness = v,
             "sun_warp_amount" => cfg.sun_warp_amount = v,
             "sun_brightness" => cfg.sun_brightness = v,
+            "map_zfar_m" => cfg.map_zfar_m = v,
+            "map_min_dist_mult" => cfg.map_min_dist_mult = v,
+            "map_ship_min_dist_m" => cfg.map_ship_min_dist_m = v,
+            "map_max_dist_m" => cfg.map_max_dist_m = v,
+            "map_ship_default_dist_m" => cfg.map_ship_default_dist_m = v,
+            "map_drag_sens" => cfg.map_drag_sens = v,
+            "map_zoom_step" => cfg.map_zoom_step = v,
             _ => println!("[config] {}:{}: unknown solar key '{}'", path, line_no, key),
         }
         0
