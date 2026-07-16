@@ -3919,6 +3919,28 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
         }
         println!("[sp-saves] body={}: {} scatter pickup(s) restored", body_id, n);
     }
+
+    /* Mid-flight rocket: if the save says the player quit while flying,
+     * re-strap them into the same ride (stages + fuel as left) at the pose
+     * the normal pose save restored. Without this the reload left them
+     * free-falling at altitude while the pad quietly refunded a fresh
+     * full-fuel rocket. */
+    if !crate::rocket_ride::is_riding() {
+        if let Some(r) = persistence::load_ride(&world_name) {
+            if r.body_id == body_id {
+                if crate::rocket_ride::restore_snapshot(&r) {
+                    println!(
+                        "[sp-saves] mid-flight rocket restored ({} part(s), {} stage(s))",
+                        r.parts.len(),
+                        r.fuels.len()
+                    );
+                } else {
+                    println!("[sp-saves] mid-flight rocket snapshot no longer flyable - dropped");
+                    persistence::save_ride(&world_name, None);
+                }
+            }
+        }
+    }
 }
 
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
@@ -4481,6 +4503,11 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
     persistence::save_bag(&world, p.hunger, &p.bag.serialize());
     /* Tech-tree discovery rides the same autosave cadence. */
     persistence::save_tech(&world, &p.discovered.serialize());
+    /* Mid-flight rocket ride: stages + fuel survive a quit. The ride edges
+     * (board / stage / exit / respawn / refuel) save same-frame; this
+     * cadence just keeps the burning fuel level fresh. Writes None when
+     * not riding, so a landed save can't re-strap the player. */
+    persistence::save_ride(&world, rocket_ride::save_snapshot().as_ref());
 }
 
 /* --------------------------------------------------------------------- */

@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 
 use tenebris_core::items::ItemId;
-use tenebris_core::math::DVec3;
+use tenebris_core::math::{dvec3_make, DVec3};
 use tenebris_core::rocket::{EngineKind, RocketRide};
 
 /// Where a ride came from: the launch pad and the pose the player boarded
@@ -51,6 +51,7 @@ thread_local! {
 pub fn begin(ride: RocketRide, stack: Vec<ItemId>, tile: i32, depth: i32, pos: DVec3, up: DVec3) {
     RIDE.with(|c| *c.borrow_mut() = Some(ride));
     ORIGIN.with(|o| *o.borrow_mut() = Some(Origin { stack, tile, depth, pos, up }));
+    sp_save_now();
     crate::rocket_cam::reset();
     /* Flight flies with a FREE cursor (like the JS): the egui flight panel
      * is clickable, and the camera orbits on left-drag instead of raw
@@ -72,6 +73,9 @@ fn release_pointer() {}
 pub fn clear() {
     RIDE.with(|c| *c.borrow_mut() = None);
     ORIGIN.with(|o| *o.borrow_mut() = None);
+    /* Same-frame clear of the mid-flight save: a landed / exited save must
+     * never re-strap the player on the next load. */
+    sp_save_now();
 }
 
 /// Reset the current rocket: rebuild it full-fuelled from the pad it launched
@@ -81,14 +85,18 @@ pub fn clear() {
 /// No duplication: the parts live on the pad, and this re-boards that same
 /// rocket - it doesn't mint new ones.
 pub fn respawn() -> Option<(DVec3, DVec3)> {
-    ORIGIN.with(|o| {
+    let pose = ORIGIN.with(|o| {
         let ob = o.borrow();
         let org = ob.as_ref()?;
         let ride = RocketRide::from_stack(&org.stack, &tenebris_core::rocket::config())?;
         RIDE.with(|c| *c.borrow_mut() = Some(ride));
         crate::rocket_cam::reset();
         Some((org.pos, org.up))
-    })
+    });
+    if pose.is_some() {
+        sp_save_now();
+    }
+    pose
 }
 
 /// The pad (tile, depth) of the rocket being flown RIGHT NOW, or `None` when
@@ -182,7 +190,11 @@ pub fn is_burning() -> bool {
 
 /// Jettison the active stage (Stage key). Returns true if a stage dropped.
 pub fn stage() -> bool {
-    RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.stage()).unwrap_or(false))
+    let dropped = RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.stage()).unwrap_or(false));
+    if dropped {
+        sp_save_now();
+    }
+    dropped
 }
 
 /// The active (bottom) stage's part ids, for the falling body a jettison
@@ -199,7 +211,82 @@ pub fn is_spent() -> bool {
 /// Station refuel: pour `units` into the active stage (capped at capacity).
 /// Returns the amount accepted.
 pub fn refuel(units: f32) -> f32 {
-    RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.refuel(units)).unwrap_or(0.0))
+    let accepted =
+        RIDE.with(|c| c.borrow_mut().as_mut().map(|r| r.refuel(units)).unwrap_or(0.0));
+    if accepted > 0.0 {
+        sp_save_now();
+    }
+    accepted
+}
+
+/* ------------------------------------------------------------------ */
+/* Mid-flight persistence: the ride is SAVE STATE. Snapshot on the ride
+ * edges (board / stage / exit / respawn - sp_save_now) and on the pose
+ * autosave cadence (fuel drift); restored at world load so quitting
+ * mid-flight resumes strapped in instead of free-falling while the pad
+ * quietly refunds a full rocket. */
+/* ------------------------------------------------------------------ */
+
+/// The current ride as a persistence snapshot, `None` when not riding.
+pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
+    RIDE.with(|c| {
+        let rb = c.borrow();
+        let r = rb.as_ref()?;
+        ORIGIN.with(|o| {
+            let ob = o.borrow();
+            let org = ob.as_ref()?;
+            Some(crate::persistence::PersistenceRide {
+                /* The ride flies over the origin pad's body. */
+                body_id: 0,
+                tile: org.tile,
+                depth: org.depth,
+                pos: [org.pos.x, org.pos.y, org.pos.z],
+                up: [org.up.x, org.up.y, org.up.z],
+                parts: r.remaining_parts(),
+                fuels: r.stage_fuels(),
+                pad_stack: org.stack.clone(),
+            })
+        })
+    })
+}
+
+/// Write (or clear, when not riding) the mid-flight snapshot for the
+/// active SP world - the same-frame hook the ride edges call. No-op in
+/// MP / menus, mirroring the other sp_save paths.
+pub fn sp_save_now() {
+    if crate::menu::state() != crate::menu::GameState::InGameSp {
+        return;
+    }
+    let world = crate::menu::active_world();
+    if world.is_empty() {
+        return;
+    }
+    crate::persistence::save_ride(&world, save_snapshot().as_ref());
+}
+
+/// Re-strap the player into a saved mid-flight ride (world load). Returns
+/// false if the snapshot no longer builds a flyable rocket.
+pub fn restore_snapshot(s: &crate::persistence::PersistenceRide) -> bool {
+    let cfg = tenebris_core::rocket::config();
+    let Some(mut ride) = RocketRide::from_stack(&s.parts, &cfg) else {
+        return false;
+    };
+    ride.set_stage_fuels(&s.fuels);
+    RIDE.with(|c| *c.borrow_mut() = Some(ride));
+    ORIGIN.with(|o| {
+        *o.borrow_mut() = Some(Origin {
+            stack: s.pad_stack.clone(),
+            tile: s.tile,
+            depth: s.depth,
+            pos: dvec3_make(s.pos[0], s.pos[1], s.pos[2]),
+            up: dvec3_make(s.up[0], s.up[1], s.up[2]),
+        })
+    });
+    /* Same entry conditions as begin(): chase cam parked behind the
+     * rocket, cursor free for the flight panel. */
+    crate::rocket_cam::reset();
+    release_pointer();
+    true
 }
 
 #[cfg(test)]

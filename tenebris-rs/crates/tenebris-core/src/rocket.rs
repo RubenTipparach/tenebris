@@ -676,6 +676,22 @@ impl RocketRide {
         parts
     }
 
+    /// Per-stage fuel levels, bottom stage first - what the mid-flight
+    /// ride save serializes so a reload resumes with the tanks it left,
+    /// not full ones.
+    pub fn stage_fuels(&self) -> Vec<f32> {
+        self.stages.iter().map(|s| s.fuel).collect()
+    }
+
+    /// Restore per-stage fuel (save-load counterpart of [`stage_fuels`]).
+    /// Each entry is clamped to its stage's capacity; extra entries are
+    /// ignored and missing ones keep the full tank `from_stack` built.
+    pub fn set_stage_fuels(&mut self, fuels: &[f32]) {
+        for (s, &f) in self.stages.iter_mut().zip(fuels) {
+            s.fuel = f.clamp(0.0, s.spec.fuel_capacity);
+        }
+    }
+
     /// Delta-v left in the whole rocket (m/s): Tsiolkovsky summed over the
     /// attached stages, burning bottom-up and shedding each spent stage's
     /// dry mass before the next lights.

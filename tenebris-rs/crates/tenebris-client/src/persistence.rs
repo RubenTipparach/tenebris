@@ -65,6 +65,11 @@ const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
 /// deliberately no '\n' framing, which the native kv layer scrubs (see the
 /// torch-CSV quirk note below).
 const KEY_SCATTER_PREFIX: &str = "tenebris-c:scatter:";
+/// Mid-flight rocket ride (Rust-port extension key): the stage stack, fuel
+/// levels, and origin pad of the rocket being flown, so quitting mid-flight
+/// resumes strapped in instead of free-falling. Single line, '|'-separated
+/// groups of ','/';'-separated fields - no '\n' framing (native kv scrub).
+const KEY_RIDE_PREFIX: &str = "tenebris-c:ride:";
 
 pub const NAME_MAX: usize = 31; // bytes, excluding terminator
 pub const MAX_WORLDS: usize = 32;
@@ -471,6 +476,98 @@ pub fn load_scatter_taken(world_name: &str, body_id: u32) -> Vec<i32> {
     s.split(',').filter_map(|f| f.trim().parse::<i32>().ok()).collect()
 }
 
+/* ------------------------------------------------------------------ */
+/* Mid-flight rocket ride: "body,tile,depth,px,py,pz,ux,uy,uz|parts|
+ * fuels|pad-stack" - one line, ';'-separated ids/fuels inside groups. */
+/* ------------------------------------------------------------------ */
+
+/// A mid-flight rocket ride snapshot: the stack still attached (with its
+/// per-stage fuel), plus the origin pad + boarding pose the respawn key
+/// needs. The player's own pose rides the normal pose save.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersistenceRide {
+    pub body_id: u32,
+    pub tile: i32,
+    pub depth: i32,
+    /// Boarding pose (respawn target), world space.
+    pub pos: [f64; 3],
+    pub up: [f64; 3],
+    /// Parts still attached to the ridden rocket, bottom -> top.
+    pub parts: Vec<u16>,
+    /// Per-stage fuel, bottom stage first.
+    pub fuels: Vec<f32>,
+    /// What is (still) sitting on the origin pad - the respawn source.
+    pub pad_stack: Vec<u16>,
+}
+
+fn build_ride_key(world: &str) -> String {
+    format!("{KEY_RIDE_PREFIX}{world}")
+}
+
+/// Replace (or, with `None`, clear) the mid-flight ride snapshot. Written
+/// on the ride edges (board / stage / exit / respawn) and on the pose
+/// autosave cadence for fuel drift; cleared the moment the ride ends so a
+/// landed save never re-straps the player.
+pub fn save_ride(world_name: &str, ride: Option<&PersistenceRide>) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    let key = build_ride_key(world_name);
+    let Some(r) = ride else {
+        client_kv::remove(&key);
+        return true;
+    };
+    let ids = |v: &[u16]| v.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(";");
+    let fuels = r.fuels.iter().map(|f| format!("{:.3}", f)).collect::<Vec<_>>().join(";");
+    let head = format!(
+        "{},{},{},{:.3},{:.3},{:.3},{:.6},{:.6},{:.6}",
+        r.body_id, r.tile, r.depth, r.pos[0], r.pos[1], r.pos[2], r.up[0], r.up[1], r.up[2]
+    );
+    client_kv::set(&key, &format!("{}|{}|{}|{}", head, ids(&r.parts), fuels, ids(&r.pad_stack)));
+    true
+}
+
+/// Read the mid-flight ride snapshot, `None` if absent or malformed.
+pub fn load_ride(world_name: &str) -> Option<PersistenceRide> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    let s = client_kv::get(&build_ride_key(world_name))?;
+    let mut groups = s.split('|');
+    let head: Vec<&str> = groups.next()?.split(',').collect();
+    if head.len() != 9 {
+        return None;
+    }
+    let ids = |g: &str| -> Vec<u16> {
+        g.split(';').filter_map(|f| f.trim().parse::<u16>().ok()).collect()
+    };
+    let parts = ids(groups.next()?);
+    let fuels: Vec<f32> =
+        groups.next()?.split(';').filter_map(|f| f.trim().parse::<f32>().ok()).collect();
+    let pad_stack = ids(groups.next().unwrap_or(""));
+    if parts.is_empty() {
+        return None;
+    }
+    Some(PersistenceRide {
+        body_id: head[0].trim().parse().ok()?,
+        tile: head[1].trim().parse().ok()?,
+        depth: head[2].trim().parse().ok()?,
+        pos: [
+            head[3].trim().parse().ok()?,
+            head[4].trim().parse().ok()?,
+            head[5].trim().parse().ok()?,
+        ],
+        up: [
+            head[6].trim().parse().ok()?,
+            head[7].trim().parse().ok()?,
+            head[8].trim().parse().ok()?,
+        ],
+        parts,
+        fuels,
+        pad_stack,
+    })
+}
+
 /// Serialise the whole block-entity store for (world, body). Called on the
 /// SAME input frame as the placement / edit (CLAUDE.md hard rule); the
 /// store is small (one entry per placed machine).
@@ -860,6 +957,9 @@ pub fn clear_world(world_name: &str) {
             client_kv::remove(&format!("{prefix}{suffix}"));
         }
     }
+    /* The mid-flight ride key is per-world with no body suffix, so it
+     * doesn't ride the prefix loop above. */
+    client_kv::remove(&build_ride_key(world_name));
 }
 
 #[cfg(test)]
@@ -1087,6 +1187,39 @@ mod tests {
         // Empty store removes the key.
         assert!(save_block_entities("home", 1, &BlockEntityStore::new()));
         assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
+    }
+
+    /// Mid-flight ride snapshot round-trips: parts, per-stage fuel, origin
+    /// pad and boarding pose all survive, and clearing (None) removes the
+    /// key so a landed save can't re-strap the player.
+    #[test]
+    fn ride_round_trips_and_clears() {
+        let _g = test_support::begin("persist_ride");
+        let r = PersistenceRide {
+            body_id: 0,
+            tile: 421,
+            depth: 71,
+            pos: [301.5, -2.25, 10.125],
+            up: [0.996195, 0.087156, 0.0],
+            parts: vec![101, 102, 102, 104],
+            fuels: vec![37.5, 100.0],
+            pad_stack: vec![101, 102, 102, 104],
+        };
+        assert!(save_ride("home", Some(&r)));
+        let back = load_ride("home").expect("ride loads");
+        assert_eq!(back.body_id, r.body_id);
+        assert_eq!(back.tile, r.tile);
+        assert_eq!(back.depth, r.depth);
+        assert_eq!(back.parts, r.parts);
+        assert_eq!(back.fuels, r.fuels);
+        assert_eq!(back.pad_stack, r.pad_stack);
+        for k in 0..3 {
+            assert!((back.pos[k] - r.pos[k]).abs() < 1e-3, "pos[{k}]");
+            assert!((back.up[k] - r.up[k]).abs() < 1e-5, "up[{k}]");
+        }
+        assert!(load_ride("other").is_none(), "other world untouched");
+        assert!(save_ride("home", None));
+        assert!(load_ride("home").is_none(), "cleared");
     }
 
     /// Taken-scatter list round-trips: the tiles whose pebble/bush was
