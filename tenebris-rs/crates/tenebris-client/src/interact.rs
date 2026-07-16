@@ -268,6 +268,16 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         return;
     }
 
+    /* Strapped into a rocket: no reach, no reticle, no mining or placing.
+     * The FPS interaction loop assumes a player standing at the camera with
+     * an arm's reach, and while riding the camera is 20 m behind a moving
+     * ship - left-click would mine whatever the chase camera happened to
+     * point through. Same early-out as space mode, and for the same reason:
+     * the block-interaction layer simply doesn't apply in this mode. */
+    if crate::rocket_ride::is_riding() {
+        return;
+    }
+
     /* Fishing rod: while the rod is the selected hotbar item, the left
      * click drives the cast / hook / reel state machine instead of
      * mining or attacking, and the reticle stays target-free. */

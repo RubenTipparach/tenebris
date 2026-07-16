@@ -34,6 +34,8 @@ pub enum Action {
     Interact,
     /// Jettison the current rocket stage (while flying a staged rocket).
     Stage,
+    /// Climb out of the rocket, handing the remaining parts back.
+    ExitRocket,
     Eat,
     Plant,
     SurvivalToggle,
@@ -84,6 +86,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Interact", "Eat", Action::Eat),
     ("Interact", "Plant / till", Action::Plant),
     ("Rocket", "Stage / jettison", Action::Stage),
+    ("Rocket", "Exit rocket", Action::ExitRocket),
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
     ("Menus", "Crafting", Action::OpenCrafting),
@@ -220,6 +223,10 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (R, Action::RollRight),
         (E, Action::Interact),
         (X, Action::Stage),
+        /* Beside X so the rocket keys cluster. Not V (the JS's exit key) -
+         * V is Eat here, and the bindings are the player's muscle memory,
+         * not the reference implementation's. */
+        (Z, Action::ExitRocket),
         /* Menus + debug. */
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),

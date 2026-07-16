@@ -1438,24 +1438,38 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
         pitch_delta += inp.look_stick_y as f64 * LOOK_STICK_SENS as f64 * dt as f64;
     }
 
+    /* Flying a rocket rebinds the whole scheme (ported from the JS
+     * reference - see rocket_cam): the MOUSE orbits the third-person chase
+     * camera and no longer points the ship.
+     *
+     * This has to happen BEFORE the planet/space split, not inside the space
+     * branch: a rocket sits on its pad in PLANET mode until it climbs out of
+     * the well, and gating the orbit on `is_in_space` left the mouse dead
+     * for the whole launch - the camera simply didn't turn. Consuming the
+     * look deltas here also stops either mode from yawing the player with
+     * them. Attitude control (WASD) is space-only, below: on the planet the
+     * rocket ascends radially and has no steering authority, matching the JS
+     * (`canSteer` is false until it reaches IN_FLIGHT). */
+    let riding = crate::rocket_ride::is_riding();
+    if riding {
+        crate::rocket_cam::orbit(inp.mouse_dx, inp.mouse_dy);
+        yaw_delta = 0.0;
+        pitch_delta = 0.0;
+    }
+
     /* ============================================================== */
     /* SPACE MODE - 6DOF orientation, thrust + drag flight.           */
     /* ============================================================== */
     if p.is_in_space {
-        /* Flying a rocket rebinds the whole scheme (ported from the JS
-         * reference - see rocket_cam): the MOUSE orbits the third-person
-         * chase camera and no longer points the ship, so attitude moves onto
-         * WASD. W/S pitch the nose down/up, A/D yaw, Q/R still roll. The
-         * mouse deltas are consumed here so the basis doesn't turn with the
-         * camera - look wherever you like while the burn holds its heading,
-         * which is the entire reason the mode exists.
+        /* Rocket attitude is on the keys, since the mouse now belongs to the
+         * camera: W/S pitch the nose down/up, A/D yaw, Q/R still roll. Look
+         * wherever you like while the burn holds its heading - the entire
+         * reason the mode exists.
          *
          * Rate-based rather than the JS's torque-into-damped-angular-
          * velocity: theirs decayed by a fixed 0.95 PER FRAME, making the
          * handling fps-dependent. Rust leads; this is dt-correct. */
-        let riding = crate::rocket_ride::is_riding();
         let (yaw_delta, pitch_delta) = if riding {
-            crate::rocket_cam::orbit(inp.mouse_dx, inp.mouse_dy);
             let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
             let mut yd = 0.0f64;
             let mut pd = 0.0f64;

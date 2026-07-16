@@ -314,6 +314,7 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
          * so they do nothing here. */
         Action::Interact
         | Action::Stage
+        | Action::ExitRocket
         | Action::Pause
         | Action::OpenTechTree
         | Action::OpenCrafting

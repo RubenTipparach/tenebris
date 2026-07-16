@@ -550,6 +550,11 @@ impl StageActive {
 pub struct RocketRide {
     stages: Vec<StageActive>,
     pub payload_mass_kg: f32,
+    /// Capsules riding on top. Tracked as a COUNT (not just the mass) so
+    /// climbing out can hand the whole rocket back as items - deriving it
+    /// by dividing payload_mass_kg would break the moment the capsule's
+    /// mass is retuned.
+    capsules: u32,
 }
 
 impl RocketRide {
@@ -569,7 +574,77 @@ impl RocketRide {
         Some(RocketRide {
             stages,
             payload_mass_kg: payload_mass(stack, cfg),
+            capsules: stack
+                .iter()
+                .filter(|&&id| part_role(id) == Some(PartRole::Capsule))
+                .count() as u32,
         })
+    }
+
+    /// Every part still attached, bottom -> top: each remaining stage's
+    /// engine + tanks, then the capsules.
+    ///
+    /// Two callers: the renderer draws this stack at the player's pose (a
+    /// ridden rocket is a posed part stack like a jettisoned one), and
+    /// climbing out hands exactly this back to the bag. Jettisoned stages
+    /// are already gone from `stages`, so they're correctly absent.
+    pub fn remaining_parts(&self) -> Vec<ItemId> {
+        let mut parts = Vec::new();
+        for s in &self.stages {
+            parts.push(match s.spec.engine_kind {
+                EngineKind::Atmospheric => ROCKET_ENGINE,
+                EngineKind::Vacuum => VACUUM_ENGINE,
+            });
+            for _ in 0..s.spec.tanks {
+                parts.push(FUEL_TANK);
+            }
+        }
+        for _ in 0..self.capsules {
+            parts.push(COMMAND_MODULE);
+        }
+        parts
+    }
+
+    /// Delta-v left in the whole rocket (m/s): Tsiolkovsky summed over the
+    /// attached stages, burning bottom-up and shedding each spent stage's
+    /// dry mass before the next lights.
+    ///
+    /// The budget that actually decides whether you can reach the station
+    /// and get home - TWR only says whether you can leave the pad.
+    ///
+    /// Effective exhaust velocity comes from the parts themselves rather
+    /// than a tuned Isp: `ve = thrust / mass_flow`, where mass_flow is
+    /// `fuel_per_sec` scaled by the kg-per-fuel-unit the tank's wet/dry
+    /// masses imply. So retuning a tank or an engine moves delta-v the way
+    /// it should, with nothing to keep in sync.
+    pub fn delta_v_mps(&self, cfg: &RocketConfig) -> f32 {
+        let kg_per_unit = if cfg.fuel_tank.capacity > 0.0 {
+            (cfg.fuel_tank.wet_mass_kg - cfg.fuel_tank.dry_mass_kg) / cfg.fuel_tank.capacity
+        } else {
+            0.0
+        };
+        if kg_per_unit <= 0.0 {
+            return 0.0;
+        }
+        let mut dv = 0.0f32;
+        for i in 0..self.stages.len() {
+            let s = &self.stages[i];
+            /* Everything this stage still has to push: itself, every stage
+             * above it, and the payload. Stages below are already gone. */
+            let above: f32 = self.stages[i..].iter().map(|x| x.spec.dry_mass_kg + x.fuel_mass()).sum();
+            let m0 = above + self.payload_mass_kg;
+            let m1 = m0 - s.fuel_mass();
+            if m1 <= 0.0 || m0 <= m1 || s.fuel <= 0.0 {
+                continue;
+            }
+            let mass_flow = s.spec.fuel_per_sec * kg_per_unit;
+            if mass_flow <= 0.0 {
+                continue;
+            }
+            let ve = s.spec.thrust_n / mass_flow;
+            dv += ve * (m0 / m1).ln();
+        }
+        dv
     }
 
     /// The active (bottom) stage, if any remain.
@@ -899,6 +974,87 @@ mod tests {
 
     /// A minimal valid rocket, bottom -> top: engine, tank, capsule.
     const MIN_ROCKET: [ItemId; 3] = [ROCKET_ENGINE, FUEL_TANK, COMMAND_MODULE];
+
+    /// Climbing out hands the whole rocket back, so what goes up the ramp
+    /// has to come back out of it - every part, capsule included. LAUNCH
+    /// clears the pad, so the ride holds the only copy: if this drops a
+    /// part, exiting destroys it.
+    #[test]
+    fn remaining_parts_round_trips_the_whole_stack() {
+        let cfg = RocketConfig::default();
+        let stack = [ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE];
+        let ride = RocketRide::from_stack(&stack, &cfg).expect("flyable");
+        let mut got = ride.remaining_parts();
+        let mut want = stack.to_vec();
+        got.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(got, want, "exiting must hand back exactly what was launched");
+    }
+
+    /// A jettisoned stage is gone - exiting can't hand back parts you
+    /// already dropped into the sea.
+    #[test]
+    fn remaining_parts_excludes_jettisoned_stages() {
+        let cfg = RocketConfig::default();
+        let stack = [ROCKET_ENGINE, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE];
+        let mut ride = RocketRide::from_stack(&stack, &cfg).expect("flyable");
+        assert!(ride.stage(), "booster jettisons");
+        let got = ride.remaining_parts();
+        assert_eq!(got, vec![VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE]);
+        assert!(!got.contains(&ROCKET_ENGINE), "shed booster must not come back");
+    }
+
+    /// Delta-v is Tsiolkovsky, so check it against the closed form by hand
+    /// for a single stage rather than just asserting "> 0".
+    #[test]
+    fn delta_v_matches_tsiolkovsky_for_one_stage() {
+        let cfg = RocketConfig::default();
+        let ride = RocketRide::from_stack(&MIN_ROCKET, &cfg).expect("flyable");
+
+        let kg_per_unit =
+            (cfg.fuel_tank.wet_mass_kg - cfg.fuel_tank.dry_mass_kg) / cfg.fuel_tank.capacity;
+        let ve = cfg.engine.thrust_n / (cfg.engine.fuel_per_sec * kg_per_unit);
+        let m0 = cfg.engine.mass_kg + cfg.fuel_tank.wet_mass_kg + cfg.command_module.mass_kg;
+        let m1 = cfg.engine.mass_kg + cfg.fuel_tank.dry_mass_kg + cfg.command_module.mass_kg;
+        let want = ve * (m0 / m1).ln();
+
+        let got = ride.delta_v_mps(&cfg);
+        assert!((got - want).abs() < 0.5, "dv {got} should match Tsiolkovsky {want}");
+    }
+
+    /// Burning fuel spends delta-v; an empty rocket has none left.
+    #[test]
+    fn delta_v_falls_as_fuel_burns_and_hits_zero_when_dry() {
+        let cfg = RocketConfig::default();
+        let mut ride = RocketRide::from_stack(&MIN_ROCKET, &cfg).expect("flyable");
+        let full = ride.delta_v_mps(&cfg);
+        assert!(full > 0.0);
+        ride.burn(2.0);
+        let after = ride.delta_v_mps(&cfg);
+        assert!(after < full, "burning should spend dv: {after} !< {full}");
+
+        while !ride.is_spent() {
+            ride.burn(1.0);
+        }
+        assert_eq!(ride.delta_v_mps(&cfg), 0.0, "a dry rocket has no dv left");
+    }
+
+    /// Staging is what buys range: the same parts flown as two stages beat
+    /// one big one, because the spent booster's dry mass stops being cargo.
+    #[test]
+    fn a_staged_rocket_has_more_delta_v_than_a_single_stage() {
+        let cfg = RocketConfig::default();
+        let one = RocketRide::from_stack(&[ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, COMMAND_MODULE], &cfg)
+            .expect("flyable")
+            .delta_v_mps(&cfg);
+        let two = RocketRide::from_stack(
+            &[ROCKET_ENGINE, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE],
+            &cfg,
+        )
+        .expect("flyable")
+        .delta_v_mps(&cfg);
+        assert!(two > one, "two stages ({two}) should out-range one ({one})");
+    }
 
     #[test]
     fn part_roles_map_only_the_three_parts() {

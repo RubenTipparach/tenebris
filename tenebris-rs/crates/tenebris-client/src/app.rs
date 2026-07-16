@@ -3382,13 +3382,60 @@ fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
     let stages = crate::rocket_ride::stage_count();
     let g = tenebris_core::rocket::config().flight.gravity_mps2;
     let twr = crate::rocket_ride::twr(g);
-    let speed = tenebris_core::math::dvec3_length(app.player.borrow().velocity);
+    /* Delta-v is the budget that decides whether you reach the station and
+     * get home; TWR only says whether you can leave the pad. */
+    let dv = crate::rocket_ride::delta_v_mps();
+
+    /* Flight state against the body you launched from. Everything here is
+     * radial: "up" is away from the planet centre, so altitude, vertical
+     * speed and attitude all fall out of one direction. */
+    let body = app.player.borrow().body.unwrap_or(app.body);
+    let center = dvec3_make(body.pos_x, body.pos_y, body.pos_z);
+    let (alt_m, vspeed, speed, pitch_deg) = {
+        let p = app.player.borrow();
+        let rel = dvec3_sub(p.position, center);
+        let r = tenebris_core::math::dvec3_length(rel);
+        let up = if r > 1e-6 {
+            tenebris_core::math::dvec3_scale(rel, 1.0 / r)
+        } else {
+            p.basis.up
+        };
+        let speed = tenebris_core::math::dvec3_length(p.velocity);
+        /* Climb rate: the component of velocity along radial up. Signed, so
+         * you can see an apoapsis coming. */
+        let vspeed = tenebris_core::math::dvec3_dot(p.velocity, up);
+        /* Attitude: angle between the nose (the axis thrust fires along) and
+         * radial up. 0 = straight up off the pad, 90 = horizontal, which is
+         * where you want to be pointing to build orbital speed. */
+        let cosine = tenebris_core::math::dvec3_dot(p.basis.fwd, up).clamp(-1.0, 1.0);
+        let pitch_deg = cosine.acos().to_degrees();
+        (r - body.radius_m, vspeed, speed, pitch_deg)
+    };
+    /* Name the attitude - a bare angle doesn't say what it's good for. */
+    let att = if pitch_deg < 20.0 {
+        "up"
+    } else if pitch_deg < 70.0 {
+        "climb"
+    } else if pitch_deg < 110.0 {
+        "horizon"
+    } else if pitch_deg < 160.0 {
+        "descend"
+    } else {
+        "retro"
+    };
+
     let throttle_key = crate::controls::action_label(crate::controls::Action::Jump);
     let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
+    let exit_key = crate::controls::action_label(crate::controls::Action::ExitRocket);
     let lines = [
         format!("ROCKET  stage {}  {} engine", stages, eng),
-        format!("fuel {}%   TWR {:.2}   speed {:.0} m/s", pct, twr, speed),
-        format!("[hold {}] throttle   [{}] stage", throttle_key, stage_key),
+        format!("fuel {}%   dv {:.0} m/s   TWR {:.2}", pct, dv, twr),
+        format!("alt {:.0} m   speed {:.0} m/s   climb {:+.0} m/s", alt_m, speed, vspeed),
+        format!("attitude {:.0} deg from up ({})", pitch_deg, att),
+        format!(
+            "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit",
+            throttle_key, stage_key, exit_key
+        ),
     ];
     sdtx::canvas(screen_w, screen_h);
     sdtx::font(1);
@@ -6050,6 +6097,38 @@ fn frame_inner(app: &mut App) {
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
     /* Orbital trading station drum, sweeping its on-rails track. */
     crate::station_fx::draw(view, proj, sim_t);
+    /* The rocket the player is FLYING. A ridden rocket is the same thing as
+     * a jettisoned one - a part stack posed in the world - so it draws
+     * through the same renderer rather than a second copy of it, just posed
+     * from the player instead of a tumble.
+     *
+     * Until the chase camera landed, nothing drew this at all: the rocket
+     * existed only as the stack of cubes on the pad, which LAUNCH clears
+     * (rocket_screen), and the ride itself was invisible. In first person
+     * you couldn't tell; from behind, the rocket was simply missing.
+     *
+     * Stacked along basis.fwd - the nose, the axis thrust fires along - and
+     * centred so the player sits inside the stack rather than at its foot. */
+    if rocket_ride::is_riding() {
+        let parts = rocket_ride::remaining_parts();
+        if !parts.is_empty() {
+            let p = app.player.borrow();
+            let ride_view = crate::falling_stage::StageView {
+                center: p.position,
+                axis: p.basis.fwd,
+                flow: p.velocity,
+                parts,
+                heat: 0.0,
+            };
+            drop(p);
+            crate::rocket_fx::draw_falling(
+                view,
+                proj,
+                &app.world.borrow(),
+                std::slice::from_ref(&ride_view),
+            );
+        }
+    }
     /* Jettisoned falling stages: tumbling part models wrapped in the
      * hull-hugging reentry plasma shell (the mining-the-sky mesh technique).
      * Stepped in the frame update; drawn here in the world pass. */
@@ -6201,32 +6280,41 @@ fn frame_inner(app: &mut App) {
      * including egui, so the bar - numbers and all - must vanish together
      * instead of the digits bleeding through the panel. */
     if !menu::pause_active() && !screens::any_open() {
-        /* No sdtx_draw here - single flush at the end of the UI block. */
-        hotbar_ui::draw(&app.player.borrow().inventory);
-        /* Real (non-ASCII) mining progress bar. */
-        draw_mining_bar(app, sapp::widthf(), sapp::heightf());
-        /* Survival hunger meter (top-left). */
+        /* Flying a rocket is its own mode: the whole block-interaction HUD
+         * (hotbar, mining bar, and every "[E] do this to the thing you're
+         * aiming at" prompt) is meaningless from a cockpit, and interact
+         * itself early-outs while riding so those hints could only ever read
+         * stale. The flight instruments below replace them. */
+        let flying = rocket_ride::is_riding();
+        if !flying {
+            /* No sdtx_draw here - single flush at the end of the UI block. */
+            hotbar_ui::draw(&app.player.borrow().inventory);
+            /* Real (non-ASCII) mining progress bar. */
+            draw_mining_bar(app, sapp::widthf(), sapp::heightf());
+            /* Farming ground hint: till soil / plant seed. (Plants no longer
+             * show a harvest prompt - they're broken like blocks.) */
+            draw_farming_hint(app, sapp::widthf(), sapp::heightf());
+            /* Machine prompt: "[E] open chest" when aiming at an openable machine
+             * (chest, furnace, 3d printer, generator, rocket pad, ...). Machine
+             * blocks are disjoint from the farmland/dirt the farming hint fires on,
+             * so the two never print over each other. */
+            draw_machine_hint(app, sapp::widthf(), sapp::heightf());
+            /* Pickup prompt: "[E] pick up flint" / "[E] pick up mossy rock" when
+             * aiming at a loose scatter object. Scatter only grows on plain ground,
+             * which carries no machine, so this and the machine hint are disjoint. */
+            draw_pickup_hint(app, sapp::widthf(), sapp::heightf());
+            /* Survival: prompt when the targeted block needs a better tool. */
+            draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
+        }
+        /* Survival hunger meter (top-left) - you still get hungry in a rocket. */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
-        /* Farming ground hint: till soil / plant seed. (Plants no longer
-         * show a harvest prompt - they're broken like blocks.) */
-        draw_farming_hint(app, sapp::widthf(), sapp::heightf());
-        /* Machine prompt: "[E] open chest" when aiming at an openable machine
-         * (chest, furnace, 3d printer, generator, rocket pad, ...). Machine
-         * blocks are disjoint from the farmland/dirt the farming hint fires on,
-         * so the two never print over each other. */
-        draw_machine_hint(app, sapp::widthf(), sapp::heightf());
-        /* Pickup prompt: "[E] pick up flint" / "[E] pick up mossy rock" when
-         * aiming at a loose scatter object. Scatter only grows on plain ground,
-         * which carries no machine, so this and the machine hint are disjoint. */
-        draw_pickup_hint(app, sapp::widthf(), sapp::heightf());
-        /* Rocket flight HUD (top-centre) while riding a rocket. */
+        /* Rocket flight instruments (top-centre) while riding a rocket. */
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
         /* Credits wallet (top-right). */
         draw_credits_hud(app, sapp::widthf(), sapp::heightf());
-        /* Station dock prompt (in space, within range). */
+        /* Station dock prompt (in space, within range) - the whole point of
+         * the flight, so it stays up. */
         draw_station_hint(app, sapp::widthf(), sapp::heightf());
-        /* Survival: prompt when the targeted block needs a better tool. */
-        draw_tool_gate_hint(app, sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */
@@ -6235,11 +6323,13 @@ fn frame_inner(app: &mut App) {
     mobile_ui::draw();
 
     /* Centre-screen reticle dot - gameplay only, mobile_ui_draw just
-     * left the alpha pipeline + ortho projection bound for us. */
+     * left the alpha pipeline + ortho projection bound for us. Hidden while
+     * flying: it marks where an FPS click would land, and in a rocket the
+     * camera centre aims at nothing (interact early-outs while riding). */
     {
         let st = menu::state();
         let in_game = st == GameState::InGameSp || st == GameState::InGameMp;
-        if in_game && !menu::pause_active() {
+        if in_game && !menu::pause_active() && !rocket_ride::is_riding() {
             let sw = sapp::widthf();
             let sh = sapp::heightf();
             let dot = 3.0f32;
@@ -6443,6 +6533,35 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             let vel = dvec3_add(p.velocity, kick);
             crate::falling_stage::spawn(shed, pos, vel, p.basis.up);
         }
+        return;
+    }
+    /* Exit rocket (default Z, beside X/stage). Climbing out hands the whole
+     * remaining rocket back as items rather than deleting it - the ride owns
+     * the only copy of those parts once LAUNCH clears the pad, so a bare
+     * `clear()` here would quietly destroy everything the player built.
+     *
+     * Allowed at any altitude on purpose: refusing to let go in space would
+     * strand you in the exact situation you're trying to get out of. In
+     * space you keep 6DOF RCS; on the ground you just stand up.
+     *
+     * (Not V - the JS's exit key - because V is Eat here.) */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::ExitRocket)
+        && crate::rocket_ride::is_riding()
+    {
+        let parts = crate::rocket_ride::remaining_parts();
+        let mut lost = 0u16;
+        {
+            let mut p = app.player.borrow_mut();
+            for id in parts {
+                lost += p.bag.add(id, 1);
+            }
+        }
+        if lost > 0 {
+            /* Only reachable with a full bag; say so rather than swallow it. */
+            println!("[rocket] WARN: bag full - {lost} rocket part(s) lost on exit");
+        }
+        crate::rocket_ride::clear();
         return;
     }
     if e._type == sapp::EventType::KeyDown

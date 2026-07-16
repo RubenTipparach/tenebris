@@ -37,6 +37,17 @@ pub fn is_riding() -> bool {
     RIDE.with(|c| c.borrow().is_some())
 }
 
+/// Every part still attached (see `RocketRide::remaining_parts`) - what the
+/// renderer draws around the player and what climbing out hands back.
+pub fn remaining_parts() -> Vec<tenebris_core::items::ItemId> {
+    with(|r| r.remaining_parts()).unwrap_or_default()
+}
+
+/// Delta-v left in the whole rocket, m/s.
+pub fn delta_v_mps() -> f32 {
+    with(|r| r.delta_v_mps(&tenebris_core::rocket::config())).unwrap_or(0.0)
+}
+
 /// Read the active ride, if any.
 pub fn with<R>(f: impl FnOnce(&RocketRide) -> R) -> Option<R> {
     RIDE.with(|c| c.borrow().as_ref().map(f))
