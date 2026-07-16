@@ -1997,9 +1997,33 @@ pub fn entity_sun_brightness(world_pos: DVec3) -> f32 {
             return 1.0;
         }
         let d = (px * r.env.sun_dir.x + py * r.env.sun_dir.y + pz * r.env.sun_dir.z) / len;
-        /* Soft terminator band (~sunset) instead of a hard cut. */
+        /* SURFACE term: day/night by which side of the planet the entity
+         * is over, with a soft terminator band (~sunset). Right for
+         * animals / crops / torch glows standing ON the ground. */
         let t = ((d + 0.10) / 0.22).clamp(0.0, 1.0);
-        0.16 + 0.84 * t
+        let surface = 0.16 + 0.84 * t;
+        /* SPACE term: sunlight is DIRECT regardless of which hemisphere
+         * the entity floats over - a rocket above the night side is still
+         * in full sun. The only darkness up there is the planet's own
+         * shadow: behind the terminator plane (along < 0) AND inside the
+         * shadow cylinder (perpendicular distance to the sun axis under
+         * the planet radius), with a soft penumbra edge. Without this the
+         * ridden rocket went near-black in space whenever its ground
+         * track crossed the night side. */
+        let rad = r.env.atmo_planet_radius.max(1.0);
+        let along = d * len;
+        let perp = (len * len - along * along).max(0.0).sqrt();
+        let umbra = if along < 0.0 {
+            ((rad - perp) / (0.15 * rad)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let space = 0.16 + 0.84 * (1.0 - umbra);
+        /* Blend surface -> space across half a radius of altitude, so
+         * ground entities keep the sunset look and orbital ones get the
+         * umbra model. */
+        let alt01 = ((len - rad) / (0.5 * rad)).clamp(0.0, 1.0);
+        surface + (space - surface) * alt01
     })
 }
 
