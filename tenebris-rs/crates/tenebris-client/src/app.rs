@@ -4477,7 +4477,9 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
      * Never let that synthetic pose get written back to the world save, or
      * every later load spawns in space with the terrain unloaded (a poisoned
      * save). The capture is read-only w.r.t. the world. */
-    if std::env::var("TENEBRIS_DEV_LODCAM").is_ok() {
+    if std::env::var("TENEBRIS_DEV_LODCAM").is_ok()
+        || std::env::var("TENEBRIS_DEV_SUNCAM").is_ok()
+    {
         return;
     }
     let world = menu::active_world();
@@ -5444,6 +5446,43 @@ fn frame_inner(app: &mut App) {
         }
     }
 
+    /* SUN-CAMERA CAPTURE (TENEBRIS_DEV_SUNCAM=<metres above surface>): the
+     * deterministic way to screenshot the SUN DISC (sun.fs.glsl work).
+     * Parks the camera <metres> above the sub-solar point and solves
+     * yaw/pitch dead along the sun direction - the disc is drawn along
+     * that same direction from the body centre, so it always centres in
+     * frame. Same basis-solve + no-autosave rules as the LOD camera. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_SUNCAM") {
+        let alt = v.parse::<f64>().unwrap_or(0.0).max(50.0);
+        let (center, radius, body_id) = {
+            let w = app.world.borrow();
+            (
+                dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                w.body.radius_m,
+                w.body.id,
+            )
+        };
+        let sim_t = tenebris_core::world_time::seconds();
+        let sun_dir = dvec3_normalize(orbit::sun_direction(body_id, sim_t));
+        let cam = dvec3_add(center, dvec3_scale(sun_dir, radius + alt));
+        {
+            let mut p = app.player.borrow_mut();
+            p.position = cam;
+            p.velocity = tenebris_core::math::DVec3::default();
+            p.last_tile = -1;
+            p.is_in_space = false;
+            /* Aim along sun_dir by solving against the live basis (see the
+             * LODCAM comment above for why fixed angles don't work). */
+            let b = &p.basis;
+            let sp = dvec3_dot(sun_dir, b.up).clamp(-1.0, 1.0);
+            let a = dvec3_dot(sun_dir, b.fwd);
+            let c = dvec3_dot(sun_dir, b.right);
+            p.pitch = sp.asin() as f32;
+            p.yaw = c.atan2(a) as f32;
+        }
+        DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+    }
+
     /* Dev screenshot aid: hold the camera on its underwater-fish perch
      * each frame so gravity can't drop it off. */
     DEV_FISH_CAM.with(|c| {
@@ -6186,7 +6225,7 @@ fn frame_inner(app: &mut App) {
     renderer::draw_skybox(view, proj);
     profiler::end("draw-skybox");
     profiler::begin("draw-sun");
-    renderer::draw_sun(view, proj);
+    renderer::draw_sun(view, proj, cam_world);
     profiler::end("draw-sun");
     /* Publish this frame's mining state so the terrain pass paints the
      * crack channel on the mined cell in-shader (replaced the old

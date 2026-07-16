@@ -1,8 +1,10 @@
-# Solar-system scale + the sun's rendered disc. Parsed by
-# core/config.rs parse_solar (tiny key: value subset).
+# Solar-system scale + the sun's rendered disc and surface look.
+# Parsed by core/config.rs parse_solar (tiny key: value subset; colours
+# are [r, g, b] lists).
 #
 # A field set to 0 / omitted keeps the compiled-in default.
 #
+# System scale:
 #   sun_distance_m     distance from the home world (Tenebris) to the
 #                      star, metres. The WHOLE system scales with it:
 #                      every star-orbiting body's structural orbit radius
@@ -18,7 +20,33 @@
 #   sun_radius_m       the star's "physical" radius, metres. Sets the
 #                      sun's angular size in the sky: drawn radius =
 #                      sun_radius_m * (sun_visual_dist_m / sun_distance_m).
+#
+# Surface shader (sun.fs.glsl - granulation / spots / limb / rim):
+#   sun_color_hot       granule-core colour (HDR >1 ok)
+#   sun_color_cool      granule-lane colour between convection cells
+#   sun_color_spot      sunspot colour
+#   sun_granule_scale   noise scale on the unit sphere (higher = finer)
+#   sun_churn_speed     surface churn animation speed
+#   sun_limb_power      limb-darkening curve power
+#   sun_limb_strength   limb-darkening strength 0..1
+#   sun_rim_boost       hot fresnel rim boost at the limb
+#   sun_spot_threshold  sunspot field threshold 0..1 (higher = fewer)
+#   sun_spot_sharpness  sunspot edge band width
+#   sun_warp_amount     domain-warp amount (0 = calm, 2 = boiling)
+#   sun_brightness      overall surface brightness multiplier
 solar:
   sun_distance_m: 150000
   sun_visual_dist_m: 18000
-  sun_radius_m: 2250
+  sun_radius_m: 9000
+  sun_color_hot: [1.40, 1.25, 0.90]
+  sun_color_cool: [1.10, 0.55, 0.16]
+  sun_color_spot: [0.55, 0.22, 0.10]
+  sun_granule_scale: 7.0
+  sun_churn_speed: 0.03
+  sun_limb_power: 0.7
+  sun_limb_strength: 0.55
+  sun_rim_boost: 0.8
+  sun_spot_threshold: 0.68
+  sun_spot_sharpness: 0.08
+  sun_warp_amount: 1.6
+  sun_brightness: 0.7

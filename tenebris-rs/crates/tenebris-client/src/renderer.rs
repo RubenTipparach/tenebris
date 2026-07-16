@@ -2957,9 +2957,11 @@ pub fn draw_skybox(view: Mat4, proj: Mat4) {
     });
 }
 
-/// Port of `renderer_draw_sun()`. Emissive sphere at env.sun_pos;
-/// writes depth so foreground planets occlude it.
-pub fn draw_sun(view: Mat4, proj: Mat4) {
+/// Port of `renderer_draw_sun()`. Procedural-surface sphere at
+/// env.sun_pos (granulation / sunspots / limb darkening / rim - see
+/// sun.fs.glsl); look knobs come from solar.yaml. `camera_world` feeds
+/// the limb-darkening view term.
+pub fn draw_sun(view: Mat4, proj: Mat4, camera_world: Vec3) {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
         if r.env.sun_radius <= 0.0 {
@@ -2970,9 +2972,37 @@ pub fn draw_sun(view: Mat4, proj: Mat4) {
         sg::apply_pipeline(r.pip_sun);
         let sun_vs = shaders::sun::SunVsParams { u_mvp: mvp.m };
         sg::apply_uniforms(shaders::sun::UB_SUN_VS_PARAMS, &sg::value_as_range(&sun_vs));
-        /* Warm white core, slightly clipping - same colour the skybox
-         * disc uses so both read as one body. */
-        let sun_fs = shaders::sun::SunFsParams { u_color: [1.40, 1.25, 0.90], _pad_12: [0; 4] };
+        let sc = config::solar();
+        /* Camera in the sun's unit-sphere space (mesh verts are the unit
+         * sphere; the model matrix scales by sun_radius). */
+        let inv_r = 1.0 / r.env.sun_radius.max(1.0);
+        let cam_local = [
+            (camera_world.x - r.env.sun_pos.x) * inv_r,
+            (camera_world.y - r.env.sun_pos.y) * inv_r,
+            (camera_world.z - r.env.sun_pos.z) * inv_r,
+        ];
+        /* Sim time drives the churn so every client's surface agrees.
+         * Wrapped to keep f32 noise coords precise on old worlds; the
+         * once-per-wrap reseed is imperceptible on a boiling surface. */
+        let t = (tenebris_core::world_time::seconds() % 100_000.0) as f32;
+        let sun_fs = shaders::sun::SunFsParams {
+            u_color_hot: [sc.sun_color_hot.x, sc.sun_color_hot.y, sc.sun_color_hot.z],
+            u_time: t,
+            u_color_cool: [sc.sun_color_cool.x, sc.sun_color_cool.y, sc.sun_color_cool.z],
+            u_granule_scale: sc.sun_granule_scale,
+            u_color_spot: [sc.sun_color_spot.x, sc.sun_color_spot.y, sc.sun_color_spot.z],
+            u_churn_speed: sc.sun_churn_speed,
+            u_cam_local: cam_local,
+            u_limb_power: sc.sun_limb_power,
+            u_limb_strength: sc.sun_limb_strength,
+            u_rim_boost: sc.sun_rim_boost,
+            u_spot_threshold: sc.sun_spot_threshold,
+            u_spot_sharpness: sc.sun_spot_sharpness,
+            u_warp_amount: sc.sun_warp_amount,
+            _pad_84: 0.0,
+            u_brightness: sc.sun_brightness,
+            _pad_92: 0.0,
+        };
         sg::apply_uniforms(shaders::sun::UB_SUN_FS_PARAMS, &sg::value_as_range(&sun_fs));
         let mut bind = sg::Bindings::new();
         bind.vertex_buffers[0] = r.uvsphere_vbuf;
@@ -6814,7 +6844,9 @@ mod tests {
         assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 112); /* +rim fresnel (2 vec4s) */
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
-        assert_eq!(size_of::<shaders::sun::SunFsParams>(), 16);
+        /* 6 vec4s: procedural surface (colors / churn / cam / limb / spot /
+         * warp) - see the table at the top of sun.fs.glsl. */
+        assert_eq!(size_of::<shaders::sun::SunFsParams>(), 96);
         assert_eq!(size_of::<shaders::water::VsParams>(), 128);
         /* 16 vec4s since the hand-added distance-fog uniform (u_fog). */
         assert_eq!(size_of::<shaders::water::FsParams>(), 256);

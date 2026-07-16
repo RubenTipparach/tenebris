@@ -95,9 +95,12 @@ pub fn elements(id: BodyId) -> OrbitElements {
             spin_days: 1.0,
             spin_phase0: 0.0,
         },
+        /* Sequoia is the COOLER sister world - it sits farther out than
+         * the home world (40 km structural = 200 km from the star at the
+         * default 150 km solar.yaml scale). */
         Sequoia => OrbitElements {
             parent: None,
-            orbit_radius_m: 42_000.0,
+            orbit_radius_m: 40_000.0,
             orbit_years: 1.5,
             orbit_phase0: 1.2,
             inclination: 0.05,
@@ -348,10 +351,10 @@ mod tests {
         let d = dvec3_length(heliocentric_pos(BodyId::Tenebris, 0.0));
         assert!((d - 150_000.0).abs() < 1.0, "tenebris-star dist {d} != 150000");
         // ...other planets scale by the same factor (5x here), keeping the
-        // system's shape...
+        // system's shape. Sequoia is pinned at 200 km - the cooler sister
+        // world sits 50 km farther out than home.
         let ds = dvec3_length(heliocentric_pos(BodyId::Sequoia, 0.0));
-        let expect = elements(BodyId::Sequoia).orbit_radius_m * 5.0;
-        assert!((ds - expect).abs() < 1.0, "sequoia dist {ds} != {expect}");
+        assert!((ds - 200_000.0).abs() < 1.0, "sequoia dist {ds} != 200000");
         // ...while moons keep their tight structural parent orbits.
         let r = elements(BodyId::Luna).orbit_radius_m;
         let dl = dvec3_length(dvec3_sub(

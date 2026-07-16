@@ -550,6 +550,13 @@ Use the deterministic tool that always frames the full disk:
   **primary** (near, detailed terrain + per-puff clouds) at **200 m
   increments** (`200..1000`), and **secondary** (far distant-sphere LOD +
   cloud-texture wrap) at **2 km increments** (`2000..12000`).
+- **`TENEBRIS_DEV_SUNCAM=<metres above surface>`** (sibling hook): frames
+  the **sun disc** instead — parks the camera above the sub-solar point
+  and solves yaw/pitch dead along `orbit::sun_direction`, which is the
+  same direction the disc is drawn along, so it always centres. Use for
+  any `sun.fs.glsl` / solar.yaml look work. Shares the LODCAM no-autosave
+  gate. Boots fast (~40 s — no full-disk gen needed, you face away from
+  the terrain).
 
 Hard facts learned building it (don't relearn them the slow way):
 

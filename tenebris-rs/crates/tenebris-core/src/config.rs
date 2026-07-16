@@ -2022,14 +2022,56 @@ pub struct SolarConfig {
     /// The star's "physical" radius, metres. Sets the sun's angular size:
     /// drawn radius = sun_radius_m * (sun_visual_dist_m / sun_distance_m).
     pub sun_radius_m: f32,
+
+    /* ---- Sun surface shader (sun.fs.glsl) look knobs. ---- */
+    /// Granule-core (hottest) colour. HDR-ish >1 values are fine.
+    pub sun_color_hot: Vec3,
+    /// Granule-lane (cooler) colour between convection cells.
+    pub sun_color_cool: Vec3,
+    /// Sunspot colour (darkest patches).
+    pub sun_color_spot: Vec3,
+    /// Granulation noise scale on the unit sphere (higher = finer cells).
+    pub sun_granule_scale: f32,
+    /// Churn animation speed (noise-field drift per second).
+    pub sun_churn_speed: f32,
+    /// Limb-darkening curve power (shapes the falloff toward the edge).
+    pub sun_limb_power: f32,
+    /// Limb-darkening strength 0..1 (0 = flat disc, 1 = black limb).
+    pub sun_limb_strength: f32,
+    /// Hot fresnel rim boost at the limb (the chromosphere flash).
+    pub sun_rim_boost: f32,
+    /// Sunspot field threshold 0..1 (higher = fewer spots).
+    pub sun_spot_threshold: f32,
+    /// Sunspot edge sharpness (smoothstep band width).
+    pub sun_spot_sharpness: f32,
+    /// Domain-warp amount for the granulation (0 = calm, 2 = boiling).
+    pub sun_warp_amount: f32,
+    /// Overall surface brightness multiplier.
+    pub sun_brightness: f32,
 }
 
 const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
     sun_distance_m: 150_000.0,
     sun_visual_dist_m: 18_000.0,
-    /* 2250 m at 150 km = 15 mrad angular radius - half the old 8 km disc,
-     * so the star reads as far away instead of looming. */
-    sun_radius_m: 2_250.0,
+    /* 9 km at 150 km = 60 mrad angular radius (4x the first-pass 2250 m
+     * disc) - a big, presence-heavy star that still reads as distant
+     * thanks to the limb darkening. */
+    sun_radius_m: 9_000.0,
+    sun_color_hot: Vec3 { x: 1.40, y: 1.25, z: 0.90 },
+    sun_color_cool: Vec3 { x: 1.10, y: 0.55, z: 0.16 },
+    sun_color_spot: Vec3 { x: 0.55, y: 0.22, z: 0.10 },
+    sun_granule_scale: 7.0,
+    sun_churn_speed: 0.03,
+    sun_limb_power: 0.7,
+    sun_limb_strength: 0.55,
+    /* rim + brightness picked so the granulation survives the LDR
+     * offscreen target: at 1.0 the HDR-ish colours all clip to white and
+     * the surface reads as a flat disc (verified with the SUNCAM tool). */
+    sun_rim_boost: 0.8,
+    sun_spot_threshold: 0.68,
+    sun_spot_sharpness: 0.08,
+    sun_warp_amount: 1.6,
+    sun_brightness: 0.7,
 };
 
 static S_SOLAR: Mutex<SolarConfig> = Mutex::new(SOLAR_DEFAULTS);
@@ -2058,6 +2100,14 @@ pub fn parse_solar(src: &str, path: &str) -> i32 {
         if val.is_empty() {
             return 0; /* "solar:" section header */
         }
+        /* Colour fields are [r, g, b] lists; a failed parse keeps the
+         * default (mirrors the per-field zero-keeps-default rule). */
+        match key {
+            "sun_color_hot" => return vec3_or_err(val, &mut cfg.sun_color_hot),
+            "sun_color_cool" => return vec3_or_err(val, &mut cfg.sun_color_cool),
+            "sun_color_spot" => return vec3_or_err(val, &mut cfg.sun_color_spot),
+            _ => {}
+        }
         let v = fval(val);
         if v == 0.0 {
             return 0; /* zero keeps the compiled-in default */
@@ -2066,6 +2116,15 @@ pub fn parse_solar(src: &str, path: &str) -> i32 {
             "sun_distance_m" => cfg.sun_distance_m = v,
             "sun_visual_dist_m" => cfg.sun_visual_dist_m = v,
             "sun_radius_m" => cfg.sun_radius_m = v,
+            "sun_granule_scale" => cfg.sun_granule_scale = v,
+            "sun_churn_speed" => cfg.sun_churn_speed = v,
+            "sun_limb_power" => cfg.sun_limb_power = v,
+            "sun_limb_strength" => cfg.sun_limb_strength = v,
+            "sun_rim_boost" => cfg.sun_rim_boost = v,
+            "sun_spot_threshold" => cfg.sun_spot_threshold = v,
+            "sun_spot_sharpness" => cfg.sun_spot_sharpness = v,
+            "sun_warp_amount" => cfg.sun_warp_amount = v,
+            "sun_brightness" => cfg.sun_brightness = v,
             _ => println!("[config] {}:{}: unknown solar key '{}'", path, line_no, key),
         }
         0
@@ -2503,6 +2562,28 @@ ui:
         }
         assert_eq!(rc, 0, "ui.yaml should parse without errors");
         assert_eq!(ui(), ui_defaults());
+    }
+
+    #[test]
+    fn solar_parses_colors_and_scalars_zero_keeps_default() {
+        let rc = parse_solar(
+            "solar:\n  sun_distance_m: 150000\n  sun_radius_m: 9000\n  \
+             sun_color_hot: [2.0, 1.0, 0.5]\n  sun_granule_scale: 9\n  \
+             sun_limb_strength: 0\n",
+            "solar-test",
+        );
+        assert_eq!(rc, 0);
+        let s = solar();
+        assert_eq!(s.sun_distance_m, 150_000.0);
+        assert_eq!(s.sun_radius_m, 9_000.0);
+        assert_eq!(s.sun_color_hot, Vec3 { x: 2.0, y: 1.0, z: 0.5 });
+        assert_eq!(s.sun_granule_scale, 9.0);
+        /* zero keeps the compiled-in default */
+        assert_eq!(s.sun_limb_strength, SOLAR_DEFAULTS.sun_limb_strength);
+        /* untouched fields keep defaults */
+        assert_eq!(s.sun_color_cool, SOLAR_DEFAULTS.sun_color_cool);
+        /* restore for other tests */
+        *S_SOLAR.lock().unwrap() = SOLAR_DEFAULTS;
     }
 
     #[test]
