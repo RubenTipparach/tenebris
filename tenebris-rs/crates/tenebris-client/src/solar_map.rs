@@ -245,6 +245,29 @@ fn asteroids() -> impl Iterator<Item = BodyId> {
     (0..10).filter_map(|i| BodyId::from_index(BodyId::Asteroid0 as i32 + i))
 }
 
+/// Small always-there MAP chip (top-right) so the system view is one
+/// click away on foot or in flight - not just a key. Hidden while the
+/// map itself is open (the fly-out owns that edge) - app gates it on
+/// being in-game and unpaused.
+pub fn egui_map_button(ctx: &egui::Context) {
+    if is_open() {
+        return;
+    }
+    let key = crate::controls::action_label(crate::controls::Action::OpenSolarMap);
+    egui::Area::new(egui::Id::new("solar-map-chip"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        .show(ctx, |ui| {
+            let btn = egui::Button::new(
+                egui::RichText::new(format!("MAP [{key}]"))
+                    .color(egui::Color32::from_rgb(0x9c, 0xb4, 0xd4)),
+            )
+            .fill(egui::Color32::from_rgba_unmultiplied(0x10, 0x14, 0x1c, 220));
+            if ui.add(btn).clicked() {
+                toggle();
+            }
+        });
+}
+
 pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;

@@ -5125,6 +5125,14 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
         solar_map::set_active(p.body.unwrap_or(app.body).id, p.position);
     }
     solar_map::egui_ui(ctx);
+    /* The one-click MAP chip (top-right) - shown whenever the player is
+     * actually in a world and not paused; the map key still works
+     * everywhere the chip does. */
+    if matches!(menu::state(), GameState::InGameSp | GameState::InGameMp)
+        && !menu::pause_active()
+    {
+        solar_map::egui_map_button(ctx);
+    }
     chest_screen::egui_ui(ctx);
     station_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
@@ -6920,11 +6928,18 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                 {
                     rocket_cam::toggle_frame();
                 }
+                /* The solar-system map - THE screen for interplanetary
+                 * legs, so it earns a button here, not just its key. */
+                let map_key =
+                    crate::controls::action_label(crate::controls::Action::OpenSolarMap);
+                if ui.button(format!("Map [{map_key}]")).clicked() {
+                    solar_map::toggle();
+                }
             });
             ui.label(
                 egui::RichText::new(
                     "hold Space: throttle   WASD: steer   Q/R: roll\n\
-                     drag LMB: orbit camera   wheel: zoom",
+                     drag LMB: orbit camera   wheel: zoom   O: system map",
                 )
                 .weak()
                 .size(11.0),
