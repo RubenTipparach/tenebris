@@ -3882,6 +3882,20 @@ fn apply_sp_world_saves(w_rc: &Rc<RefCell<World>>) {
         }
         println!("[sp-saves] body={}: {} block-entit(ies) restored", body_id, n);
     }
+
+    /* Taken scatter: tiles whose loose pebble / bush was picked up. Restored
+     * before the first mesh build reaches them, so a consumed object never
+     * reappears across reload (take_scatter also re-dirties the tile in case
+     * a mesh already went out). */
+    let taken = persistence::load_scatter_taken(&world_name, body_id);
+    if !taken.is_empty() {
+        let mut w = w_rc.borrow_mut();
+        let n = taken.len();
+        for tile in taken {
+            w.take_scatter(tile);
+        }
+        println!("[sp-saves] body={}: {} scatter pickup(s) restored", body_id, n);
+    }
 }
 
 fn mark_sp_saves_applied(app: &mut App, w_rc: &Rc<RefCell<World>>) {
@@ -3914,6 +3928,46 @@ fn default_spawn_pos(body: &BodyConfig) -> DVec3 {
 /// bar while it runs. The caller's flow (saves replay, resume pose)
 /// re-runs after the loader finishes; frame_inner is skipped while a
 /// loader is active, so gameplay never touches the half-built world.
+/// Does the loaded terrain have to be rebuilt for the session tagged
+/// `target_tag` (`"sp:<world>"` / `"mp"`)?
+///
+/// `cur_tag` empty means "no terrain loaded yet" (boot), where a tag
+/// mismatch isn't meaningful and `!generated` does the work.
+fn needs_regen(cur_tag: &str, target_tag: &str, seed_matches: bool, generated: bool) -> bool {
+    !seed_matches || !generated || (cur_tag != target_tag && !cur_tag.is_empty())
+}
+
+/// Terrain bookkeeping for one pass of the world-entry flow: decides whether
+/// a regen is needed and hands `cur_tag` to the incoming session either way.
+///
+/// The "either way" is the whole point. The entry flow re-runs from the top
+/// every time the loader finishes, so the regen path MUST record that the
+/// terrain now belongs to `target_tag` - otherwise the second pass sees the
+/// PREVIOUS session's tag, `needs_regen` fires again on inputs that can
+/// never change, and the world reloads forever. That was a real bug: play
+/// world A, quit, create world B, and B regenerated endlessly with the same
+/// seed. Only the second world ever hit it - the first entry has an empty
+/// tag, which the mismatch clause deliberately ignores.
+///
+/// Claiming the tag before the terrain exists is safe: the tag is not what
+/// proves the terrain is usable. `seed_matches` and `generated` are checked
+/// independently, so a half-built or wrong-seeded world still regens.
+///
+/// Both call sites (SP entry, MP entry) go through here so they cannot drift
+/// on this - MP only escaped the bug because it happened to assign the tag
+/// on a fall-through path where SP took an early return.
+fn claim_terrain_for_session(
+    cur_tag: &mut String,
+    target_tag: &str,
+    seed_matches: bool,
+    generated: bool,
+) -> bool {
+    let regen = needs_regen(cur_tag, target_tag, seed_matches, generated);
+    cur_tag.clear();
+    cur_tag.push_str(target_tag);
+    regen
+}
+
 fn start_world_regen(app: &mut App, seed: u64) {
     planet::set_seed(BodyId::Tenebris, seed);
     let body = planet::get(BodyId::Tenebris);
@@ -3979,19 +4033,16 @@ fn maybe_apply_sp_resume(app: &mut App) {
         let w = app.world.borrow();
         (w.body.seed == target_seed, w.gen_complete())
     };
-    if !seed_matches
-        || !generated
-        || (app.terrain_tag != target_tag && !app.terrain_tag.is_empty())
-    {
+    if claim_terrain_for_session(&mut app.terrain_tag, &target_tag, seed_matches, generated) {
         /* Hand the heavy build to the staged loader and bail; the
          * latch stays unset, so this whole entry flow re-runs once the
-         * loader finishes (seed matches + generated then, no second
-         * pass). `!generated` covers the very first entry - boot no
-         * longer loads any terrain, because the menu doesn't need it. */
+         * loader finishes. By then seed matches, the terrain is generated,
+         * and the tag is this session's - so no second pass.
+         * `!generated` covers the very first entry: boot no longer loads
+         * any terrain, because the menu doesn't need it. */
         start_world_regen(app, target_seed);
         return;
     }
-    app.terrain_tag = target_tag;
 
     /* Apply persisted column + torch data for the SPAWN body only.
      * Other bodies' saves are flushed lazily by apply_sp_saves_lazy
@@ -4211,13 +4262,9 @@ fn maybe_prime_mode_for_state(app: &mut App) {
                 let w = app.world.borrow();
                 (w.body.seed == mp_seed, w.gen_complete())
             };
-            if !seed_matches
-                || !generated
-                || (app.terrain_tag != "mp" && !app.terrain_tag.is_empty())
-            {
+            if claim_terrain_for_session(&mut app.terrain_tag, "mp", seed_matches, generated) {
                 start_world_regen(app, mp_seed);
             }
-            app.terrain_tag = "mp".to_string();
 
             /* MP defaults to survival: blocks have quantity. Torches
              * still flow in unlimited via inventory_init_empty. */
@@ -6705,9 +6752,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * finds nothing and falls through to the normal E behaviour. */
     if interact_pressed {
         let picked = {
-            let w = app.world.borrow();
+            let mut w = app.world.borrow_mut();
             let p = app.player.borrow();
-            crate::interact::try_pickup_scatter(&app.interact, &w, &p)
+            crate::interact::try_pickup_scatter(&app.interact, &mut w, &p)
         };
         if picked {
             return;
@@ -7080,6 +7127,107 @@ mod js_callbacks {
 /* Tests - the factorable app-level logic. The frame fn itself is
  * exercised by the native launch smoke run.                              */
 /* --------------------------------------------------------------------- */
+
+#[cfg(test)]
+mod regen_tests {
+    use super::claim_terrain_for_session;
+
+    /// Drive the real entry-pass bookkeeping the way `frame` does: pass 1
+    /// decides, the loader runs, then the whole flow re-runs and pass 2 must
+    /// settle.
+    ///
+    /// `enter` returns "did this pass start a regen?". A regen leaves the
+    /// terrain generated and seed-matched by the time the flow re-runs (the
+    /// loader is what does that), which is what pass 2 models.
+    fn enter(tag: &mut String, target: &str, seed_matches: bool, generated: bool) -> bool {
+        claim_terrain_for_session(tag, target, seed_matches, generated)
+    }
+
+    /// THE regression. The entry flow re-runs each time the loader finishes,
+    /// so a completed regen must not ask for another one - it did, because
+    /// the terrain tag was left on the previous session, and the world
+    /// reloaded forever with the same seed.
+    ///
+    /// Repro from the report: play world A, quit, delete the save, create
+    /// world B.
+    #[test]
+    fn regen_converges_after_the_loader_finishes() {
+        let mut tag = "sp:A".to_string();
+
+        /* Entering B with A's terrain loaded: rebuild it. */
+        assert!(enter(&mut tag, "sp:B", false, true), "a different world must regen");
+
+        /* The loader has now built B: seed matches, terrain generated. The
+         * flow re-runs from the top - and must NOT regen again. */
+        assert!(
+            !enter(&mut tag, "sp:B", true, true),
+            "regen re-fired on ready terrain: this is the infinite loading loop"
+        );
+
+        /* And it stays settled however many times the flow re-runs. */
+        for _ in 0..5 {
+            assert!(!enter(&mut tag, "sp:B", true, true), "regen must stay settled");
+        }
+    }
+
+    /// First-ever entry: no terrain at all. The empty tag must not read as a
+    /// mismatch - that's why the loop only bit on the SECOND world, boot
+    /// escaped it by accident.
+    #[test]
+    fn first_entry_regens_then_settles() {
+        let mut tag = String::new();
+        assert!(enter(&mut tag, "sp:A", true, false), "boot has no terrain yet");
+        assert!(!enter(&mut tag, "sp:A", true, true), "and settles once it is built");
+    }
+
+    /// Re-entering the same world with its terrain still loaded is free.
+    #[test]
+    fn re_entering_the_same_world_reuses_its_terrain() {
+        let mut tag = "sp:A".to_string();
+        assert!(!enter(&mut tag, "sp:A", true, true));
+    }
+
+    /// Deleting a save and remaking the world under the same name reseeds
+    /// it: the matching name doesn't make the old terrain right.
+    #[test]
+    fn a_reseeded_world_regens_under_the_same_name_then_settles() {
+        let mut tag = "sp:A".to_string();
+        assert!(enter(&mut tag, "sp:A", false, true), "new seed must rebuild");
+        assert!(!enter(&mut tag, "sp:A", true, true));
+    }
+
+    /// Half-built terrain is never usable, whatever the tag says.
+    #[test]
+    fn ungenerated_terrain_always_regens() {
+        let mut tag = "sp:A".to_string();
+        assert!(enter(&mut tag, "sp:A", true, false));
+    }
+
+    /// SP <-> MP swaps both ways, and converges both ways. MP only dodged
+    /// the original bug by assigning its tag on a fall-through path; both
+    /// go through the same bookkeeping now.
+    #[test]
+    fn sp_and_mp_swap_terrain_and_settle() {
+        let mut tag = "sp:A".to_string();
+        assert!(enter(&mut tag, "mp", true, true), "SP terrain must not leak into MP");
+        assert!(!enter(&mut tag, "mp", true, true), "MP settles");
+        assert!(enter(&mut tag, "sp:A", true, true), "and MP must not leak into SP");
+        assert!(!enter(&mut tag, "sp:A", true, true), "SP settles");
+    }
+
+    /// Bouncing between two worlds regens exactly once per switch, forever -
+    /// no drift, no stuck state.
+    #[test]
+    fn alternating_worlds_regen_once_each_time() {
+        let mut tag = "sp:A".to_string();
+        for _ in 0..4 {
+            assert!(enter(&mut tag, "sp:B", false, true), "A -> B rebuilds");
+            assert!(!enter(&mut tag, "sp:B", true, true), "B settles");
+            assert!(enter(&mut tag, "sp:A", false, true), "B -> A rebuilds");
+            assert!(!enter(&mut tag, "sp:A", true, true), "A settles");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -12,6 +12,7 @@
 //! tenebris-c:tile:<name>:<body>:<tile>  - 128-byte column (hex)
 //! tenebris-c:water:<name>:<body>:<tile> - 128-byte water column (hex)
 //! tenebris-c:torches:<name>:<body>      - torch list CSV
+//! tenebris-c:scatter:<name>:<body>      - taken-scatter tile list CSV
 //! ```
 //!
 //! Per CLAUDE.md, every block place/break and torch place/remove MUST
@@ -59,6 +60,11 @@ const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
 const KEY_WATER_PREFIX: &str = "tenebris-c:water:";
 /// Per-placed-block state (tech facing etc.), one CSV line per entity.
 const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
+/// Tiles whose loose scatter object (flint pebble / bush) was picked up
+/// (Rust-port extension key). Single comma-separated line of tile indices -
+/// deliberately no '\n' framing, which the native kv layer scrubs (see the
+/// torch-CSV quirk note below).
+const KEY_SCATTER_PREFIX: &str = "tenebris-c:scatter:";
 
 pub const NAME_MAX: usize = 31; // bytes, excluding terminator
 pub const MAX_WORLDS: usize = 32;
@@ -428,6 +434,41 @@ fn build_bentity_key(world: &str, body: u32) -> String {
 
 fn build_crop_key(world: &str, body: u32) -> String {
     format!("{KEY_CROP_PREFIX}{world}:{body}")
+}
+
+fn build_scatter_key(world: &str, body: u32) -> String {
+    format!("{KEY_SCATTER_PREFIX}{world}:{body}")
+}
+
+/// Replace the taken-scatter snapshot for (world, body): the tiles whose
+/// loose pebble / bush has been picked up. Written on the SAME input frame
+/// as the pickup (CLAUDE.md world-edit rule). One comma-separated line -
+/// no '\n' framing, so the native kv scrub quirk (see save_torches) cannot
+/// bite. An empty slice clears the key.
+pub fn save_scatter_taken(world_name: &str, body_id: u32, tiles: &[i32]) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    let key = build_scatter_key(world_name, body_id);
+    if tiles.is_empty() {
+        client_kv::remove(&key);
+        return true;
+    }
+    let buf = tiles.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(",");
+    client_kv::set(&key, &buf);
+    true
+}
+
+/// Read the taken-scatter snapshot for (world, body). Fields that fail to
+/// parse are skipped, the rest still load.
+pub fn load_scatter_taken(world_name: &str, body_id: u32) -> Vec<i32> {
+    if !valid_name(world_name) {
+        return Vec::new();
+    }
+    let Some(s) = client_kv::get(&build_scatter_key(world_name, body_id)) else {
+        return Vec::new();
+    };
+    s.split(',').filter_map(|f| f.trim().parse::<i32>().ok()).collect()
 }
 
 /// Serialise the whole block-entity store for (world, body). Called on the
@@ -810,6 +851,7 @@ pub fn clear_world(world_name: &str) {
         format!("{KEY_CROP_PREFIX}{world_name}:"),
         format!("{KEY_WATER_PREFIX}{world_name}:"),
         format!("{KEY_BENTITY_PREFIX}{world_name}:"),
+        format!("{KEY_SCATTER_PREFIX}{world_name}:"),
     ] {
         let Some(list) = client_kv::list_with_prefix(&prefix) else {
             continue;

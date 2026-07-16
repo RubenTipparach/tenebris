@@ -164,6 +164,16 @@ pub fn sp_save_tile_after_edit(w: &World, tile_idx: i32) {
     persistence::save_block_entities(&name, w.body.id as u32, &w.block_entities);
 }
 
+/// Taken-scatter snapshot, written on the same frame as the pickup that
+/// consumed the object (CLAUDE.md world-edit rule). The list grows by one
+/// tile index per pickup, so re-serialising it per event is cheap.
+fn sp_save_scatter_after_change(w: &World) {
+    let Some(name) = sp_active_for_world(w) else {
+        return;
+    };
+    persistence::save_scatter_taken(&name, w.body.id as u32, &w.taken_scatter_tiles());
+}
+
 /// Port of `sp_save_torches_after_change()`. (pub(crate): the dev
 /// torch-village hook persists through the same path.)
 pub(crate) fn sp_save_torches_after_change(w: &World) {
@@ -864,7 +874,7 @@ pub fn pickup_target(
 /// Deliberately scoped to the discrete scatter OBJECTS rather than the whole
 /// of [`forage_surface`]: grass / stone / leaf surfaces are almost every tile
 /// underfoot, so foraging those on E would swallow the inventory binding.
-pub fn try_pickup_scatter(s: &InteractState, w: &World, p: &PlayerCtrl) -> bool {
+pub fn try_pickup_scatter(s: &InteractState, w: &mut World, p: &PlayerCtrl) -> bool {
     match pickup_target(s, w, p) {
         Some((item, _)) => {
             /* Spawn in the AIR cell above the surface, not inside the solid
@@ -874,6 +884,12 @@ pub fn try_pickup_scatter(s: &InteractState, w: &World, p: &PlayerCtrl) -> bool 
              * because it has just turned that cell to air; foraging has not. */
             let air_depth = (s.hit_depth + 1).min(WORLD_MAX_DEPTH - 1);
             crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
+            /* CONSUME the object: one pebble = one flint, ever. The taken
+             * bit hides it from the prompt/pickup immediately and the
+             * remesh (take_scatter dirties the tile) removes the visual.
+             * Persisted on this same frame, per the world-edit rule. */
+            w.take_scatter(s.hit_tile);
+            sp_save_scatter_after_change(w);
             true
         }
         None => false,
@@ -887,12 +903,18 @@ pub fn try_pickup_scatter(s: &InteractState, w: &World, p: &PlayerCtrl) -> bool 
 /// decorative scatter you see (tufts, pebbles) is pure mesh decoration, so
 /// this reads the underlying surface block instead. Returns true if the
 /// click found something to forage (so the caller can treat it as handled).
-fn forage_surface(s: &InteractState, w: &World) -> bool {
+fn forage_surface(s: &InteractState, w: &mut World) -> bool {
     /* The loose object sitting on the tile wins over the ground it rests
      * on - see `scatter_pickup_item`. This is the "pick the rock up off
-     * the ground" the player sees, and it seeds the whole flint-tool loop. */
+     * the ground" the player sees, and it seeds the whole flint-tool loop.
+     * Like the E pickup, gathering it CONSUMES it (taken bit + remesh +
+     * same-frame save) - one pebble is one flint, not an infinite well.
+     * The bare-surface forage below stays unlimited by design (grass
+     * fields, stone faces). */
     if let Some(item) = scatter_pickup_item(w, s.hit_tile) {
         crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+        w.take_scatter(s.hit_tile);
+        sp_save_scatter_after_change(w);
         return true;
     }
     let top = w.get(s.hit_tile, s.hit_depth);
@@ -1490,7 +1512,7 @@ mod tests {
     /// player could see rocks on the ground but never pick flint off them.
     #[test]
     fn forage_picks_flint_off_a_scatter_rock() {
-        let w = gen_world(BodyId::Tenebris);
+        let mut w = gen_world(BodyId::Tenebris);
         /* Find the first land tile the mesher decorates with a rock, and its
          * exposed surface depth (topmost solid). tile_has_rock is the exact
          * predicate build_scatter uses, so this is a real, visible pebble. */
@@ -1515,12 +1537,20 @@ mod tests {
         s.has_target = true;
         s.hit_tile = rock_tile;
         s.hit_depth = rock_depth;
-        assert!(forage_surface(&s, &w), "a rock tile forages something");
+        assert!(forage_surface(&s, &mut w), "a rock tile forages something");
         assert_eq!(crate::drops::count(), 1, "one drop spawned");
         assert_eq!(
             crate::drops::test_items(),
             vec![items::FLINT],
             "the pebble yields flint, not grass/nothing"
+        );
+
+        /* The gather CONSUMED the pebble: the tile stops advertising a rock
+         * (prompt + pickup both go through tile_has_rock), so a second
+         * forage on the same spot must not mint more flint off it. */
+        assert!(
+            !crate::hex_mesher::tile_has_rock(&w, rock_tile),
+            "picked pebble is gone - no infinite flint"
         );
     }
 

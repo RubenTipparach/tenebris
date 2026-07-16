@@ -2381,6 +2381,9 @@ fn build_vines(out: &mut HexMesh, w: &World, tile_idx: i32, t: &Tile, canopy_top
 /// how a survival player bootstraps the flint-tool tree. Kept in lockstep
 /// with the rock branch of `build_scatter` (SALT_KIND + 3).
 pub fn tile_has_rock(w: &World, tile_idx: i32) -> bool {
+    if w.is_scatter_taken(tile_idx) {
+        return false; /* picked up - consumed for good */
+    }
     let cfg = scatter_cfg::config();
     let col_base = (tile_idx * WORLD_MAX_DEPTH) as usize;
     let mut surf = -1i32;
@@ -2431,6 +2434,9 @@ pub fn tile_has_rock(w: &World, tile_idx: i32) -> bool {
 /// roll (SALT_KIND + 2, tripled in jungle). Kept in lockstep with that
 /// branch - change one, change the other.
 pub fn tile_has_bush(w: &World, tile_idx: i32) -> bool {
+    if w.is_scatter_taken(tile_idx) {
+        return false; /* picked up - consumed for good */
+    }
     let cfg = scatter_cfg::config();
     let Some(t) = w.grid.tile(tile_idx) else {
         return false;
@@ -2862,9 +2868,13 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
     }
 
     /* Bushes: two leafy prism lumps, on grass or dirt (jungle packs
-     * more of them in). */
+     * more of them in). Gated on the taken bit like the rock below -
+     * gathering the bush (E pickup) consumes it, and the remesh this
+     * gate feeds is what makes it disappear. Keep in lockstep with
+     * tile_has_bush. */
+    let scatter_gone = w.is_scatter_taken(tile_idx);
     let bush_chance = if biome == Biome::Jungle { cfg.bush_chance * 3.0 } else { cfg.bush_chance };
-    if (grassy || dirty) && hash2(tile_idx, SALT_KIND + 2) < bush_chance {
+    if !scatter_gone && (grassy || dirty) && hash2(tile_idx, SALT_KIND + 2) < bush_chance {
         let leaves_uv = tile_uv(Block::Leaves, FaceCap::Side);
         let base = place(
             hash2(tile_idx, SALT_POS_A + 60),
@@ -2879,10 +2889,12 @@ pub fn build_scatter(out: &mut HexMesh, w: &World, tile_idx: i32) {
         );
     }
 
-    /* Rocks: a small stone prism on bare ground (and sparse on grass). */
+    /* Rocks: a small stone prism on bare ground (and sparse on grass).
+     * Gated on the taken bit - picking the flint consumes the pebble.
+     * Keep in lockstep with tile_has_rock. */
     let rock_roll = hash2(tile_idx, SALT_KIND + 3);
     let rock_chance = if bare { cfg.rock_chance } else { cfg.rock_chance * 0.3 };
-    if (bare || grassy) && rock_roll < rock_chance {
+    if !scatter_gone && (bare || grassy) && rock_roll < rock_chance {
         let stone_uv = tile_uv(Block::Stone, FaceCap::Side);
         let base = place(
             hash2(tile_idx, SALT_POS_A + 80),
