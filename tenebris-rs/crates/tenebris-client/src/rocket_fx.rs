@@ -300,6 +300,20 @@ pub fn part_seg_m() -> f32 {
     PART_HEIGHT * ROCKET_SCALE
 }
 
+/// Centre of the RIDDEN rocket's drawn stack. The player rides at the
+/// BASE and the mesh extends `remaining_parts * seg` up the nose, so the
+/// middle sits half the CURRENT stack above them - staging (X) shortens
+/// the stack, so this re-centres the instant a stage drops. The single
+/// source of truth for both the ride draw and the chase camera's orbit
+/// anchor: because both ask here, the camera pivot IS the mesh centre by
+/// construction (it used to anchor at the player = the stack's bottom
+/// edge, so the ship orbited around a point outside its middle and
+/// staging never moved it).
+pub fn ride_center(pos: DVec3, up: DVec3) -> DVec3 {
+    let n = crate::rocket_ride::remaining_parts().len();
+    dvec3_add(pos, dvec3_scale(up, n as f64 * part_seg_m() as f64 * 0.5))
+}
+
 /// Draw one assembled part stack from its BASE (bottom face of the first
 /// engine) along the basis' +Y column: each part in its slot, vacuum bells
 /// at VAC_BELL_SCALE and TOP-ALIGNED so the housing meets the tank above,

@@ -6028,7 +6028,12 @@ fn frame_inner(app: &mut App) {
         let p = app.player.borrow();
         if rocket_ride::is_riding() {
             let (f, u, r) = (p.basis.fwd, p.basis.up, p.basis.right);
-            let anchor = p.position;
+            /* Orbit the MIDDLE of the current stack, not the player at its
+             * base - anchoring on the player made the ship swing around its
+             * bottom edge, and staging (X) never moved the pivot. ride_center
+             * re-derives from the remaining parts, so the pivot re-centres
+             * the moment a stage drops. */
+            let anchor = crate::rocket_fx::ride_center(p.position, u);
             (rocket_cam::view(anchor, f, u, r), rocket_cam::eye(anchor, f, u, r))
         } else {
             (
@@ -6232,13 +6237,12 @@ fn frame_inner(app: &mut App) {
              * flight. (The first cut stacked it along basis.fwd, so it lay
              * on its side and read "90 deg from up" parked on the pad.)
              *
-             * draw_falling centres the stack on `center`, so lift the centre
-             * half a stack up the nose to put the engine at the player's feet
-             * and the capsule overhead - the player rides at the base rather
-             * than halfway inside the tanks. */
-            let seg = crate::rocket_fx::part_seg_m() as f64;
-            let half = parts.len() as f64 * seg * 0.5;
-            let center = dvec3_add(p.position, dvec3_scale(p.basis.up, half));
+             * draw_falling centres the stack on `center` = ride_center: half
+             * the CURRENT stack up the nose, engine at the player's feet,
+             * capsule overhead. Shared with the chase camera's anchor so the
+             * orbit pivot is always the mesh centre, including right after a
+             * stage drops. */
+            let center = crate::rocket_fx::ride_center(p.position, p.basis.up);
             let ride_view = crate::falling_stage::StageView {
                 center,
                 axis: p.basis.up,
