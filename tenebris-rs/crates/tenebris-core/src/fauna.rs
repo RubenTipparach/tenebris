@@ -747,15 +747,19 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
          * band check uses ITS surface clearance (the deep reef fish
          * needs far more headroom than a minnow). */
         let wroll = rand01(id, salt.wrapping_add(47));
-        let species = if wroll < 0.38 {
+        /* Sea serpents haunt every ocean, but Sequoia's green water is
+         * their home - a much bigger slice of its spawn roll. */
+        let serpent_cut =
+            if w.body.tileset == crate::planet::Tileset::Sequoia { 0.72 } else { 0.92 };
+        let species = if wroll < 0.36 {
             AnimalKind::Fish
-        } else if wroll < 0.56 {
+        } else if wroll < 0.52 {
             AnimalKind::LargeFish
-        } else if wroll < 0.70 {
+        } else if wroll < 0.62 {
             AnimalKind::LongFish
-        } else if wroll < 0.82 {
+        } else if wroll < 0.70 {
             AnimalKind::FlatFish
-        } else if wroll < 0.92 {
+        } else if wroll < serpent_cut {
             AnimalKind::Turtle
         } else {
             AnimalKind::SerpentFish
@@ -773,78 +777,147 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
         a.pos = dvec3_add(center, dvec3_scale(dvec3_normalize(rel), lift));
         species
     } else {
-        /* Each biome runs its own roster: swamps croak with frogs,
-         * jungles flutter with birds and prowl with cats, deserts dart
-         * with lizards, tundra waddles with penguins, mountains keep
-         * hardy sheep under circling birds, and the temperate fields
-         * graze the classic barnyard mix. Legacy (default-seed) worlds
-         * classify Fields everywhere, so their mix is unchanged. */
-        use crate::planet_gen::Biome;
+        /* Each PLANET runs its own biome rosters: Tenebris keeps the
+         * classic barnyard mix; Sequoia - the world whose animal line
+         * evolved on two feet (see SEQUOIA_PLAN.md) - fields the new
+         * bipeds, waders, and raptors instead. Legacy (default-seed)
+         * worlds classify Fields everywhere, so their mix is unchanged. */
         let biome = crate::planet_gen::biome(&w.body, dvec3_normalize(rel));
+        let sequoia = w.body.tileset == crate::planet::Tileset::Sequoia;
         let roll = rand01(id, salt.wrapping_add(41));
         let table_roll = rand01(id, salt.wrapping_add(43));
-        let pick = |arr: &[AnimalKind]| -> AnimalKind {
-            arr[(table_roll * arr.len() as f32) as usize % arr.len()]
-        };
-        match biome {
+        land_spawn_kind(sequoia, biome, roll, table_roll)
+    };
+    Some(a)
+}
+
+/// Which land species a biome spawn resolves to, per planet. Pure so the
+/// rosters are testable: `sequoia` selects the new-world tables (bipeds,
+/// waders, raptors - SEQUOIA_PLAN.md), otherwise the Tenebris classics.
+/// `roll` gates the biome's headline species, `table_roll` indexes the
+/// remainder table.
+pub fn land_spawn_kind(
+    sequoia: bool,
+    biome: crate::planet_gen::Biome,
+    roll: f32,
+    table_roll: f32,
+) -> AnimalKind {
+    use crate::planet_gen::Biome;
+    let pick = |arr: &[AnimalKind]| -> AnimalKind {
+        arr[(table_roll * arr.len() as f32) as usize % arr.len()]
+    };
+    if sequoia {
+        /* The two-footed world: mascot bipeds everywhere temperate,
+         * cranes wading the wet biomes, raptors owning the high ground.
+         * No barnyard here - cows and chickens stay on Tenebris. */
+        return match biome {
             Biome::Swamp => {
-                if roll < 0.55 {
-                    AnimalKind::Frog
+                if roll < 0.40 {
+                    AnimalKind::Crane
                 } else {
-                    pick(&[AnimalKind::Bird, AnimalKind::Critter, AnimalKind::Crane])
+                    pick(&[AnimalKind::Frog, AnimalKind::Shellkin, AnimalKind::Crane])
                 }
             }
             Biome::Jungle => {
-                if roll < 0.35 {
-                    AnimalKind::Bird
+                if roll < 0.30 {
+                    AnimalKind::Sparkit
                 } else {
-                    pick(&[AnimalKind::Cat, AnimalKind::Critter, AnimalKind::Bird])
+                    pick(&[
+                        AnimalKind::Sparkit,
+                        AnimalKind::Shellkin,
+                        AnimalKind::Bird,
+                        AnimalKind::Crane,
+                    ])
                 }
             }
             Biome::Desert => {
-                if roll < 0.75 {
-                    AnimalKind::Lizard
+                if roll < 0.55 {
+                    AnimalKind::Sparkit
                 } else {
-                    AnimalKind::Critter
+                    pick(&[AnimalKind::Lizard, AnimalKind::Shellkin])
                 }
             }
             Biome::Tundra => {
-                if roll < 0.70 {
-                    AnimalKind::Penguin
+                if roll < 0.50 {
+                    AnimalKind::Shellkin
                 } else {
-                    AnimalKind::Critter
+                    AnimalKind::Crane
                 }
             }
             Biome::Mountains => {
-                if roll < 0.18 {
-                    AnimalKind::Bird
-                } else if roll < 0.34 {
+                if roll < 0.45 {
                     AnimalKind::Raptor
                 } else {
-                    AnimalKind::Sheep
+                    pick(&[AnimalKind::Crane, AnimalKind::Sparkit])
                 }
             }
             _ => {
-                if roll < 0.09 {
-                    AnimalKind::Bird
-                } else if roll < 0.14 {
+                if roll < 0.10 {
                     AnimalKind::Raptor
                 } else {
                     pick(&[
-                        AnimalKind::Critter,
-                        AnimalKind::Cat,
-                        AnimalKind::Sheep,
-                        AnimalKind::Chicken,
-                        AnimalKind::Cow,
+                        AnimalKind::Sparkit,
+                        AnimalKind::Shellkin,
                         AnimalKind::Crane,
                         AnimalKind::Sparkit,
                         AnimalKind::Shellkin,
                     ])
                 }
             }
+        };
+    }
+    /* Tenebris: the classic rosters, unchanged - the new species live on
+     * the new planet. */
+    match biome {
+        Biome::Swamp => {
+            if roll < 0.55 {
+                AnimalKind::Frog
+            } else {
+                pick(&[AnimalKind::Bird, AnimalKind::Critter])
+            }
         }
-    };
-    Some(a)
+        Biome::Jungle => {
+            if roll < 0.35 {
+                AnimalKind::Bird
+            } else {
+                pick(&[AnimalKind::Cat, AnimalKind::Critter, AnimalKind::Bird])
+            }
+        }
+        Biome::Desert => {
+            if roll < 0.75 {
+                AnimalKind::Lizard
+            } else {
+                AnimalKind::Critter
+            }
+        }
+        Biome::Tundra => {
+            if roll < 0.70 {
+                AnimalKind::Penguin
+            } else {
+                AnimalKind::Critter
+            }
+        }
+        Biome::Mountains => {
+            if roll < 0.30 {
+                AnimalKind::Bird
+            } else {
+                AnimalKind::Sheep
+            }
+        }
+        _ => {
+            if roll < 0.12 {
+                AnimalKind::Bird
+            } else {
+                pick(&[
+                    AnimalKind::Critter,
+                    AnimalKind::Cat,
+                    AnimalKind::Sheep,
+                    AnimalKind::Chicken,
+                    AnimalKind::Cow,
+                ])
+            }
+        }
+    }
 }
 
 /// [`spawn_near`] with an explicit kind (stalkers use the same ring).
@@ -1221,6 +1294,41 @@ mod tests {
             assert!(k.to_u8() <= 0xFF, "kind must fit the wire byte (bits 4..11)");
         }
         assert_eq!(AnimalKind::from_u8(20), AnimalKind::Critter, "unknown -> critter");
+    }
+
+    #[test]
+    fn planets_field_disjoint_rosters() {
+        use crate::planet_gen::Biome;
+        let biomes = [
+            Biome::Fields,
+            Biome::Swamp,
+            Biome::Jungle,
+            Biome::Desert,
+            Biome::Tundra,
+            Biome::Mountains,
+        ];
+        let mut seq_kinds = std::collections::HashSet::new();
+        let mut ten_kinds = std::collections::HashSet::new();
+        for biome in biomes {
+            for i in 0..40 {
+                for j in 0..40 {
+                    let (roll, tr) = (i as f32 / 40.0, j as f32 / 40.0);
+                    seq_kinds.insert(land_spawn_kind(true, biome, roll, tr).to_u8());
+                    ten_kinds.insert(land_spawn_kind(false, biome, roll, tr).to_u8());
+                }
+            }
+        }
+        /* The new species live on the NEW planet... */
+        for k in [AnimalKind::Sparkit, AnimalKind::Shellkin, AnimalKind::Crane, AnimalKind::Raptor]
+        {
+            assert!(seq_kinds.contains(&k.to_u8()), "{k:?} must spawn on Sequoia");
+            assert!(!ten_kinds.contains(&k.to_u8()), "{k:?} must NOT spawn on Tenebris");
+        }
+        /* ...and the barnyard stays home. */
+        for k in [AnimalKind::Cow, AnimalKind::Chicken, AnimalKind::Sheep, AnimalKind::Cat] {
+            assert!(ten_kinds.contains(&k.to_u8()), "{k:?} must spawn on Tenebris");
+            assert!(!seq_kinds.contains(&k.to_u8()), "{k:?} must NOT spawn on Sequoia");
+        }
     }
 
     #[test]

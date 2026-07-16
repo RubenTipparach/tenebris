@@ -478,7 +478,7 @@ fn dev_maybe_place(app: &mut App) {
      * it must wait for worldgen - probing half-generated terrain finds no
      * ocean and the school falls back to a surface float. Re-arm until
      * the disk is generated. */
-    if dev_mode == 17 && !app.world.borrow().gen_complete() {
+    if (dev_mode == 17 || dev_mode == 14) && !app.world.borrow().gen_complete() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(10));
         return;
     }
@@ -663,7 +663,7 @@ fn dev_maybe_place(app: &mut App) {
                     let p = app.player.borrow();
                     dvec3_add(
                         p.position,
-                        dvec3_add(dvec3_scale(p.basis.up, 3.0), dvec3_scale(p.basis.fwd, -2.0)),
+                        dvec3_add(dvec3_scale(p.basis.up, 5.5), dvec3_scale(p.basis.fwd, -3.5)),
                     )
                 };
                 app.player.borrow_mut().position = cam;
