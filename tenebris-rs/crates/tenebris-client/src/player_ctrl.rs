@@ -1626,6 +1626,32 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                 p.velocity,
                 dvec3_scale(sf.up, scfg.artificial_gravity_mps2 as f64 * dt as f64),
             );
+            /* THE STATION IS AUTHORITATIVE UP inside its field. Space mode
+             * leaves the basis free (6DOF), which had the player walking
+             * the casino deck tilted at whatever attitude they flew in
+             * with - there is exactly one up on the deck, the station's.
+             * Ease basis.up onto the deck normal at soi_align_rate
+             * (station.yaml) so entering the field rolls the world level
+             * instead of snapping; fwd/right parallel-transport by the
+             * same shortest arc (the planet-radial sync's recipe, with
+             * the deck as the authority). */
+            let k = 1.0 - (-(scfg.soi_align_rate as f64) * dt as f64).exp();
+            let old_up = p.basis.up;
+            let mut mixed = dvec3_add(
+                dvec3_scale(old_up, 1.0 - k),
+                dvec3_scale(sf.up, k),
+            );
+            if dvec3_length(mixed) < 1e-3 {
+                /* Entered exactly upside down: nudge through the side so
+                 * the interpolation has a direction to roll through. */
+                mixed = dvec3_add(mixed, dvec3_scale(p.basis.right, 0.01));
+            }
+            let mixed = dvec3_normalize(mixed);
+            p.basis.fwd = rotate_between(old_up, mixed, p.basis.fwd);
+            p.basis.right = rotate_between(old_up, mixed, p.basis.right);
+            p.basis.up = mixed;
+            p.basis.right = dvec3_normalize(dvec3_cross(p.basis.fwd, p.basis.up));
+            p.basis.fwd = dvec3_normalize(dvec3_cross(p.basis.up, p.basis.right));
         }
         /* Flight-assist drag ONLY while steering with RCS: it makes small
          * manual corrections controllable without killing orbits - a

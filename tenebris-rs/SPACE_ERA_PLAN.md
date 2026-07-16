@@ -362,14 +362,26 @@ Direct asks from playtest; status notes per item. The station perf kernel
    pad) - the ship visually vanishes. Needs: a `parked_ships` client/core
    store (stack + fuel + orbital elements), drawn via rocket_fx, saved in
    the ride save's format, raycast target for re-boarding.
-2. **Docking = guided landing on a pad.** Within the dock gate (radius +
+2. **Docking = guided landing on a pad.** NEXT UP (designed): E in the
+   dock gate starts a TRACTOR SEQUENCE, not a toggle - capture, glide to
+   the nearest free pad (station::pad_centers: ring corner + 2 cells out
+   per HEX_DIRS, top of the deck slab), settle upright, THEN the dock
+   menu opens automatically with a "Leave Ship" option; leaving parks
+   the ship on the pad (drawn via rocket_fx), E near it re-boards.
+   (original ask:) Within the dock gate (radius +
    rel-speed), guide the ship onto a free external docking pad: simple
    spline from current pose to pad approach point, then settle upright
    (nose radially out of the deck). Obstacle avoidance can be "approach
    from the pad's outward normal" rather than true path planning. On
    touchdown the ship parks (item 1's store, station-frame anchored).
 3. **Ship stays parked on the pad; re-board with E.** Falls out of 1+2.
-4. **Station sphere-of-influence reference frame.** Within ~2 km the
+4. **Station sphere-of-influence reference frame.** PARTIAL: inside the
+   artificial-gravity field the station is now the AUTHORITATIVE UP -
+   the player's tangent basis rolls onto the deck frame at
+   soi_align_rate (station.yaml), so FPS walking reads the casino grid
+   as normal ground. Remaining: full station-local state storage
+   (zero-drift parking) + world posed around the station frame.
+   (original ask:) Within ~2 km the
    station becomes the SIMULATION ORIGIN: the player/ship state is stored
    station-local so there is zero orbital drift while walking/parking;
    the world (planet, sky) is posed around the station frame per frame.

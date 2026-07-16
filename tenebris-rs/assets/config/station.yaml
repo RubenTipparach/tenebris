@@ -82,6 +82,9 @@ station:
   lamp_emission: 15
   neon_emission: 8
   sign_emission: 12
+  # Inside the artificial-gravity field the STATION owns "up": the player's
+  # frame rolls onto the deck at this rate (1/s; ~1/rate seconds to level).
+  soi_align_rate: 5.0
   # Distance LOD: full prism drum within this range; beyond it a single
   # bright glint quad (the wheel is sub-pixel from the surface anyway).
   # lod_glint_frac = the glint's apparent size as a fraction of distance.
