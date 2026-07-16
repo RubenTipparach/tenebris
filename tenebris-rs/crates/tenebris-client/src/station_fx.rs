@@ -44,7 +44,13 @@ const TEX_WALL: usize = 5;
 const TEX_GLASS: usize = 6;
 const TEX_NEON_PINK: usize = 7;
 const TEX_NEON_GOLD: usize = 8;
-const TEX_COUNT: usize = 9;
+const TEX_TRADE: usize = 9;
+const TEX_RESEARCH: usize = 10;
+const TEX_MUSEUM: usize = 11;
+const TEX_LIGHT: usize = 12;
+const TEX_SLOTS: usize = 13;
+const TEX_CARDS: usize = 14;
+const TEX_COUNT: usize = 15;
 
 /// Face shading (multiplied by the sun term): caps bright, keels dark,
 /// sides alternating so the hex facets read in silhouette.
@@ -70,13 +76,19 @@ fn tex_for(m: StationMat) -> usize {
         StationMat::Sign => TEX_SIGN,
         StationMat::Wall => TEX_WALL,
         StationMat::Glass => TEX_GLASS,
+        StationMat::TradeTerminal => TEX_TRADE,
+        StationMat::ResearchConsole => TEX_RESEARCH,
+        StationMat::MuseumCase => TEX_MUSEUM,
+        StationMat::LightFixture => TEX_LIGHT,
+        StationMat::Slots => TEX_SLOTS,
+        StationMat::CardTable => TEX_CARDS,
     }
 }
 
 /// True for the station's own light sources - drawn with a sun-term
 /// floor so they glow indoors and at night.
 fn is_emissive(tex: usize) -> bool {
-    matches!(tex, TEX_NEON | TEX_NEON_PINK | TEX_NEON_GOLD | TEX_SIGN)
+    matches!(tex, TEX_NEON | TEX_NEON_PINK | TEX_NEON_GOLD | TEX_SIGN | TEX_LIGHT)
 }
 
 struct ShellCache {
@@ -218,8 +230,9 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
         let cache = cache.get_or_insert_with(build_cache);
         /* Opaque materials first, glass last so blending sees the scene. */
         let order = [
-            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD,
-            TEX_SIGN, TEX_GLASS,
+            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_TRADE, TEX_RESEARCH, TEX_MUSEUM,
+            TEX_SLOTS, TEX_CARDS, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD, TEX_LIGHT, TEX_SIGN,
+            TEX_GLASS,
         ];
         for tex in order {
             let prisms = &cache.groups[tex];

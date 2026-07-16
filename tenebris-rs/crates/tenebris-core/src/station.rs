@@ -202,6 +202,23 @@ pub enum StationMat {
     Sign,
     /// Semi-transparent glazing (courtyard floor, hotel windows).
     Glass,
+
+    /* Function fixtures - the station's POIs, one-hex prisms on the
+     * deck. Placed with 6-fold symmetry (see the shell fixture pass).
+     * Interaction (opening the actual trade/research/zoo/casino UIs)
+     * reuses the station hub screens; these are the in-world markers. */
+    /// Stock-exchange kiosk (the trading station).
+    TradeTerminal,
+    /// Science console (the research station).
+    ResearchConsole,
+    /// Animal-museum display case (the courtyard zoo).
+    MuseumCase,
+    /// Emissive hex lamp (courtyard lighting).
+    LightFixture,
+    /// Slot-machine cabinet (casino game).
+    Slots,
+    /// Blackjack / poker table (casino game).
+    CardTable,
 }
 
 /// One hex prism of the station structure. `q`/`r`/`layer` are the
@@ -548,7 +565,44 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     }
 
+    /* 6. Function fixtures, placed with 6-fold symmetry (one loop over
+     * the six sectors). Each fixture is a one-hex prism sitting ON the
+     * deck slab (layer `slab`), so it reads as a distinct 6-sided
+     * furniture piece the player walks up to:
+     *   - ring spoke node  (dir*(n_out-1)): trade terminal / research
+     *     console, alternating -> the trading + research stations;
+     *   - ring sector node ((dir_i+dir_{i+1})*4): slots / card table,
+     *     alternating -> the casino floor;
+     *   - courtyard sector ((dir_i+dir_{i+1})*3): an animal-museum case
+     *     with a hex lamp hovering two layers above it -> the zoo in
+     *     the lit courtyard. */
+    for i in 0..6 {
+        let (dq, dr) = HEX_DIRS[i];
+        let (eq, er) = HEX_DIRS[(i + 1) % 6];
+        let kiosk = if i % 2 == 0 { StationMat::TradeTerminal } else { StationMat::ResearchConsole };
+        push(dq * (n_out - 1), dr * (n_out - 1), slab, kiosk);
+        let game = if i % 2 == 0 { StationMat::Slots } else { StationMat::CardTable };
+        push((dq + eq) * 4, (dr + er) * 4, slab, game);
+        let (mq, mr) = ((dq + eq) * 3, (dr + er) * 3);
+        push(mq, mr, slab, StationMat::MuseumCase);
+        push(mq, mr, slab + 2, StationMat::LightFixture);
+    }
+
     out
+}
+
+/// True for the station's function-fixture materials (POIs placed on
+/// the deck), as opposed to structural prisms.
+pub fn is_fixture(m: StationMat) -> bool {
+    matches!(
+        m,
+        StationMat::TradeTerminal
+            | StationMat::ResearchConsole
+            | StationMat::MuseumCase
+            | StationMat::LightFixture
+            | StationMat::Slots
+            | StationMat::CardTable
+    )
 }
 
 /// Solid vertical spans per occupied column, in station-local metres:
@@ -1258,6 +1312,46 @@ mod tests {
             for (q, r) in pad_cells {
                 let col = spans.get(&(q, r)).expect("pad column occupied");
                 assert!(col.iter().any(|&(_, top)| (top - deck).abs() < 1e-4));
+            }
+        }
+    }
+
+    #[test]
+    fn function_fixtures_are_placed_six_fold_symmetric() {
+        let cfg = StationConfig::DEFAULT;
+        let prisms = shell(&cfg);
+        let count = |m: StationMat| prisms.iter().filter(|p| p.mat == m).count();
+        /* Six sectors: 3 trade + 3 research kiosks, 3 slots + 3 tables,
+         * 6 museum cases, 6 courtyard lamps. */
+        assert_eq!(count(StationMat::TradeTerminal), 3);
+        assert_eq!(count(StationMat::ResearchConsole), 3);
+        assert_eq!(count(StationMat::Slots), 3);
+        assert_eq!(count(StationMat::CardTable), 3);
+        assert_eq!(count(StationMat::MuseumCase), 6);
+        assert_eq!(count(StationMat::LightFixture), 6);
+        /* Every fixture sits on the deck slab (or the lamp two above),
+         * and each material's cells are a full 6-fold orbit: rotating a
+         * fixture cell by 60 degrees lands on another cell of the same
+         * material. Rotation in axial coords: (q,r) -> (-r, q+r). */
+        let rot = |q: i32, r: i32| (-r, q + r);
+        for m in [
+            StationMat::TradeTerminal, StationMat::ResearchConsole, StationMat::Slots,
+            StationMat::CardTable, StationMat::MuseumCase, StationMat::LightFixture,
+        ] {
+            let set: std::collections::HashSet<(i32, i32)> =
+                prisms.iter().filter(|p| p.mat == m).map(|p| (p.q, p.r)).collect();
+            for &(q, r) in &set {
+                assert!(is_fixture(m));
+                /* 3 (trade/slots/etc) or 6 fixtures form orbits under
+                 * repeated 60-deg rotation; two rotations (120 deg) map
+                 * a 3-fold set onto itself, one rotation a 6-fold set. */
+                let (rq, rr) = rot(q, r);
+                let (rq2, rr2) = rot(rq, rr);
+                assert!(
+                    set.contains(&(rq, rr)) || set.contains(&(rq2, rr2)),
+                    "{:?} at {:?} has no rotational partner",
+                    m, (q, r)
+                );
             }
         }
     }

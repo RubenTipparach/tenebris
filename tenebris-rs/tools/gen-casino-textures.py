@@ -86,6 +86,17 @@ PAL = {
     "2": (225, 245, 255, 200),  # glint streak
     "3": (105, 150, 210, 190),  # pane edge shade
     "T": (150, 158, 172, 255),  # glazing frame
+    # fixture accents (trade / research / museum / light)
+    "G": (72, 210, 120, 255),   # trade green up-candle
+    "e": (30, 44, 40, 255),      # dark screen
+    "H": (90, 210, 255, 255),   # research holo cyan
+    "P": (150, 120, 235, 255),  # research node violet
+    "l": (70, 150, 210, 255),   # museum case glass blue
+    "o": (26, 34, 52, 255),     # museum case interior
+    "j": (150, 170, 200, 255),  # museum creature silhouette
+    "u": (250, 250, 235, 255),  # light lamp core (bright)
+    "V": (180, 230, 255, 255),  # light lamp glow
+    "X": (110, 120, 135, 255),  # fixture housing
 }
 
 STATION_HULL = [
@@ -258,6 +269,83 @@ def floor_rows():
     return ["".join(r) for r in rows]
 
 
+TRADE_TERMINAL = [
+    "gggggggggggggggg",
+    "geeeeeeeeeeeeeeg",
+    "geeeeeeeeeeeGeeg",
+    "geeeeeeeeGeGGGeg",
+    "geeeeeGeeGGGGGeg",
+    "geeGeGGeGGGGGGeg",
+    "geGGGGGeeSSeGGeg",
+    "geGGGGGeeSSeGGeg",
+    "geGGGGGeSSSSeGeg",
+    "geGGGGGeSSSSeeeg",
+    "geeeeeeeSSSSeeeg",
+    "geeeeeeeeeeeeeeg",
+    "gGGGGGGGGGGGGGGg",
+    "gXXXXXXXXXXXXXXg",
+    "gXXXXXXXXXXXXXXg",
+    "gggggggggggggggg",
+]
+
+RESEARCH_CONSOLE = [
+    "XXXXXXXXXXXXXXXX",
+    "XeeeeeeeeeeeeeeX",
+    "XeeeeHHHHHHeeeeX",
+    "XeeHHeeeeeeHHeeX",
+    "XeHHeeHHHHeeHHeX",
+    "XeHeeHHPPHHeeHeX",
+    "XeHeHHPHHPHHeHeX",
+    "XeHeHHPHHPHHeHeX",
+    "XeHeeHHPPHHeeHeX",
+    "XeHHeeHHHHeeHHeX",
+    "XeeHHeeeeeeHHeeX",
+    "XeeeeHHHHHHeeeeX",
+    "XeeeeeeeeeeeeeeX",
+    "XHHeXHHeXHHeXHHX",
+    "XXXXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXXXX",
+]
+
+MUSEUM_CASE = [
+    "gggggggggggggggg",
+    "gllllllllllllllg",
+    "gl" + "oooooooooooo" + "lg",
+    "gl" + "ooooojjooooo" + "lg",
+    "gl" + "oooojjjjoooo" + "lg",
+    "gl" + "ooojjjjjjooo" + "lg",
+    "gl" + "ooojjjjjjooo" + "lg",
+    "gl" + "oojjjjjjjjoo" + "lg",
+    "gl" + "ooojjoojjooo" + "lg",
+    "gl" + "oooooooooooo" + "lg",
+    "gllllllllllllllg",
+    "gXXXXXXXXXXXXXXg",
+    "gXXXXXXXXXXXXXXg",
+    "gXXXXXXXXXXXXXXg",
+    "gXXXXXXXXXXXXXXg",
+    "gggggggggggggggg",
+]
+
+LIGHT_FIXTURE = [
+    "XXXXXXXXXXXXXXXX",
+    "XXXXXXVVVVXXXXXX",
+    "XXXXVVVVVVVVXXXX",
+    "XXXVVVuuuuVVVXXX",
+    "XXVVVuuuuuuVVVXX",
+    "XVVVuuuuuuuuVVVX",
+    "XVVuuuuuuuuuuVVX",
+    "XVVuuuuuuuuuuVVX",
+    "XVVuuuuuuuuuuVVX",
+    "XVVuuuuuuuuuuVVX",
+    "XVVVuuuuuuuuVVVX",
+    "XXVVVuuuuuuVVVXX",
+    "XXXVVVuuuuVVVXXX",
+    "XXXXVVVVVVVVXXXX",
+    "XXXXXXVVVVXXXXXX",
+    "XXXXXXXXXXXXXXXX",
+]
+
+
 def recolor(rows, mapping):
     """Copy a pixel grid with palette chars swapped (neon variants)."""
     table = str.maketrans(mapping)
@@ -276,6 +364,10 @@ TILES = {
     "slot_machine_face": SLOT_MACHINE_FACE,
     "card_table_face": CARD_TABLE_FACE,
     "station_glass": STATION_GLASS,
+    "trade_terminal": TRADE_TERMINAL,
+    "research_console": RESEARCH_CONSOLE,
+    "museum_case": MUSEUM_CASE,
+    "light_fixture": LIGHT_FIXTURE,
 }
 
 
