@@ -520,6 +520,16 @@ pub struct LodConfig {
     pub distant_shade_ceiling: f32,
     pub distant_shade_range_m: f32,
 
+    /* Atmospheric RIM fresnel on the distant globe (the "less bland from
+     * space" limb glow). Colour is the atmospheric tint added at grazing
+     * angles; power sharpens the ring (higher = thinner); intensity scales
+     * it; floor keeps a faint edge on the night side (0 = rim only on the
+     * sunlit crescent). A zero colour disables the effect. */
+    pub distant_rim_color: Vec3,
+    pub distant_rim_power: f32,
+    pub distant_rim_intensity: f32,
+    pub distant_rim_floor: f32,
+
     /* Per-tileset palette for the distant-LOD vertex sampler.
      * Indexed by tileset_t: EARTH=0, SEQUOIA=1, CRAG=2, FROST=3,
      * ASTEROID=4. */
@@ -605,6 +615,10 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
     distant_shade_floor: 0.65,
     distant_shade_ceiling: 1.20,
     distant_shade_range_m: 50.0,
+    distant_rim_color: v3(0.35, 0.55, 1.0),
+    distant_rim_power: 3.0,
+    distant_rim_intensity: 0.9,
+    distant_rim_floor: 0.25,
     tileset_water_color: [
         v3(0.10, 0.28, 0.55), /* EARTH    - open-ocean blue          */
         v3(0.16, 0.42, 0.34), /* SEQUOIA  - alien greenish water     */
@@ -768,6 +782,19 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
             }
             "distant_shade_range_m" => {
                 cfg.distant_shade_range_m = fval(val);
+                0
+            }
+            "distant_rim_color" => vec3_or_err(val, &mut cfg.distant_rim_color),
+            "distant_rim_power" => {
+                cfg.distant_rim_power = fval(val);
+                0
+            }
+            "distant_rim_intensity" => {
+                cfg.distant_rim_intensity = fval(val);
+                0
+            }
+            "distant_rim_floor" => {
+                cfg.distant_rim_floor = fval(val);
                 0
             }
             "gravity_full_mult" => {

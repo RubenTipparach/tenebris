@@ -3798,6 +3798,7 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             let dvp = shaders::distant::DistantVsParams { u_mvp: mvp.m };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
             let wc = config::water();
+            let lc = config::lod();
             let dfp = shaders::distant::DistantFsParams {
                 u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                 u_pad0: 0.0,
@@ -3811,6 +3812,12 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 u_pad2: 0.0,
                 u_pad3: 0.0,
                 u_pad4: 0.0,
+                u_rim_color: [lc.distant_rim_color.x, lc.distant_rim_color.y, lc.distant_rim_color.z],
+                u_rim_power: lc.distant_rim_power,
+                u_rim_intensity: lc.distant_rim_intensity,
+                u_rim_floor: lc.distant_rim_floor,
+                u_pad5: 0.0,
+                u_pad6: 0.0,
             };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_FS_PARAMS, &sg::value_as_range(&dfp));
             sg::draw(0, body.distant_index_count as usize, 1);
@@ -6626,7 +6633,7 @@ mod tests {
         assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 128);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
         assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
-        assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 80);
+        assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 112); /* +rim fresnel (2 vec4s) */
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
         assert_eq!(size_of::<shaders::sun::SunFsParams>(), 16);
         assert_eq!(size_of::<shaders::water::VsParams>(), 128);

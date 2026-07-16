@@ -34,6 +34,14 @@
 #                                  level that maps to the ceiling/floor
 #                                  shade. Smaller = more dramatic
 #                                  contrast over the same elevation.
+#   distant_rim_color       vec3   atmospheric RIM tint added at the globe's
+#                                  limb from orbit (grazing-angle fresnel), so
+#                                  the planet reads as an air-wrapped sphere
+#                                  instead of a flat disc. [0,0,0] disables it.
+#   distant_rim_power       float  fresnel sharpness - higher = thinner ring.
+#   distant_rim_intensity   float  overall rim brightness.
+#   distant_rim_floor       float  night-side rim strength 0..1 (0 = the halo
+#                                  only lights the sunlit crescent).
 #   gravity_full_mult       float  body radius multiplier inside which
 #                                  gravity is at 100%. Default 1.4 =
 #                                  full pull from the surface up to
@@ -79,6 +87,11 @@ lod:
   distant_shade_floor:    0.65
   distant_shade_ceiling:  1.20
   distant_shade_range_m:  50.0
+  # Atmospheric limb glow from orbit (Astrak/three-planets rim look).
+  distant_rim_color:      [0.35, 0.55, 1.0]
+  distant_rim_power:      3.0
+  distant_rim_intensity:  0.9
+  distant_rim_floor:      0.25
   gravity_full_mult:      1.4
   gravity_falloff_mult:   1.8
   roll_slerp_duration_s:  3.0
