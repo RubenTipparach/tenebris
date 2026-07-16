@@ -5197,6 +5197,67 @@ fn frame_inner(app: &mut App) {
         }
     }
 
+    /* LOD-CAMERA CAPTURE (TENEBRIS_DEV_LODCAM=<metres>): the reliable way to
+     * screenshot the planet from orbit. Parks the camera <metres> beyond the
+     * surface on the line PERPENDICULAR to the sun and aims it straight at the
+     * planet CENTRE every frame, so the full disk is always framed - no more
+     * accidentally pointing at empty space. Combine with TENEBRIS_DEV_SP to
+     * enter a world; the capture script steps 100..500 m. See
+     * docs/lod-camera-capture.md. The one-shot full-disk remesh makes the whole
+     * globe render as terrain (chunks were meshed around the spawn tile). */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_LODCAM") {
+        /* Distance beyond the surface, in metres. The whole globe fits by
+         * ~400 m; past ~400-500 m the terrain streaming radius culls the disk
+         * back to empty stars, so the useful capture range is ~100..400 m. */
+        let dist = v.parse::<f64>().unwrap_or(0.0).max(1.0);
+        let (center, radius, sun_dir, body_id) = {
+            let w = app.world.borrow();
+            let sim_t = tenebris_core::world_time::seconds();
+            let sd = dvec3_normalize(tenebris_core::orbit::sun_direction(w.body.id, sim_t));
+            (
+                dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
+                w.body.radius_m,
+                sd,
+                w.body.id as u32,
+            )
+        };
+        let reference = if sun_dir.y.abs() < 0.9 {
+            dvec3_make(0.0, 1.0, 0.0)
+        } else {
+            dvec3_make(1.0, 0.0, 0.0)
+        };
+        /* Sun-perpendicular azimuth (terminator bisects the disk so the lit
+         * limb + rim + night side are all visible), LIFTED well off the
+         * equatorial plane so the equator-orbiting station drum doesn't sit in
+         * front of the planet. Aim stays radial (pitch below), so any camera
+         * placement still points dead at the centre. */
+        let sun_perp = dvec3_normalize(tenebris_core::math::dvec3_cross(sun_dir, reference));
+        let view_dir = dvec3_normalize(dvec3_add(sun_perp, dvec3_make(0.0, 0.85, 0.0)));
+        let cam = dvec3_add(center, dvec3_scale(view_dir, radius + dist));
+        {
+            let mut p = app.player.borrow_mut();
+            p.position = cam;
+            p.velocity = tenebris_core::math::DVec3::default();
+            p.last_tile = -1;
+            /* Keep is_in_space FALSE (like the orbit showcase) so the planet
+             * always renders as full terrain - past ~200 m the space seam
+             * otherwise flips this true, unloads the voxel chunks, and the disk
+             * vanishes to empty stars. Position is re-pinned each frame, so the
+             * surface-gravity that this re-enables can't actually move us. */
+            p.is_in_space = false;
+            /* Radial "up" at the cam == view_dir, so pitch just off -pi/2 looks
+             * straight down the radial at the planet centre and frames the disk. */
+            p.yaw = 0.0;
+            p.pitch = -1.552;
+        }
+        DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+        thread_local! { static LODCAM_REMESHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+        if !LODCAM_REMESHED.with(|c| c.get()) {
+            LODCAM_REMESHED.with(|c| c.set(true));
+            renderer::remesh_body_now(body_id);
+        }
+    }
+
     /* Dev screenshot aid: hold the camera on its underwater-fish perch
      * each frame so gravity can't drop it off. */
     DEV_FISH_CAM.with(|c| {
