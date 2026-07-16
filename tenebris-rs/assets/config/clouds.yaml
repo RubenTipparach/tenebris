@@ -44,6 +44,6 @@ clouds:
   patch_scale: 4
   patch_clear: 0.45
   patch_soft: 0.18
-  lod_alt_m: 10000
-  lod_fade_m: 3000
+  lod_alt_m: 5000
+  lod_fade_m: 1500
   shell_alpha: 0.6
