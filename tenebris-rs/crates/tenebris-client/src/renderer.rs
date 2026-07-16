@@ -84,13 +84,11 @@ use std::rc::Rc;
 use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
-    dvec3_cross, dvec3_dot, dvec3_length, dvec3_normalize, dvec3_scale, dvec3_sub, dvec3_to_vec3,
-    vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_cross, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
 };
-#[cfg(test)]
-use tenebris_core::math::dvec3_make;
 use tenebris_core::orbit;
-use tenebris_core::planet::{BodyConfig, BodyId, Tileset};
+use tenebris_core::planet::{self, BodyConfig, BodyId, Tileset};
 use tenebris_core::planet_gen;
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
@@ -717,6 +715,121 @@ fn sample_planet_lod_color(
     base.y *= shade * (lo.y * (1.0 - u) + hi.y * u);
     base.z *= shade * (lo.z * (1.0 - u) + hi.z * u);
     (base, water_alpha)
+}
+
+/* ----------------------------------------------------------------------- */
+/* Body-gallery thumbnails (the solar-system map's picker "screenshots").  */
+
+/// Thumbnail edge, px. The gallery atlas is GALLERY_COLS x GALLERY_ROWS
+/// of these, one cell per `BodyId::ALL` entry in declaration order.
+pub const GALLERY_THUMB_PX: i32 = 48;
+const GALLERY_COLS: i32 = 5;
+const GALLERY_ROWS: i32 = 4;
+
+/// Pure half of the gallery bake: one lit-sphere thumbnail per body,
+/// coloured by the exact sampling the distant LOD uses (biome colour +
+/// water blend + height shade), lit by a fixed key light with a soft
+/// terminator, alpha-feathered at the disc edge. Premultiplied RGBA -
+/// the egui layer's blend expects it.
+fn build_body_gallery_pixels(col_avg: &[Vec3; ATLAS_TILES]) -> (i32, i32, Vec<u8>) {
+    let w = GALLERY_COLS * GALLERY_THUMB_PX;
+    let h = GALLERY_ROWS * GALLERY_THUMB_PX;
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    /* Key light: upper-left, toward the viewer - reads as "sunlit globe"
+     * in a UI card regardless of the body's real sky. */
+    let light = {
+        let l = Vec3 { x: -0.45, y: 0.5, z: 0.75 };
+        let len = (l.x * l.x + l.y * l.y + l.z * l.z).sqrt();
+        Vec3 { x: l.x / len, y: l.y / len, z: l.z / len }
+    };
+    for (bi, &id) in BodyId::ALL.iter().enumerate() {
+        let b = planet::get(id);
+        let fallback = body_distant_color(&b);
+        let ox = (bi as i32 % GALLERY_COLS) * GALLERY_THUMB_PX;
+        let oy = (bi as i32 / GALLERY_COLS) * GALLERY_THUMB_PX;
+        let t = GALLERY_THUMB_PX as f32;
+        for py in 0..GALLERY_THUMB_PX {
+            for pxi in 0..GALLERY_THUMB_PX {
+                /* Pixel -> [-1,1] disc coords; sphere normal faces +Z. */
+                let fx = (pxi as f32 + 0.5) / t * 2.0 - 1.0;
+                let fy = (py as f32 + 0.5) / t * 2.0 - 1.0;
+                let rr = fx * fx + fy * fy;
+                /* 1-px feathered edge so the disc anti-aliases on any
+                 * panel colour. */
+                let alpha = ((1.0 - rr.sqrt()) * (t * 0.5)).clamp(0.0, 1.0);
+                if alpha <= 0.0 {
+                    continue;
+                }
+                let nz = (1.0 - rr.min(1.0)).sqrt();
+                let n = Vec3 { x: fx, y: -fy, z: nz };
+                let dir = dvec3_make(n.x as f64, n.y as f64, n.z as f64);
+                let mut surface_m = planet_gen::surface_altitude(&b, dir);
+                if b.barren {
+                    surface_m *= 0.3; /* same rule as the distant texture */
+                }
+                let (rgb, _water) =
+                    sample_planet_lod_color(&b, fallback, dir, surface_m, col_avg);
+                let lit = 0.35 + 0.65 * (n.x * light.x + n.y * light.y + n.z * light.z).max(0.0);
+                let idx = (((oy + py) * w + ox + pxi) * 4) as usize;
+                /* Premultiply by the edge alpha. */
+                px[idx] = ((rgb.x * lit).clamp(0.0, 1.0) * alpha * 255.0) as u8;
+                px[idx + 1] = ((rgb.y * lit).clamp(0.0, 1.0) * alpha * 255.0) as u8;
+                px[idx + 2] = ((rgb.z * lit).clamp(0.0, 1.0) * alpha * 255.0) as u8;
+                px[idx + 3] = (alpha * 255.0) as u8;
+            }
+        }
+    }
+    (w, h, px)
+}
+
+/// GPU half: bake + upload the gallery atlas (init time, after
+/// bake_atlas so the column averages are live).
+fn bake_body_gallery(r: &mut Renderer) {
+    let (w, h, px) = build_body_gallery_pixels(&r.atlas_col_avg);
+    let mut desc = sg::ImageDesc {
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"body-gallery".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(&px);
+    r.gallery_img = sg::make_image(&desc);
+    r.gallery_view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.gallery_img, ..Default::default() },
+        label: c"body-gallery-view".as_ptr(),
+        ..Default::default()
+    });
+    r.gallery_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Linear,
+        mag_filter: sg::Filter::Linear,
+        wrap_u: sg::Wrap::ClampToEdge,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"body-gallery-smp".as_ptr(),
+        ..Default::default()
+    });
+}
+
+/// Raw view / sampler ids for the gallery (egui_layer binds them for the
+/// BODY_TEX user texture).
+pub fn body_gallery_view_id() -> u32 {
+    R.with(|cell| cell.borrow().gallery_view.id)
+}
+pub fn body_gallery_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().gallery_smp.id)
+}
+
+/// UV rect (u0, v0, u1, v1) of a body's thumbnail in the gallery atlas.
+pub fn body_gallery_uv(id: BodyId) -> (f32, f32, f32, f32) {
+    let i = BodyId::ALL.iter().position(|&b| b == id).unwrap_or(0) as i32;
+    let cx = (i % GALLERY_COLS) as f32;
+    let cy = (i / GALLERY_COLS) as f32;
+    (
+        cx / GALLERY_COLS as f32,
+        cy / GALLERY_ROWS as f32,
+        (cx + 1.0) / GALLERY_COLS as f32,
+        (cy + 1.0) / GALLERY_ROWS as f32,
+    )
 }
 
 /// Pure half of `build_distant_textures_for_body()`: the equirect
@@ -1675,6 +1788,13 @@ struct Renderer {
     atlas_view: sg::View,
     atlas_smp: sg::Sampler,
 
+    /// Body-gallery atlas: one lit-sphere thumbnail per BodyId (the
+    /// "screenshots" the solar-system map's picker shows). Baked once at
+    /// init from the same colour sampling the distant LOD uses.
+    gallery_img: sg::Image,
+    gallery_view: sg::View,
+    gallery_smp: sg::Sampler,
+
     water_normal_img: sg::Image,
     water_normal_view: sg::View,
     water_normal_smp: sg::Sampler,
@@ -1778,6 +1898,9 @@ impl Default for Renderer {
             atlas_img: sg::Image::new(),
             atlas_view: sg::View::new(),
             atlas_smp: sg::Sampler::new(),
+            gallery_img: sg::Image::new(),
+            gallery_view: sg::View::new(),
+            gallery_smp: sg::Sampler::new(),
             water_normal_img: sg::Image::new(),
             water_normal_view: sg::View::new(),
             water_normal_smp: sg::Sampler::new(),
@@ -2809,6 +2932,7 @@ pub fn init() {
         }
 
         bake_atlas(&mut r);
+        bake_body_gallery(&mut r);
         load_water_normal(&mut r);
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);

@@ -29,6 +29,10 @@ use crate::ui_icons;
 /// thumbnails; the draw loop binds the `ui_icons` atlas for it.
 pub const ICON_TEX: egui::TextureId = egui::TextureId::User(1);
 
+/// egui `TextureId` for the solar-system map's body thumbnails; the draw
+/// loop binds the renderer's baked body-gallery atlas for it.
+pub const BODY_TEX: egui::TextureId = egui::TextureId::User(2);
+
 struct Layer {
     ctx: egui::Context,
     /// egui input events accumulated between `run` calls.
@@ -326,6 +330,10 @@ pub fn draw() {
                 ICON_TEX if ui_icons::view_id() != 0 => (
                     sg::View { id: ui_icons::view_id() },
                     sg::Sampler { id: ui_icons::sampler_id() },
+                ),
+                BODY_TEX if crate::renderer::body_gallery_view_id() != 0 => (
+                    sg::View { id: crate::renderer::body_gallery_view_id() },
+                    sg::Sampler { id: crate::renderer::body_gallery_sampler_id() },
                 ),
                 _ => (l.view, l.smp),
             };

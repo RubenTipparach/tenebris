@@ -98,18 +98,36 @@ const TARGETS: &[Target] = &[
 ];
 
 thread_local! {
-    /// Index into TARGETS; one past the end = no target. Persists across
-    /// flights on purpose - re-boarding shouldn't forget the plan.
-    static TARGET_IDX: Cell<usize> = const { Cell::new(TARGETS.len()) };
+    /// Current maneuver target. Persists across flights on purpose -
+    /// re-boarding shouldn't forget the plan. Stored as the Target itself
+    /// (not a TARGETS index) so the solar-system map can set ANY body -
+    /// including belt asteroids, which the T-cycle deliberately skips.
+    static TARGET_SEL: Cell<Option<Target>> = const { Cell::new(None) };
 }
 
 /// Advance to the next target (station -> moons -> planets -> none).
+/// A target outside the cycle order (e.g. an asteroid picked on the map)
+/// steps to the front of the cycle.
 pub fn cycle_target() {
-    TARGET_IDX.with(|c| c.set((c.get() + 1) % (TARGETS.len() + 1)));
+    TARGET_SEL.with(|c| {
+        let next = match c.get().and_then(|t| TARGETS.iter().position(|&x| x == t)) {
+            None if c.get().is_some() => Some(TARGETS[0]), /* off-cycle -> front */
+            None => Some(TARGETS[0]),                      /* none -> front */
+            Some(i) if i + 1 < TARGETS.len() => Some(TARGETS[i + 1]),
+            Some(_) => None, /* last -> none */
+        };
+        c.set(next);
+    });
 }
 
 pub fn target() -> Option<Target> {
-    TARGET_IDX.with(|c| TARGETS.get(c.get()).copied())
+    TARGET_SEL.with(|c| c.get())
+}
+
+/// Set (or clear) the maneuver target directly - the solar-system map's
+/// entry point. Accepts any body, asteroids included.
+pub fn set_target(t: Option<Target>) {
+    TARGET_SEL.with(|c| c.set(t));
 }
 
 /// Display name for the HUD ("none" when nothing is targeted).
@@ -660,7 +678,7 @@ mod tests {
     /// debug it (mid-flight).
     #[test]
     fn target_cycle_visits_everything_and_wraps() {
-        TARGET_IDX.with(|c| c.set(TARGETS.len())); /* start at none */
+        set_target(None); /* start at none */
         assert_eq!(target(), None);
         let mut seen = Vec::new();
         for _ in 0..TARGETS.len() {
@@ -697,7 +715,7 @@ mod tests {
     /// where Tenebris's field is ~6x anything else's.
     #[test]
     fn readout_reports_the_circular_orbit() {
-        TARGET_IDX.with(|c| c.set(TARGETS.len()));
+        set_target(None);
         let b = planet::get(BodyId::Tenebris);
         let r = 5_000.0;
         let mu = tenebris_core::nav::mu(&b);

@@ -299,6 +299,21 @@ fn body_center(id: BodyId) -> DVec3 {
     dvec3_make(b.pos_x, b.pos_y, b.pos_z)
 }
 
+/// Inverse of [`apparent_pos`] for arbitrary points: map a RENDER-frame
+/// position (the frame the player/rocket lives in, anchored to the
+/// `active` body's static centre and rotating with its spin) into the
+/// heliocentric frame the orbit sim runs in. This is what puts the
+/// player's marker on the solar-system map while they fly between
+/// planets.
+pub fn world_to_heliocentric(active: BodyId, p_world: DVec3, t: f64) -> DVec3 {
+    let rel = dvec3_sub(p_world, body_center(active));
+    /* apparent_pos rotates helio-relative offsets INTO the render frame by
+     * +spin; undo with -spin, then re-anchor at the active body's
+     * heliocentric position. */
+    let rel_helio = rotate_about(rel, SPIN_AXIS, -spin_angle(active, t));
+    dvec3_add(heliocentric_pos(active, t), rel_helio)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +377,22 @@ mod tests {
             heliocentric_pos(BodyId::Tenebris, 0.0),
         ));
         assert!((dl - r).abs() < 1.0, "luna orbit {dl} != structural {r}");
+    }
+
+    #[test]
+    fn world_to_heliocentric_inverts_apparent_pos() {
+        setup();
+        // A body drawn at apparent_pos(active, body) must map back to its
+        // own heliocentric position - the map marker and the sky agree.
+        for &t in &[0.0, 37.0, 411.0] {
+            for body in [BodyId::Luna, BodyId::Sequoia, BodyId::Frostbite] {
+                let drawn = apparent_pos(BodyId::Tenebris, body, t);
+                let back = world_to_heliocentric(BodyId::Tenebris, drawn, t);
+                let truth = heliocentric_pos(body, t);
+                let d = dvec3_length(dvec3_sub(back, truth));
+                assert!(d < 1e-6, "{body:?} t={t}: roundtrip off by {d} m");
+            }
+        }
     }
 
     #[test]

@@ -5120,7 +5120,10 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     inventory_screen::egui_ui(ctx);
     tech_tree::set_player(Some(app.player.clone()));
     tech_tree::egui_ui(ctx);
-    solar_map::set_active(app.player.borrow().body.unwrap_or(app.body).id);
+    {
+        let p = app.player.borrow();
+        solar_map::set_active(p.body.unwrap_or(app.body).id, p.position);
+    }
     solar_map::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     station_screen::egui_ui(ctx);
@@ -5492,6 +5495,33 @@ fn frame_inner(app: &mut App) {
             p.velocity = tenebris_core::math::DVec3::default();
         }
     });
+
+    /* Dev screenshot aid (TENEBRIS_DEV_SOLARMAP): pop the solar-system
+     * map open once in-game, so headless captures can verify the chart +
+     * body picker without a keyboard. */
+    thread_local! {
+        static SOLARMAP_OPENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if std::env::var("TENEBRIS_DEV_SOLARMAP").is_ok()
+        && menu::state() == GameState::InGameSp
+        && !SOLARMAP_OPENED.with(|c| c.get())
+    {
+        SOLARMAP_OPENED.with(|c| c.set(true));
+        solar_map::toggle();
+        /* Optional: also set a maneuver target so the highlight ring is
+         * in the shot (TENEBRIS_DEV_SOLARMAP=sequoia etc.). */
+        if let Ok(v) = std::env::var("TENEBRIS_DEV_SOLARMAP") {
+            let t = match v.to_ascii_lowercase().as_str() {
+                "sequoia" => Some(tenebris_core::planet::BodyId::Sequoia),
+                "luna" => Some(tenebris_core::planet::BodyId::Luna),
+                "crag" => Some(tenebris_core::planet::BodyId::Crag),
+                _ => None,
+            };
+            if let Some(id) = t {
+                crate::nav_ui::set_target(Some(crate::nav_ui::Target::Body(id)));
+            }
+        }
+    }
 
     /* Dev physics aid (TENEBRIS_DEV_STATION_DROP): once in-game, drop
      * the player 12 m over the casino hotel roof, co-moving with the
