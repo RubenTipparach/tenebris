@@ -696,6 +696,18 @@ pub fn column_spans(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32)
     let mut map: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> =
         std::collections::HashMap::new();
     for p in shell(cfg) {
+        /* Fixtures (card tables, slot cabinets, trade/research consoles,
+         * museum cases, hovering lamps) are DECORATIVE object-entities,
+         * not structure: the client draws them as furniture and the
+         * player walks right up to them. Exclude them from the collision
+         * spans - same reasoning as mat_blocks_light. Otherwise a table
+         * reads as a solid voxel column the player bumps into, and it
+         * punches a hole in the deck / stair collision above its cell
+         * (the "casino objects treated as voxels / stairs have a gap
+         * where a table is" bug). */
+        if is_fixture(p.mat) {
+            continue;
+        }
         map.entry((p.q, p.r)).or_default().push((p.y, p.y + lh));
     }
     /* Merge touching/overlapping spans so a wall column reads as ONE
@@ -1377,6 +1389,44 @@ mod tests {
         assert!(count(StationMat::NeonPink) >= 2 * 24 - 2, "pink storey bands");
         assert_eq!(count(StationMat::NeonGold), 10 + 6, "core light bands + pad markers");
         assert_eq!(count(StationMat::Sign), 24 + 2 + 2, "crown + spire + entrance arch");
+    }
+
+    #[test]
+    fn fixtures_are_decorative_not_collision() {
+        /* Casino furniture - card tables, slot cabinets, trade / research
+         * consoles, museum cases, hovering lamps - are object-entities the
+         * client draws as furniture, NOT solid voxel columns. So their cell
+         * must not appear as a collision span (else the player bumps an
+         * invisible wall walking up to a console, and the table punches a
+         * hole in the deck / stair collision above it). The floor UNDER the
+         * fixture still supports the player (checked by the fall-through
+         * test) - only the fixture's own layer is walk-through. */
+        let cfg = StationConfig::DEFAULT;
+        let spans = column_spans(&cfg);
+        let lh = layer_h(&cfg);
+        let mut checked = 0;
+        for p in shell(&cfg) {
+            if !is_fixture(p.mat) {
+                continue;
+            }
+            checked += 1;
+            let mid = p.y + lh * 0.5; /* centre of the fixture's own layer */
+            if let Some(col) = spans.get(&(p.q, p.r)) {
+                for &(bot, top) in col {
+                    assert!(
+                        mid < bot || mid > top,
+                        "fixture {:?} at ({},{}) sits inside collision span [{},{}] - \
+                         furniture must be walk-through, not a solid voxel",
+                        p.mat,
+                        p.q,
+                        p.r,
+                        bot,
+                        top
+                    );
+                }
+            }
+        }
+        assert!(checked > 0, "there should be casino fixtures to check");
     }
 
     #[test]
