@@ -5743,16 +5743,23 @@ fn frame_inner(app: &mut App) {
             /* Mutable: night stalkers lunge - knockback + hunger land on
              * the player inside animals::update. */
             let mut p = app.player.borrow_mut();
+            /* Own profiler scopes: these sims used to hide inside the
+             * "interact" slot, which pinned ~3 ms/frame on the raycast when
+             * the cost was actually the herd + crop simulation. */
+            profiler::begin("animals-sim");
             animals::update(dt, &w, &mut p);
+            profiler::end("animals-sim");
             let block_limit = if app.interact.has_target && !app.interact.is_torch_target {
                 app.interact.distance as f32
             } else {
                 f32::MAX
             };
+            profiler::begin("crops-sim");
             crops::update(dt, &w, &p, block_limit);
             /* Scatter wild fruit plants in the fields / jungle around the
              * player to forage (deterministic, not persisted). */
             crops::spawn_wild_near(&w, &p);
+            profiler::end("crops-sim");
         }
         fishing::update(&phys_world.borrow(), &mut app.player.borrow_mut(), dt);
         interact::update(

@@ -121,6 +121,19 @@ default_moisture: 0.66
 #                      near->far with distance so a storm reads as depth.
 #   wet_fade_tau_s     fade time-constant (s) for camera wet FX easing in/
 #                      out when entering/leaving rain. 0 = instant snap.
+#   rain_lod_alt_m     camera altitude (m) above which rain/snow streaks stop
+#                      rendering entirely (sub-pixel from up there; the storm
+#                      still reads via clouds + overcast + fog).
+#   rain_lod_far_frac  fraction of each cell's streak count kept at max
+#                      range (count thins with the same near->far fade as
+#                      the alpha; far curtains are ~invisible anyway).
+#                      1.0 = old constant density everywhere.
+#   rain_detail_range_m  cells within this distance render individual
+#                      streaks; beyond it each cell draws ONE translucent
+#                      curtain sheet (the far-precip impostor), so distant
+#                      storms stay visible at a fraction of the cost.
+#   rain_impostor_alpha  opacity multiplier for those far curtain sheets
+#                      (on top of the distance fade) - haze, not a wall.
 #
 #   --- Camera rain-on-glass lens droplets (the drops on the "lens" when it
 #   rains / after surfacing; composite FS Heartfelt FX). Count and SIZE are
@@ -168,6 +181,10 @@ rain_color_b: 1.0
 rain_alpha_near: 0.78
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
+rain_lod_alt_m: 200.0
+rain_lod_far_frac: 0.25
+rain_detail_range_m: 250.0
+rain_impostor_alpha: 0.5
 rain_lens_density: 1.4
 rain_lens_refract: 1.7
 rain_lens_speed: 1.0
