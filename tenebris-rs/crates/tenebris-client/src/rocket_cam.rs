@@ -74,17 +74,19 @@ thread_local! {
     });
 }
 
-/// Which frame the chase camera's orbit angles live in.
+/// What the chase camera orbits, and in which frame its angles live.
 ///
 /// `Rocket`: the rocket's own basis - azimuth 0 is behind the nose and the
-/// camera turns with the ship. `Equatorial`: fixed world axes (up = the
-/// planet spin axis, +Y), so the camera holds a stable equator-aligned
-/// view while the rocket manoeuvres inside it - the KSP "orbit mode"
-/// counterpart to its chase mode.
+/// camera turns with the ship. `Equatorial`: still anchored on the rocket,
+/// but in fixed world axes (up = the planet spin axis, +Y) - a stable
+/// equator-aligned view while the rocket manoeuvres inside it. `Planet`:
+/// anchored on TENEBRIS's centre in the same fixed axes - the map view,
+/// for reading the whole orbit while adjusting a manoeuvre.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CamFrame {
     Rocket,
     Equatorial,
+    Planet,
 }
 
 thread_local! {
@@ -93,14 +95,30 @@ thread_local! {
     static FRAME: std::cell::Cell<CamFrame> = const { std::cell::Cell::new(CamFrame::Rocket) };
 }
 
-/// Toggle rocket-frame <-> equatorial (the CamAlign key).
+/// Cycle rocket -> equatorial -> planet-centred (the CamAlign key).
+///
+/// Entering the planet view pushes the zoom out to at least
+/// `planet_view_min_m` - the previous chase distance would put the eye
+/// inside the terrain.
 pub fn toggle_frame() {
-    FRAME.with(|f| {
-        f.set(match f.get() {
+    let next = FRAME.with(|f| {
+        let next = match f.get() {
             CamFrame::Rocket => CamFrame::Equatorial,
-            CamFrame::Equatorial => CamFrame::Rocket,
-        })
+            CamFrame::Equatorial => CamFrame::Planet,
+            CamFrame::Planet => CamFrame::Rocket,
+        };
+        f.set(next);
+        next
     });
+    if next == CamFrame::Planet {
+        let c = tenebris_core::rocket::config().camera;
+        CAM.with(|cell| {
+            let m = &mut *cell.borrow_mut();
+            if m.target_distance < c.planet_view_min_m {
+                m.target_distance = c.planet_view_min_m.min(c.max_distance_m);
+            }
+        });
+    }
 }
 
 pub fn frame() -> CamFrame {
@@ -112,16 +130,17 @@ pub fn frame_label() -> &'static str {
     match frame() {
         CamFrame::Rocket => "rocket",
         CamFrame::Equatorial => "equatorial",
+        CamFrame::Planet => "tenebris",
     }
 }
 
 /// The frame the orbit angles apply in: the rocket's own basis, or fixed
-/// world axes for the equatorial view. Returns (fwd, up, right), the same
-/// handedness as the player basis (fwd x up = right).
+/// world axes for the equatorial / planet views. Returns (fwd, up, right),
+/// the same handedness as the player basis (fwd x up = right).
 fn orbit_frame(fwd: DVec3, up: DVec3, right: DVec3) -> (DVec3, DVec3, DVec3) {
     match frame() {
         CamFrame::Rocket => (fwd, up, right),
-        CamFrame::Equatorial => (
+        CamFrame::Equatorial | CamFrame::Planet => (
             tenebris_core::math::dvec3_make(0.0, 0.0, 1.0),
             tenebris_core::math::dvec3_make(0.0, 1.0, 0.0),
             tenebris_core::math::dvec3_make(-1.0, 0.0, 0.0),
@@ -150,13 +169,15 @@ pub fn orbit(dx: f32, dy: f32) {
 }
 
 /// Zoom by one scroll notch. `notches` is +1 per notch away (pull back).
-/// Multiplicative, so each notch is a constant *fraction* of the current
-/// distance - it zooms as fast up close as it does far out.
+/// Multiplicative in two zones: a fine fraction inside `zoom_far_m`
+/// (ship-scale framing), a much bigger one beyond it (climbing out to a
+/// whole-orbit view is a flick of the wheel, not fifty notches).
 pub fn zoom(notches: f32) {
     let c = tenebris_core::rocket::config().camera;
     CAM.with(|cell| {
         let m = &mut *cell.borrow_mut();
-        let d = m.target_distance * (1.0 + notches * c.zoom_step);
+        let step = if m.target_distance > c.zoom_far_m { c.zoom_step_far } else { c.zoom_step };
+        let d = m.target_distance * (1.0 + notches * step);
         m.target_distance = d.clamp(c.min_distance_m, c.max_distance_m);
     });
 }

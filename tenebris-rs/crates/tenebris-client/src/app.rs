@@ -232,6 +232,9 @@ struct App {
 
     /* frame()-local statics. */
     was_mouse_locked: bool,
+    /// Left button held while riding: the mouse is dragging the chase
+    /// camera's orbit (flight flies with a free cursor for the panel).
+    rocket_cam_drag: bool,
     state_send_ctr: u32,
     water_accum_s: f32,
     inv_last_type: [u16; 9],
@@ -2538,6 +2541,7 @@ extern "C" fn init() {
             last_sent_valid: false,
             pos_log_accum: 0.0,
             was_mouse_locked: false,
+            rocket_cam_drag: false,
             state_send_ctr: 0,
             water_accum_s: 0.0,
             inv_last_type: [0; 9],
@@ -3447,30 +3451,15 @@ fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
     let throttle_key = crate::controls::action_label(crate::controls::Action::Jump);
     let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
     let exit_key = crate::controls::action_label(crate::controls::Action::ExitRocket);
-    let respawn_key = crate::controls::action_label(crate::controls::Action::RespawnRocket);
-    let cam_key = crate::controls::action_label(crate::controls::Action::CamAlign);
-    let mut lines = vec![
+    /* Numbers only up top - the orbit readouts, target info and every
+     * control live in the clickable egui flight panel (flight_panel_ui). */
+    let _ = (throttle_key, stage_key, exit_key);
+    let lines = [
         format!("ROCKET  stage {}  {} engine", stages, eng),
         format!("fuel {}%   dv {:.0} m/s   TWR {:.2}", pct, dv, twr),
         format!("alt {:.0} m   speed {:.0} m/s   climb {:+.0} m/s", alt_m, speed, vspeed),
         format!("attitude {:.0} deg from up ({})", pitch_deg, att),
     ];
-    /* Orbit + target readouts (Ap/Pe/period, target range + rel speed). */
-    {
-        let p = app.player.borrow();
-        let sim_t = tenebris_core::world_time::seconds();
-        lines.extend(nav_ui::readout_lines(p.position, p.velocity, sim_t));
-    }
-    lines.push(format!(
-        "cam {} [{}]   target {} [T]",
-        rocket_cam::frame_label(),
-        cam_key,
-        nav_ui::target_name()
-    ));
-    lines.push(format!(
-        "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit  [{}] respawn",
-        throttle_key, stage_key, exit_key, respawn_key
-    ));
     sdtx::canvas(screen_w, screen_h);
     sdtx::font(1);
     let cell = 8.0f32;
@@ -5101,6 +5090,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     bonfire_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
     rocket_screen::egui_ui(ctx);
+    flight_panel_ui(app, ctx);
     menu::pause_egui_ui(ctx);
     menu::weather_egui_ui(ctx);
     menu::inputs_egui_ui(ctx);
@@ -6032,8 +6022,15 @@ fn frame_inner(app: &mut App) {
              * base - anchoring on the player made the ship swing around its
              * bottom edge, and staging (X) never moved the pivot. ride_center
              * re-derives from the remaining parts, so the pivot re-centres
-             * the moment a stage drops. */
-            let anchor = crate::rocket_fx::ride_center(p.position, u);
+             * the moment a stage drops.
+             *
+             * The tenebris-centred map view anchors on the planet instead:
+             * the whole orbit in frame while adjusting a manoeuvre. */
+            let anchor = if rocket_cam::frame() == rocket_cam::CamFrame::Planet {
+                dvec3_make(app.body.pos_x, app.body.pos_y, app.body.pos_z)
+            } else {
+                crate::rocket_fx::ride_center(p.position, u)
+            };
             (rocket_cam::view(anchor, f, u, r), rocket_cam::eye(anchor, f, u, r))
         } else {
             (
@@ -6211,6 +6208,9 @@ fn frame_inner(app: &mut App) {
             proj,
             p.position,
             p.velocity,
+            p.basis.right,
+            p.basis.fwd,
+            p.basis.up,
             rocket_ride::is_riding(),
             p.is_in_space,
             sim_t,
@@ -6250,6 +6250,7 @@ fn frame_inner(app: &mut App) {
                 parts,
                 heat: 0.0,
             };
+            let (nozzle, ride_up) = (p.position, p.basis.up);
             drop(p);
             crate::rocket_fx::draw_falling(
                 view,
@@ -6257,6 +6258,17 @@ fn frame_inner(app: &mut App) {
                 &app.world.borrow(),
                 std::slice::from_ref(&ride_view),
             );
+            /* Exhaust plume while the engine actually burns fuel: the
+             * nozzle sits at the stack base (the player's ride point). */
+            if rocket_ride::is_burning() {
+                crate::rocket_fx::draw_plume(
+                    view,
+                    proj,
+                    nozzle,
+                    ride_up,
+                    renderer::time_seconds(),
+                );
+            }
         }
     }
     /* Jettisoned falling stages: tumbling part models wrapped in the
@@ -6617,10 +6629,139 @@ extern "C" fn event(e: *const sapp::Event) {
     with_app(|app| event_inner(app, e));
 }
 
+/* ---- Rocket flight actions. One implementation each, shared by the key
+ * bindings (event_inner) and the clickable egui flight panel - a second
+ * copy of "what staging does" would drift. ---- */
+
+/// Jettison the active stage; the shed stack becomes a tumbling falling
+/// body (reentry plasma + salvage) if more than one stage remains.
+fn rocket_stage_action(app: &App) {
+    let shed = crate::rocket_ride::active_stage_parts();
+    if crate::rocket_ride::stage() && !shed.is_empty() {
+        let p = app.player.borrow();
+        /* Drop it a stack-length below the player, moving with them plus a
+         * small backward kick so it visibly separates behind the climb. */
+        let along = dvec3_scale(p.basis.up, -(shed.len() as f64) * 1.8);
+        let pos = dvec3_add(p.position, along);
+        let kick = dvec3_scale(p.basis.up, -6.0);
+        let vel = dvec3_add(p.velocity, kick);
+        crate::falling_stage::spawn(shed, pos, vel, p.basis.up);
+    }
+}
+
+/// Climb out. The parts stay on the launch pad (board doesn't empty it),
+/// so there's nothing to hand back and nothing to lose - walk back and E
+/// to fly again, or respawn. Allowed at any altitude on purpose: refusing
+/// to let go in space would strand you in the exact situation you're
+/// trying to escape. Re-locks the pointer for FPS mouse-look (flight has
+/// a free cursor for the panel + camera drag).
+fn rocket_exit_action(app: &mut App) {
+    crate::rocket_ride::clear();
+    app.rocket_cam_drag = false;
+    sapp::lock_mouse(true);
+}
+
+/// Reset to a full-fuelled rocket back on the pad it launched from. No
+/// duplication - it re-boards the same rocket still sitting on the pad.
+fn rocket_respawn_action(app: &App) {
+    if let Some((pos, _up)) = crate::rocket_ride::respawn() {
+        let mut p = app.player.borrow_mut();
+        p.position = pos;
+        p.velocity = dvec3_make(0.0, 0.0, 0.0);
+        p.grounded = false;
+        /* Rebuild the basis at the pad so the nose points radially up
+         * again (a fresh vertical launch), not wherever the last flight
+         * left it. */
+        p.basis_ready = false;
+        p.last_tile = -1;
+        player_ctrl::rebuild_basis(&mut p);
+    }
+}
+
+/// The clickable flight panel (egui, bottom-right): orbit + target
+/// readouts and the flight controls as real buttons. Every button is also
+/// a key; the button label carries the binding so the panel doubles as
+/// the control reference ("proper UI" instead of a wall of sdtx text).
+fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
+    if !rocket_ride::is_riding() {
+        return;
+    }
+    let (pos, vel) = {
+        let p = app.player.borrow();
+        (p.position, p.velocity)
+    };
+    let sim_t = tenebris_core::world_time::seconds();
+    let mut do_stage = false;
+    let mut do_exit = false;
+    let mut do_respawn = false;
+    egui::Window::new("Flight")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
+        .show(ctx, |ui| {
+            for line in nav_ui::readout_lines(pos, vel, sim_t) {
+                ui.label(egui::RichText::new(line).monospace().size(12.0));
+            }
+            ui.separator();
+            let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
+            let exit_key = crate::controls::action_label(crate::controls::Action::ExitRocket);
+            let respawn_key =
+                crate::controls::action_label(crate::controls::Action::RespawnRocket);
+            let cam_key = crate::controls::action_label(crate::controls::Action::CamAlign);
+            ui.horizontal(|ui| {
+                if ui.button(format!("Stage [{stage_key}]")).clicked() {
+                    do_stage = true;
+                }
+                if ui.button(format!("Exit [{exit_key}]")).clicked() {
+                    do_exit = true;
+                }
+                if ui
+                    .add_enabled(
+                        rocket_ride::can_respawn(),
+                        egui::Button::new(format!("Respawn [{respawn_key}]")),
+                    )
+                    .clicked()
+                {
+                    do_respawn = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui.button(format!("Target: {} [T]", nav_ui::target_name())).clicked() {
+                    nav_ui::cycle_target();
+                }
+                if ui
+                    .button(format!("Camera: {} [{cam_key}]", rocket_cam::frame_label()))
+                    .clicked()
+                {
+                    rocket_cam::toggle_frame();
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "hold Space: throttle   WASD: steer   Q/R: roll\n\
+                     drag LMB: orbit camera   wheel: zoom",
+                )
+                .weak()
+                .size(11.0),
+            );
+        });
+    if do_stage {
+        rocket_stage_action(app);
+    }
+    if do_exit {
+        rocket_exit_action(app);
+    }
+    if do_respawn {
+        rocket_respawn_action(app);
+    }
+}
+
 fn event_inner(app: &mut App, e: &sapp::Event) {
     /* Feed every event to egui so its panels see the mouse / keyboard.
+     * The return - "egui wants this" - gates the flight-mode mouse below:
+     * a click on the flight panel must not also start a camera drag.
      * (Swallowing from gameplay is added per-screen as each ports over.) */
-    egui_layer::handle_event(e);
+    let egui_wants = egui_layer::handle_event(e);
 
     /* The mouse wheel belongs to whichever egui panel is open (recipe
      * lists + grids scroll) - without this the same scroll ALSO cycled
@@ -6668,6 +6809,37 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * ui.yaml. Wired here, not inside the debug_ui_visible block,
      * because the inventory / crafting screens that ride on this
      * module aren't debug features. */
+    /* Flight-mode mouse. The cursor is FREE while riding (the flight panel
+     * is clickable egui, like the JS - which released pointer lock in
+     * flight for its HTML buttons): holding the left button drags the
+     * chase-camera orbit; clicks that egui claims never reach the camera
+     * or gameplay. Wheel zoom stays on the input path (player_ctrl). */
+    if crate::rocket_ride::is_riding() {
+        let egui_mouse = egui_wants
+            && matches!(
+                e._type,
+                sapp::EventType::MouseDown | sapp::EventType::MouseUp | sapp::EventType::MouseScroll
+            );
+        if egui_mouse {
+            app.rocket_cam_drag = false;
+            return;
+        }
+        match e._type {
+            sapp::EventType::MouseDown if e.mouse_button == sapp::Mousebutton::Left => {
+                app.rocket_cam_drag = true;
+            }
+            sapp::EventType::MouseUp if e.mouse_button == sapp::Mousebutton::Left => {
+                app.rocket_cam_drag = false;
+            }
+            sapp::EventType::MouseMove if app.rocket_cam_drag => {
+                rocket_cam::orbit(e.mouse_dx, e.mouse_dy);
+            }
+            _ => {}
+        }
+    } else {
+        app.rocket_cam_drag = false;
+    }
+
     /* Stage (default X): jettison the spent booster while flying a rocket.
      * The shed stack becomes a tumbling falling body (reentry plasma +
      * salvage) if more than one stage remains. */
@@ -6675,34 +6847,15 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Stage)
         && crate::rocket_ride::is_riding()
     {
-        let shed = crate::rocket_ride::active_stage_parts();
-        if crate::rocket_ride::stage() && !shed.is_empty() {
-            let p = app.player.borrow();
-            /* Drop it a stack-length below the player, moving with them plus a
-             * small backward kick so it visibly separates behind the climb. */
-            let along = dvec3_scale(p.basis.up, -(shed.len() as f64) * 1.8);
-            let pos = dvec3_add(p.position, along);
-            let kick = dvec3_scale(p.basis.up, -6.0);
-            let vel = dvec3_add(p.velocity, kick);
-            crate::falling_stage::spawn(shed, pos, vel, p.basis.up);
-        }
+        rocket_stage_action(app);
         return;
     }
-    /* Exit rocket (default Z, beside X/stage). Just ends the ride - the
-     * parts stay on the launch pad they were built on (board no longer
-     * empties it), so there's nothing to hand back and nothing to lose.
-     * Walk back to the pad and E to fly again, or respawn.
-     *
-     * Allowed at any altitude on purpose: refusing to let go in space would
-     * strand you in the exact situation you're trying to get out of. In
-     * space you drop to 6DOF RCS; on the ground you just stand up.
-     *
-     * (Not V - the JS's exit key - because V is Eat here.) */
+    /* Exit rocket (default Z, beside X/stage). */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::ExitRocket)
         && crate::rocket_ride::is_riding()
     {
-        crate::rocket_ride::clear();
+        rocket_exit_action(app);
         return;
     }
     /* Cycle nav target (T while flying). T is Plant on foot; farming is
@@ -6715,8 +6868,8 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         crate::nav_ui::cycle_target();
         return;
     }
-    /* Toggle chase-camera alignment (default L): rocket-frame <-> planet
-     * equatorial. Only meaningful while flying. */
+    /* Cycle chase-camera alignment (default L): rocket / equatorial /
+     * tenebris-centred map view. Only meaningful while flying. */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::CamAlign)
         && crate::rocket_ride::is_riding()
@@ -6724,28 +6877,13 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         rocket_cam::toggle_frame();
         return;
     }
-    /* Respawn rocket (default P): reset to a full-fuelled rocket back on the
-     * pad. For a botched launch, a burnout, or a rocket that drifted off -
-     * you don't have to walk back and re-board. No duplication: it re-boards
-     * the same rocket still sitting on the pad. */
+    /* Respawn rocket (default P). */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code)
             == Some(crate::controls::Action::RespawnRocket)
         && crate::rocket_ride::can_respawn()
     {
-        if let Some((pos, up)) = crate::rocket_ride::respawn() {
-            let mut p = app.player.borrow_mut();
-            p.position = pos;
-            p.velocity = dvec3_make(0.0, 0.0, 0.0);
-            p.grounded = false;
-            /* Rebuild the basis at the pad so the nose points radially up
-             * again (a fresh vertical launch), not wherever the last flight
-             * left it. */
-            p.basis_ready = false;
-            p.last_tile = -1;
-            player_ctrl::rebuild_basis(&mut p);
-            let _ = up;
-        }
+        rocket_respawn_action(app);
         return;
     }
     if e._type == sapp::EventType::KeyDown

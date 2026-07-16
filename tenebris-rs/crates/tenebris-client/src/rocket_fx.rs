@@ -314,6 +314,120 @@ pub fn ride_center(pos: DVec3, up: DVec3) -> DVec3 {
     dvec3_add(pos, dvec3_scale(up, n as f64 * part_seg_m() as f64 * 0.5))
 }
 
+/// Cheap deterministic 0..1 hash for the plume's flicker.
+fn plume_hash(n: f32) -> f32 {
+    ((n.sin() * 43758.547).fract()).abs()
+}
+
+/// Engine exhaust plume for the ridden rocket (`[plume]` in rocket.yaml):
+/// two crossed additive ribbons from the nozzle down the thrust axis, the
+/// bright core fading to the tip colour along the length, whole flame
+/// flickering at flicker_hz. Drawn in the OVERLAY (post-water) sgl context
+/// like the reentry plasma - depth-tests against the forwarded scene depth
+/// with write off, so terrain occludes it and it still reads in front of
+/// the sea. Call only while `rocket_ride::is_burning()`.
+pub fn draw_plume(view: Mat4, proj: Mat4, nozzle: DVec3, up: DVec3, time_s: f32) {
+    let pc = tenebris_core::rocket::config().plume;
+    if pc.length_m <= 0.0 || pc.width_m <= 0.0 {
+        return;
+    }
+    renderer::sgl_overlay_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+    thread_local! {
+        static PIP: std::cell::Cell<sgl::Pipeline> =
+            const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+    }
+    let pip = PIP.with(|p| {
+        if p.get().id == 0 {
+            /* Additive fire: src ONE dst ONE, depth test on / write off so
+             * the flame layers glow over the scene but stays occluded. */
+            let mut desc = sokol::gfx::PipelineDesc {
+                depth: sokol::gfx::DepthState {
+                    write_enabled: false,
+                    compare: sokol::gfx::CompareFunc::Less,
+                    ..Default::default()
+                },
+                cull_mode: sokol::gfx::CullMode::None,
+                ..Default::default()
+            };
+            desc.colors[0].blend = sokol::gfx::BlendState {
+                enabled: true,
+                src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
+                dst_factor_rgb: sokol::gfx::BlendFactor::One,
+                src_factor_alpha: sokol::gfx::BlendFactor::One,
+                dst_factor_alpha: sokol::gfx::BlendFactor::One,
+                ..Default::default()
+            };
+            p.set(sgl::make_pipeline(&desc));
+        }
+        p.get()
+    });
+    sgl::load_pipeline(pip);
+
+    /* Exhaust frame: down the thrust axis, two orthogonal ribbon planes. */
+    let axis = dvec3_scale(up, -1.0);
+    let reference = if up.y.abs() < 0.9 {
+        dvec3_make(0.0, 1.0, 0.0)
+    } else {
+        dvec3_make(1.0, 0.0, 0.0)
+    };
+    let r1 = dvec3_normalize(dvec3_cross(up, reference));
+    let r2 = dvec3_cross(up, r1);
+
+    /* Whole-flame flicker: a hashed pulse per flicker_hz tick shortens the
+     * plume and nudges the widths, so the flame dances instead of standing
+     * frozen. */
+    let tick = (time_s * pc.flicker_hz).floor();
+    let pulse = plume_hash(tick * 12.9898);
+    let len = (pc.length_m * (1.0 - pc.flicker * pulse)) as f64;
+    let segs = (pc.segments.max(2.0)) as i32;
+
+    sgl::begin_quads();
+    for ribbon in [r1, r2] {
+        for i in 0..segs {
+            let t0 = i as f32 / segs as f32;
+            let t1 = (i + 1) as f32 / segs as f32;
+            /* Cone: narrow at the bell, flaring toward the tip, each edge
+             * jittered a little by the flicker. */
+            let jit0 = 1.0 - pc.flicker * 0.5 * plume_hash(tick * 3.7 + i as f32 * 17.3);
+            let jit1 = 1.0 - pc.flicker * 0.5 * plume_hash(tick * 3.7 + (i + 1) as f32 * 17.3);
+            let w0 = (pc.width_m * (0.45 + 1.05 * t0) * jit0) as f64;
+            let w1 = (pc.width_m * (0.45 + 1.05 * t1) * jit1) as f64;
+            let p0 = dvec3_add(nozzle, dvec3_scale(axis, len * t0 as f64));
+            let p1 = dvec3_add(nozzle, dvec3_scale(axis, len * t1 as f64));
+            /* Core -> tip colour, alpha dying toward the tail. */
+            let col = |t: f32| {
+                (
+                    pc.core_r + (pc.tip_r - pc.core_r) * t,
+                    pc.core_g + (pc.tip_g - pc.core_g) * t,
+                    pc.core_b + (pc.tip_b - pc.core_b) * t,
+                    (1.0 - t).powf(1.5),
+                )
+            };
+            let (r0c, g0c, b0c, a0) = col(t0);
+            let (r1c, g1c, b1c, a1) = col(t1);
+            let v = |p: DVec3, r: DVec3, s: f64| {
+                let q = dvec3_add(p, dvec3_scale(r, s));
+                sgl::v3f(q.x as f32, q.y as f32, q.z as f32);
+            };
+            sgl::c4f(r0c, g0c, b0c, a0);
+            v(p0, ribbon, -w0);
+            sgl::c4f(r0c, g0c, b0c, a0);
+            v(p0, ribbon, w0);
+            sgl::c4f(r1c, g1c, b1c, a1);
+            v(p1, ribbon, w1);
+            sgl::c4f(r1c, g1c, b1c, a1);
+            v(p1, ribbon, -w1);
+        }
+    }
+    sgl::end();
+    renderer::sgl_overlay_end();
+}
+
 /// Draw one assembled part stack from its BASE (bottom face of the first
 /// engine) along the basis' +Y column: each part in its slot, vacuum bells
 /// at VAC_BELL_SCALE and TOP-ALIGNED so the housing meets the tank above,

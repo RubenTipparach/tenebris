@@ -60,8 +60,9 @@ const RETROGRADE: [f32; 4] = [0.95, 0.5, 0.2, 1.0];
 const RADIAL_OUT: [f32; 4] = [0.3, 0.9, 0.95, 1.0];
 const NORMAL: [f32; 4] = [0.8, 0.4, 0.95, 1.0];
 const TARGET_COL: [f32; 4] = [0.98, 0.35, 0.75, 1.0];
-/* Orbit lines. */
-const ORBIT_SEGS: usize = 192;
+/* Orbit lines. 768 chords keeps a 10 km ellipse looking like a curve even
+ * fully zoomed out (~80 m per chord); lines are near-free to draw. */
+const ORBIT_SEGS: usize = 768;
 const ELLIPSE_COL: [f32; 4] = [0.35, 0.9, 0.95, 0.85];
 const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
@@ -136,6 +137,32 @@ pub fn target_state(sim_t: f64) -> Option<(DVec3, DVec3)> {
 
 thread_local! {
     static LINE_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    static HUD_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+}
+
+/// Alpha-blended 2D pipeline for the navball, created lazily in the
+/// default (swapchain) context. Own pipeline rather than
+/// `mobile_ui::alpha_pipeline()` because that one is id 0 until
+/// mobile_ui's FIRST draw has run - and this module draws before it in
+/// the frame, so on early frames the ball would silently bind an invalid
+/// pipeline. (That is exactly the "where is my navball" bug.)
+fn hud_pip() -> sgl::Pipeline {
+    let existing = HUD_PIP.with(|c| c.get());
+    if existing.id != 0 {
+        return existing;
+    }
+    let mut desc = sg::PipelineDesc::default();
+    desc.colors[0].blend = sg::BlendState {
+        enabled: true,
+        src_factor_rgb: sg::BlendFactor::SrcAlpha,
+        dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+        src_factor_alpha: sg::BlendFactor::One,
+        dst_factor_alpha: sg::BlendFactor::One,
+        ..Default::default()
+    };
+    let pip = sgl::make_pipeline(&desc);
+    HUD_PIP.with(|c| c.set(pip));
+    pip
 }
 
 /// Depth-tested alpha-blended line pipeline for the world sgl context
@@ -211,9 +238,44 @@ fn circle(center: DVec3, e1: DVec3, e2: DVec3, r: f64, col: [f32; 4], segs: usiz
     line_strip(&pts, col);
 }
 
+/// A world-space arrow from `from` along `dir` (unit) for `len` metres,
+/// with a 4-fin head so it reads from any angle.
+fn arrow(from: DVec3, dir: DVec3, len: f64, col: [f32; 4]) {
+    let tip = dvec3_add(from, dvec3_scale(dir, len));
+    /* Two perpendiculars to the shaft for the head fins. */
+    let seed = if dir.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
+    let s1 = dvec3_normalize(dvec3_cross(dir, seed));
+    let s2 = dvec3_cross(dir, s1);
+    let back = dvec3_sub(tip, dvec3_scale(dir, len * 0.18));
+    let w = len * 0.08;
+    sgl::begin_lines();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    sgl::v3f(from.x as f32, from.y as f32, from.z as f32);
+    sgl::v3f(tip.x as f32, tip.y as f32, tip.z as f32);
+    for s in [s1, s2, dvec3_scale(s1, -1.0), dvec3_scale(s2, -1.0)] {
+        let fin = dvec3_add(back, dvec3_scale(s, w));
+        sgl::v3f(tip.x as f32, tip.y as f32, tip.z as f32);
+        sgl::v3f(fin.x as f32, fin.y as f32, fin.z as f32);
+    }
+    sgl::end();
+}
+
 /// Draw the nav layer into the world pass. Call while riding in space
 /// (self-gates otherwise, so the call site can stay unconditional).
-pub fn draw_world(view: Mat4, proj: Mat4, pos: DVec3, vel: DVec3, riding: bool, in_space: bool, sim_t: f64) {
+/// `right`/`fwd`/`nose` are the rocket's basis for the attitude arrows.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_world(
+    view: Mat4,
+    proj: Mat4,
+    pos: DVec3,
+    vel: DVec3,
+    right: DVec3,
+    fwd: DVec3,
+    nose: DVec3,
+    riding: bool,
+    in_space: bool,
+    sim_t: f64,
+) {
     if !riding || !in_space {
         return;
     }
@@ -246,9 +308,9 @@ pub fn draw_world(view: Mat4, proj: Mat4, pos: DVec3, vel: DVec3, riding: bool, 
             let c = dvec3_make(b.pos_x, b.pos_y, b.pos_z);
             let r = b.radius_m * 1.5;
             let y_axis = dvec3_make(0.0, 1.0, 0.0);
-            circle(c, x_axis, z_axis, r, TARGET_COL, 64);
-            circle(c, x_axis, y_axis, r, TARGET_COL, 64);
-            circle(c, y_axis, z_axis, r, TARGET_COL, 64);
+            circle(c, x_axis, z_axis, r, TARGET_COL, 96);
+            circle(c, x_axis, y_axis, r, TARGET_COL, 96);
+            circle(c, y_axis, z_axis, r, TARGET_COL, 96);
         }
         None => {}
     }
@@ -273,6 +335,21 @@ pub fn draw_world(view: Mat4, proj: Mat4, pos: DVec3, vel: DVec3, riding: bool, 
                 cross_marker(ap, 25.0, col);
             }
         }
+    }
+
+    /* Attitude gizmo: past close-chase range the rocket is subpixel, so
+     * draw its axes as arrows sized to the camera distance - orientation
+     * readable from ANY zoom. Nose (thrust) in the crosshair yellow, its
+     * negatives dim; fwd green, right red (the WASD steering axes). */
+    let cam_d = crate::rocket_cam::state().cur_distance as f64;
+    if cam_d > tenebris_core::rocket::config().camera.zoom_far_m as f64 {
+        let len = cam_d * 0.12;
+        arrow(pos, nose, len * 1.4, NOSE_COL);
+        arrow(pos, dvec3_scale(nose, -1.0), len * 0.7, [NOSE_COL[0], NOSE_COL[1], NOSE_COL[2], 0.35]);
+        arrow(pos, fwd, len, [0.3, 0.9, 0.35, 0.9]);
+        arrow(pos, dvec3_scale(fwd, -1.0), len * 0.7, [0.3, 0.9, 0.35, 0.35]);
+        arrow(pos, right, len, [0.95, 0.35, 0.3, 0.9]);
+        arrow(pos, dvec3_scale(right, -1.0), len * 0.7, [0.95, 0.35, 0.3, 0.35]);
     }
 
     renderer::sgl_world_end();
@@ -346,7 +423,7 @@ pub fn draw_hud(
     sgl::ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
     sgl::matrix_mode_modelview();
     sgl::load_identity();
-    sgl::load_pipeline(crate::mobile_ui::alpha_pipeline());
+    sgl::load_pipeline(hud_pip());
 
     let cx = screen_w * 0.5;
     let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
@@ -509,7 +586,6 @@ pub fn draw_hud(
 pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
     let mut out = Vec::new();
     let focus = nav::dominant_body(pos);
-    let focus_c = dvec3_make(focus.pos_x, focus.pos_y, focus.pos_z);
     if let Some(c) = Conic::from_state(&focus, pos, vel) {
         if c.e < 1.0 {
             out.push(format!(

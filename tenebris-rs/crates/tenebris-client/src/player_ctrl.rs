@@ -1452,7 +1452,10 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      * (`canSteer` is false until it reaches IN_FLIGHT). */
     let riding = crate::rocket_ride::is_riding();
     if riding {
-        crate::rocket_cam::orbit(inp.mouse_dx, inp.mouse_dy);
+        /* The camera is orbited by LEFT-DRAG in app.rs's event path now
+         * (flight flies with a free cursor for the clickable panel), not by
+         * raw look deltas - but keep the deltas consumed so a locked-pointer
+         * edge frame can't yaw the ship. */
         yaw_delta = 0.0;
         pitch_delta = 0.0;
     }

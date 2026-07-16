@@ -60,11 +60,16 @@ steer_rate_rads: 0.9
 [camera]
 distance_m: 20         # resting distance behind the rocket
 min_distance_m: 8      # zoom-in clamp
-max_distance_m: 100    # zoom-out clamp
+max_distance_m: 20000  # zoom-out clamp - far enough to frame a whole 10 km
+                       # orbit; zooming out IS the manoeuvre/map view
 elevation_rad: 0.3     # start angle above the rocket's horizon (~17 deg)
 smooth_rate: 15.0      # orbit follow rate, 1/s: lerp = 1 - exp(-rate * dt)
 mouse_sens: 0.005      # radians per mouse pixel
-zoom_step: 0.1         # fraction of current distance per scroll notch
+zoom_step: 0.1         # fraction of current distance per scroll notch (near)
+zoom_step_far: 0.35    # bigger fraction past zoom_far_m - ship-scale to a
+zoom_far_m: 100        # whole-orbit view in a flick, not fifty notches
+planet_view_min_m: 800 # min orbit distance entering the tenebris-centred
+                       # map view (the chase distance would sit inside rock)
 
 # Reentry FX (client visual): plasma streaks when falling fast inside the
 # lower atmosphere. Ramps min_speed -> full_speed; only below max_alt_m.
@@ -86,3 +91,19 @@ heat_decay: 1.2        # glow cool-down rate
 spin_rate: 1.4         # tumble of the shed stack (rad/s)
 scrap_min: 2           # metal scraps from a stage that hits land
 scrap_max: 4
+
+# Engine exhaust plume (client visual): drawn while the ride is actually
+# burning fuel - crossed additive ribbons from the nozzle down the thrust
+# axis, bright core fading to the tip colour, flickering.
+[plume]
+length_m: 14.0         # full-throttle plume length
+width_m: 1.5           # half-width at the nozzle
+core_r: 1.0            # bright core colour at the nozzle (additive)
+core_g: 0.92
+core_b: 0.65
+tip_r: 1.0             # tail colour the plume fades toward
+tip_g: 0.32
+tip_b: 0.06
+flicker: 0.22          # length/width jitter fraction (the flame's dance)
+flicker_hz: 26.0       # flicker pulses per second
+segments: 7            # ribbon segments (colour-gradient resolution)

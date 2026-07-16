@@ -226,8 +226,18 @@ pub struct CameraConstants {
     pub smooth_rate: f32,
     /// Mouse orbit sensitivity, radians per pixel.
     pub mouse_sens: f32,
-    /// Fraction of the current distance one scroll notch adds/removes.
+    /// Fraction of the current distance one scroll notch adds/removes,
+    /// inside `zoom_far_m` - the fine, ship-scale zoom.
     pub zoom_step: f32,
+    /// Past `zoom_far_m` a notch steps by this bigger fraction instead, so
+    /// climbing from ship-scale out to a whole-orbit view takes a flick of
+    /// the wheel, not fifty notches. Still multiplicative - each notch is a
+    /// constant fraction of the current distance in both zones.
+    pub zoom_step_far: f32,
+    pub zoom_far_m: f32,
+    /// Minimum orbit distance when entering the planet-centred (map) view -
+    /// the chase distance would sit inside the terrain.
+    pub planet_view_min_m: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -242,6 +252,32 @@ pub struct RocketConfig {
     pub reentry: ReentryConstants,
     pub salvage: SalvageConstants,
     pub camera: CameraConstants,
+    pub plume: PlumeConstants,
+}
+
+/// Engine exhaust plume (client visual; `[plume]` in rocket.yaml). Drawn
+/// while the ride is actually burning fuel: crossed additive ribbons from
+/// the nozzle down the thrust axis, bright core fading to the tip colour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlumeConstants {
+    /// Full-throttle plume length (m).
+    pub length_m: f32,
+    /// Plume half-width at the nozzle (m).
+    pub width_m: f32,
+    /// Bright core colour at the nozzle (additive, 0..1).
+    pub core_r: f32,
+    pub core_g: f32,
+    pub core_b: f32,
+    /// Tail colour the plume fades toward (additive, 0..1).
+    pub tip_r: f32,
+    pub tip_g: f32,
+    pub tip_b: f32,
+    /// Length/width jitter fraction (0..1) - the flame's flicker.
+    pub flicker: f32,
+    /// Flicker rate, pulses per second.
+    pub flicker_hz: f32,
+    /// Ribbon segments along the plume (colour-gradient resolution).
+    pub segments: f32,
 }
 
 /// Compiled-in defaults = the JS RocketConfig (MEDIUM_* parts).
@@ -286,11 +322,32 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
     camera: CameraConstants {
         distance_m: 20.0,
         min_distance_m: 8.0,
-        max_distance_m: 100.0,
+        /* Far enough to frame a whole 10 km orbit, not just the ship - the
+         * zoom-out IS the map view for orbital manoeuvres. (Was 100 m, the
+         * JS value, which never had orbits to look at.) */
+        max_distance_m: 20000.0,
         elevation_rad: 0.3,
         smooth_rate: 15.0,
         mouse_sens: 0.005,
         zoom_step: 0.1,
+        /* 35%/notch past 100 m: 100 m -> 20 km in ~18 notches instead of 55. */
+        zoom_step_far: 0.35,
+        zoom_far_m: 100.0,
+        /* ~2.5 planet radii: the whole globe in frame on entry. */
+        planet_view_min_m: 800.0,
+    },
+    plume: PlumeConstants {
+        length_m: 14.0,
+        width_m: 1.5,
+        core_r: 1.0,
+        core_g: 0.92,
+        core_b: 0.65,
+        tip_r: 1.0,
+        tip_g: 0.32,
+        tip_b: 0.06,
+        flicker: 0.22,
+        flicker_hz: 26.0,
+        segments: 7.0,
     },
 };
 
@@ -342,6 +399,9 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("camera", "smooth_rate") => c.camera.smooth_rate = val,
             ("camera", "mouse_sens") => c.camera.mouse_sens = val,
             ("camera", "zoom_step") => c.camera.zoom_step = val,
+            ("camera", "zoom_step_far") => c.camera.zoom_step_far = val,
+            ("camera", "zoom_far_m") => c.camera.zoom_far_m = val,
+            ("camera", "planet_view_min_m") => c.camera.planet_view_min_m = val,
             ("flight", "steer_rate_rads") => c.flight.steer_rate_rads = val,
             ("engine", "thrust_n") => c.engine.thrust_n = val,
             ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
@@ -373,6 +433,17 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("flight", "safe_landing_mps") => c.flight.safe_landing_mps = val,
             ("flight", "drag_coef") => c.flight.drag_coef = val,
             ("flight", "parachute_drag") => c.flight.parachute_drag = val,
+            ("plume", "length_m") => c.plume.length_m = val,
+            ("plume", "width_m") => c.plume.width_m = val,
+            ("plume", "core_r") => c.plume.core_r = val,
+            ("plume", "core_g") => c.plume.core_g = val,
+            ("plume", "core_b") => c.plume.core_b = val,
+            ("plume", "tip_r") => c.plume.tip_r = val,
+            ("plume", "tip_g") => c.plume.tip_g = val,
+            ("plume", "tip_b") => c.plume.tip_b = val,
+            ("plume", "flicker") => c.plume.flicker = val,
+            ("plume", "flicker_hz") => c.plume.flicker_hz = val,
+            ("plume", "segments") => c.plume.segments = val,
             _ => {}
         }
     }

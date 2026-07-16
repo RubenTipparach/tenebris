@@ -841,7 +841,15 @@ pub fn handle_event(e: &sapp::Event) {
             }
 
             sapp::EventType::MouseDown => {
-                if !s.pub_.pointer_locked && !s.pub_.touch_active {
+                /* Click-to-recapture the FPS pointer - except in rocket
+                 * flight, which deliberately flies with a free cursor
+                 * (clickable flight panel + drag-to-orbit camera). Without
+                 * this gate the first click in flight re-locked the mouse
+                 * and yanked the cursor off the panel. */
+                if !s.pub_.pointer_locked
+                    && !s.pub_.touch_active
+                    && !crate::rocket_ride::is_riding()
+                {
                     lock_mouse(true);
                 }
                 if e.mouse_button == sapp::Mousebutton::Left {

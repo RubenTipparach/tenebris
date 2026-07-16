@@ -36,6 +36,10 @@ struct Origin {
 thread_local! {
     static RIDE: RefCell<Option<RocketRide>> = const { RefCell::new(None) };
     static ORIGIN: RefCell<Option<Origin>> = const { RefCell::new(None) };
+    /// Wall-clock (renderer::time_seconds) until which the engine counts as
+    /// firing - set by `burn` whenever fuel actually burned this frame. The
+    /// short grace keeps the plume from strobing on frame-time jitter.
+    static BURN_UNTIL_S: std::cell::Cell<f64> = const { std::cell::Cell::new(-1e9) };
 }
 
 /// Board a rocket assembled on the pad at (`tile`, `depth`). `pos`/`up` are
@@ -48,7 +52,19 @@ pub fn begin(ride: RocketRide, stack: Vec<ItemId>, tile: i32, depth: i32, pos: D
     RIDE.with(|c| *c.borrow_mut() = Some(ride));
     ORIGIN.with(|o| *o.borrow_mut() = Some(Origin { stack, tile, depth, pos, up }));
     crate::rocket_cam::reset();
+    /* Flight flies with a FREE cursor (like the JS): the egui flight panel
+     * is clickable, and the camera orbits on left-drag instead of raw
+     * mouse-look. Exit re-locks (rocket_exit_action). */
+    release_pointer();
 }
+
+#[cfg(not(test))]
+fn release_pointer() {
+    sokol::app::lock_mouse(false);
+    sokol::app::show_mouse(true);
+}
+#[cfg(test)]
+fn release_pointer() {}
 
 /// Stop flying (climbed out / landed / world exit). Also forgets the origin
 /// pad, so a later respawn can't reset a rocket the player has walked away
@@ -145,9 +161,23 @@ pub fn stage_count() -> usize {
 pub fn burn(dt: f32) {
     RIDE.with(|c| {
         if let Some(r) = c.borrow_mut().as_mut() {
+            /* Latch the plume only when there is fuel to burn - a spent
+             * stage's throttle key must not light an exhaust. (This is
+             * RocketRide::active_fuel - the f32 - not this module's
+             * (fuel, cap) tuple wrapper of the same name.) */
+            if r.active_fuel() > 0.0 {
+                BURN_UNTIL_S
+                    .with(|b| b.set(crate::renderer::time_seconds() as f64 + 0.1));
+            }
             r.burn(dt);
         }
     });
+}
+
+/// True while the engine is firing (fuel burned within the last grace
+/// window) - drives the exhaust plume.
+pub fn is_burning() -> bool {
+    BURN_UNTIL_S.with(|b| (crate::renderer::time_seconds() as f64) < b.get())
 }
 
 /// Jettison the active stage (Stage key). Returns true if a stage dropped.
