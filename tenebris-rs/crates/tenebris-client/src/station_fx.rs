@@ -358,8 +358,19 @@ fn bake() -> BakedStation {
 }
 
 /// Lazy pipeline against the OFFSCREEN pass formats (Rgba8 +
-/// DepthStencil, no MSAA - same recipe as the glow pipeline). Opaque
-/// writes depth; glass tests but doesn't write and alpha-blends.
+/// DepthStencil, no MSAA - same recipe as the glow pipeline). Both opaque
+/// AND glass write depth.
+///
+/// Glass writing depth is deliberate: the drum's glazing is a BAKED mesh
+/// with no per-frame back-to-front sort, so the old "test but don't write"
+/// transparency setup blended the panes in vertex-buffer order - a farther
+/// pane emitted after a nearer one painted OVER it, the "faces sorted out
+/// of order" artifact. Writing depth lets the z-buffer arbitrate: at each
+/// pixel only the NEAREST glass face survives the LessEqual test and blends
+/// over the opaque scene behind it, regardless of emit order. The trade is
+/// that stacked panes don't double-tint (you see one layer of glass, not
+/// glass-through-glass) - a clean, order-independent look instead of the
+/// flicker. (True layered glazing would need a depth-sorted or OIT pass.)
 fn make_mesh_pipeline(glass: bool) -> sg::Pipeline {
     let shd = sg::make_shader(&smesh::station_mesh_shader_desc(sg::query_backend()));
     let mut desc = sg::PipelineDesc {
@@ -368,7 +379,7 @@ fn make_mesh_pipeline(glass: bool) -> sg::Pipeline {
         depth: sg::DepthState {
             pixel_format: sg::PixelFormat::DepthStencil,
             compare: sg::CompareFunc::LessEqual,
-            write_enabled: !glass,
+            write_enabled: true,
             ..Default::default()
         },
         cull_mode: sg::CullMode::None,
