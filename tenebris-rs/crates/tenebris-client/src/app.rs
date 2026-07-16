@@ -5268,9 +5268,11 @@ fn frame_inner(app: &mut App) {
         let pitch = tenebris_core::station::floor_pitch(&cfg) as f64;
         let slab_top = (cfg.slab_layers as f64 + storey as f64 * pitch) * lh;
         let (cx, cz) =
-            tenebris_core::station::axial_to_local(-2, 0, cfg.hex_size_m);
+            tenebris_core::station::axial_to_local(-3, 1, cfg.hex_size_m);
         let eye = sf.local_to_world(dvec3_make(cx as f64, slab_top + 1.5, cz as f64));
-        let look = sf.local_to_world(dvec3_make(4.0, slab_top + 1.2, 2.0));
+        /* Look at the central spiral staircase, tilted up the atrium
+         * shaft so the winding treads read. */
+        let look = sf.local_to_world(dvec3_make(1.0, slab_top + 5.5, -0.5));
         {
             /* Pin the 6DOF basis level with the room (station up), not
              * whatever roll the free camera drifted to. */

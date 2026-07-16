@@ -54,7 +54,7 @@ station:
   gravity_field_m: 40.0
   artificial_gravity_mps2: 15.0
   deck_friction: 6.0
-  step_up_m: 0.7
+  step_up_m: 0.75
   head_clearance_m: 1.8
   # Start phase (degrees from +x) - keeps the station off the prime
   # meridian so it never spawns parked over the launch complex.

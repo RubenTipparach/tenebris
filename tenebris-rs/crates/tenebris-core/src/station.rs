@@ -53,7 +53,7 @@ pub struct StationConfig {
     /// Clear walking headroom per storey, in air layers.
     pub floor_air_layers: u32,
     /// How high a ledge the player steps up onto while walking the
-    /// station (also what makes the half-layer stair treads climbable).
+    /// station (sized to make the spiral's 0.714 m treads climbable).
     pub step_up_m: f32,
     /// Head clearance used for ceiling collision inside the hotel.
     pub head_clearance_m: f32,
@@ -89,7 +89,7 @@ impl StationConfig {
         tower_radius: 4,
         tower_floors: 5,
         floor_air_layers: 3,
-        step_up_m: 0.7,
+        step_up_m: 0.75,
         head_clearance_m: 1.8,
         gravity_field_m: 40.0,
         artificial_gravity_mps2: 15.0,
@@ -290,19 +290,12 @@ fn roof_layer(cfg: &StationConfig) -> i32 {
     floor_slab_layer(cfg, cfg.tower_floors.max(1) as i32)
 }
 
-/// The interior stair ring (one ring inside the facade), cells ordered
-/// by angle so consecutive indices are adjacent - the spiral walks it.
+/// The stair ring: the six cells IMMEDIATELY around the centre column -
+/// a true central spiral staircase winding up the building's core,
+/// ordered by angle so consecutive indices are adjacent.
 fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
-    let n = cfg.tower_radius as i32 - 1;
     let a = cfg.hex_size_m;
-    let mut cells: Vec<(i32, i32)> = Vec::new();
-    for q in -n..=n {
-        for r in (-n).max(-q - n)..=n.min(-q + n) {
-            if hex_dist(q, r) == n {
-                cells.push((q, r));
-            }
-        }
-    }
+    let mut cells: Vec<(i32, i32)> = HEX_DIRS.to_vec();
     cells.sort_by(|&(q0, r0), &(q1, r1)| {
         let (x0, z0) = axial_to_local(q0, r0, a);
         let (x1, z1) = axial_to_local(q1, r1, a);
@@ -311,15 +304,19 @@ fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
     cells
 }
 
-/// Treads per stair run (floor to floor). The rise per tread is
-/// `floor_pitch * layer_h / STAIR_STEPS_PER_FLOOR` - 0.625 m at the
-/// defaults, walkable under the `step_up_m` allowance.
-pub const STAIR_STEPS_PER_FLOOR: i32 = 8;
+/// Treads per stair run (floor to floor). Seven treads over the 6-cell
+/// centre ring rise `floor_pitch * layer_h / 7` each (0.714 m at the
+/// defaults, inside the `step_up_m` allowance) and one revolution
+/// climbs 6/7 of a storey - which is what guarantees every tread keeps
+/// at least `floor_air_layers` of clear air above it in its own column
+/// (pinned by the stair-clearance test).
+pub const STAIR_STEPS_PER_FLOOR: i32 = 7;
 
-/// The hotel's spiral staircase: for each floor, STAIR_STEPS_PER_FLOOR
-/// treads walking the interior ring upward in half-layer rises; the top
-/// treads of each run pass through a stairwell opening in the slab
-/// above (see `stairwell_open`). The final run tops out on the roof.
+/// The hotel's central spiral staircase: for each floor,
+/// STAIR_STEPS_PER_FLOOR treads winding around the lit centre column;
+/// the slabs above open a 6-cell atrium shaft (see the interior slab
+/// build) so the floor you are climbing to never blocks the run. The
+/// final run tops out on the roof deck.
 pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
     let ring = stair_ring(cfg);
     let lh = layer_h(cfg);
@@ -337,17 +334,13 @@ pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
     out
 }
 
-/// True when slab `f`'s cell (q, r) is a stairwell opening - the cell
-/// sits over the upper half of the run arriving from the floor below,
-/// so the spiral can pass through. `f == tower_floors` is the roof.
-fn stairwell_open(_cfg: &StationConfig, ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
-    if f < 1 {
-        return false;
-    }
-    let run = f - 1;
-    (STAIR_STEPS_PER_FLOOR / 2..STAIR_STEPS_PER_FLOOR).any(|k| {
-        ring[((run * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()] == (q, r)
-    })
+/// True when slab `f`'s cell (q, r) is part of the central atrium
+/// shaft the spiral climbs through: every slab above the lobby (and
+/// the roof, `f == tower_floors`) opens the 6-cell ring around the
+/// centre column, so no floor blocks the stairs and every tread keeps
+/// its full headroom.
+fn stairwell_open(_cfg: &StationConfig, _ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
+    f >= 1 && hex_dist(q, r) == 1
 }
 
 /// Generate the wheel station. Pure function of the config; the client
@@ -1176,14 +1169,15 @@ mod tests {
             glass_windows >= 5 * 8,
             "every storey carries a glazed window band (got {glass_windows} panes)"
         );
-        /* Interior slabs: 37 interior cells x (5 storeys + roof) minus
-         * 4 stairwell-opening cells per slab above the ground floor. */
+        /* Interior slabs: full 37-cell lobby, then 31 cells per slab
+         * above it (5 slabs incl. roof) - the 6-cell central atrium
+         * shaft the spiral staircase climbs through stays open. */
         let interior = prisms
             .iter()
             .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
-        assert_eq!(interior, 37 * 6 - 5 * 4);
+        assert_eq!(interior, 37 + 5 * (37 - 6));
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
          * storey bands; pink alternate bands; warm-gold room lights (5
          * storeys) + 6 pad markers; signs = crown ring + spire + the
@@ -1249,15 +1243,44 @@ mod tests {
         }
         /* Ground floor is level with the courtyard deck. */
         assert!((col[0].1 - cfg.slab_layers as f32 * lh).abs() < 1e-4);
-        /* Stairs: 8 treads per storey, each rise within the step-up
-         * allowance, topping out exactly on the roof deck. */
+        /* Stairs: a CENTRAL spiral - every tread on the 6-cell ring
+         * around the core column - 7 treads per storey, each rise
+         * within the step-up allowance, consecutive treads on adjacent
+         * cells, topping out exactly on the roof deck. */
         let steps = stairs(&cfg);
         assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize);
+        for s in &steps {
+            assert_eq!(hex_dist(s.q, s.r), 1, "spiral hugs the centre column");
+        }
+        for w in steps.windows(2) {
+            let d = hex_dist(w[0].q - w[1].q, w[0].r - w[1].r);
+            assert!(d <= 1, "consecutive treads are adjacent cells");
+        }
         let rise = floor_pitch(&cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
         assert!(rise <= cfg.step_up_m, "tread rise {rise} must be walkable");
         let roof_top = (roof_layer(&cfg) + 1) as f32 * lh;
         let max_top = steps.iter().map(|s| s.top_m).fold(f32::MIN, f32::max);
         assert!((max_top - roof_top).abs() < 1e-4, "spiral tops out on the roof");
+        /* THE user rule: every tread keeps at least floor_air_layers of
+         * clear air above it in its own column - no slab, no tread, no
+         * anything blocks the climb. */
+        let min_air = cfg.floor_air_layers as f32 * lh;
+        for s in &steps {
+            let col = spans.get(&(s.q, s.r)).expect("tread column");
+            let over = col
+                .iter()
+                .map(|sp| sp.0)
+                .filter(|&bot| bot > s.top_m + 1e-4)
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                over - s.top_m >= min_air - 1e-3,
+                "tread at {:?} top {} has only {} m of air above (need {})",
+                (s.q, s.r),
+                s.top_m,
+                over - s.top_m,
+                min_air
+            );
+        }
         /* The hotel wall is one merged solid: no mid-wall ledge to stand
          * on (walls are impassable), while BOTH entrance columns (the
          * double-wide arch) keep a walkable gap at deck level - at
