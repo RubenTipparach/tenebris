@@ -28,9 +28,10 @@ use std::collections::HashSet;
 use sokol::gl as sgl;
 
 use tenebris_core::math::{
-    dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
-    DVec3,
+    dvec3_add, dvec3_cross, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale,
+    dvec3_sub, DVec3,
 };
+use tenebris_core::orbit;
 use tenebris_core::planet::{self, BodyId};
 use tenebris_core::station::{self, Prism, StationMat, HEX_DIRS};
 
@@ -147,35 +148,54 @@ fn corner(a: f32, k: usize) -> (f32, f32) {
  * shader reproduces the old per-face `shade * max(lit_material,
  * light01)` exactly. */
 
-/// Push one baked station vertex (7 floats - shaders::station_mesh).
+/// Push one baked station vertex (10 floats - shaders::station_mesh):
+/// pos + uv + shade + floor + station-local face normal (for the sun N.L).
 #[inline]
-fn push_v(out: &mut Vec<f32>, x: f32, y: f32, z: f32, u: f32, v: f32, shade: f32, floor: f32) {
-    out.extend_from_slice(&[x, y, z, u, v, shade, floor]);
+#[allow(clippy::too_many_arguments)]
+fn push_v(
+    out: &mut Vec<f32>,
+    x: f32,
+    y: f32,
+    z: f32,
+    u: f32,
+    v: f32,
+    shade: f32,
+    floor: f32,
+    n: [f32; 3],
+) {
+    out.extend_from_slice(&[x, y, z, u, v, shade, floor, n[0], n[1], n[2]]);
 }
 
-/// Emit one hexagonal cap (6 triangles) at local height `y`.
-fn emit_cap(out: &mut Vec<f32>, x: f32, z: f32, a: f32, y: f32, shade: f32, floor: f32) {
+/// Emit one hexagonal cap (6 triangles) at local height `y`. `ny` is the
+/// cap's facing (+1 top / -1 bottom) for the sun term.
+fn emit_cap(out: &mut Vec<f32>, x: f32, z: f32, a: f32, y: f32, shade: f32, floor: f32, ny: f32) {
+    let n = [0.0, ny, 0.0];
     for k in 0..6 {
         let (x0, z0) = corner(a, k);
         let (x1, z1) = corner(a, (k + 1) % 6);
-        push_v(out, x, y, z, 0.5, 0.5, shade, floor);
-        push_v(out, x + x0, y, z + z0, 0.5 + 0.5 * x0 / a, 0.5 + 0.5 * z0 / a, shade, floor);
-        push_v(out, x + x1, y, z + z1, 0.5 + 0.5 * x1 / a, 0.5 + 0.5 * z1 / a, shade, floor);
+        push_v(out, x, y, z, 0.5, 0.5, shade, floor, n);
+        push_v(out, x + x0, y, z + z0, 0.5 + 0.5 * x0 / a, 0.5 + 0.5 * z0 / a, shade, floor, n);
+        push_v(out, x + x1, y, z + z1, 0.5 + 0.5 * x1 / a, 0.5 + 0.5 * z1 / a, shade, floor, n);
     }
 }
 
-/// Emit side quad k (two triangles) of a prism spanning y0..y1.
+/// Emit side quad k (two triangles) of a prism spanning y0..y1. The face's
+/// outward normal is the xz direction of its base-edge midpoint (a hex face
+/// points radially out from the column centre).
 fn emit_side(out: &mut Vec<f32>, x: f32, z: f32, a: f32, k: usize, y0: f32, y1: f32, floor: f32) {
     let (x0, z0) = corner(a, k);
     let (x1, z1) = corner(a, (k + 1) % 6);
     let s = if k % 2 == 0 { SHADE_SIDE_A } else { SHADE_SIDE_B };
+    let (mx, mz) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+    let ml = (mx * mx + mz * mz).sqrt().max(1e-6);
+    let n = [mx / ml, 0.0, mz / ml];
     let (bx0, bz0, bx1, bz1) = (x + x0, z + z0, x + x1, z + z1);
-    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor);
-    push_v(out, bx1, y0, bz1, 1.0, 1.0, s, floor);
-    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor);
-    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor);
-    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor);
-    push_v(out, bx0, y1, bz0, 0.0, 0.0, s, floor);
+    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor, n);
+    push_v(out, bx1, y0, bz1, 1.0, 1.0, s, floor, n);
+    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor, n);
+    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor, n);
+    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor, n);
+    push_v(out, bx0, y1, bz0, 0.0, 0.0, s, floor, n);
 }
 
 /// True for the fixtures the client draws as real furniture (built from
@@ -189,6 +209,7 @@ fn is_furniture(tex: usize) -> bool {
 /// Emit one textured quad (two triangles). Corners wind p0->p1->p2->p3;
 /// uv maps 0..1 across the face (p0 bottom-left). Cull mode is None so
 /// winding doesn't matter - both sides show.
+#[allow(clippy::too_many_arguments)]
 fn emit_quad(
     out: &mut Vec<f32>,
     p0: [f32; 3],
@@ -197,30 +218,31 @@ fn emit_quad(
     p3: [f32; 3],
     s: f32,
     floor: f32,
+    n: [f32; 3],
 ) {
-    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor);
-    push_v(out, p1[0], p1[1], p1[2], 1.0, 1.0, s, floor);
-    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor);
-    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor);
-    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor);
-    push_v(out, p3[0], p3[1], p3[2], 0.0, 0.0, s, floor);
+    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor, n);
+    push_v(out, p1[0], p1[1], p1[2], 1.0, 1.0, s, floor, n);
+    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor, n);
+    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor, n);
+    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor, n);
+    push_v(out, p3[0], p3[1], p3[2], 0.0, 0.0, s, floor, n);
 }
 
 /// Emit a textured axis-aligned box centred at (cx, cz) with half-extents
 /// (hx, hz), spanning y0..y1. Faces use the same cap/side shading as the
 /// prisms so the furniture reads with the scene light; the bound texture
-/// wraps each face 0..1.
+/// wraps each face 0..1. Each face carries its axis normal for the sun N.L.
 fn emit_box(out: &mut Vec<f32>, cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, floor: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (z0, z1) = (cz - hz, cz + hz);
     /* Top + bottom caps. */
-    emit_quad(out, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP, floor);
-    emit_quad(out, [x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM, floor);
+    emit_quad(out, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP, floor, [0.0, 1.0, 0.0]);
+    emit_quad(out, [x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM, floor, [0.0, -1.0, 0.0]);
     /* Four sides (alternating shade so the block's facets read). */
-    emit_quad(out, [x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A, floor);
-    emit_quad(out, [x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A, floor);
-    emit_quad(out, [x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B, floor);
-    emit_quad(out, [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B, floor);
+    emit_quad(out, [x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A, floor, [1.0, 0.0, 0.0]);
+    emit_quad(out, [x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A, floor, [-1.0, 0.0, 0.0]);
+    emit_quad(out, [x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B, floor, [0.0, 0.0, 1.0]);
+    emit_quad(out, [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B, floor, [0.0, 0.0, -1.0]);
 }
 
 /// Draw one casino fixture as furniture on the lobby floor at (x, z),
@@ -263,10 +285,10 @@ struct BakedStation {
 
 thread_local! {
     static BAKED: RefCell<Option<BakedStation>> = const { RefCell::new(None) };
-    /// This frame's near-station draw request: (mvp, sun lit). Set by
-    /// draw() while within LOD range; drained by the renderer's two
-    /// flush hooks inside the offscreen pass.
-    static PENDING: std::cell::Cell<Option<([f32; 16], f32)>> =
+    /// This frame's near-station draw request: (mvp, whole-station dim,
+    /// station-local sun dir). Set by draw() while within LOD range;
+    /// drained by the renderer's two flush hooks inside the offscreen pass.
+    static PENDING: std::cell::Cell<Option<([f32; 16], f32, [f32; 3])>> =
         const { std::cell::Cell::new(None) };
     static PIP_MESH_OPAQUE: std::cell::Cell<sg::Pipeline> =
         const { std::cell::Cell::new(sg::Pipeline { id: 0 }) };
@@ -306,11 +328,11 @@ fn bake() -> BakedStation {
             let solid = tex != TEX_GLASS;
             if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
                 let fl = mat_floor.max(cache.light01(p.q, p.r, p.layer + 1));
-                emit_cap(&mut verts, p.x, p.z, a, y1, SHADE_TOP, fl);
+                emit_cap(&mut verts, p.x, p.z, a, y1, SHADE_TOP, fl, 1.0);
             }
             if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
                 let fl = mat_floor.max(cache.light01(p.q, p.r, p.layer - 1));
-                emit_cap(&mut verts, p.x, p.z, a, y0, SHADE_BOTTOM, fl);
+                emit_cap(&mut verts, p.x, p.z, a, y0, SHADE_BOTTOM, fl, -1.0);
             }
             for k in 0..6 {
                 let (dq, dr) = HEX_DIRS[(k + 1) % 6];
@@ -369,6 +391,7 @@ fn make_mesh_pipeline(glass: bool) -> sg::Pipeline {
     desc.layout.attrs[smesh::ATTR_STATION_MESH_A_UV].format = sg::VertexFormat::Float2;
     desc.layout.attrs[smesh::ATTR_STATION_MESH_A_SHADE].format = sg::VertexFormat::Float;
     desc.layout.attrs[smesh::ATTR_STATION_MESH_A_FLOOR].format = sg::VertexFormat::Float;
+    desc.layout.attrs[smesh::ATTR_STATION_MESH_A_NORMAL].format = sg::VertexFormat::Float3;
     sg::make_pipeline(&desc)
 }
 
@@ -379,7 +402,12 @@ const OPAQUE_ORDER: [usize; 14] = [
     TEX_CARDS, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD, TEX_LIGHT, TEX_SIGN,
 ];
 
-fn draw_groups(texs: &[usize], mvp: [f32; 16], lit: f32, glass: bool) {
+/// Ambient floor for station faces that point away from the sun - they
+/// aren't pure black (space has planetshine + the station's own glow). Not
+/// a designer knob worth a yaml round-trip yet; a single constant here.
+const SUN_AMBIENT: f32 = 0.32;
+
+fn draw_groups(texs: &[usize], mvp: [f32; 16], lit: f32, sun_local: [f32; 3], glass: bool) {
     let pip_cell = if glass { &PIP_MESH_GLASS } else { &PIP_MESH_OPAQUE };
     let pip = pip_cell.with(|p| {
         if p.get().id == 0 {
@@ -399,6 +427,7 @@ fn draw_groups(texs: &[usize], mvp: [f32; 16], lit: f32, glass: bool) {
             smesh::UB_STATION_MESH_FS_PARAMS,
             &sg::value_as_range(&smesh::StationMeshFsParams {
                 u_fs: [lit, if glass { 1.0 } else { 0.0 }, 0.0, 0.0],
+                u_sun: [sun_local[0], sun_local[1], sun_local[2], SUN_AMBIENT],
             }),
         );
         for &tex in texs {
@@ -422,16 +451,16 @@ fn draw_groups(texs: &[usize], mvp: [f32; 16], lit: f32, glass: bool) {
 /// pass (before the sgl entity flush, so entities depth-test against the
 /// drum). No-op when the station wasn't requested this frame.
 pub fn flush_baked_opaque() {
-    if let Some((mvp, lit)) = PENDING.with(|c| c.get()) {
-        draw_groups(&OPAQUE_ORDER, mvp, lit, false);
+    if let Some((mvp, lit, sun)) = PENDING.with(|c| c.get()) {
+        draw_groups(&OPAQUE_ORDER, mvp, lit, sun, false);
     }
 }
 
 /// Renderer hook: draw the GLASS group after the sgl entities, so the
 /// glazing blends over the finished scene. Drains the request.
 pub fn flush_baked_glass() {
-    if let Some((mvp, lit)) = PENDING.with(|c| c.take()) {
-        draw_groups(&[TEX_GLASS], mvp, lit, true);
+    if let Some((mvp, lit, sun)) = PENDING.with(|c| c.take()) {
+        draw_groups(&[TEX_GLASS], mvp, lit, sun, true);
     }
 }
 
@@ -539,5 +568,18 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
         Mat4 { m: basis },
     );
     let mvp = mat4_mul(mat4_mul(proj, view), model);
-    PENDING.with(|c| c.set(Some((mvp.m, lit))));
+
+    /* Sun direction, pre-rotated into station-LOCAL space so the baked
+     * local face normals get a real N.L terminator without a per-frame
+     * normal transform. The station rides Tenebris's frame, so its sun
+     * direction is the same one the terrain uses (orbit::sun_direction).
+     * The basis is orthonormal, so world->local is just the dot with each
+     * axis. */
+    let sun_w = orbit::sun_direction(BodyId::Tenebris, sim_t);
+    let sun_local = [
+        dvec3_dot(sun_w, prograde) as f32,
+        dvec3_dot(sun_w, up) as f32,
+        dvec3_dot(sun_w, normal) as f32,
+    ];
+    PENDING.with(|c| c.set(Some((mvp.m, lit, sun_local))));
 }
