@@ -1,0 +1,45 @@
+# station.yaml - orbital trading station structure + rendezvous tuning.
+#
+# The station is a wheel of hexagonal prisms on rails in a circular orbit
+# around Tenebris: an outer ring deck, six spokes, a casino hotel tower in
+# the middle, and six external docking pads. Its orbital speed is NOT a
+# knob: it is derived from the same inverse-square gravity field the
+# rocket integrates (v = sqrt(g_surf * R^2 / r), see
+# core/station.rs::orbit_speed_mps and tools/station-math.py), so a rocket
+# in a matching circular orbit is automatically velocity-matched.
+#
+# Geometry:
+#   radius_hexes  - OUTER radius of the ring deck, in hex rings
+#   ring_width    - ring deck width, in hex rings
+#   slab_layers   - deck slab thickness (ring / spokes / pads), layers
+#   tower_radius  - casino hotel footprint radius, hex rings
+#   tower_layers  - casino hotel height, layers
+#   layers/height_m - reference stack: one layer = height_m / layers m
+#   hex_size_m    - hex circumradius (centre -> corner) of one prism
+#   altitude_m    - orbit altitude above the Tenebris surface
+#
+# Docking + artificial gravity:
+#   dock_radius_m     - how close the player must fly to interact
+#   dock_max_rel_mps  - max relative speed for the dock to accept; any
+#                       faster and the prompt shows the velocity gap
+#                       instead ("match velocity")
+#   gravity_field_m         - artificial-gravity reach above each deck
+#                             column (~20 blocks at 2 m hexes)
+#   artificial_gravity_mps2 - pull toward the deck inside the field, in
+#                             the station's free-falling orbit frame
+
+station:
+  radius_hexes: 10
+  ring_width: 3
+  slab_layers: 2
+  tower_radius: 3
+  tower_layers: 10
+  layers: 6
+  height_m: 15.0
+  hex_size_m: 2.0
+  altitude_m: 120.0
+  dock_radius_m: 60.0
+  dock_max_rel_mps: 8.0
+  gravity_field_m: 40.0
+  artificial_gravity_mps2: 15.0
+  deck_friction: 6.0

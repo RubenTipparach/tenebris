@@ -595,8 +595,8 @@ mod tests {
         let col = face_tile(Block::Grass, FaceCap::Top) as i32;
         assert_eq!(col, 4);
         let (u0, u1) = icon_uv(col);
-        assert!((u0 - 4.0 / 100.0).abs() < 1e-7);
-        assert!((u1 - 5.0 / 100.0).abs() < 1e-7);
+        assert!((u0 - 4.0 / 108.0).abs() < 1e-7);
+        assert!((u1 - 5.0 / 108.0).abs() < 1e-7);
         /* last PHYSICAL column ends exactly at 1.0 */
         let (_, u1) = icon_uv(HEX_ATLAS_TILES_PHYS - 1);
         assert!((u1 - 1.0).abs() < 1e-6);

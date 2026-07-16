@@ -50,3 +50,15 @@ rocket-engine:  220
 vacuum-engine:  300
 fuel-tank:      160
 command-module: 400
+
+# Station / casino structure blocks (space era Phase 2 "built look").
+# The panels are also 3D-printable from ingots; the decorative casino
+# pieces and game machines are market-only.
+station-hull:   12
+station-floor:  10
+casino-carpet:  6
+casino-wall:    8
+neon-trim:      18
+casino-sign:    30
+slot-machine:   180
+card-table:     120

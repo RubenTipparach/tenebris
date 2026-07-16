@@ -1,11 +1,15 @@
 //! The orbital station hub UI (space era Phase 2): Trade / Warehouse / Fuel
-//! tabs over the Core market engine (`core::station`). Docking: fly within
-//! [`DOCK_RADIUS_M`] of the station point in space and press Interact.
+//! tabs over the Core market engine (`core::station`). The station rides an
+//! on-rails circular orbit (`core::station::orbit_pos`, speed derived from
+//! the gravity field - see station.yaml + tools/station-math.py); docking is
+//! a RENDEZVOUS: fly within `dock_radius_m` AND match the station's orbital
+//! velocity to within `dock_max_rel_mps`, then press Interact. While the hub
+//! is open the player is carried along the orbit so undocking leaves them
+//! flying formation.
 //!
 //! Every mutation persists SAME-FRAME to `tenebris-c:station:<world>` via
 //! `client_kv` (a bet, a sale, an upgrade can't be quit-scummed away).
-//! The 3D tech-hex station structure is the next iteration; the dock point +
-//! hub are fully functional without it.
+//! The drum structure itself is drawn by `station_fx`.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,17 +17,11 @@ use std::rc::Rc;
 use crate::{client_kv, menu, ui_icons};
 use tenebris_core::items::{self};
 use tenebris_core::math::{dvec3_make, dvec3_length, dvec3_sub, DVec3};
-use tenebris_core::planet::{self, BodyId};
 use tenebris_core::station::StationState;
 use tenebris_core::{economy, world_time};
 
 use crate::player_ctrl::PlayerCtrl;
 pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
-
-/// Dock range around the station point (m).
-pub const DOCK_RADIUS_M: f64 = 40.0;
-/// Station orbit altitude above Tenebris, in planet radii from the centre.
-const STATION_ORBIT_RADII: f64 = 2.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
@@ -37,6 +35,10 @@ struct Screen {
     tab: Tab,
     state: StationState,
     player: Option<PlayerHandle>,
+    /// World-space offset from the orbital anchor captured at dock time;
+    /// while the hub is open the player is re-posed to anchor + offset
+    /// every frame so the station doesn't sail away mid-trade.
+    dock_offset: DVec3,
 }
 
 thread_local! {
@@ -45,20 +47,57 @@ thread_local! {
         tab: Tab::Trade,
         state: StationState::default(),
         player: None,
+        dock_offset: DVec3 { x: 0.0, y: 0.0, z: 0.0 },
     });
 }
 
-/// World-space position of the trading station: parked on Tenebris's +x axis
-/// at a fixed orbital radius (2R = 600 m - inside easy rocket reach, well
-/// clear of Luna at 6 km).
+/// World-space position of the trading station NOW: the on-rails orbital
+/// anchor at the current world time (see `core::station::orbit_pos`).
 pub fn station_pos() -> DVec3 {
-    let b = planet::get(BodyId::Tenebris);
-    dvec3_make(b.pos_x + b.radius_m * STATION_ORBIT_RADII, b.pos_y, b.pos_z)
+    tenebris_core::station::orbit_pos(world_time::seconds())
+}
+
+/// Dock range around the station anchor (station.yaml).
+pub fn dock_radius_m() -> f64 {
+    tenebris_core::station::config().dock_radius_m as f64
 }
 
 /// Distance from `pos` to the station dock point.
 pub fn dock_distance_m(pos: DVec3) -> f64 {
     dvec3_length(dvec3_sub(pos, station_pos()))
+}
+
+/// Relative speed between the player and the station (m/s) - the
+/// rendezvous number the rocket has to bring under `dock_max_rel_mps`.
+pub fn dock_rel_speed_mps(vel: DVec3) -> f64 {
+    dvec3_length(dvec3_sub(vel, tenebris_core::station::orbit_vel(world_time::seconds())))
+}
+
+/// True when `vel` is matched closely enough for the dock to accept.
+pub fn dock_speed_ok(vel: DVec3) -> bool {
+    dock_rel_speed_mps(vel) <= tenebris_core::station::config().dock_max_rel_mps as f64
+}
+
+/// Per-frame while the hub is open: carry the docked player along the
+/// orbit (anchor + captured offset, velocity = station velocity) so
+/// closing the hub leaves them flying formation with the station.
+pub fn carry_docked_player() {
+    if !is_open() {
+        return;
+    }
+    S.with(|c| {
+        let s = c.borrow();
+        let Some(player) = s.player.clone() else { return };
+        let t = world_time::seconds();
+        let mut p = player.borrow_mut();
+        let anchor = tenebris_core::station::orbit_pos(t);
+        p.position = dvec3_make(
+            anchor.x + s.dock_offset.x,
+            anchor.y + s.dock_offset.y,
+            anchor.z + s.dock_offset.z,
+        );
+        p.velocity = tenebris_core::station::orbit_vel(t);
+    });
 }
 
 fn kv_key() -> String {
@@ -87,6 +126,9 @@ pub fn open(player: PlayerHandle) {
         s.state = client_kv::get(&kv_key())
             .and_then(|b| StationState::parse(&b))
             .unwrap_or_default();
+        /* Capture where the player sits relative to the moving anchor so
+         * carry_docked_player keeps them there for the whole visit. */
+        s.dock_offset = dvec3_sub(player.borrow().position, station_pos());
         s.player = Some(player);
         s.tab = Tab::Trade;
         s.open = true;

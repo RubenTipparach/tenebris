@@ -245,7 +245,7 @@ pub(crate) fn load_png_rgba(path: &str, flip_vertical: bool) -> Option<LoadedIma
 
 const ATLAS_TILE_PX: i32 = 16;
 /* Physical column count: 93 legacy UV-addressed columns + the extension
- * tiles at 93..99 (baked at u > 1.0; the hex FS rescales u by 93/100 -
+ * tiles at 93..107 (baked at u > 1.0; the hex FS rescales u by 93/108 -
  * see hex_mesher::HEX_ATLAS_TILES_PHYS). */
 const ATLAS_TILES: usize = hex_mesher::HEX_ATLAS_TILES_PHYS as usize;
 const ATLAS_W: i32 = ATLAS_TILE_PX * hex_mesher::HEX_ATLAS_TILES_PHYS;
@@ -361,7 +361,7 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/items/fuel_tank.png"),      /* 91 fuel tank */
     Some("assets/textures/items/command_module.png"), /* 92 command module */
     /* Biome-sod extension tiles (past HEX_ATLAS_TILES; sampled at
-     * u > 1.0 via the hex FS 93/97 rescale). Baked from the stock
+     * u > 1.0 via the hex FS 93/108 rescale). Baked from the stock
      * grass art by tools/gen-biome-grass.py - a multiply tint can't
      * yellow a texture whose red channel is mostly zero, so pasture
      * is a channel-mixed PNG instead of an ATLAS_TINTS entry. */
@@ -370,8 +370,18 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/dry_grass.png"),         /* 95 DRY_GRASS top */
     Some("assets/textures/dry_dirt_grass.png"),    /* 96 DRY_GRASS side */
     Some("assets/textures/cactus.png"),            /* 97 CACTUS (scatter) */
-    None,                                          /* 98 reserved */
-    None,                                          /* 99 reserved */
+    /* Station / casino structure set (space era Phase 2 "built look" +
+     * Phase 5 casino room) - baked by tools/gen-casino-textures.py. */
+    Some("assets/textures/technology/station_hull.png"),      /* 98 STATION_HULL */
+    Some("assets/textures/technology/station_floor.png"),     /* 99 STATION_FLOOR */
+    Some("assets/textures/technology/casino_carpet.png"),     /* 100 CASINO_CARPET */
+    Some("assets/textures/technology/casino_wall.png"),       /* 101 CASINO_WALL */
+    Some("assets/textures/technology/neon_trim.png"),         /* 102 NEON_TRIM */
+    Some("assets/textures/technology/casino_sign.png"),       /* 103 CASINO_SIGN */
+    Some("assets/textures/technology/slot_machine_face.png"), /* 104 SLOT_MACHINE */
+    Some("assets/textures/technology/card_table_face.png"),   /* 105 CARD_TABLE */
+    None,                                                     /* 106 reserved */
+    None,                                                     /* 107 reserved */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -474,12 +484,20 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
-    /* 93-97 extension tiles: pre-baked PNGs, no tint; 98-99 reserved. */
+    /* 93-105 extension tiles: pre-baked PNGs, no tint; 106-107 reserved. */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS top  */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS side */
     [1.0, 1.0, 1.0], /* DRY_GRASS top     */
     [1.0, 1.0, 1.0], /* DRY_GRASS side    */
     [1.0, 1.0, 1.0], /* CACTUS            */
+    [1.0, 1.0, 1.0], /* STATION_HULL      */
+    [1.0, 1.0, 1.0], /* STATION_FLOOR     */
+    [1.0, 1.0, 1.0], /* CASINO_CARPET     */
+    [1.0, 1.0, 1.0], /* CASINO_WALL       */
+    [1.0, 1.0, 1.0], /* NEON_TRIM         */
+    [1.0, 1.0, 1.0], /* CASINO_SIGN       */
+    [1.0, 1.0, 1.0], /* SLOT_MACHINE      */
+    [1.0, 1.0, 1.0], /* CARD_TABLE        */
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
 ];
@@ -1646,6 +1664,8 @@ struct Renderer {
     rocket_tex_img: [sg::Image; 4],
     rocket_tex_view: [sg::View; 4],
     rocket_tex_smp: sg::Sampler,
+    station_tex_img: [sg::Image; 6],
+    station_tex_view: [sg::View; 6],
 
     /* Crop texture atlas (assets/textures/crops.png) - one 32x32 material
      * tile per column (bark / leaves / melon rind / fruit / ...), sampled
@@ -1739,6 +1759,8 @@ impl Default for Renderer {
             rocket_tex_img: [sg::Image::new(); 4],
             rocket_tex_view: [sg::View::new(); 4],
             rocket_tex_smp: sg::Sampler::new(),
+            station_tex_img: [sg::Image::new(); 6],
+            station_tex_view: [sg::View::new(); 6],
             crop_tex_img: sg::Image::new(),
             crop_tex_view: sg::View::new(),
             crop_tex_smp: sg::Sampler::new(),
@@ -2170,6 +2192,51 @@ fn load_rocket_textures(r: &mut Renderer) {
             ..Default::default()
         });
     }
+}
+
+/// Orbital-station skins (client::station_fx). Index order matches
+/// station_fx::TEX_*: 0 hull, 1 floor, 2 carpet, 3 neon trim, 4 sign,
+/// 5 casino wall. NEAREST (the shared rocket sampler) keeps the pixel
+/// art crisp.
+fn load_station_textures(r: &mut Renderer) {
+    const PATHS: [&str; 6] = [
+        "assets/textures/technology/station_hull.png",
+        "assets/textures/technology/station_floor.png",
+        "assets/textures/technology/casino_carpet.png",
+        "assets/textures/technology/neon_trim.png",
+        "assets/textures/technology/casino_sign.png",
+        "assets/textures/technology/casino_wall.png",
+    ];
+    const FALLBACK: [u8; 4] = [150, 156, 166, 255];
+    for (i, path) in PATHS.iter().enumerate() {
+        let loaded = load_png_rgba(path, false);
+        let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+            Some(img) => (img.w, img.h, &img.rgba),
+            None => {
+                println!("[renderer] WARNING: {path} missing; station face flat-tinted");
+                (1, 1, &FALLBACK)
+            }
+        };
+        let mut desc = sg::ImageDesc {
+            width: w,
+            height: h,
+            pixel_format: sg::PixelFormat::Rgba8,
+            label: c"station-tex".as_ptr(),
+            ..Default::default()
+        };
+        desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+        r.station_tex_img[i] = sg::make_image(&desc);
+        r.station_tex_view[i] = sg::make_view(&sg::ViewDesc {
+            texture: sg::TextureViewDesc { image: r.station_tex_img[i], ..Default::default() },
+            label: c"station-tex-view".as_ptr(),
+            ..Default::default()
+        });
+    }
+}
+
+/// View id for a station skin (see `load_station_textures` order).
+pub fn station_view_id(idx: usize) -> u32 {
+    R.with(|cell| cell.borrow().station_tex_view[idx.min(5)].id)
 }
 
 /// View id for a rocket part texture (0 engine, 1 tank, 2 capsule, 3 tower).
@@ -2663,6 +2730,7 @@ pub fn init() {
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
         load_rocket_textures(&mut r);
+        load_station_textures(&mut r);
         load_crop_textures(&mut r);
         /* Per-chunk meshes are allocated lazily once a body registers. */
     });
