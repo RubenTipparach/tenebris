@@ -175,7 +175,11 @@ pub const MSG_SIM_TIME_VERSION: u16 = 1;
 pub const MSG_BAG_STATE_VERSION: u16 = 1;
 pub const MSG_BENTITY_DIFF_VERSION: u16 = 1;
 pub const MSG_CROP_DIFF_VERSION: u16 = 1;
-pub const MSG_ANIMAL_STATE_VERSION: u16 = 1;
+/* v2: the kind field widened from the state word's high nibble (bits
+ * 4..7) to a byte (bits 4..11) when the roster outgrew 16 species. The
+ * word had 24 spare bits, so the entry size is unchanged; a v1 peer
+ * decodes kinds >= 16 as (kind & 0x0F) - wrong species drawn, no crash. */
+pub const MSG_ANIMAL_STATE_VERSION: u16 = 2;
 pub const MSG_ANIMAL_HIT_VERSION: u16 = 1;
 
 /* Header + body layout for MSG_WATER_ORIGINS_DIFF:
@@ -1860,7 +1864,7 @@ pub fn write_animal_state(buf: &mut [u8], m: &MsgAnimalState) -> usize {
     let mut off = MSG_ANIMAL_STATE_HEADER;
     for e in &m.entries[..n] {
         put_u32_le(p, off, e.id);
-        put_u32_le(p, off + 4, (e.state & 0x0F) as u32 | (((e.kind & 0x0F) as u32) << 4));
+        put_u32_le(p, off + 4, (e.state & 0x0F) as u32 | ((e.kind as u32) << 4));
         put_f32_le(p, off + 8, e.pos_x);
         put_f32_le(p, off + 12, e.pos_y);
         put_f32_le(p, off + 16, e.pos_z);
@@ -1892,7 +1896,7 @@ pub fn read_animal_state(payload: &[u8]) -> Option<MsgAnimalState> {
         e.id = get_u32_le(payload, off);
         let sw = get_u32_le(payload, off + 4);
         e.state = (sw & 0x0F) as u8;
-        e.kind = ((sw >> 4) & 0x0F) as u8;
+        e.kind = ((sw >> 4) & 0xFF) as u8;
         e.pos_x = get_f32_le(payload, off + 8);
         e.pos_y = get_f32_le(payload, off + 12);
         e.pos_z = get_f32_le(payload, off + 16);
@@ -2992,7 +2996,7 @@ mod tests {
         m.entries[0] = MsgAnimalEntry {
             id: 9,
             state: ANIMAL_STATE_FLEE,
-            kind: 1, /* stalker - rides bits 4..8 of the state word */
+            kind: 19, /* highest roster id - proves bits 4..11 carry a full byte */
             pos_x: 100.0,
             pos_y: 2.0,
             pos_z: 3.0,

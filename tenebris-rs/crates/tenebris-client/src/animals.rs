@@ -229,6 +229,13 @@ pub fn id_at(idx: i32) -> Option<u32> {
 /// Dev/screenshot aid: drop a small herd on the ground in front of the
 /// player (along their look forward) so they're framed immediately.
 pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
+    dev_spawn_roster(w, p, false)
+}
+
+/// `new_only` narrows the lineup to the newest species row (serpent,
+/// raptor, crane, sparkit, shellkin) placed close in one rank - the
+/// clean "meet the new animals" shot.
+pub fn dev_spawn_roster(w: &World, p: &PlayerCtrl, new_only: bool) {
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.list.clear();
@@ -238,9 +245,14 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
         s.body_center = center;
         let fwd = p.basis.fwd;
         let right = p.basis.right;
-        for k in 0..13i32 {
-            let ahead = 6.0 + (k / 3) as f64 * 4.0;
-            let side = ((k % 3) - 1) as f64 * 4.0;
+        let n = if new_only { 5i32 } else { 18 };
+        for k in 0..n {
+            let (ahead, side) = if new_only {
+                /* One close rank of five, broadside. */
+                (7.0, (k - 2) as f64 * 2.6)
+            } else {
+                (6.0 + (k / 3) as f64 * 4.0, ((k % 3) - 1) as f64 * 4.0)
+            };
             let local = dvec3_sub(p.position, center);
             let point = dvec3_add(
                 local,
@@ -253,7 +265,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                 let mut a = Animal::new(id, pos, dir);
                 /* Zoo lineup: one of each new kind so a shot frames the
                  * whole menagerie; slot 3 also mid hit-flash. */
-                const ZOO: [fauna::AnimalKind; 13] = [
+                const ZOO: [fauna::AnimalKind; 18] = [
                     fauna::AnimalKind::Lizard,
                     fauna::AnimalKind::Penguin,
                     fauna::AnimalKind::Cat,
@@ -267,9 +279,25 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
                     fauna::AnimalKind::LargeFish,
                     fauna::AnimalKind::LongFish,
                     fauna::AnimalKind::Turtle,
+                    fauna::AnimalKind::SerpentFish,
+                    fauna::AnimalKind::Raptor,
+                    fauna::AnimalKind::Crane,
+                    fauna::AnimalKind::Sparkit,
+                    fauna::AnimalKind::Shellkin,
                 ];
-                a.kind = ZOO[k as usize % ZOO.len()];
-                if k == 3 {
+                const NEW: [fauna::AnimalKind; 5] = [
+                    fauna::AnimalKind::SerpentFish,
+                    fauna::AnimalKind::Raptor,
+                    fauna::AnimalKind::Crane,
+                    fauna::AnimalKind::Sparkit,
+                    fauna::AnimalKind::Shellkin,
+                ];
+                a.kind = if new_only {
+                    NEW[k as usize % NEW.len()]
+                } else {
+                    ZOO[k as usize % ZOO.len()]
+                };
+                if k == 3 && !new_only {
                     a.hurt_t = 0.3; /* lands on a red blink-on interval */
                 }
                 s.list.push(a);
@@ -277,7 +305,7 @@ pub fn dev_spawn(w: &World, p: &PlayerCtrl) {
         }
         /* Stage one corpse at the end of the death clip so the shot shows
          * the keel-over pose (frozen herd -> it never ages out). */
-        {
+        if !new_only {
             let local = dvec3_sub(p.position, center);
             let point = dvec3_add(
                 local,
@@ -308,12 +336,13 @@ pub fn dev_spawn_fish(w: &World, p: &PlayerCtrl, underwater: bool) -> Option<DVe
         let fwd = p.basis.fwd;
         let right = p.basis.right;
         let up = p.basis.up;
-        const FISH: [fauna::AnimalKind; 5] = [
+        const FISH: [fauna::AnimalKind; 6] = [
             fauna::AnimalKind::Fish,
             fauna::AnimalKind::FlatFish,
             fauna::AnimalKind::LongFish,
             fauna::AnimalKind::LargeFish,
             fauna::AnimalKind::Turtle,
+            fauna::AnimalKind::SerpentFish,
         ];
 
         /* Underwater mode: find an ocean-surface anchor ahead by
@@ -601,7 +630,7 @@ fn orient_basis(up: DVec3, heading: DVec3) -> [f32; 16] {
  * with eyes), LIMB (darker legs / fins). Column 15 is a near-white
  * tile for accent boxes (combs, beaks, horns, eyes) that want a flat
  * colour instead of the species pattern. */
-const ANIMAL_ATLAS_COLS: f32 = 16.0;
+const ANIMAL_ATLAS_COLS: f32 = 24.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Part {
@@ -624,10 +653,11 @@ fn part_uv(kid: u8, part: Part) -> (f32, f32, f32, f32) {
     (u0 + inset, u1 - inset, v0, v1)
 }
 
-/// The flat near-white accent tile (atlas column 15) - colour comes
-/// entirely from the vertex tint.
+/// The flat near-white accent tile (atlas column 23; it moved off 15
+/// when the sea serpent took that wire id) - colour comes entirely from
+/// the vertex tint.
 fn accent_uv() -> (f32, f32, f32, f32) {
-    part_uv(15, Part::Body)
+    part_uv(23, Part::Body)
 }
 
 /// One axis-aligned cuboid, textured + per-face shaded (top brightest,
@@ -1017,6 +1047,135 @@ fn draw_kind(
             }
             acc_b(-0.07, 0.06, -0.04, 0.06, 0.06, 0.10, 0.95, 0.55, 0.10); /* feet */
             acc_b(0.07, 0.06, -0.04, 0.06, 0.06, 0.10, 0.95, 0.55, 0.10);
+        }
+        AnimalKind::SerpentFish => {
+            /* Sea serpent: a chain of scaled coils sculling with a phase
+             * wave down the spine, dorsal ridge fins, big-jawed head with
+             * pale fangs. The ocean's trophy silhouette. */
+            let wave = |k: f32| (phase * 1.4 - k * 0.9).sin() * if moving { 0.16 } else { 0.05 };
+            for k in 0..5 {
+                let z = -0.20 + k as f32 * 0.22;
+                let x = wave(k as f32);
+                let taper = 1.0 - k as f32 * 0.12;
+                b(Part::Body, x, 0.52, z, 0.09 * taper, 0.12 * taper, 0.13, 1.0);
+                b(Part::Limb, x, 0.68, z, 0.02, 0.07 * taper, 0.05, 1.0); /* ridge fin */
+            }
+            /* Tail fluke. */
+            b(Part::Limb, wave(5.0), 0.52, 0.94, 0.02, 0.13, 0.09, 1.0);
+            /* Head: broad jaw ahead of the first coil. */
+            let hx = wave(-1.0);
+            b(Part::Head, hx, 0.54, -0.38, 0.10, 0.10, 0.14, 1.05);
+            googly_eye(hx - 0.08, 0.62, -0.44, 0.05);
+            googly_eye(hx + 0.08, 0.62, -0.44, 0.05);
+            acc_b(hx - 0.05, 0.45, -0.50, 0.015, 0.035, 0.015, 0.92, 0.94, 0.88); /* fangs */
+            acc_b(hx + 0.05, 0.45, -0.50, 0.015, 0.035, 0.015, 0.92, 0.94, 0.88);
+        }
+        AnimalKind::Raptor => {
+            /* Large bird of prey: broad slow wings, fanned tail, hooked
+             * beak. Reads as a silhouette riding high. */
+            b(Part::Body, 0.0, 0.55, 0.0, 0.14, 0.12, 0.26, 1.0);
+            b(Part::Head, 0.0, 0.68, -0.28, 0.08, 0.08, 0.09, 1.05);
+            googly_eye(-0.045, 0.72, -0.35, 0.035);
+            googly_eye(0.045, 0.72, -0.35, 0.035);
+            acc_b(0.0, 0.66, -0.39, 0.025, 0.02, 0.05, 0.95, 0.75, 0.20); /* beak bar */
+            acc_b(0.0, 0.62, -0.42, 0.018, 0.025, 0.018, 0.90, 0.65, 0.15); /* hook tip */
+            let flap = if moving { (phase * 1.2).sin() * 0.7 } else { 0.15 };
+            for side in [-1.0f32, 1.0] {
+                sgl::push_matrix();
+                sgl::translate(side * 0.14, 0.62, 0.0);
+                sgl::rotate(side * flap, 0.0, 0.0, 1.0);
+                sgl::translate(side * 0.30, 0.0, 0.0);
+                draw_box(
+                    0.0, 0.0, 0.02, 0.30, 0.025, 0.16, limb_uv, limb_uv,
+                    tint[0], tint[1], tint[2], lit,
+                );
+                sgl::pop_matrix();
+            }
+            /* Fanned tail feathers. */
+            b(Part::Limb, 0.0, 0.53, 0.32, 0.11, 0.02, 0.12, 1.0);
+        }
+        AnimalKind::Crane => {
+            /* Tall wader: stilt legs, oval body, S-neck up to a small
+             * head with a long spear beak, folded wing slabs. */
+            b(Part::Body, 0.0, 0.85, 0.04, 0.13, 0.13, 0.22, 1.0);
+            for side in [-1.0f32, 1.0] {
+                b(Part::Limb, side * 0.13, 0.88, 0.02, 0.015, 0.10, 0.18, 1.0); /* folded wing */
+            }
+            /* Neck: up and forward. */
+            b(Part::Body, 0.0, 1.10, -0.16, 0.035, 0.16, 0.04, 1.05);
+            b(Part::Head, 0.0, 1.28, -0.20, 0.055, 0.055, 0.07, 1.05);
+            googly_eye(-0.035, 1.31, -0.25, 0.028);
+            googly_eye(0.035, 1.31, -0.25, 0.028);
+            acc_b(0.0, 1.27, -0.34, 0.012, 0.012, 0.09, 0.95, 0.65, 0.15); /* spear beak */
+            /* Stilt legs (long, slow stride). */
+            for (x, sw) in [(-0.06f32, swing), (0.06, -swing)] {
+                leg4(x, 0.02, sw * 0.6, 0.36, 1.0);
+            }
+        }
+        AnimalKind::Sparkit => {
+            /* Mascot biped: big head, tall dark-tipped ears, teal cheek
+             * sparks, stubby swinging arms, and a thin tail carrying a
+             * glowing star tip. Bounces as it moves. */
+            let bounce = if moving { (phase * 2.0).sin().abs() * 0.05 } else { 0.0 };
+            sgl::translate(0.0, bounce, 0.0);
+            b(Part::Body, 0.0, 0.38, 0.0, 0.13, 0.15, 0.11, 1.0);
+            acc_b(0.0, 0.34, -0.10, 0.08, 0.09, 0.02, 0.98, 0.92, 0.72); /* cream belly */
+            b(Part::Head, 0.0, 0.72, 0.0, 0.16, 0.14, 0.14, 1.05);
+            googly_eye(-0.07, 0.76, -0.13, 0.045);
+            googly_eye(0.07, 0.76, -0.13, 0.045);
+            /* Teal spark spots on the cheeks. */
+            acc_b(-0.14, 0.68, -0.10, 0.025, 0.025, 0.02, 0.20, 0.85, 0.80);
+            acc_b(0.14, 0.68, -0.10, 0.025, 0.025, 0.02, 0.20, 0.85, 0.80);
+            /* Tall ears, dark tips. */
+            for side in [-1.0f32, 1.0] {
+                b(Part::Body, side * 0.09, 0.94, 0.0, 0.03, 0.10, 0.03, 1.0);
+                acc_b(side * 0.09, 1.06, 0.0, 0.032, 0.035, 0.032, 0.22, 0.20, 0.24);
+            }
+            /* Stubby arms swing opposite the legs. */
+            for (side, sw) in [(-1.0f32, swing), (1.0, -swing)] {
+                sgl::push_matrix();
+                sgl::translate(side * 0.15, 0.46, 0.0);
+                sgl::rotate(sw * 0.8, 1.0, 0.0, 0.0);
+                draw_box(
+                    0.0, -0.06, 0.0, 0.03, 0.07, 0.03, limb_uv, limb_uv,
+                    tint[0], tint[1], tint[2], lit,
+                );
+                sgl::pop_matrix();
+            }
+            for (x, sw) in [(-0.06f32, swing), (0.06, -swing)] {
+                leg4(x, 0.0, sw, 0.11, 1.0);
+            }
+            /* Tail: thin rise with a glowing star-tip sphere. */
+            b(Part::Limb, 0.0, 0.50, 0.16, 0.02, 0.10, 0.02, 1.0);
+            sphere(0.0, 0.64, 0.16, 0.05, 1.0, 0.95, 0.45); /* glow tip */
+        }
+        AnimalKind::Shellkin => {
+            /* Mascot biped: sage-skinned walker carrying a plated shell
+             * dome, cream plastron up front, unhurried waddle. */
+            let waddle = if moving { (phase * 1.1).sin() * 0.14 } else { 0.0 };
+            sgl::rotate(waddle, 0.0, 0.0, 1.0);
+            /* Shell rides the back (Part::Body carries the plate grid). */
+            b(Part::Body, 0.0, 0.46, 0.10, 0.15, 0.16, 0.09, 1.0);
+            b(Part::Body, 0.0, 0.46, 0.16, 0.11, 0.12, 0.05, 1.05); /* dome bulge */
+            acc_b(0.0, 0.42, -0.06, 0.11, 0.13, 0.03, 0.94, 0.88, 0.66); /* plastron */
+            b(Part::Head, 0.0, 0.74, -0.04, 0.10, 0.09, 0.10, 1.05);
+            googly_eye(-0.05, 0.77, -0.13, 0.04);
+            googly_eye(0.05, 0.77, -0.13, 0.04);
+            /* Stubby arms. */
+            for (side, sw) in [(-1.0f32, swing), (1.0, -swing)] {
+                sgl::push_matrix();
+                sgl::translate(side * 0.16, 0.50, -0.02);
+                sgl::rotate(sw * 0.6, 1.0, 0.0, 0.0);
+                draw_box(
+                    0.0, -0.06, 0.0, 0.035, 0.07, 0.035, limb_uv, limb_uv,
+                    tint[0], tint[1], tint[2], lit,
+                );
+                sgl::pop_matrix();
+            }
+            for (x, sw) in [(-0.07f32, swing), (0.07, -swing)] {
+                leg4(x, 0.0, sw * 0.6, 0.13, 1.0);
+            }
+            b(Part::Limb, 0.0, 0.36, 0.24, 0.025, 0.025, 0.04, 0.9); /* tail nub */
         }
         _ => {
             /* Critter / stalker: the classic dog silhouette, wearing

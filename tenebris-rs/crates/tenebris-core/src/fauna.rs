@@ -61,6 +61,17 @@ pub enum AnimalKind {
     FlatFish,
     /// Sea turtle - domed shell, flippers.
     Turtle,
+    /// Sea serpent - a LONG undulating deep-water hunter, the ocean's
+    /// apex catch.
+    SerpentFish,
+    /// Large soaring bird of prey - broad slow wings, rides high.
+    Raptor,
+    /// Tall long-legged wading bird - stalks shorelines on stilts.
+    Crane,
+    /// Small mascot biped: big ears, spark-tipped tail, quick hopper.
+    Sparkit,
+    /// Small mascot biped: domed shell on its back, unhurried.
+    Shellkin,
 }
 
 /// Where an animal is allowed to be (drives the reseat rules).
@@ -75,8 +86,9 @@ pub enum Habitat {
 }
 
 impl AnimalKind {
-    /// Stable wire byte (packed into the AnimalState entry's state
-    /// byte's high nibble, 0..15 - append only, never renumber).
+    /// Stable wire byte (packed into bits 4..11 of the AnimalState
+    /// entry's state word - append only, never renumber). Historically a
+    /// nibble; widened to a byte when the roster outgrew 16 kinds.
     pub fn to_u8(self) -> u8 {
         match self {
             AnimalKind::Critter => 0,
@@ -94,6 +106,11 @@ impl AnimalKind {
             AnimalKind::LongFish => 12,
             AnimalKind::FlatFish => 13,
             AnimalKind::Turtle => 14,
+            AnimalKind::SerpentFish => 15,
+            AnimalKind::Raptor => 16,
+            AnimalKind::Crane => 17,
+            AnimalKind::Sparkit => 18,
+            AnimalKind::Shellkin => 19,
         }
     }
 
@@ -113,18 +130,24 @@ impl AnimalKind {
             12 => AnimalKind::LongFish,
             13 => AnimalKind::FlatFish,
             14 => AnimalKind::Turtle,
+            15 => AnimalKind::SerpentFish,
+            16 => AnimalKind::Raptor,
+            17 => AnimalKind::Crane,
+            18 => AnimalKind::Sparkit,
+            19 => AnimalKind::Shellkin,
             _ => AnimalKind::Critter,
         }
     }
 
     pub fn habitat(self) -> Habitat {
         match self {
-            AnimalKind::Bird => Habitat::Air,
+            AnimalKind::Bird | AnimalKind::Raptor => Habitat::Air,
             AnimalKind::Fish
             | AnimalKind::LargeFish
             | AnimalKind::LongFish
             | AnimalKind::FlatFish
-            | AnimalKind::Turtle => Habitat::Water,
+            | AnimalKind::Turtle
+            | AnimalKind::SerpentFish => Habitat::Water,
             _ => Habitat::Land,
         }
     }
@@ -147,6 +170,11 @@ impl AnimalKind {
             AnimalKind::LongFish => 1.9,
             AnimalKind::FlatFish => 1.0,
             AnimalKind::Turtle => 0.6,
+            AnimalKind::SerpentFish => 2.2,
+            AnimalKind::Raptor => 3.4,
+            AnimalKind::Crane => 1.2,
+            AnimalKind::Sparkit => 2.0,
+            AnimalKind::Shellkin => 0.8,
         }
     }
 
@@ -170,6 +198,11 @@ impl AnimalKind {
             AnimalKind::LongFish => 0.8,
             AnimalKind::FlatFish => 0.75,
             AnimalKind::Turtle => 0.9,
+            AnimalKind::SerpentFish => 1.3,
+            AnimalKind::Raptor => 1.5,
+            AnimalKind::Crane => 1.9,
+            AnimalKind::Sparkit => 1.0,
+            AnimalKind::Shellkin => 1.0,
         }
     }
 
@@ -185,6 +218,8 @@ impl AnimalKind {
             AnimalKind::Cat => 1,
             AnimalKind::Lizard => 1,
             AnimalKind::LargeFish => 3,
+            AnimalKind::SerpentFish => 4,
+            AnimalKind::Sparkit => 1,
             _ => 2,
         }
     }
@@ -204,6 +239,7 @@ impl AnimalKind {
             AnimalKind::LongFish => 0.80,   // eel head 0.48 + trough + buffer
             AnimalKind::FlatFish => 0.73,   // ray eyes 0.43 + trough + buffer
             AnimalKind::Turtle => 0.85,     // shell dome 0.54 + trough + buffer
+            AnimalKind::SerpentFish => 1.10, // arched coils + trough + buffer
             _ => 0.0,
         }
     }
@@ -214,7 +250,11 @@ impl AnimalKind {
     pub fn is_fish(self) -> bool {
         matches!(
             self,
-            AnimalKind::Fish | AnimalKind::LargeFish | AnimalKind::LongFish | AnimalKind::FlatFish
+            AnimalKind::Fish
+                | AnimalKind::LargeFish
+                | AnimalKind::LongFish
+                | AnimalKind::FlatFish
+                | AnimalKind::SerpentFish
         )
     }
 
@@ -228,6 +268,7 @@ impl AnimalKind {
             AnimalKind::FlatFish => 2,  // ray
             AnimalKind::LongFish => 3,  // eel
             AnimalKind::Turtle => 4,    // NOT hooked; rated for reference
+            AnimalKind::SerpentFish => 4, // sea serpent - RAREST on the line
             AnimalKind::LargeFish => 5, // reef fish - rare, twitchy, 5 fish
             _ => 0,
         }
@@ -242,6 +283,7 @@ impl AnimalKind {
             AnimalKind::FlatFish => 24,
             AnimalKind::LongFish => 16,
             AnimalKind::LargeFish => 10,
+            AnimalKind::SerpentFish => 5,
             _ => 0,
         }
     }
@@ -264,15 +306,21 @@ impl AnimalKind {
             AnimalKind::LongFish => "eel",
             AnimalKind::FlatFish => "ray",
             AnimalKind::Turtle => "turtle",
+            AnimalKind::SerpentFish => "sea serpent",
+            AnimalKind::Raptor => "raptor",
+            AnimalKind::Crane => "crane",
+            AnimalKind::Sparkit => "sparkit",
+            AnimalKind::Shellkin => "shellkin",
         }
     }
 
     /// The catchable fish species, ordered weakest to strongest -
     /// the fishing roll iterates this table.
-    pub const FISHING_TABLE: [AnimalKind; 4] = [
+    pub const FISHING_TABLE: [AnimalKind; 5] = [
         AnimalKind::Fish,
         AnimalKind::FlatFish,
         AnimalKind::LongFish,
+        AnimalKind::SerpentFish,
         AnimalKind::LargeFish,
     ];
 
@@ -699,16 +747,18 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
          * band check uses ITS surface clearance (the deep reef fish
          * needs far more headroom than a minnow). */
         let wroll = rand01(id, salt.wrapping_add(47));
-        let species = if wroll < 0.40 {
+        let species = if wroll < 0.38 {
             AnimalKind::Fish
-        } else if wroll < 0.60 {
+        } else if wroll < 0.56 {
             AnimalKind::LargeFish
-        } else if wroll < 0.75 {
+        } else if wroll < 0.70 {
             AnimalKind::LongFish
-        } else if wroll < 0.88 {
+        } else if wroll < 0.82 {
             AnimalKind::FlatFish
-        } else {
+        } else if wroll < 0.92 {
             AnimalKind::Turtle
+        } else {
+            AnimalKind::SerpentFish
         };
         /* A column that can't hold THIS species inside its swim band
          * (floor pad + its surface margin) never spawns it - a fish
@@ -741,7 +791,7 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
                 if roll < 0.55 {
                     AnimalKind::Frog
                 } else {
-                    pick(&[AnimalKind::Bird, AnimalKind::Critter])
+                    pick(&[AnimalKind::Bird, AnimalKind::Critter, AnimalKind::Crane])
                 }
             }
             Biome::Jungle => {
@@ -766,15 +816,19 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
                 }
             }
             Biome::Mountains => {
-                if roll < 0.30 {
+                if roll < 0.18 {
                     AnimalKind::Bird
+                } else if roll < 0.34 {
+                    AnimalKind::Raptor
                 } else {
                     AnimalKind::Sheep
                 }
             }
             _ => {
-                if roll < 0.12 {
+                if roll < 0.09 {
                     AnimalKind::Bird
+                } else if roll < 0.14 {
+                    AnimalKind::Raptor
                 } else {
                     pick(&[
                         AnimalKind::Critter,
@@ -782,6 +836,9 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
                         AnimalKind::Sheep,
                         AnimalKind::Chicken,
                         AnimalKind::Cow,
+                        AnimalKind::Crane,
+                        AnimalKind::Sparkit,
+                        AnimalKind::Shellkin,
                     ])
                 }
             }
@@ -1154,11 +1211,16 @@ mod tests {
             AnimalKind::LongFish,
             AnimalKind::FlatFish,
             AnimalKind::Turtle,
+            AnimalKind::SerpentFish,
+            AnimalKind::Raptor,
+            AnimalKind::Crane,
+            AnimalKind::Sparkit,
+            AnimalKind::Shellkin,
         ] {
             assert_eq!(AnimalKind::from_u8(k.to_u8()), k);
-            assert!(k.to_u8() <= 0x0F, "kind must fit the wire nibble");
+            assert!(k.to_u8() <= 0xFF, "kind must fit the wire byte (bits 4..11)");
         }
-        assert_eq!(AnimalKind::from_u8(15), AnimalKind::Critter, "unknown -> critter");
+        assert_eq!(AnimalKind::from_u8(20), AnimalKind::Critter, "unknown -> critter");
     }
 
     #[test]

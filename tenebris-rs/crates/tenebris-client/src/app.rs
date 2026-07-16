@@ -473,6 +473,15 @@ fn dev_maybe_place(app: &mut App) {
     if center < 0 && dev_mode != 21 {
         return;
     }
+    /* The fish showcase probes real Water blocks (=under marches the
+     * shoreline), so on a freshly teleported-to body (TENEBRIS_DEV_BODY)
+     * it must wait for worldgen - probing half-generated terrain finds no
+     * ocean and the school falls back to a surface float. Re-arm until
+     * the disk is generated. */
+    if dev_mode == 17 && !app.world.borrow().gen_complete() {
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(10));
+        return;
+    }
 
     match dev_mode {
         18 => {
@@ -641,8 +650,25 @@ fn dev_maybe_place(app: &mut App) {
         14 => {
             /* Animal showcase: drop a herd near the player, then aim the
              * camera at its centre so the critters are framed. */
-            animals::dev_spawn(&app.world.borrow(), &app.player.borrow());
-            crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), 4.0);
+            let new_only = std::env::var("TENEBRIS_DEV_ANIMALS")
+                .map(|v| v == "new")
+                .unwrap_or(false);
+            animals::dev_spawn_roster(&app.world.borrow(), &app.player.borrow(), new_only);
+            if !new_only {
+                crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), 4.0);
+            } else {
+                /* Lift + pin the eye above the grass line so the lineup
+                 * frames broadside instead of through the scatter. */
+                let cam = {
+                    let p = app.player.borrow();
+                    dvec3_add(
+                        p.position,
+                        dvec3_add(dvec3_scale(p.basis.up, 3.0), dvec3_scale(p.basis.fwd, -2.0)),
+                    )
+                };
+                app.player.borrow_mut().position = cam;
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+            }
             println!("[dev] spawned {} animals, {} crops", animals::count(), crops::count());
             if let Some(mid) = animals::herd_center() {
                 dev_aim_at(app, mid);
@@ -4558,6 +4584,9 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
      * save). The capture is read-only w.r.t. the world. */
     if std::env::var("TENEBRIS_DEV_LODCAM").is_ok()
         || std::env::var("TENEBRIS_DEV_SUNCAM").is_ok()
+        || std::env::var("TENEBRIS_DEV_STATION_CAM").is_ok()
+        || std::env::var("TENEBRIS_DEV_HOTEL_CAM").is_ok()
+        || std::env::var("TENEBRIS_DEV_CASINO_DOOR").is_ok()
     {
         return;
     }
@@ -5611,6 +5640,36 @@ fn frame_inner(app: &mut App) {
             if let Some(id) = t {
                 crate::nav_ui::set_target(Some(crate::nav_ui::Target::Body(id)));
                 solar_map::set_focus(solar_map::Focus::Body(id));
+            }
+        }
+    }
+
+    /* Dev travel aid (TENEBRIS_DEV_BODY=<name>): once in-game, teleport
+     * to the named body (same path as the teleport menu), so captures can
+     * shoot OTHER worlds - e.g. Sequoia's green water - headless.
+     * Composes with the other dev hooks (TENEBRIS_DEV_FISH etc. fire
+     * after their countdown, by which point we're standing there). */
+    thread_local! {
+        static BODY_TELEPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_BODY") {
+        if menu::state() == GameState::InGameSp && !BODY_TELEPORTED.with(|c| c.get()) {
+            let id = match v.to_ascii_lowercase().as_str() {
+                "sequoia" => Some(tenebris_core::planet::BodyId::Sequoia),
+                "crag" => Some(tenebris_core::planet::BodyId::Crag),
+                "frostbite" => Some(tenebris_core::planet::BodyId::Frostbite),
+                "luna" => Some(tenebris_core::planet::BodyId::Luna),
+                "selene" => Some(tenebris_core::planet::BodyId::Selene),
+                _ => None,
+            };
+            if let Some(id) = id {
+                BODY_TELEPORTED.with(|c| c.set(true));
+                let b = tenebris_core::planet::get(id);
+                player_ctrl::teleport_to(&mut app.player.borrow_mut(), &b);
+                if let Some(w) = renderer::world_for_body(b.id as u32) {
+                    renderer::set_active_world(&w);
+                }
+                println!("[dev] teleported to {}", b.name);
             }
         }
     }
