@@ -319,6 +319,7 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
      * The increment lives at the loop tail so the C `continue` (depth
      * out of range) still advances dd. 0.25 accumulates exactly in
      * binary, so the sequence is bit-identical to the C. */
+    crate::profiler::begin("interact-ray");
     let mut dd = 0.0f64;
     while dd <= MAX_DIST {
         let cur = dvec3_add(eye, dvec3_scale(dir, dd));
@@ -348,18 +349,22 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         dd += STEP_M;
     }
 
+    crate::profiler::end("interact-ray");
+
     /* Torch raycast - placed-torch entities are NOT in the voxel grid,
      * so they need their own intersection pass. Whichever target sits
      * closer along the look ray wins; the torch path short-circuits
      * the block path so a torch always takes precedence on a tie. */
     let eye_f = vec3_make(eye.x as f32, eye.y as f32, eye.z as f32);
     let dir_f = vec3_make(dir.x as f32, dir.y as f32, dir.z as f32);
+    crate::profiler::begin("interact-targets");
     let (torch_hit, torch_dist_f) = torch::raycast(eye_f, dir_f, MAX_DIST as f32);
 
     /* Animal attack takes precedence when a critter is the nearest thing
      * under the reticle. Instant hit on the left-click edge; a kill drops
      * raw meat into the bag. Short-circuits the block / torch handling. */
     let (animal_hit, animal_dist_f) = crate::animals::raycast(eye_f, dir_f, MAX_DIST as f32);
+    crate::profiler::end("interact-targets");
     if animal_hit >= 0
         && (!block_hit || (animal_dist_f as f64) <= block_dist)
         && (torch_hit < 0 || animal_dist_f <= torch_dist_f)

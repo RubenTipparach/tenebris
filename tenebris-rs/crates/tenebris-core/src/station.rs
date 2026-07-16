@@ -79,6 +79,14 @@ pub struct StationConfig {
     pub neon_emission: u32,
     /// Block-light emission of the lucky-7 marquees / sign spire.
     pub sign_emission: u32,
+    /// Camera distance (m) within which the FULL prism drum renders.
+    /// Beyond it the station draws as a single bright glint quad - the
+    /// whole ~40 m wheel is sub-pixel from the surface 9.7 km below, yet
+    /// its thousands of prisms were rebuilt through sokol_gl every frame.
+    pub lod_full_range_m: f32,
+    /// Apparent size of the far glint as a fraction of its distance
+    /// (angular size). 0.004 = roughly a bright 4-px star at 1080p.
+    pub lod_glint_frac: f32,
 }
 
 impl StationConfig {
@@ -118,6 +126,8 @@ impl StationConfig {
         lamp_emission: 15,
         neon_emission: 8,
         sign_emission: 12,
+        lod_full_range_m: 3000.0,
+        lod_glint_frac: 0.004,
     };
 }
 
@@ -172,6 +182,8 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
                 c.artificial_gravity_mps2 = if f > 0.0 { f } else { c.artificial_gravity_mps2 }
             }
             "deck_friction" => c.deck_friction = if f > 0.0 { f } else { c.deck_friction },
+            "lod_full_range_m" => c.lod_full_range_m = if f > 0.0 { f } else { c.lod_full_range_m },
+            "lod_glint_frac" => c.lod_glint_frac = if f > 0.0 { f } else { c.lod_glint_frac },
             "orbit_phase0_deg" => {
                 c.orbit_phase0_deg = if f > 0.0 { f } else { c.orbit_phase0_deg }
             }

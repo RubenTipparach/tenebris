@@ -27,7 +27,10 @@ use std::collections::HashSet;
 
 use sokol::gl as sgl;
 
-use tenebris_core::math::{dvec3_cross, dvec3_make, dvec3_normalize, dvec3_sub};
+use tenebris_core::math::{
+    dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    DVec3,
+};
 use tenebris_core::planet::{self, BodyId};
 use tenebris_core::station::{self, Prism, StationMat, HEX_DIRS};
 
@@ -221,6 +224,57 @@ fn emit_furniture(tex: usize, x: f32, z: f32, y0: f32, lit: f32) {
     }
 }
 
+/// Far-LOD stand-in: one camera-facing quad at the station anchor, sized
+/// as a fixed fraction of its distance (constant apparent size), lit by
+/// the same sun term as the full drum. Depth-tested in the world context
+/// so the planet occludes it below the horizon.
+fn draw_glint(view: Mat4, proj: Mat4, anchor: DVec3, dist: f64, glint_frac: f32) {
+    thread_local! {
+        static PIP_GLINT: std::cell::Cell<sgl::Pipeline> =
+            const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
+    }
+    renderer::sgl_world_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+    let pip = PIP_GLINT.with(|p| {
+        if p.get().id == 0 {
+            /* Opaque dot: depth test + write, no blend, no texture. */
+            p.set(sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+                depth: sokol::gfx::DepthState {
+                    write_enabled: true,
+                    compare: sokol::gfx::CompareFunc::Less,
+                    ..Default::default()
+                },
+                cull_mode: sokol::gfx::CullMode::None,
+                ..Default::default()
+            }));
+        }
+        p.get()
+    });
+    sgl::load_pipeline(pip);
+    /* Camera right/up straight off the view matrix rows. */
+    let right = dvec3_make(view.m[0] as f64, view.m[4] as f64, view.m[8] as f64);
+    let up = dvec3_make(view.m[1] as f64, view.m[5] as f64, view.m[9] as f64);
+    let h = dist * glint_frac as f64 * 0.5;
+    let lit = renderer::entity_sun_brightness(anchor).clamp(0.15, 1.0);
+    let c0 = dvec3_add(anchor, dvec3_scale(dvec3_add(right, up), -h));
+    let c1 = dvec3_add(anchor, dvec3_scale(dvec3_sub(right, up), h));
+    let c2 = dvec3_add(anchor, dvec3_scale(dvec3_add(right, up), h));
+    let c3 = dvec3_add(anchor, dvec3_scale(dvec3_sub(up, right), h));
+    sgl::begin_triangles();
+    sgl::c3f(lit, lit, lit);
+    for tri in [[c0, c1, c2], [c0, c2, c3]] {
+        for v in tri {
+            sgl::v3f(v.x as f32, v.y as f32, v.z as f32);
+        }
+    }
+    sgl::end();
+    renderer::sgl_world_end();
+}
+
 fn make_pipeline(blend: bool) -> sgl::Pipeline {
     let mut desc = sokol::gfx::PipelineDesc {
         depth: sokol::gfx::DepthState {
@@ -247,10 +301,24 @@ fn make_pipeline(blend: bool) -> sgl::Pipeline {
 }
 
 /// Draw the orbital station for this frame. `sim_t` is the world clock
-/// the on-rails orbit is a function of.
-pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
+/// the on-rails orbit is a function of; `cam_world` drives the distance
+/// LOD.
+pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
     let cfg = station::config();
     let anchor = station::orbit_pos(sim_t);
+
+    /* Distance LOD (station.yaml lod_full_range_m): the whole wheel is a
+     * few tens of metres across on a 9.7 km orbit - sub-pixel from the
+     * surface - yet its thousands of textured prisms were re-recorded
+     * through sokol_gl EVERY frame ("draw-entities" red on the F3 readout
+     * while just standing on the planet). Far away, draw one bright
+     * depth-tested glint quad instead: still reads as the station sweeping
+     * its track across the sky, for two triangles. */
+    let dist = dvec3_length(dvec3_sub(cam_world, anchor));
+    if dist > cfg.lod_full_range_m as f64 {
+        draw_glint(view, proj, anchor, dist, cfg.lod_glint_frac);
+        return;
+    }
     let b = planet::get(BodyId::Tenebris);
 
     /* Orbit frame: +y radial out, +x prograde, +z the orbit normal -

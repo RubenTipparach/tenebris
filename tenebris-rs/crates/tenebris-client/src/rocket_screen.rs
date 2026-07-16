@@ -345,28 +345,36 @@ pub fn egui_ui(ctx: &egui::Context) {
         }
         persist(&w);
     } else if launch && faults.is_empty() {
-        /* Board: snapshot the assembled stack into a flown rocket, seat the
-         * player at the pad top, and clear the pad (the rocket is now the
-         * player's ride). Hold jump to fire the engine; X to stage. */
+        /* Board: snapshot the assembled stack into a flown rocket and seat
+         * the player at the pad top. Hold jump to fire the engine; X to
+         * stage; Z to exit.
+         *
+         * The pad KEEPS its parts (this used to empty it). The flown rocket
+         * is a session on top of the pad's rocket - the renderer hides the
+         * pad's static copy while it's the one being flown, and exiting
+         * leaves the rocket on the pad rather than deleting it or dumping the
+         * parts into the bag. That's what makes respawn and re-boarding work,
+         * and it can't duplicate parts: they only ever live on the pad. */
         if let Some(ride) = rocket::RocketRide::from_stack(&parts, &cfg) {
-            let mut w = world.borrow_mut();
             let mut p = player.borrow_mut();
-            if let Some(t) = w.grid.tile(tile) {
+            let w = world.borrow();
+            let (pos, up) = if let Some(t) = w.grid.tile(tile) {
                 let center =
                     tenebris_core::math::dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
                 let dir = tenebris_core::math::dvec3_normalize(t.center);
                 let r = w.depth_to_radius_m(depth + 1) + 1.0;
-                p.position =
+                let pos =
                     tenebris_core::math::dvec3_add(center, tenebris_core::math::dvec3_scale(dir, r));
+                p.position = pos;
                 p.velocity = tenebris_core::math::DVec3::default();
                 p.grounded = false;
-            }
-            let pad = w.block_entities.entry(tile, depth).launch_pad_mut();
-            while pad.pop().is_some() {}
-            persist(&w);
+                (pos, dir)
+            } else {
+                (p.position, p.basis.up)
+            };
             drop(w);
             drop(p);
-            crate::rocket_ride::begin(ride);
+            crate::rocket_ride::begin(ride, parts.clone(), tile, depth, pos, up);
             do_close = true;
         }
     }

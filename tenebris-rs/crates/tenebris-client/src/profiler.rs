@@ -82,6 +82,13 @@ struct ProfilerState {
     slots: [ProfSlot; MAX_SLOTS],
     slot_count: usize,
     visible: bool,
+    /// True between begin_frame and end_frame. begin()/end() no-op
+    /// outside a frame: in the app every scope runs inside one, so this
+    /// changes nothing there - but unit tests exercise instrumented code
+    /// (e.g. interact::update) without ever starting a frame, and their
+    /// stray begin/end writes raced the profiler's own state-resetting
+    /// tests across test threads.
+    in_frame: bool,
     frame_start_t: u64,
     frame_ms_last: f64,
     frame_ms_avg: f64,
@@ -96,6 +103,7 @@ const INITIAL_STATE: ProfilerState = ProfilerState {
     slots: [EMPTY_SLOT; MAX_SLOTS],
     slot_count: 0,
     visible: false,
+    in_frame: false,
     frame_start_t: 0,
     frame_ms_last: 0.0,
     frame_ms_avg: 0.0,
@@ -146,8 +154,20 @@ fn push_frame_sample(p: &mut ProfilerState, ms: f32) {
     }
 }
 
+/* sokol_time must be set up before any stm_now(). The app does that at
+ * boot, but unit tests exercise instrumented code paths (e.g.
+ * interact::update's sub-scopes) without booting sokol - without this
+ * guard every such test dies on sokol_time's initialized assert. The
+ * Once makes the profiler self-sufficient wherever it's called from. */
+fn ensure_time() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(sokol::time::setup);
+}
+
 pub fn begin_frame() {
+    ensure_time();
     let mut p = P.lock().unwrap();
+    p.in_frame = true;
     p.frame_start_t = stm_now();
     for i in 0..p.slot_count {
         p.slots[i].ms_curr = 0.0;
@@ -156,7 +176,9 @@ pub fn begin_frame() {
 }
 
 pub fn end_frame() {
+    ensure_time();
     let mut p = P.lock().unwrap();
+    p.in_frame = false;
     /* Whole-frame total (wall-clock between begin_frame and end_frame
      * - captures everything between, including unprofiled regions). */
     p.frame_ms_last = stm_ms(stm_diff(stm_now(), p.frame_start_t));
@@ -178,13 +200,21 @@ pub fn end_frame() {
 /// implementation doesn't validate this - mismatched begin/end
 /// pairs corrupt the matching slot's accumulator.
 pub fn begin(name: &'static str) {
+    ensure_time();
     let mut p = P.lock().unwrap();
+    if !p.in_frame {
+        return; /* instrumented code running outside a frame (unit tests) */
+    }
     let Some(i) = slot_index(&mut p, name) else { return };
     p.slots[i].start_t = stm_now();
 }
 
 pub fn end(name: &'static str) {
+    ensure_time();
     let mut p = P.lock().unwrap();
+    if !p.in_frame {
+        return; /* instrumented code running outside a frame (unit tests) */
+    }
     let Some(i) = slot_index(&mut p, name) else { return };
     let dt = stm_ms(stm_diff(stm_now(), p.slots[i].start_t));
     p.slots[i].ms_curr += dt;
@@ -249,7 +279,9 @@ fn rows_for(p: &ProfilerState) -> Vec<DrawRow> {
     let mut rows = Vec::new();
     rows.push(DrawRow {
         color: (0xff, 0xe0, 0x40),
-        text: "\n=== profiler [F3 / P] ===\n".to_string(),
+        /* F3 is the ToggleProfiler binding (controls.rs); the C-era "/ P"
+         * alternate never got a Rust binding, so don't advertise it. */
+        text: "\n=== profiler [F3] ===\n".to_string(),
     });
     let fps = if p.frame_ms_avg > 0.01 { 1000.0 / p.frame_ms_avg } else { 0.0 };
     rows.push(DrawRow {
@@ -481,7 +513,7 @@ mod tests {
         assert_eq!(rows.len(), 6); // header + frame + 3 slots + color reset
 
         assert_eq!(rows[0].color, (0xff, 0xe0, 0x40));
-        assert_eq!(rows[0].text, "\n=== profiler [F3 / P] ===\n");
+        assert_eq!(rows[0].text, "\n=== profiler [F3] ===\n");
 
         assert_eq!(rows[1].color, (0xc0, 0xd0, 0xff));
         assert_eq!(

@@ -191,6 +191,16 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     let up = dvec3_scale(local, 1.0 / r);
     let planet_r = w.body.radius_m as f64;
 
+    /* Altitude LOD: individual rain / snow streaks are sub-pixel from a few
+     * hundred metres up - the storm still reads from there via the cloud
+     * deck, the overcast dimming, and the fog. Skip the whole emitter pass
+     * (including its per-cell weather sampling) above the cutoff
+     * (weather.yaml rain_lod_alt_m). */
+    let cam_alt = r - planet_r;
+    if cam_alt > weather::config().rain_lod_alt_m as f64 {
+        return;
+    }
+
     let forced = forced_precip();
 
     /* Cloud deck the precipitation falls from (same shell the clouds ride). */
@@ -386,11 +396,21 @@ fn draw_distant_shafts(
     let cell_ang = (ccfg.cell_m as f64 / shell_r).max(1e-5);
     let n_rows = (std::f64::consts::PI / cell_ang).ceil() as i32;
 
-    /* Horizon cull (identical construction to clouds.rs). */
+    /* Horizon cull (identical construction to clouds.rs) - then CAP the
+     * scan cone to the shaft draw range. Shafts beyond SHAFT_RANGE_M were
+     * always rejected by the per-cell range2 test below, but the row/cell
+     * scan still walked the ENTIRE visible hemisphere to reach that test -
+     * and every visited cell samples the weather field (two simplex evals
+     * via cloud_cell). From altitude the horizon cap opens toward the whole
+     * hemisphere, so a storm ran thousands of pointless samples per frame
+     * (the top red "draw-weather" row on the F3 readout). The cap makes the
+     * scan proportional to what can actually draw; visuals are unchanged by
+     * construction. */
     let horizon_player = (planet_r / r.max(planet_r)).clamp(-1.0, 1.0).acos();
     let horizon_puff = (planet_r / shell_r).clamp(-1.0, 1.0).acos();
     let margin_ang = 2.0 * ccfg.puff_w_m as f64 / shell_r;
-    let view_ang = horizon_player + horizon_puff + margin_ang;
+    let range_ang = SHAFT_RANGE_M / shell_r + 2.0 * cell_ang;
+    let view_ang = (horizon_player + horizon_puff + margin_ang).min(range_ang);
     let cos_view = view_ang.min(std::f64::consts::PI).cos();
 
     let range2 = SHAFT_RANGE_M * SHAFT_RANGE_M;
@@ -485,7 +505,74 @@ fn draw_distant_shafts(
             } else {
                 (wcfg.rain_fall_mps as f64, wcfg.rain_streak_m as f64, wcfg.rain_density_mult)
             };
-            let n_streaks = ((SHAFT_STREAKS as f32) * density_mult).round() as i32;
+            /* FAR-CURTAIN IMPOSTOR (weather.yaml rain_detail_range_m): beyond
+             * the detail range, ONE translucent camera-facing sheet per cell
+             * stands in for its dozens of individual streaks. From that far
+             * the streaks are sub-pixel and the eye only reads "a curtain of
+             * precipitation is there" - which is exactly what the sheet says,
+             * at ~2% of the vertex + CPU cost. The sheet spans the cell's
+             * width and the full cloud-to-ground column, tinted rain / snow,
+             * with its opacity on the same distance fade as the streaks
+             * (times rain_impostor_alpha so a sheet never reads as a wall).
+             *
+             * SMOOTH HANDOVER: t_imp ramps 0 -> 1 across the blend band
+             * (rain_lod_blend_m) ending at the detail range. The sheet fades
+             * IN with t_imp while the streaks fade OUT (opacity AND count)
+             * with 1 - t_imp below, so the transition is a cross-fade, never
+             * a pop. At t_imp = 1 the cell is impostor-only. */
+            let detail_m = wcfg.rain_detail_range_m as f64;
+            let blend_m = (wcfg.rain_lod_blend_m as f64).max(1.0);
+            let t_imp = (((d - (detail_m - blend_m)) / blend_m).clamp(0.0, 1.0)) as f32;
+            if t_imp > 0.0 {
+                /* Rain sheets take their own tint (grey stock - distant rain
+                 * reads as haze, not saturated streak blue); snow sheets keep
+                 * the snow colour. */
+                let wcol = if snow_capable {
+                    snow_col
+                } else {
+                    [wcfg.rain_impostor_r, wcfg.rain_impostor_g, wcfg.rain_impostor_b]
+                };
+                let a = alpha * wcfg.rain_impostor_alpha * t_imp;
+                let half_w = ccfg.cell_m as f64 * 0.5;
+                let b0 = dvec3_add(base_pt, dvec3_scale(right, -half_w));
+                let b1 = dvec3_add(base_pt, dvec3_scale(right, half_w));
+                let u0 = dvec3_add(b0, dvec3_scale(up, col_h));
+                let u1 = dvec3_add(b1, dvec3_scale(up, col_h));
+                sgl::c4f(wcol[0], wcol[1], wcol[2], a);
+                sgl::v3f(b0.x as f32, b0.y as f32, b0.z as f32);
+                sgl::v3f(b1.x as f32, b1.y as f32, b1.z as f32);
+                sgl::v3f(u1.x as f32, u1.y as f32, u1.z as f32);
+                sgl::v3f(b0.x as f32, b0.y as f32, b0.z as f32);
+                sgl::v3f(u1.x as f32, u1.y as f32, u1.z as f32);
+                sgl::v3f(u0.x as f32, u0.y as f32, u0.z as f32);
+                drawn += 1;
+                if t_imp >= 1.0 {
+                    continue; /* fully handed over - no streaks out here */
+                }
+            }
+            /* Streak side of the cross-fade: opacity thins with 1 - t_imp
+             * (count follows below via the lod factor). */
+            let streak_fade = 1.0 - t_imp;
+            let alpha = alpha * streak_fade;
+
+            /* Distance LOD on the COUNT, not just the alpha: far shafts fade
+             * toward rain_alpha_far (0.1 stock) so they barely read, yet each
+             * one still cost full CPU - with a storm filling every cell the
+             * 9000-streak cap was reached mostly by shafts too faint to see
+             * (the red "draw-weather" row). Scale the per-cell count by the
+             * SAME fade, floored at rain_lod_far_frac (weather.yaml; 1.0
+             * restores the old constant density), so nearby curtains stay
+             * dense while the far haze thins to a sketch. */
+            let lod =
+                (wcfg.rain_lod_far_frac + (1.0 - wcfg.rain_lod_far_frac) * fade) * streak_fade;
+            let n_streaks =
+                ((SHAFT_STREAKS as f32) * density_mult * lod.clamp(0.0, 1.0)).round() as i32;
+            /* Per-cell invariants, hoisted: these were recomputed per STREAK
+             * (two cross products + a normalize each), thousands of times a
+             * frame in a storm. */
+            let cell_w = (ccfg.cell_m as f64) * 0.5;
+            let t1 = dvec3_normalize(dvec3_cross(dvec3_make(0.0, 1.0, 0.0), up));
+            let t2 = dvec3_cross(up, t1);
             for s in 0..n_streaks {
                 if drawn >= MAX_SHAFT_STREAKS {
                     break;
@@ -493,9 +580,6 @@ fn draw_distant_shafts(
                 /* Spread streaks across the cell in the tangent plane. */
                 let ja = hash3(ti, pj.wrapping_add(s * 97), 0x51) as f64;
                 let jb = hash3(ti.wrapping_add(s * 41), pj, 0x52) as f64;
-                let cell_w = (ccfg.cell_m as f64) * 0.5;
-                let t1 = dvec3_normalize(dvec3_cross(dvec3_make(0.0, 1.0, 0.0), up));
-                let t2 = dvec3_cross(up, t1);
                 let off = dvec3_add(
                     dvec3_scale(t1, (ja - 0.5) * cell_w),
                     dvec3_scale(t2, (jb - 0.5) * cell_w),

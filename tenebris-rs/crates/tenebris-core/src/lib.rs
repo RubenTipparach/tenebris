@@ -17,6 +17,7 @@ pub mod items;
 pub mod job_system;
 pub mod math;
 pub mod mining;
+pub mod nav;
 pub mod orbit;
 pub mod physics;
 pub mod planet;

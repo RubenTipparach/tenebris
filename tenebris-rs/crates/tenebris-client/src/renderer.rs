@@ -1864,6 +1864,10 @@ thread_local! {
     /// Camera aspect (width / height) for this frame, so the composite
     /// rain-on-glass droplets stay round. Set in camera_basis.
     static FRAME_ASPECT: Cell<f32> = const { Cell::new(1.777) };
+    /// Throttle for the world-sgl-context overflow warning (see
+    /// context_draw in draw_world) - a sustained overflow logs once per
+    /// few seconds, not per frame.
+    static SGL_OVERFLOW_LAST_LOG_S: Cell<f64> = const { Cell::new(-1e9) };
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
@@ -1892,6 +1896,19 @@ fn sgl_world_ctx() -> sgl::Context {
                 color_format: sg::PixelFormat::Rgba8,
                 depth_format: sg::PixelFormat::DepthStencil,
                 sample_count: 1,
+                /* Explicit pools: the sokol_gl DEFAULT is 64k vertices, and
+                 * on any overflow the whole context renders NOTHING for the
+                 * frame. A full storm deck (weather moisture at max fills
+                 * EVERY cloud cell with a storm-scaled lump cluster) blows
+                 * 64k on its own - the "no clouds while it is raining" bug:
+                 * clouds, drops, animals, bonfire FX all silently vanished,
+                 * while the rain shafts survived in the separate default
+                 * (swapchain) context. Same failure + fix precedent as the
+                 * station drum in mobile_ui::init (default context 256k).
+                 * The overflow diagnostic next to context_draw() reports if
+                 * this ever saturates again. */
+                max_vertices: 256 * 1024,
+                max_commands: 32 * 1024,
                 ..Default::default()
             });
             c.set(ctx);
@@ -4033,6 +4050,27 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
          * keeps its own buffer and flushes at end-of-frame as before. */
         let world_ctx = SGL_WORLD_CTX.with(|c| c.get());
         if world_ctx.id != 0 {
+            /* Overflow watchdog: a saturated sokol_gl context DRAWS NOTHING
+             * for the frame, silently - this is how the storm cloud deck
+             * vanished. If the (now much larger) pool ever fills again, say
+             * so out loud instead of letting entities disappear unexplained.
+             * Throttled so a sustained overflow can't flood the console. */
+            let err = sgl::context_error(world_ctx);
+            if err.any {
+                let now = time_seconds() as f64;
+                let last = SGL_OVERFLOW_LAST_LOG_S.with(|c| c.get());
+                if now - last > 5.0 {
+                    SGL_OVERFLOW_LAST_LOG_S.with(|c| c.set(now));
+                    eprintln!(
+                        "[renderer] WARN: world sgl context overflow - nothing \
+                         drawn this frame (vertices_full={} commands_full={} \
+                         uniforms_full={}). Entity/cloud geometry exceeds the \
+                         pool; raise max_vertices in sgl_world_ctx or thin the \
+                         emitters.",
+                        err.vertices_full, err.commands_full, err.uniforms_full
+                    );
+                }
+            }
             sgl::context_draw(world_ctx);
         }
         sg::end_pass();

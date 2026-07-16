@@ -74,6 +74,61 @@ thread_local! {
     });
 }
 
+/// Which frame the chase camera's orbit angles live in.
+///
+/// `Rocket`: the rocket's own basis - azimuth 0 is behind the nose and the
+/// camera turns with the ship. `Equatorial`: fixed world axes (up = the
+/// planet spin axis, +Y), so the camera holds a stable equator-aligned
+/// view while the rocket manoeuvres inside it - the KSP "orbit mode"
+/// counterpart to its chase mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CamFrame {
+    Rocket,
+    Equatorial,
+}
+
+thread_local! {
+    /* Persists across flights on purpose: the alignment is a pilot
+     * preference, not flight state. */
+    static FRAME: std::cell::Cell<CamFrame> = const { std::cell::Cell::new(CamFrame::Rocket) };
+}
+
+/// Toggle rocket-frame <-> equatorial (the CamAlign key).
+pub fn toggle_frame() {
+    FRAME.with(|f| {
+        f.set(match f.get() {
+            CamFrame::Rocket => CamFrame::Equatorial,
+            CamFrame::Equatorial => CamFrame::Rocket,
+        })
+    });
+}
+
+pub fn frame() -> CamFrame {
+    FRAME.with(|f| f.get())
+}
+
+/// HUD label for the current alignment (ASCII, per the in-game-text rule).
+pub fn frame_label() -> &'static str {
+    match frame() {
+        CamFrame::Rocket => "rocket",
+        CamFrame::Equatorial => "equatorial",
+    }
+}
+
+/// The frame the orbit angles apply in: the rocket's own basis, or fixed
+/// world axes for the equatorial view. Returns (fwd, up, right), the same
+/// handedness as the player basis (fwd x up = right).
+fn orbit_frame(fwd: DVec3, up: DVec3, right: DVec3) -> (DVec3, DVec3, DVec3) {
+    match frame() {
+        CamFrame::Rocket => (fwd, up, right),
+        CamFrame::Equatorial => (
+            tenebris_core::math::dvec3_make(0.0, 0.0, 1.0),
+            tenebris_core::math::dvec3_make(0.0, 1.0, 0.0),
+            tenebris_core::math::dvec3_make(-1.0, 0.0, 0.0),
+        ),
+    }
+}
+
 /// Re-seed the orbit from config. Call when boarding, so every flight
 /// starts parked behind the rocket rather than wherever the last one ended.
 pub fn reset() {
@@ -149,13 +204,14 @@ fn orbit_dir(fwd: DVec3, up: DVec3, right: DVec3, azimuth: f32, elevation: f32) 
 /// float-cancellation noise that motivates the same trick over there.
 pub fn view(anchor: DVec3, fwd: DVec3, up: DVec3, right: DVec3) -> Mat4 {
     let m = state();
-    let dir = orbit_dir(fwd, up, right, m.cur_azimuth, m.cur_elevation);
+    let (f, u, r) = orbit_frame(fwd, up, right);
+    let dir = orbit_dir(f, u, r, m.cur_azimuth, m.cur_elevation);
     let eye = dvec3_add(anchor, dvec3_scale(dir, m.cur_distance as f64));
     let look = dvec3_scale(dir, -1.0);
     mat4_look_at_dir(
         dvec3_to_vec3(eye),
         Vec3 { x: look.x as f32, y: look.y as f32, z: look.z as f32 },
-        Vec3 { x: up.x as f32, y: up.y as f32, z: up.z as f32 },
+        Vec3 { x: u.x as f32, y: u.y as f32, z: u.z as f32 },
     )
 }
 
@@ -164,7 +220,8 @@ pub fn view(anchor: DVec3, fwd: DVec3, up: DVec3, right: DVec3) -> Mat4 {
 /// at the player, so they need to be told.
 pub fn eye(anchor: DVec3, fwd: DVec3, up: DVec3, right: DVec3) -> DVec3 {
     let m = state();
-    let dir = orbit_dir(fwd, up, right, m.cur_azimuth, m.cur_elevation);
+    let (f, u, r) = orbit_frame(fwd, up, right);
+    let dir = orbit_dir(f, u, r, m.cur_azimuth, m.cur_elevation);
     dvec3_add(anchor, dvec3_scale(dir, m.cur_distance as f64))
 }
 

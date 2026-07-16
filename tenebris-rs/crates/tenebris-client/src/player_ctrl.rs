@@ -1461,67 +1461,83 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     /* SPACE MODE - 6DOF orientation, thrust + drag flight.           */
     /* ============================================================== */
     if p.is_in_space {
-        /* Rocket attitude is on the keys, since the mouse now belongs to the
-         * camera: W/S pitch the nose down/up, A/D yaw, Q/R still roll. Look
-         * wherever you like while the burn holds its heading - the entire
-         * reason the mode exists.
-         *
-         * Rate-based rather than the JS's torque-into-damped-angular-
-         * velocity: theirs decayed by a fixed 0.95 PER FRAME, making the
-         * handling fps-dependent. Rust leads; this is dt-correct. */
-        let (yaw_delta, pitch_delta) = if riding {
+        if riding {
+            /* Rocket attitude. The nose - and the thrust axis - is basis.up,
+             * so the keys AIM basis.up rather than the look direction (the
+             * mouse owns the camera in this mode). W/S pitch the nose
+             * fore/aft (rotate about right), A/D yaw it port/starboard
+             * (rotate about fwd), Q/R spin about it (rotate about up). Each
+             * rotation keeps its own axis fixed, so the three compose into
+             * full attitude control and the nose can be pointed anywhere.
+             *
+             * Rate-based, not the JS's torque-into-per-frame-damped angular
+             * velocity, which made handling fps-dependent. Rust leads;
+             * dt-correct. Signs are a feel choice - confirm in-game.*/
             let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
-            let mut yd = 0.0f64;
-            let mut pd = 0.0f64;
-            if inp.phys.left {
-                yd -= rate;
-            }
-            if inp.phys.right {
-                yd += rate;
-            }
+            let roll_rate = l.space_roll_speed as f64 * dt as f64;
+            let mut pitch = 0.0f64; /* about basis.right */
             if inp.phys.forward {
-                pd -= rate; /* W: nose down */
+                pitch += rate; /* W: pitch the nose over toward fwd */
             }
             if inp.phys.backward {
-                pd += rate; /* S: nose up */
+                pitch -= rate; /* S: bring the nose back up */
             }
-            (yd, pd)
+            let mut yaw = 0.0f64; /* about basis.fwd */
+            if inp.phys.right {
+                yaw += rate;
+            }
+            if inp.phys.left {
+                yaw -= rate;
+            }
+            let mut roll = 0.0f64; /* about basis.up (the nose) */
+            if inp.phys.roll_right {
+                roll += roll_rate;
+            }
+            if inp.phys.roll_left {
+                roll -= roll_rate;
+            }
+            if pitch != 0.0 {
+                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.right, pitch);
+                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.right, pitch);
+            }
+            if yaw != 0.0 {
+                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.fwd, yaw);
+                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.fwd, yaw);
+            }
+            if roll != 0.0 {
+                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, roll);
+                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, roll);
+            }
+            orthonormalise_basis(&mut p.basis);
         } else {
-            (yaw_delta, pitch_delta)
-        };
-
-        /* Rotate basis directly around its own axes. Yaw around
-         * basis.up turns left/right; pitch around basis.right looks
-         * up/down (no clamp - full 6DOF allows looping); roll around
-         * basis.fwd via Q/E so the player can bank. Keeps the basis
-         * orthonormal each step. */
-        if yaw_delta != 0.0 {
-            p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, -yaw_delta);
-            p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, -yaw_delta);
+            /* Spacewalk 6DOF: the mouse points the look axis (basis.fwd).
+             * Yaw around basis.up turns left/right; pitch around basis.right
+             * looks up/down (no clamp - full 6DOF loops); roll around
+             * basis.fwd via Q/E banks. Keeps the basis orthonormal. */
+            if yaw_delta != 0.0 {
+                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, -yaw_delta);
+                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, -yaw_delta);
+            }
+            if pitch_delta != 0.0 {
+                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.right, pitch_delta);
+                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.right, pitch_delta);
+            }
+            /* Roll Q/E around basis.fwd. fwd x up = +right, so +theta tilts
+             * up toward +right - the camera banks RIGHT. Q (roll left) is a
+             * negative theta; E (roll right) positive. */
+            let mut roll_delta = 0.0f64;
+            if inp.phys.roll_left {
+                roll_delta -= l.space_roll_speed as f64 * dt as f64;
+            }
+            if inp.phys.roll_right {
+                roll_delta += l.space_roll_speed as f64 * dt as f64;
+            }
+            if roll_delta != 0.0 {
+                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.fwd, roll_delta);
+                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.fwd, roll_delta);
+            }
+            orthonormalise_basis(&mut p.basis);
         }
-        if pitch_delta != 0.0 {
-            p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.right, pitch_delta);
-            p.basis.up = rotate_axis_angle(p.basis.up, p.basis.right, pitch_delta);
-        }
-        /* Roll Q/E: rotation around basis.fwd. Under our basis
-         * convention fwd x up = +right, so a +theta rotation around
-         * fwd tilts up toward +right - visually that's the camera
-         * banking RIGHT. Q is the "roll left" key, so we apply a
-         * NEGATIVE theta when roll_left is held; E (roll right) gets
-         * the positive theta. The previous signs were inverted, which
-         * mapped Q to a right-roll. */
-        let mut roll_delta = 0.0f64;
-        if inp.phys.roll_left {
-            roll_delta -= l.space_roll_speed as f64 * dt as f64;
-        }
-        if inp.phys.roll_right {
-            roll_delta += l.space_roll_speed as f64 * dt as f64;
-        }
-        if roll_delta != 0.0 {
-            p.basis.up = rotate_axis_angle(p.basis.up, p.basis.fwd, roll_delta);
-            p.basis.right = rotate_axis_angle(p.basis.right, p.basis.fwd, roll_delta);
-        }
-        orthonormalise_basis(&mut p.basis);
 
         /* Thrust acts along basis axes - fwd/back, strafe via
          * basis.right, up/down via basis.up (Space/C). Velocity is
@@ -1548,11 +1564,16 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                 accel = dvec3_sub(accel, p.basis.right);
             }
         }
-        if inp.phys.fly_up {
-            accel = dvec3_add(accel, p.basis.up);
-        }
-        if inp.phys.fly_down {
-            accel = dvec3_sub(accel, p.basis.up);
+        /* fly_up/fly_down are RCS too, and fly_up shares the Space key with
+         * the rocket engine below - firing both would double-thrust every
+         * burn. The rocket flies on its engine alone. */
+        if !riding {
+            if inp.phys.fly_up {
+                accel = dvec3_add(accel, p.basis.up);
+            }
+            if inp.phys.fly_down {
+                accel = dvec3_sub(accel, p.basis.up);
+            }
         }
         let al = dvec3_length(accel);
         let rcs_active = al > 1e-6;
@@ -1568,20 +1589,20 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             }
             p.velocity = dvec3_add(p.velocity, dvec3_scale(accel, thrust * dt as f64));
         }
-        /* Riding a rocket in space: holding jump fires the active engine (the
-         * vacuum upper stage after you've staged the booster) PROGRADE - along
-         * basis.fwd - so you point where you want and burn to build orbital
-         * speed. Much stronger than the RCS thrust above. Spent -> free-fly. */
-        if crate::rocket_ride::is_riding() {
-            if inp.phys.jump {
-                let m = crate::rocket_ride::mass_kg().max(1.0) as f64;
-                let a = crate::rocket_ride::thrust_n() as f64 / m;
-                p.velocity = dvec3_add(p.velocity, dvec3_scale(p.basis.fwd, a * dt as f64));
-                crate::rocket_ride::burn(dt);
-            }
-            if crate::rocket_ride::is_spent() {
-                crate::rocket_ride::clear();
-            }
+        /* Riding a rocket in space: holding Jump fires the active engine
+         * along the NOSE (basis.up) - the same axis it fires on the pad and
+         * the axis the attitude keys aim, so "point the nose, hold Jump"
+         * flies consistently in both modes. Much stronger than RCS.
+         *
+         * A spent rocket is NOT auto-cleared: the player stays in the (dead)
+         * capsule and coasts / falls, and can respawn to a fresh one or
+         * climb out. Dropping them to a free-flying spacewalk the instant
+         * the tank ran dry was jarring and stranded them mid-arc. */
+        if riding && inp.phys.jump {
+            let m = crate::rocket_ride::mass_kg().max(1.0) as f64;
+            let a = crate::rocket_ride::thrust_n() as f64 / m;
+            p.velocity = dvec3_add(p.velocity, dvec3_scale(p.basis.up, a * dt as f64));
+            crate::rocket_ride::burn(dt);
         }
         /* Orbital gravity: every body pulls inverse-square (anchored to its
          * surface gravity), so an unpowered coast is a real ballistic arc -
@@ -1872,20 +1893,15 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      *   3) Dry: regular tap-to-jump + hold-for-jetpack as before. */
     /* Riding a rocket: the engine replaces the jetpack. Holding jump throttles
      * the active stage - thrust/mass along up (gravity still opposes, so a
-     * TWR < 1 rocket won't leave the pad). Burns the active stage's fuel; when
-     * the whole rocket is spent, drop back to normal free-fly. */
-    let riding = crate::rocket_ride::is_riding();
-    if riding {
-        if inp.phys.jump {
-            let m = crate::rocket_ride::mass_kg().max(1.0);
-            let a = (crate::rocket_ride::thrust_n() / m) as f64;
-            vy += a * dt as f64;
-            crate::rocket_ride::burn(dt);
-            p.grounded = false;
-        }
-        if crate::rocket_ride::is_spent() {
-            crate::rocket_ride::clear();
-        }
+     * TWR < 1 rocket won't leave the pad). Burns the active stage's fuel. A
+     * spent rocket is left in place (no auto-clear) - the player stays in the
+     * dead capsule and can respawn or climb out; see the space branch. */
+    if riding && inp.phys.jump {
+        let m = crate::rocket_ride::mass_kg().max(1.0);
+        let a = (crate::rocket_ride::thrust_n() / m) as f64;
+        vy += a * dt as f64;
+        crate::rocket_ride::burn(dt);
+        p.grounded = false;
     }
     if inp.phys.jump && !riding {
         p.jump_held_s += dt;
@@ -3327,7 +3343,14 @@ mod tests {
         let stack =
             [ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE];
         let cfg = tenebris_core::rocket::config();
-        crate::rocket_ride::begin(RocketRide::from_stack(&stack, &cfg).expect("flyable"));
+        crate::rocket_ride::begin(
+            RocketRide::from_stack(&stack, &cfg).expect("flyable"),
+            stack.to_vec(),
+            -1,
+            -1,
+            p.position,
+            p.basis.up,
+        );
 
         /* Ascent with a throttle cut: full burn to 80 m/s vertical, then
          * coast up out of the well (holding full throttle the whole climb
@@ -3392,10 +3415,17 @@ mod tests {
             if dvec3_length(err) < 2.0 {
                 break;
             }
-            let fwd = dvec3_normalize(err);
-            p.basis.fwd = fwd;
-            p.basis.up = up;
-            p.basis.right = dvec3_cross(fwd, up);
+            /* Thrust fires along the NOSE (basis.up) now, matching the pad
+             * and the JS local-up model, so aim the nose at the burn vector.
+             * The other two axes only need to be orthonormal. (Before the
+             * rocket thrusted along basis.fwd, which is why this used to set
+             * fwd = burn direction.) */
+            let dir = dvec3_normalize(err);
+            let seed =
+                if dir.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
+            p.basis.up = dir;
+            p.basis.right = dvec3_normalize(dvec3_cross(dir, seed));
+            p.basis.fwd = dvec3_cross(p.basis.right, dir);
             steps(&mut p, Some(&w), 1);
             burn_frames += 1;
             assert!(

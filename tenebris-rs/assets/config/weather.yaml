@@ -121,6 +121,26 @@ default_moisture: 0.66
 #                      near->far with distance so a storm reads as depth.
 #   wet_fade_tau_s     fade time-constant (s) for camera wet FX easing in/
 #                      out when entering/leaving rain. 0 = instant snap.
+#   rain_lod_alt_m     camera altitude (m) above which rain/snow streaks stop
+#                      rendering entirely (sub-pixel from up there; the storm
+#                      still reads via clouds + overcast + fog).
+#   rain_lod_far_frac  fraction of each cell's streak count kept at max
+#                      range (count thins with the same near->far fade as
+#                      the alpha; far curtains are ~invisible anyway).
+#                      1.0 = old constant density everywhere.
+#   rain_detail_range_m  cells within this distance render individual
+#                      streaks; beyond it each cell draws ONE translucent
+#                      curtain sheet (the far-precip impostor), so distant
+#                      storms stay visible at a fraction of the cost.
+#   rain_lod_blend_m   width (m) of the streak->impostor cross-fade band
+#                      ending at rain_detail_range_m: streaks fade out
+#                      (opacity + count) while the sheet fades in, so the
+#                      handover never pops. Small = near-hard cut.
+#   rain_impostor_alpha  opacity multiplier for those far curtain sheets
+#                      (on top of the distance fade) - haze, not a wall.
+#   rain_impostor_r/g/b  tint of the far RAIN curtain sheets (0..1). Grey
+#                      stock so distance rain reads as haze; snow sheets
+#                      always use the snow colour.
 #
 #   --- Camera rain-on-glass lens droplets (the drops on the "lens" when it
 #   rains / after surfacing; composite FS Heartfelt FX). Count and SIZE are
@@ -162,12 +182,22 @@ rain_streak_m: 1.5
 snow_fall_mps: 3.0
 snow_streak_m: 0.4
 snow_density_mult: 2.0
-rain_color_r: 0.40
-rain_color_g: 0.58
-rain_color_b: 1.0
+# Slightly grey-shifted from the old 0.40/0.58/1.0 so the streaks sit
+# closer to the grey impostor sheets they cross-fade into.
+rain_color_r: 0.52
+rain_color_g: 0.62
+rain_color_b: 0.90
 rain_alpha_near: 0.78
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
+rain_lod_alt_m: 200.0
+rain_lod_far_frac: 0.25
+rain_detail_range_m: 150.0
+rain_lod_blend_m: 60.0
+rain_impostor_alpha: 0.5
+rain_impostor_r: 0.55
+rain_impostor_g: 0.58
+rain_impostor_b: 0.62
 rain_lens_density: 1.4
 rain_lens_refract: 1.7
 rain_lens_speed: 1.0
