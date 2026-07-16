@@ -227,6 +227,16 @@ pub struct PlayerCtrl {
      * intentional, please save it now". Refreshing without moving
      * leaves the original saved pose authoritative. */
     pub rescue_save_freeze_s: f32,
+
+    /* While Some, the player lives in the STATION's reference frame
+     * (CLAUDE.md: stations are stationary frames inside their SOI):
+     * authoritative (position, velocity) in station-LOCAL metres. All
+     * on-deck physics - walking, jumping, falling, collision -
+     * integrates HERE, where the station is motionless; the world-space
+     * pose is COMPOSED from this each frame for rendering/saves/net.
+     * Never integrate on-deck motion in world space - the station's
+     * 15 m/s orbit leaks in and a jump tosses the player sideways. */
+    pub station_local: Option<(DVec3, DVec3)>,
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1512,11 +1522,39 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                 p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, roll);
             }
             orthonormalise_basis(&mut p.basis);
+        } else if station_field {
+            /* ON THE STATION DECK the mouse look is PLANET-STYLE: scalar
+             * yaw/pitch layered over the basis (compute_look), with the
+             * basis owned by the deck alignment below.
+             *
+             * It cannot be 6DOF here: 6DOF pitch rotates basis.up, and the
+             * station's authoritative-up alignment eases basis.up back onto
+             * the deck normal EVERY FRAME - so every degree the player
+             * pitched was rolled back level, and looking UP was impossible
+             * (the "camera anchor stops me looking up on the station" bug).
+             * Scalars sidestep the fight: alignment owns the basis, the
+             * look rides on top, and the planet-mode pitch clamp applies. */
+            p.yaw += yaw_delta as f32;
+            p.pitch += pitch_delta as f32;
+            if p.pitch > PITCH_LIMIT {
+                p.pitch = PITCH_LIMIT;
+            }
+            if p.pitch < -PITCH_LIMIT {
+                p.pitch = -PITCH_LIMIT;
+            }
         } else {
             /* Spacewalk 6DOF: the mouse points the look axis (basis.fwd).
              * Yaw around basis.up turns left/right; pitch around basis.right
              * looks up/down (no clamp - full 6DOF loops); roll around
              * basis.fwd via Q/E banks. Keeps the basis orthonormal. */
+
+            /* Just floated off the deck: the station look kept scalar
+             * yaw/pitch, which 6DOF never consumes - bake them into the
+             * basis first or the view carries a phantom offset the mouse
+             * can never cancel (the same bake as the planet->space edge). */
+            if p.yaw != 0.0 || p.pitch != 0.0 {
+                bake_yaw_pitch_into_basis(p);
+            }
             if yaw_delta != 0.0 {
                 p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, -yaw_delta);
                 p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, -yaw_delta);
@@ -1541,6 +1579,113 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             }
             orthonormalise_basis(&mut p.basis);
         }
+
+        /* ============================================================ */
+        /* STATION FRAME (CLAUDE.md: stations are stationary reference  */
+        /* frames inside their SOI). On foot in the field, ALL physics  */
+        /* runs in station-LOCAL coordinates where the station is       */
+        /* motionless - walking, jumping, gravity, collision - and the  */
+        /* world pose is COMPOSED at the end. The station's 15 m/s      */
+        /* orbit never touches the integration, so a jump goes straight */
+        /* up and lands back on the deck instead of the station curving */
+        /* away underneath ("jump tosses me sideways" bug). The frame   */
+        /* is treated as inertial; at a ~70 min orbital period the      */
+        /* fictitious terms are imperceptible.                          */
+        /* ============================================================ */
+        if station_field && !riding {
+            let scfg = tenebris_core::station::config();
+            let sf = tenebris_core::station::frame_sample(p.position, sim_t);
+            /* Entering the field: capture the local pose ONCE from the
+             * composed world state; from then on the local pose is the
+             * authority and this conversion never runs again (repeating
+             * it every frame is exactly the world-integration leak). */
+            let (mut lp, mut lv) = p.station_local.unwrap_or_else(|| {
+                (sf.local, sf.world_vec_to_local(dvec3_sub(p.velocity, sf.station_vel)))
+            });
+
+            /* THE STATION IS AUTHORITATIVE UP: ease basis.up onto the
+             * deck normal (soi_align_rate) so entering rolls the world
+             * level; fwd/right parallel-transport by the same arc. The
+             * LOOK is scalar yaw/pitch on top (see the look arm above),
+             * so this alignment never eats the player's pitch. */
+            let k = 1.0 - (-(scfg.soi_align_rate as f64) * dt as f64).exp();
+            let old_up = p.basis.up;
+            let mut mixed =
+                dvec3_add(dvec3_scale(old_up, 1.0 - k), dvec3_scale(sf.up, k));
+            if dvec3_length(mixed) < 1e-3 {
+                mixed = dvec3_add(mixed, dvec3_scale(p.basis.right, 0.01));
+            }
+            let mixed = dvec3_normalize(mixed);
+            p.basis.fwd = rotate_between(old_up, mixed, p.basis.fwd);
+            p.basis.right = rotate_between(old_up, mixed, p.basis.right);
+            p.basis.up = mixed;
+            p.basis.right = dvec3_normalize(dvec3_cross(p.basis.fwd, p.basis.up));
+            p.basis.fwd = dvec3_normalize(dvec3_cross(p.basis.up, p.basis.right));
+
+            /* Local integration - the station does not move in here. */
+            lv.y -= scfg.artificial_gravity_mps2 as f64 * dt as f64;
+            let prev = lp;
+            lp = dvec3_add(lp, dvec3_scale(lv, dt as f64));
+
+            /* Collision against the shell columns at the NEW cell. The
+             * frame basis is position-independent, so local_to_world on
+             * the frame we already sampled is exact; the resample is
+             * only for the new column's spans. */
+            let mut sfc = tenebris_core::station::frame_sample(sf.local_to_world(lp), sim_t);
+            if sfc.embedded {
+                /* Walked into a wall: cancel the horizontal step. */
+                lp.x = prev.x;
+                lp.z = prev.z;
+                sfc = tenebris_core::station::frame_sample(sf.local_to_world(lp), sim_t);
+            }
+            p.grounded = false;
+            if let Some(support) = sfc.support_m {
+                if lp.y <= support + 0.05 && lv.y <= 0.0 {
+                    lp.y = support;
+                    lv.y = 0.0;
+                    let damp = (-(scfg.deck_friction as f64) * dt as f64).exp();
+                    lv.x *= damp;
+                    lv.z *= damp;
+                    p.grounded = true;
+                }
+            }
+            if let Some(ceiling) = sfc.ceiling_m {
+                if lp.y + scfg.head_clearance_m as f64 >= ceiling && lv.y > 0.0 {
+                    lp.y = ceiling - scfg.head_clearance_m as f64;
+                    lv.y = 0.0;
+                }
+            }
+            /* Deck walking: grounded motion is the walk wish, verbatim
+             * planet feel - and a jump is a clean local up-impulse that
+             * the deck gravity above brings straight back down. */
+            if p.grounded {
+                let wish = walk_wish(p, &inp.phys);
+                let speed = if inp.phys.sprint { SPRINT_SPEED } else { WALK_SPEED } as f64;
+                let wl = sf.world_vec_to_local(wish);
+                lv.x = wl.x * speed;
+                lv.z = wl.z * speed;
+                if inp.phys.jump && !p.jump_consumed {
+                    lv.y = l.jump_velocity_mps as f64;
+                    p.grounded = false;
+                    p.jump_consumed = true;
+                }
+            }
+            if !inp.phys.jump {
+                p.jump_consumed = false;
+            }
+
+            p.station_local = Some((lp, lv));
+            /* Compose the world pose - rendering, saves and net all read
+             * this; none of them know the integration was local. */
+            p.position = sf.local_to_world(lp);
+            p.velocity = dvec3_add(sf.station_vel, sf.local_vec_to_world(lv));
+            p.last_tile = -1;
+            jerk_log(p, &before, w, dt);
+            return;
+        }
+        /* Not on the station: the local pose is meaningless - drop it so
+         * re-entry recaptures from the world state. */
+        p.station_local = None;
 
         /* Thrust acts along basis axes - fwd/back, strafe via
          * basis.right, up/down via basis.up (Space/C). Velocity is
@@ -1613,53 +1758,9 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * to a moon costs the fuel the tanks actually carry. */
         let og = planet::orbital_gravity_at(p.position);
         p.velocity = dvec3_add(p.velocity, dvec3_scale(og, dt as f64));
-        /* Artificial gravity inside the orbital station's field: an
-         * extra anti-radial pull toward the deck. The station frame is
-         * free-falling (real gravity is exactly its centripetal budget),
-         * so relative to the station this reads as plain downward
-         * gravity - hover a rocket over the casino and it settles onto
-         * the deck. */
-        let scfg = tenebris_core::station::config();
-        let sf = tenebris_core::station::frame_sample(p.position, sim_t);
-        /* Station physics applies ON FOOT only. A ridden ship must fly
-         * free through the field - no gravity suck, no deck clamp, no
-         * basis roll - until the pilot explicitly docks (E): "the
-         * ship-to-station pad snapping is happening by distance, but it
-         * needs to be when I press E to dock". The docking sequence
-         * drives the ship's pose itself. */
-        let station_walk = sf.in_field && !riding;
-        if station_walk {
-            p.velocity = dvec3_sub(
-                p.velocity,
-                dvec3_scale(sf.up, scfg.artificial_gravity_mps2 as f64 * dt as f64),
-            );
-            /* THE STATION IS AUTHORITATIVE UP inside its field. Space mode
-             * leaves the basis free (6DOF), which had the player walking
-             * the casino deck tilted at whatever attitude they flew in
-             * with - there is exactly one up on the deck, the station's.
-             * Ease basis.up onto the deck normal at soi_align_rate
-             * (station.yaml) so entering the field rolls the world level
-             * instead of snapping; fwd/right parallel-transport by the
-             * same shortest arc (the planet-radial sync's recipe, with
-             * the deck as the authority). */
-            let k = 1.0 - (-(scfg.soi_align_rate as f64) * dt as f64).exp();
-            let old_up = p.basis.up;
-            let mut mixed = dvec3_add(
-                dvec3_scale(old_up, 1.0 - k),
-                dvec3_scale(sf.up, k),
-            );
-            if dvec3_length(mixed) < 1e-3 {
-                /* Entered exactly upside down: nudge through the side so
-                 * the interpolation has a direction to roll through. */
-                mixed = dvec3_add(mixed, dvec3_scale(p.basis.right, 0.01));
-            }
-            let mixed = dvec3_normalize(mixed);
-            p.basis.fwd = rotate_between(old_up, mixed, p.basis.fwd);
-            p.basis.right = rotate_between(old_up, mixed, p.basis.right);
-            p.basis.up = mixed;
-            p.basis.right = dvec3_normalize(dvec3_cross(p.basis.fwd, p.basis.up));
-            p.basis.fwd = dvec3_normalize(dvec3_cross(p.basis.up, p.basis.right));
-        }
+        /* (Station physics is handled ABOVE in the station-frame block -
+         * on foot in the field this code never runs. A ridden ship flies
+         * free through the field until the pilot explicitly docks.) */
         /* Flight-assist drag ONLY while steering with RCS: it makes small
          * manual corrections controllable without killing orbits - a
          * hands-off coast (or a rocket burn) is drag-free Newtonian, so
@@ -1668,73 +1769,8 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             let damp = (-(l.space_drag as f64) * dt as f64).exp();
             p.velocity = dvec3_scale(p.velocity, damp);
         }
-        let pre_step = p.position;
         p.position = dvec3_add(p.position, dvec3_scale(p.velocity, dt as f64));
         p.grounded = false;
-        /* Station collision: resample at the integrated position.
-         * - Walked into a wall column (embedded): cancel the horizontal
-         *   step that put us there (cheap lateral wall collision).
-         * - Floor landing: feet crossed the SUPPORT under them (the
-         *   storey / stair tread they're over, not just the roof) while
-         *   moving deck-ward relative to the station -> clamp on, kill
-         *   vertical relative velocity, bleed slide via deck friction.
-         * - Ceiling: head met the underside of the storey above while
-         *   rising -> stop the rise. */
-        if station_walk {
-            let mut sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
-            if sf2.embedded {
-                let pre = tenebris_core::station::frame_sample(pre_step, sim_t);
-                let lp = dvec3_make(pre.local.x, sf2.local.y, pre.local.z);
-                p.position = sf2.local_to_world(lp);
-                sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
-            }
-            let mut rel = sf2.world_vec_to_local(dvec3_sub(p.velocity, sf2.station_vel));
-            let mut lp = sf2.local;
-            let mut touched = false;
-            if let Some(support) = sf2.support_m {
-                if lp.y <= support + 0.05 && rel.y <= 0.0 {
-                    lp.y = support;
-                    rel.y = 0.0;
-                    let damp = (-(scfg.deck_friction as f64) * dt as f64).exp();
-                    rel.x *= damp;
-                    rel.z *= damp;
-                    p.grounded = true;
-                    touched = true;
-                }
-            }
-            if let Some(ceiling) = sf2.ceiling_m {
-                if lp.y + scfg.head_clearance_m as f64 >= ceiling && rel.y > 0.0 {
-                    lp.y = ceiling - scfg.head_clearance_m as f64;
-                    rel.y = 0.0;
-                    touched = true;
-                }
-            }
-            /* DECK WALKING: while grounded the deck owns the player's
-             * motion. Station-RELATIVE velocity is set directly from the
-             * walk wish (the same yaw-aware wish planet walking uses), so
-             * every trace of orbital-frame velocity cancels out of the
-             * controls - walking and jumping on the station feel exactly
-             * like planet ground. Jump is a clean up-impulse in the deck
-             * frame; the artificial gravity above brings it back down.
-             * RCS drift only exists while airborne off the deck. */
-            if p.grounded {
-                let wish = walk_wish(p, &inp.phys);
-                let speed =
-                    if inp.phys.sprint { SPRINT_SPEED } else { WALK_SPEED } as f64;
-                let wish_l = sf2.world_vec_to_local(wish);
-                rel.x = wish_l.x * speed;
-                rel.z = wish_l.z * speed;
-                if inp.phys.jump {
-                    rel.y = l.jump_velocity_mps as f64;
-                    p.grounded = false;
-                }
-                touched = true;
-            }
-            if touched {
-                p.position = sf2.local_to_world(lp);
-                p.velocity = dvec3_add(sf2.station_vel, sf2.local_vec_to_world(rel));
-            }
-        }
         p.last_tile = -1;
         jerk_log(p, &before, w, dt);
         return;

@@ -1,5 +1,67 @@
 # Repo rules
 
+## HIGH PRIORITY BUG: the ship must NEVER despawn when you exit it
+
+**Status: OPEN. Standing instruction from the user (all-caps, engrained).**
+Pressing Exit (Z / ExitRocket) while flying must LEAVE THE SHIP IN THE
+WORLD at the pose it had when you climbed out - visible, and re-boardable
+by walking up to it and pressing E. It must NOT vanish.
+
+- The old behaviour called `rocket_ride::clear()` on exit, which discards
+  the ride entirely. That only "worked" on the launch pad (the parts were
+  assumed to still be sitting on the pad); mid-flight / in orbit it made
+  the whole ship disappear - the exact bug the user keeps hitting.
+- The fix is a PARKED-SHIP representation: exit parks the ship (pose +
+  parts + per-stage fuels + origin pad) so it keeps drawing in the world
+  and re-boards where it sits. This lives in Core-adjacent client state
+  (`rocket_ride.rs`) so SP and MP share it.
+- **World edits persist immediately** (see the persistence rule below):
+  a parked ship is world state, so parking writes the ride save
+  same-frame, and reloading a world with a parked ship must bring the
+  ship back at its parked pose - NOT strap the player back in, and NOT
+  refund a fresh rocket on the pad.
+- **Claude cannot verify this alone** - like the tree bug, the failure
+  only shows in the running game. After ANY change here, ask the user to
+  exit a ship in flight AND after a reload, and confirm the ship is still
+  there and boardable. Keep the strongest regression tests on the pure
+  park/board/persist state transitions, but green tests are not proof -
+  only the user's in-game confirmation counts.
+
+Related standing request: **teleport must carry the ship.** When the
+teleport debug menu fires while the player is riding, it teleports the
+SHIP (with the player in it) to the destination and keeps them flying -
+it must not leave the ship behind or drop the player out onto a surface.
+
+## Stations are STATIONARY reference frames inside their SOI
+
+Standing instruction from the user (engrained). Inside the orbital
+station's sphere of influence (its artificial-gravity field), the
+station is the FIXED frame and everything else moves around it - exactly
+like walking on a planet:
+
+- **The player's pose is authoritative in STATION-LOCAL coordinates**
+  while on/near the station. Walking, jumping, falling, collision - all
+  of it integrates in the station's local frame (prograde/up/normal),
+  where the station is motionless. A jump goes straight up and comes
+  straight back down onto the deck.
+- **World-space pose is COMPOSED, never integrated.** Each frame,
+  world pos/vel = station anchor/orbit-velocity + the local pose mapped
+  through the station basis. Rendering, saves, MP sync all read the
+  composed world pose and keep working unchanged.
+- **Never integrate on-deck motion in world space.** The station orbits
+  at ~15 m/s on rails; a player integrated in world space inherits that
+  as leaked orbital velocity, and the moment their feet leave the deck
+  the station curves away under them - the "jump tosses me sideways off
+  the station" bug. Any approach that keeps the player as a free world
+  body plus per-frame corrections (artificial gravity toward the deck,
+  velocity matching) WILL leak and is wrong here.
+- The local frame is treated as inertial (no Coriolis/centrifugal
+  terms) - at a ~70-minute orbital period the fictitious forces are
+  imperceptible, and simplicity wins.
+- The same rule applies to any future moving platform (moving ships,
+  elevators, asteroids on rails): if the player stands on it, they
+  live in ITS frame; the world moves around them.
+
 ## ONGOING UNRESOLVED BUG: falling through the world at trees
 
 **Status: OPEN. Do not assume this is fixed.** The player clips/sinks

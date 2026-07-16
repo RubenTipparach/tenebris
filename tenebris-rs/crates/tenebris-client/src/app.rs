@@ -4393,7 +4393,15 @@ fn maybe_prime_mode_for_state(app: &mut App) {
 
 /// Diagnostic: every 5 s log the player position alongside the most
 /// recent pose we sent to the server.
+///
+/// MP-only: the whole point is comparing the local pose against the
+/// last one RELAYED to the server, and SP has no server - it printed
+/// "sent=(none yet)" forever, which read as a stuck warning ("why won't
+/// it stop firing") rather than the idle diagnostic it was.
 fn periodic_pos_log(app: &mut App, dt: f64) {
+    if menu::state() != GameState::InGameMp {
+        return;
+    }
     if !accum_fire(&mut app.pos_log_accum, dt, 5.0) {
         return;
     }
