@@ -1560,7 +1560,7 @@ mod tests {
     /// gate). Regresses "cant pick up flint from the ground with E".
     #[test]
     fn e_pickup_takes_flint_off_a_scatter_rock() {
-        let w = gen_world(BodyId::Tenebris);
+        let mut w = gen_world(BodyId::Tenebris);
         let mut rock_tile = -1;
         let mut rock_depth = -1;
         'scan: for tile in 0..w.grid.tile_count() {
@@ -1584,11 +1584,25 @@ mod tests {
         s.has_target = true;
         s.hit_tile = rock_tile;
         s.hit_depth = rock_depth;
-        assert!(try_pickup_scatter(&s, &w, &p), "E picks the pebble up");
+        assert!(try_pickup_scatter(&s, &mut w, &p), "E picks the pebble up");
         assert_eq!(
             crate::drops::test_items(),
             vec![items::FLINT],
             "E on a pebble yields flint"
+        );
+
+        /* Consumption: the same E on the same tile must find NOTHING - one
+         * pebble is one flint, not an infinite well. Regresses "I can just
+         * get infinite flint from grabbing it constantly". */
+        crate::drops::init();
+        assert!(
+            !try_pickup_scatter(&s, &mut w, &p),
+            "second E on the same pebble finds nothing"
+        );
+        assert_eq!(crate::drops::count(), 0, "no drop from a consumed pebble");
+        assert!(
+            pickup_target(&s, &w, &p).is_none(),
+            "the aim prompt is gone too - prompt and pickup share one source"
         );
 
         /* No target under the reticle -> E must fall through so it keeps
@@ -1597,7 +1611,7 @@ mod tests {
         let mut none = InteractState::default();
         none.has_target = false;
         assert!(
-            !try_pickup_scatter(&none, &w, &p),
+            !try_pickup_scatter(&none, &mut w, &p),
             "no target: E falls through to the inventory toggle"
         );
         assert_eq!(crate::drops::count(), 0, "nothing spawned without a target");

@@ -152,6 +152,16 @@ pub struct World {
     /// actually edits.
     pub edited: Vec<u8>,
 
+    /// "The loose scatter object on this tile was picked up" bitset - one
+    /// bit per tile. The decorative scatter (flint pebbles, leafy bushes)
+    /// is a deterministic per-tile hash, so it would re-offer itself
+    /// forever; this bit is what makes a pickup CONSUME the object. Read
+    /// by the mesher (skip the rock/bush branches so the visual is gone
+    /// after the remesh) and by the pickup/forage/prompt paths (stop
+    /// offering the item). Set via [`World::take_scatter`], never cleared
+    /// at runtime; persisted as a taken-tile list per body.
+    pub scatter_taken: Vec<u8>,
+
     /// Generation progress: how many tiles have had terrain computed so
     /// far. Fill is streamed across frames; tiles past this cursor are
     /// all BLOCK_AIR.
@@ -360,6 +370,7 @@ impl World {
             dirty_queue: Vec::with_capacity(tile_count as usize),
             saved: None,
             edited: vec![0u8; dirty_bytes],
+            scatter_taken: vec![0u8; dirty_bytes],
             gen_cursor: 0,
             light: WorldLight::create(tile_count),
             /* C: w->water = world_water_create(w); (reads tile_count) */
@@ -482,6 +493,42 @@ impl World {
     /// Port of `world_gen_complete()`.
     pub fn gen_complete(&self) -> bool {
         self.gen_cursor >= self.tile_count
+    }
+
+    /// True when the loose scatter object (flint pebble / leafy bush) this
+    /// tile's hash would otherwise grow has been picked up. Out-of-range
+    /// tiles read as not-taken.
+    pub fn is_scatter_taken(&self, tile: i32) -> bool {
+        if tile < 0 || tile >= self.tile_count {
+            return false;
+        }
+        (self.scatter_taken[(tile >> 3) as usize] >> (tile & 7)) & 1 == 1
+    }
+
+    /// Consume the loose scatter object on `tile`: the pickup / forage path
+    /// calls this on the same frame it hands the item over, so the object
+    /// can only be gathered once. Marks the tile dirty so the chunk
+    /// remeshes without the object immediately. The caller owns the
+    /// same-frame persistence write (CLAUDE.md world-edit rule), exactly
+    /// like `set` and `sp_save_tile_after_edit`.
+    pub fn take_scatter(&mut self, tile: i32) {
+        if tile < 0 || tile >= self.tile_count {
+            return;
+        }
+        self.scatter_taken[(tile >> 3) as usize] |= 1u8 << (tile & 7);
+        self.dirty_enqueue(tile);
+    }
+
+    /// Every tile whose scatter has been taken, for the persistence
+    /// snapshot. The list stays small - it grows by one per pickup.
+    pub fn taken_scatter_tiles(&self) -> Vec<i32> {
+        let mut out = Vec::new();
+        for t in 0..self.tile_count {
+            if (self.scatter_taken[(t >> 3) as usize] >> (t & 7)) & 1 == 1 {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// Port of `world_gen_progress_pct()`. 0..100.

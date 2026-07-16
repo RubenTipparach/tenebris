@@ -1089,6 +1089,22 @@ mod tests {
         assert_eq!(client_kv::get("tenebris-c:bentities:home:1"), None);
     }
 
+    /// Taken-scatter list round-trips: the tiles whose pebble/bush was
+    /// picked up survive a reload, so a consumed pickup can't come back as
+    /// an infinite flint well. Single comma-separated line - immune to the
+    /// native kv '\n' scrub quirk by construction.
+    #[test]
+    fn scatter_taken_round_trips_and_clears() {
+        let _g = test_support::begin("persist_scatter");
+        assert!(save_scatter_taken("home", 1, &[42, 7, 1003]));
+        assert_eq!(load_scatter_taken("home", 1), vec![42, 7, 1003]);
+        assert!(load_scatter_taken("home", 2).is_empty(), "other body untouched");
+        assert!(load_scatter_taken("other", 1).is_empty(), "other world untouched");
+        // Empty list removes the key.
+        assert!(save_scatter_taken("home", 1, &[]));
+        assert_eq!(client_kv::get("tenebris-c:scatter:home:1"), None);
+    }
+
     #[test]
     fn launch_pad_stack_round_trips() {
         use tenebris_core::items::{COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE};
