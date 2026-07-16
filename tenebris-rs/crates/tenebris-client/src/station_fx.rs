@@ -507,10 +507,12 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
     }
     let b = planet::get(BodyId::Tenebris);
 
-    /* Orbit frame: +y radial out, +x prograde, +z the orbit normal -
-     * identical to core::station::frame_sample. */
+    /* Orbit frame: +y points AT the planet (the wheel flies flipped 180
+     * deg about prograde - the casino's sky is Tenebris overhead), +x
+     * prograde, +z the recomputed orbit normal - identical to
+     * core::station::frame_sample. */
     let center = dvec3_make(b.pos_x, b.pos_y, b.pos_z);
-    let up = dvec3_normalize(dvec3_sub(anchor, center));
+    let up = dvec3_normalize(dvec3_sub(center, anchor));
     let prograde = dvec3_normalize(station::orbit_vel(sim_t));
     let normal = dvec3_cross(prograde, up);
     let basis: [f32; 16] = [

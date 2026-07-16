@@ -827,10 +827,16 @@ pub fn frame_sample(world_pos: DVec3, t: f64) -> StationFrame {
     let anchor = orbit_pos(t);
     let station_vel = orbit_vel(t);
     let b = planet::get(BodyId::Tenebris);
+    /* The wheel flies FLIPPED 180 deg about prograde: station-local +y
+     * (the deck normal, the tower) points AT Tenebris, so standing in
+     * the casino the planet hangs overhead like a sky. The normal is
+     * recomputed from the cross, so handedness (and every consumer:
+     * artificial gravity, SOI basis alignment, the baked-mesh pose)
+     * follows automatically. */
     let up = dvec3_normalize(dvec3_make(
-        anchor.x - b.pos_x,
-        anchor.y - b.pos_y,
-        anchor.z - b.pos_z,
+        b.pos_x - anchor.x,
+        b.pos_y - anchor.y,
+        b.pos_z - anchor.z,
     ));
     let prograde = dvec3_normalize(station_vel);
     let normal = dvec3_cross(prograde, up);
