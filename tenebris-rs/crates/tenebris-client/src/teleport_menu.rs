@@ -72,6 +72,51 @@ const ROW_PAD: f32 = 4.0;
 /// Mirrors the C `BODY_COUNT` uses in this file (int arithmetic).
 const BODY_COUNT: i32 = planet::BODY_COUNT as i32;
 
+/// Debug teleport destinations are every body, then the orbital station(s).
+/// One station today (the casino drum riding Tenebris orbit); centralising
+/// the count here keeps the nav / draw / hit-test bounds in agreement.
+const STATION_COUNT: i32 = 1;
+
+/// Total selectable rows: bodies first, stations after.
+fn dest_count() -> i32 {
+    BODY_COUNT + STATION_COUNT
+}
+
+/// What a selectable row points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dest {
+    /// Index into the planet table (`planet::get_by_index`).
+    Body(i32),
+    /// Station index (0-based; only 0 exists today).
+    Station(i32),
+}
+
+/// Resolve a row index into its destination, or `None` when out of range.
+fn dest_at(idx: i32) -> Option<Dest> {
+    if idx < 0 {
+        None
+    } else if idx < BODY_COUNT {
+        Some(Dest::Body(idx))
+    } else if idx < BODY_COUNT + STATION_COUNT {
+        Some(Dest::Station(idx - BODY_COUNT))
+    } else {
+        None
+    }
+}
+
+/// Station row label - ASCII only (reaches the player via debugtext).
+fn station_row_label(_i: i32) -> String {
+    format!("{:<18} hub  Tenebris orbit", "Orbital Station")
+}
+
+/// Row label for any destination (body or station).
+fn dest_row_label(idx: i32) -> Option<String> {
+    match dest_at(idx)? {
+        Dest::Body(i) => planet::get_by_index(i).map(|b| row_label(&b)),
+        Dest::Station(i) => Some(station_row_label(i)),
+    }
+}
+
 /// The C menu keeps a raw `player_ctrl_t*` so mobile button taps -
 /// which can't pass a player through input.c - can still call
 /// player_teleport_to. The port's analogue of that long-lived pointer
@@ -174,8 +219,8 @@ fn clamp_scroll(m: &mut Menu) {
     if m.scroll < 0 {
         m.scroll = 0;
     }
-    if m.scroll > BODY_COUNT - VISIBLE_ROWS {
-        m.scroll = BODY_COUNT - VISIBLE_ROWS;
+    if m.scroll > dest_count() - VISIBLE_ROWS {
+        m.scroll = dest_count() - VISIBLE_ROWS;
     }
     if m.scroll < 0 {
         m.scroll = 0;
@@ -203,7 +248,7 @@ fn action_down() {
         if !m.open {
             return;
         }
-        if m.selected < BODY_COUNT - 1 {
+        if m.selected < dest_count() - 1 {
             m.selected += 1;
         }
         clamp_scroll(m);
@@ -220,24 +265,40 @@ fn action_ok() {
         return;
     }
     if let Some(player) = player {
-        if let Some(b) = planet::get_by_index(selected) {
-            /* player_teleport_to drops the player ~3 m above the
-             * destination's surface - comfortably inside its full-
-             * gravity radius (default 1.4 x body radius), so the
-             * gravity integrator pulls them straight to the ground
-             * rather than letting them no-clip through. The roll-
-             * slerp timer is armed at the same time so the camera
-             * eases into level rather than popping. */
-            player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
-            /* Belt-and-suspenders: the per-frame body-sync in
-             * main_web also catches this, but call it here too so
-             * the renderer's chunked / LOD partition flips on the
-             * SAME frame the teleport happens - no stale "previous
-             * planet still meshed at full detail" window between
-             * teleport and the next frame's gravity tick. */
-            if let Some(w) = renderer::world_for_body(b.id as u32) {
-                renderer::set_active_world(&w);
+        match dest_at(selected) {
+            Some(Dest::Body(i)) => {
+                if let Some(b) = planet::get_by_index(i) {
+                    /* player_teleport_to drops the player ~3 m above the
+                     * destination's surface - comfortably inside its full-
+                     * gravity radius (default 1.4 x body radius), so the
+                     * gravity integrator pulls them straight to the ground
+                     * rather than letting them no-clip through. The roll-
+                     * slerp timer is armed at the same time so the camera
+                     * eases into level rather than popping. */
+                    player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
+                    /* Belt-and-suspenders: the per-frame body-sync in
+                     * main_web also catches this, but call it here too so
+                     * the renderer's chunked / LOD partition flips on the
+                     * SAME frame the teleport happens - no stale "previous
+                     * planet still meshed at full detail" window between
+                     * teleport and the next frame's gravity tick. */
+                    if let Some(w) = renderer::world_for_body(b.id as u32) {
+                        renderer::set_active_world(&w);
+                    }
+                }
             }
+            Some(Dest::Station(_)) => {
+                /* Drops the player onto the casino deck riding the station's
+                 * prograde velocity (see player_ctrl::teleport_to_station).
+                 * The station orbits Tenebris, so make that body the active
+                 * meshed world on the same frame as the bodies path does. */
+                player_ctrl::teleport_to_station(&mut player.borrow_mut());
+                let ten = planet::get(planet::BodyId::Tenebris);
+                if let Some(w) = renderer::world_for_body(ten.id as u32) {
+                    renderer::set_active_world(&w);
+                }
+            }
+            None => {}
         }
     }
     M.with(|cell| cell.borrow_mut().open = false);
@@ -309,7 +370,7 @@ fn handle_click(px: f32, py: f32) -> bool {
     let scroll = M.with(|cell| cell.borrow().scroll);
     for row in 0..VISIBLE_ROWS {
         let idx = scroll + row;
-        if idx >= BODY_COUNT {
+        if idx >= dest_count() {
             break;
         }
         let (rx, ry, rw, rh) = row_rect(panel_x, panel_y, row);
@@ -721,10 +782,10 @@ pub fn draw() {
     mobile_ui::draw_rect(cx, cy, cs, cs, cr, cg, cb, ca);
     mobile_ui::draw_rect_outline(cx, cy, cs, cs, 1.5, 1.00, 0.55, 0.55, 0.95);
 
-    /* Body rows. */
+    /* Destination rows (bodies, then stations). */
     for row in 0..VISIBLE_ROWS {
         let idx = scroll + row;
-        if idx >= BODY_COUNT {
+        if idx >= dest_count() {
             break;
         }
         let (rx, ry, rw, rh) = row_rect(panel_x, panel_y, row);
@@ -754,15 +815,15 @@ pub fn draw() {
 
     for row in 0..VISIBLE_ROWS {
         let idx = scroll + row;
-        if idx >= BODY_COUNT {
+        if idx >= dest_count() {
             break;
         }
-        let Some(b) = planet::get_by_index(idx) else {
+        let Some(label) = dest_row_label(idx) else {
             continue;
         };
         let (rx, ry, _rw, _rh) = row_rect(panel_x, panel_y, row);
         let (tr, tg, tb) = row_text_color(idx == sel);
-        draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &row_label(&b));
+        draw_text_at(rx + 8.0, ry + 6.0, 1.75, tr, tg, tb, &label);
     }
 
     /* Nav-button SGL commands are still issued by mobile_ui_draw so
@@ -949,14 +1010,17 @@ mod tests {
         /* Up at the top is a no-op. */
         assert!(handle_event(&key(Keycode::Up), None));
         assert_eq!(snapshot().selected, 0);
-        /* Walk down the full list; selection clamps at BODY_COUNT-1 and
-         * scroll lands at BODY_COUNT - VISIBLE_ROWS. */
-        for _ in 0..25 {
+        /* Walk down the full list; selection clamps at the last row (now
+         * the station, past the bodies) and scroll lands at
+         * dest_count() - VISIBLE_ROWS. */
+        for _ in 0..30 {
             handle_event(&key(Keycode::Down), None);
         }
         let m = snapshot();
-        assert_eq!(m.selected, BODY_COUNT - 1);
-        assert_eq!(m.scroll, BODY_COUNT - VISIBLE_ROWS); /* = 8 */
+        assert_eq!(m.selected, dest_count() - 1);
+        assert_eq!(m.scroll, dest_count() - VISIBLE_ROWS);
+        /* The last row is the station, not a body. */
+        assert_eq!(dest_at(m.selected), Some(Dest::Station(0)));
         /* Walk back up; scroll follows the selection. */
         for _ in 0..25 {
             handle_event(&key(Keycode::Up), None);
@@ -975,12 +1039,12 @@ mod tests {
         assert_eq!(m.scroll, 1); /* selected - VISIBLE_ROWS + 1 */
         handle_event(&key(Keycode::PageDown), None);
         let m = snapshot();
-        assert_eq!(m.selected, BODY_COUNT - 1);
-        assert_eq!(m.scroll, 8);
+        assert_eq!(m.selected, dest_count() - 1);
+        assert_eq!(m.scroll, dest_count() - VISIBLE_ROWS); /* 9 */
         assert!(handle_event(&key(Keycode::PageUp), None));
         let m = snapshot();
-        assert_eq!(m.selected, 7);
-        assert_eq!(m.scroll, 7);
+        assert_eq!(m.selected, 8);
+        assert_eq!(m.scroll, 8);
     }
 
     /* -- selection from key sequences ------------------------------------ */
@@ -1175,14 +1239,18 @@ mod tests {
         assert_eq!(label(1), "Luna               rck r=   80m");
         assert_eq!(label(8), "Frostbite          ice r=  220m");
         assert_eq!(label(10), "Asteroid A         ast r=   14m");
+        /* The station row is the last destination, after every body. */
+        assert_eq!(station_row_label(0), "Orbital Station    hub  Tenebris orbit");
         let fixed = [
             "[T] teleport\n",
             "TELEPORT",
             "click a row to go - arrows + enter also work",
             "X",
         ];
-        for s in (0..BODY_COUNT)
-            .map(label)
+        /* Cover EVERY destination row (bodies + station) plus the fixed
+         * chrome strings. */
+        for s in (0..dest_count())
+            .map(|i| dest_row_label(i).unwrap())
             .chain(fixed.iter().map(|s| s.to_string()))
         {
             assert!(s.is_ascii(), "non-ASCII player-visible string: {:?}", s);
@@ -1217,5 +1285,48 @@ mod tests {
         assert_eq!(row_text_color(false), (0xc0, 0xc8, 0xd8));
         assert_eq!(close_btn_fill_color(true), (0.70, 0.15, 0.15, 0.95));
         assert_eq!(close_btn_fill_color(false), (0.50, 0.15, 0.15, 0.95));
+    }
+
+    /* -- station destination ------------------------------------------------ */
+
+    #[test]
+    fn stations_follow_bodies_in_the_row_list() {
+        assert_eq!(dest_count(), BODY_COUNT + STATION_COUNT);
+        assert_eq!(dest_at(0), Some(Dest::Body(0)));
+        assert_eq!(dest_at(BODY_COUNT - 1), Some(Dest::Body(BODY_COUNT - 1)));
+        /* First row past the bodies is the station. */
+        assert_eq!(dest_at(BODY_COUNT), Some(Dest::Station(0)));
+        assert_eq!(dest_at(dest_count()), None);
+        assert_eq!(dest_at(-1), None);
+    }
+
+    #[test]
+    fn selecting_the_station_row_lands_on_the_deck() {
+        setup();
+        toggle();
+        let p = player();
+        /* Walk to the last row (the station) and confirm. */
+        for _ in 0..dest_count() {
+            handle_event(&key(Keycode::Down), None);
+        }
+        assert_eq!(dest_at(snapshot().selected), Some(Dest::Station(0)));
+        assert!(handle_event(&key(Keycode::Enter), Some(p.clone())));
+        assert!(!is_open());
+
+        let pl = p.borrow();
+        assert!(pl.is_in_space, "the station rides orbit, not a surface");
+        let t = tenebris_core::world_time::seconds();
+        /* Inherits the station's prograde velocity so it doesn't instantly
+         * shear off the frame at orbital speed. */
+        let vel = tenebris_core::station::orbit_vel(t);
+        assert!((pl.velocity.x - vel.x).abs() < 1e-6);
+        assert!((pl.velocity.z - vel.z).abs() < 1e-6);
+        /* Landed on the drum, near its anchor - not out at a planet radius. */
+        let anchor = tenebris_core::station::orbit_pos(t);
+        let d = tenebris_core::math::dvec3_length(tenebris_core::math::dvec3_sub(
+            pl.position,
+            anchor,
+        ));
+        assert!(d < 200.0, "within the drum, got {d} m from the anchor");
     }
 }

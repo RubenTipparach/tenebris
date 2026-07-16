@@ -2722,6 +2722,46 @@ pub fn teleport_to(p: &mut PlayerCtrl, body: &BodyConfig) {
     p.pitch = 0.0;
 }
 
+/// Teleport onto the orbital station's casino deck (debug companion to
+/// [`teleport_to`]). The station rides Tenebris orbit, so the body context
+/// stays Tenebris and the pose INHERITS the station's prograde velocity -
+/// otherwise the player would instantly shear off the frame at orbital
+/// speed. Feet drop a couple of metres above the deck slab so station
+/// gravity settles them on (not embedded in) it, and the basis is
+/// pre-levelled to the deck up so the SOI alignment snap eases in from
+/// flat rather than from whatever roll the player carried in.
+pub fn teleport_to_station(p: &mut PlayerCtrl) {
+    use tenebris_core::station;
+    let t = tenebris_core::world_time::seconds();
+    let cfg = station::config();
+    let lh = station::layer_h(&cfg) as f64;
+    let anchor = station::orbit_pos(t);
+    let sf = station::frame_sample(anchor, t);
+    /* Deck level = top of the structural slab. Reuse the known-open
+     * interior cell the hotel-cam dev hook stands in so the drop never
+     * lands inside a wall or the central atrium shaft. */
+    let slab_top = cfg.slab_layers.max(1) as f64 * lh;
+    let (cx, cz) = station::axial_to_local(-3, 1, cfg.hex_size_m);
+    let feet_local = dvec3_make(cx as f64, slab_top + 2.0, cz as f64);
+
+    p.body = Some(planet::get(BodyId::Tenebris));
+    p.position = sf.local_to_world(feet_local);
+    p.velocity = sf.station_vel;
+    p.grounded = false;
+    p.is_in_space = true;
+    p.last_tile = -1;
+    /* Pre-level the 6DOF basis with the deck (station up), same as the
+     * hotel-cam hook - then let the per-frame SOI alignment maintain it. */
+    let fwd = dvec3_normalize(dvec3_cross(sf.up, sf.prograde));
+    p.basis.up = sf.up;
+    p.basis.fwd = fwd;
+    p.basis.right = dvec3_cross(fwd, sf.up);
+    p.basis_ready = true;
+    p.transition_timer_s = config::lod().roll_slerp_duration_s;
+    p.yaw = 0.0;
+    p.pitch = 0.0;
+}
+
 /// Port of `player_view()`.
 pub fn view(p: &PlayerCtrl) -> Mat4 {
     let (look, up) = compute_look(p);
