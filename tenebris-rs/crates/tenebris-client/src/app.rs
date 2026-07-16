@@ -5907,6 +5907,8 @@ fn frame_inner(app: &mut App) {
      * z-sort correctly against them. */
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
+    /* Orbital trading station drum, sweeping its on-rails track. */
+    crate::station_fx::draw(view, proj, sim_t);
     /* Jettisoned falling stages: tumbling part models wrapped in the
      * hull-hugging reentry plasma shell (the mining-the-sky mesh technique).
      * Stepped in the frame update; drawn here in the world pass. */
@@ -5942,8 +5944,6 @@ fn frame_inner(app: &mut App) {
         let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
         crate::reentry_fx::draw(view, proj, eye, p.velocity, p.basis.fwd, p.basis.up);
     }
-    /* Orbital trading station drum, sweeping its on-rails track. */
-    crate::station_fx::draw(view, proj, sim_t);
     fishing::draw(view, proj, &app.player.borrow());
     crops::draw(view, proj);
     drops::draw(view, proj, renderer::time_seconds());
