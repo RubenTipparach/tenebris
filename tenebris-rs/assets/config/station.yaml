@@ -66,3 +66,8 @@ station:
   # Start phase (degrees from +x) - keeps the station off the prime
   # meridian so it never spawns parked over the launch complex.
   orbit_phase0_deg: 120.0
+  # Distance LOD: full prism drum within this range; beyond it a single
+  # bright glint quad (the wheel is sub-pixel from the surface anyway).
+  # lod_glint_frac = the glint's apparent size as a fraction of distance.
+  lod_full_range_m: 3000.0
+  lod_glint_frac: 0.004

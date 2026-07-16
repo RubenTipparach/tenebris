@@ -515,7 +515,14 @@ fn draw_distant_shafts(
              * with its opacity on the same distance fade as the streaks
              * (times rain_impostor_alpha so a sheet never reads as a wall). */
             if d > wcfg.rain_detail_range_m as f64 {
-                let wcol = if snow_capable { snow_col } else { rain_col };
+                /* Rain sheets take their own tint (grey stock - distant rain
+                 * reads as haze, not saturated streak blue); snow sheets keep
+                 * the snow colour. */
+                let wcol = if snow_capable {
+                    snow_col
+                } else {
+                    [wcfg.rain_impostor_r, wcfg.rain_impostor_g, wcfg.rain_impostor_b]
+                };
                 let a = alpha * wcfg.rain_impostor_alpha;
                 let half_w = ccfg.cell_m as f64 * 0.5;
                 let b0 = dvec3_add(base_pt, dvec3_scale(right, -half_w));

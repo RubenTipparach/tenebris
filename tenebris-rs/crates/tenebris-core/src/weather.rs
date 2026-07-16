@@ -232,6 +232,12 @@ pub struct WeatherConfig {
     /// top of the distance-faded streak alpha) so a sheet reads as haze,
     /// never a solid wall.
     pub rain_impostor_alpha: f32,
+    /// Far-curtain impostor sheet tint for RAIN (snow sheets keep the snow
+    /// colour). Grey by default - a distant rain curtain reads as grey
+    /// haze, not the saturated blue of the near streaks.
+    pub rain_impostor_r: f32,
+    pub rain_impostor_g: f32,
+    pub rain_impostor_b: f32,
 
     /* --- Camera rain-on-glass lens droplets (composite FS Heartfelt FX) --- */
     /// Droplet COUNT / coverage on the lens - independent of drop size (that
@@ -344,6 +350,9 @@ impl WeatherConfig {
         rain_lod_far_frac: 0.25,
         rain_detail_range_m: 250.0,
         rain_impostor_alpha: 0.5,
+        rain_impostor_r: 0.55,
+        rain_impostor_g: 0.58,
+        rain_impostor_b: 0.62,
         rain_lens_density: 1.0,
         rain_lens_refract: 1.7,
         rain_lens_speed: 1.0,
@@ -432,6 +441,9 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_lod_far_frac" => cfg.rain_lod_far_frac = v,
             "rain_detail_range_m" => cfg.rain_detail_range_m = v,
             "rain_impostor_alpha" => cfg.rain_impostor_alpha = v,
+            "rain_impostor_r" => cfg.rain_impostor_r = v,
+            "rain_impostor_g" => cfg.rain_impostor_g = v,
+            "rain_impostor_b" => cfg.rain_impostor_b = v,
             "rain_lens_density" => cfg.rain_lens_density = v,
             "rain_lens_refract" => cfg.rain_lens_refract = v,
             "rain_lens_speed" => cfg.rain_lens_speed = v,

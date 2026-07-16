@@ -134,6 +134,9 @@ default_moisture: 0.66
 #                      storms stay visible at a fraction of the cost.
 #   rain_impostor_alpha  opacity multiplier for those far curtain sheets
 #                      (on top of the distance fade) - haze, not a wall.
+#   rain_impostor_r/g/b  tint of the far RAIN curtain sheets (0..1). Grey
+#                      stock so distance rain reads as haze; snow sheets
+#                      always use the snow colour.
 #
 #   --- Camera rain-on-glass lens droplets (the drops on the "lens" when it
 #   rains / after surfacing; composite FS Heartfelt FX). Count and SIZE are
@@ -185,6 +188,9 @@ rain_lod_alt_m: 200.0
 rain_lod_far_frac: 0.25
 rain_detail_range_m: 250.0
 rain_impostor_alpha: 0.5
+rain_impostor_r: 0.55
+rain_impostor_g: 0.58
+rain_impostor_b: 0.62
 rain_lens_density: 1.4
 rain_lens_refract: 1.7
 rain_lens_speed: 1.0
