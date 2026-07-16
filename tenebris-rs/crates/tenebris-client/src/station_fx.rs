@@ -124,7 +124,19 @@ fn build_cache() -> ShellCache {
     let mut groups: [Vec<Prism>; TEX_COUNT] = Default::default();
     let mut occupied = HashSet::new();
     for p in station::shell(&cfg) {
-        occupied.insert((p.q, p.r, p.layer));
+        /* Fixtures (slot cabinets, card tables, trade / research consoles,
+         * the museum case, the courtyard lamp) are DECORATIVE object-
+         * entities, not structure - the client draws them as their own
+         * furniture boxes / lone prisms, and they must NOT occlude the
+         * deck faces around them. Keeping a fixture OUT of the occupancy
+         * set is the render-side twin of the column_spans fixture
+         * exclusion in core::station: without it a slot cabinet's cell
+         * (one layer above the carpet tile it stands on) culls that
+         * tile's top cap, leaving a hex-shaped hole in the floor under the
+         * machine (the exact "hole next to the slot machine" bug). */
+        if !station::is_fixture(p.mat) {
+            occupied.insert((p.q, p.r, p.layer));
+        }
         groups[tex_for(p.mat)].push(p);
     }
     ShellCache { groups, occupied, light: station::light_field(&cfg) }
