@@ -47,6 +47,22 @@ pub struct CloudsConfig {
     pub patch_clear: f32,
     /// Edge softness of a system, in coverage-field units.
     pub patch_soft: f32,
+
+    /* Far LOD - camera altitude gate between the near per-puff shell and
+     * the single translucent cloud-texture wrap seen from orbit. Below
+     * `lod_alt_m` the detailed puffs draw (they no longer cull with
+     * distance until this height); above it they give way to one
+     * transparent equirect cloud shell so the planet still wears clouds
+     * from far out without thousands of sub-pixel puff boxes. `lod_fade_m`
+     * is the crossfade band so the swap doesn't pop. */
+    /// Camera altitude (m above the surface) where the per-puff shell
+    /// hands over to the far cloud-texture wrap.
+    pub lod_alt_m: f32,
+    /// Crossfade band (m) around `lod_alt_m`: puffs fade out / the shell
+    /// fades in across it so the LOD swap is smooth.
+    pub lod_fade_m: f32,
+    /// Peak opacity of the far cloud-texture shell (0..1).
+    pub shell_alpha: f32,
 }
 
 impl CloudsConfig {
@@ -63,6 +79,9 @@ impl CloudsConfig {
         patch_scale: 4.0,
         patch_clear: 0.45,
         patch_soft: 0.18,
+        lod_alt_m: 10000.0,
+        lod_fade_m: 3000.0,
+        shell_alpha: 0.6,
     };
 }
 
@@ -118,6 +137,9 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
             "patch_scale" => cfg.patch_scale = c,
             "patch_clear" => cfg.patch_clear = c, /* negative -> 0 = uniform */
             "patch_soft" => cfg.patch_soft = c,
+            "lod_alt_m" => cfg.lod_alt_m = c,
+            "lod_fade_m" => cfg.lod_fade_m = c,
+            "shell_alpha" => cfg.shell_alpha = c,
             _ => {}
         }
     }
@@ -152,6 +174,18 @@ mod tests {
         assert_eq!(p.patch_scale, 6.0);
         assert_eq!(p.patch_clear, 0.0, "negative patch_clear = uniform sky");
         assert_eq!(p.patch_soft, CloudsConfig::DEFAULT.patch_soft);
+        set_config(CloudsConfig::DEFAULT);
+    }
+
+    #[test]
+    fn lod_shell_fields_parse() {
+        let c = parse_config("lod_alt_m: 8000\nlod_fade_m: 2000\nshell_alpha: 0.5\n", "t");
+        assert_eq!(c.lod_alt_m, 8000.0);
+        assert_eq!(c.lod_fade_m, 2000.0);
+        assert_eq!(c.shell_alpha, 0.5);
+        /* Zero keeps the compiled-in default (the merge rule). */
+        let d = parse_config("lod_alt_m: 0\n", "t");
+        assert_eq!(d.lod_alt_m, CloudsConfig::DEFAULT.lod_alt_m);
         set_config(CloudsConfig::DEFAULT);
     }
 }

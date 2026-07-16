@@ -3,16 +3,22 @@
 #
 # Boots the tenebris-rs client with the LOD-camera dev hook
 # (TENEBRIS_DEV_LODCAM), which parks the camera a fixed distance beyond the
-# planet surface and aims it dead at the planet CENTRE every frame - so the full
-# disk is always framed and you never end up staring at empty space. It steps
-# the camera back 100 m at a time (100..500 m by default) and grabs one PNG per
-# distance, so you get a consistent A/B set for verifying from-orbit visual
-# changes (atmosphere rim, terrain shading, LOD swap, etc).
+# planet surface and aims it dead at the planet CENTRE every frame - solving
+# yaw/pitch against the live camera basis so the full disk is always framed and
+# you never end up staring at empty space. It grabs one PNG per distance, so you
+# get a consistent A/B set for verifying from-orbit visual changes (atmosphere
+# rim, terrain shading, LOD swap, cloud shell, etc).
+#
+# Two LOD tiers, two default sweeps:
+#   - PRIMARY (near): 200 m increments, 200..1000 m - the detailed chunked
+#     terrain + per-puff cloud shell.
+#   - SECONDARY (far): 2 km increments, 2000..12000 m - the distant sphere LOD
+#     and, past ~10 km, the translucent cloud-texture wrap around the planet.
 #
 # Usage:
 #   tools/lodcam-capture.sh [OUT_DIR] [DISTANCES...]
-#   tools/lodcam-capture.sh                       # 100 200 300 400 500 -> /tmp/lodcam
-#   tools/lodcam-capture.sh out 150 300 600       # custom set
+#   tools/lodcam-capture.sh                       # both sweeps -> /tmp/lodcam
+#   tools/lodcam-capture.sh out 400 3000 10000    # custom set
 #
 # Headless (CI / container): drives an Xvfb + llvmpipe display, same as the repo
 # screenshot helpers. On a real desktop with $DISPLAY already set it reuses it.
@@ -23,11 +29,11 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-/tmp/lodcam}"; shift || true
-# Default sweep: 100..400 m from the surface. ~400 m is the far limit - the
-# whole globe already fills the frame there, and past it (~500 m+) the terrain
-# streaming radius culls the planet back to empty stars. Pass explicit
-# distances to override.
-DISTS=("$@"); [ ${#DISTS[@]} -eq 0 ] && DISTS=(100 200 300 400)
+# Default: primary sweep at 200 m increments (near/detailed) then the secondary
+# sweep at 2 km increments (far LOD + cloud shell). Pass explicit distances to
+# override both.
+DISTS=("$@")
+[ ${#DISTS[@]} -eq 0 ] && DISTS=(200 400 600 800 1000 2000 4000 6000 8000 10000 12000)
 BOOT="${LODCAM_BOOT_SECS:-90}"   # seconds to let worldgen + the full-disk remesh settle
 mkdir -p "$OUT"
 

@@ -532,18 +532,35 @@ Use the deterministic tool that always frames the full disk:
   each frame parks the camera `<metres>` beyond the planet surface on a
   sun-perpendicular azimuth (terminator bisects the disk), lifted off the
   equatorial plane so the station drum isn't in front, and aims it dead at
-  the planet **centre** via the radial pitch. It forces `is_in_space =
-  false` and remeshes the full disk once gen completes, so the whole globe
-  renders as terrain. Lives in `app.rs` by the other per-frame dev-cam hooks.
+  the planet **centre**. It forces `is_in_space = false` and remeshes the
+  full disk once gen completes, so the whole globe renders as terrain. Lives
+  in `app.rs` by the other per-frame dev-cam hooks.
+- **How the aim works (don't regress this):** the look direction is solved,
+  not guessed. Each frame it takes `to_center = normalize(center - cam)` and
+  solves yaw/pitch against the player's **current** basis
+  (`pitch = asin(dot(to_center, up))`, `yaw = atan2(dot(to_center, right),
+  dot(to_center, fwd))`). The old hard-coded `yaw=0 / pitch=-1.552` assumed
+  `basis.up == view_dir`, but the basis is parallel-transported and stale for
+  a frame or two after the teleport, so the fixed angles pointed off-centre
+  (the exact "camera wasn't aimed at the planet" bug). Solving against the
+  live basis frames the disk no matter how the basis is oriented.
 - **`tenebris-rs/tools/lodcam-capture.sh [OUT_DIR] [DISTANCES...]`**: boots
   the client once per distance and grabs one PNG each — a consistent A/B
-  set for from-orbit visual work. Default sweep is `100 200 300 400`.
+  set for from-orbit visual work. Two LOD tiers, two default sweeps:
+  **primary** (near, detailed terrain + per-puff clouds) at **200 m
+  increments** (`200..1000`), and **secondary** (far distant-sphere LOD +
+  cloud-texture wrap) at **2 km increments** (`2000..12000`).
 
 Hard facts learned building it (don't relearn them the slow way):
 
-- **Working range is ~100..400 m from the surface.** By ~400 m the whole
-  globe fills the frame. Past ~400-500 m the terrain streaming radius culls
-  the planet back to empty stars — a distance limit, not a framing mistake.
+- **Near tier: ~200..1000 m.** By ~400 m the whole globe fills the frame.
+  Between there and the 5 km chunk cutoff the terrain streaming radius can
+  cull chunked terrain back toward empty stars — that's why the far tier
+  exists.
+- **Far tier: past the 5 km chunk cutoff** the active body draws the
+  distant-sphere LOD (no streaming), and **past ~10 km** the translucent
+  cloud-texture shell wraps it (`clouds.yaml` `lod_alt_m`). This is the tier
+  to check cloud-shell and distant-LOD shading changes.
 - **`is_in_space` must be forced false** for the capture. Past ~200 m the
   space seam otherwise flips it true, unloads the voxel chunks, and the disk
   vanishes.
@@ -554,11 +571,13 @@ Hard facts learned building it (don't relearn them the slow way):
   a throwaway world name (`TENEBRIS_DEV_SP=rimtest`) for captures.
 - **Fresh worlds need long boots** (120 s+) to stream-generate the full disk;
   a partially-gen'd world reads as an off-centre partial arc.
-- At these orbit distances the planet is **voxel terrain + the atmosphere
-  shell**, NOT the distant-LOD impostor (that only shows when `is_in_space`
-  is genuinely true). So from-orbit terrain shading targets the **hex**
-  terrain shader (`hex_fs_light[3..6]` carries the camera + rim knobs) and
-  the atmosphere, not `distant.fs.glsl`.
+- In the **near tier** the planet is **voxel hex terrain + the atmosphere
+  shell**, NOT the distant-LOD impostor. So near-orbit terrain shading
+  targets the **hex** terrain shader (`hex_fs_light[3..6]` carries the
+  camera + rim knobs) and the atmosphere. In the **far tier** (past 5 km) it
+  swaps to the distant icosphere impostor (`distant.fs.glsl`) plus, past
+  ~10 km, the `clouds.rs` cloud-texture shell. Pick the shader that matches
+  the tier you're capturing.
 
 When doing any "planet from orbit" visual change, capture a before/after
 with this tool instead of guessing at the camera.

@@ -19,6 +19,7 @@
 
 use std::cell::Cell;
 
+use sokol::gfx as sg;
 use sokol::gl as sgl;
 
 use tenebris_core::clouds as clouds_cfg;
@@ -36,7 +37,20 @@ use crate::renderer;
 
 thread_local! {
     static PIP3D: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    /* Far-LOD cloud shell: one alpha-blended textured sphere. The pipeline
+     * is built once; the equirect coverage texture is baked once per body
+     * (view_id, sampler_id, image_id, body_id) and rebuilt on body change. */
+    static SHELL_PIP: Cell<sgl::Pipeline> = const { Cell::new(sgl::Pipeline { id: 0 }) };
+    static SHELL_TEX: Cell<(u32, u32, u32, i64)> = const { Cell::new((0, 0, 0, i64::MIN)) };
 }
+
+/* Far cloud shell resolution: the baked equirect coverage texture and the
+ * lat/long sphere tessellation. Modest - it's only ever seen from >10 km,
+ * where a coarse wrap reads as a full cloud deck. */
+const SHELL_TEX_W: i32 = 128;
+const SHELL_TEX_H: i32 = 64;
+const SHELL_LON: i32 = 48;
+const SHELL_LAT: i32 = 24;
 
 /* Hash salts - distinct decision streams per cell, not tunables. */
 const SALT_EXIST: i32 = 0x71;
@@ -121,6 +135,23 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     }
     let shell_r = w.body.radius_m as f64 + cfg.altitude_m as f64;
 
+    /* LOD swap: below `lod_alt_m` the detailed per-puff shell draws (and
+     * never distance-culls until this height); above it a single
+     * translucent cloud-texture wrap replaces the puffs so the planet
+     * still wears clouds from orbit without thousands of sub-pixel boxes.
+     * A crossfade band around the threshold fades the shell in / hard-cuts
+     * the puffs so the swap doesn't pop. */
+    let planet_r0 = w.body.radius_m as f64;
+    let cam_alt = r - planet_r0;
+    let fade = (cfg.lod_fade_m as f64).max(1.0);
+    let shell_t = smoothstep(
+        cfg.lod_alt_m as f64 - fade * 0.5,
+        cfg.lod_alt_m as f64 + fade * 0.5,
+        cam_alt,
+    );
+    let draw_puffs = shell_t < 0.999;
+    let draw_shell = shell_t > 0.001;
+
     /* Sample frame: rotate the player direction INTO cloud space (the
      * pattern is fixed there; the inverse rotation on the way out is
      * what makes the puffs drift across the world). */
@@ -149,6 +180,10 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     let view_ang = horizon_player + horizon_puff + margin_ang;
     let cos_view = view_ang.min(std::f64::consts::PI).cos();
 
+    /* NEAR LOD: the detailed per-puff shell. Skipped once the camera is
+     * fully above the far-LOD threshold (the cloud-texture wrap below
+     * takes over). */
+    if draw_puffs {
     renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -332,5 +367,202 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     }
 
     sgl::end();
+    renderer::sgl_world_end();
+    } /* end near-LOD puff shell */
+
+    /* FAR LOD: one translucent equirect cloud shell wrapping the planet,
+     * so the world still wears clouds from orbit (>~10 km) after the
+     * per-puff detail drops out. Alpha ramps in across the crossfade
+     * band via `shell_t`. */
+    if draw_shell {
+        draw_cloud_shell(
+            view,
+            proj,
+            w,
+            center,
+            shell_r,
+            planet_r0,
+            drift_ang,
+            time_s,
+            cfg.shell_alpha as f64 * shell_t,
+        );
+    }
+}
+
+/// Equirect texel (u, v in 0..1) -> unit direction. Longitude wraps in u
+/// (about +Y), latitude runs v=0 at the north pole to v=1 at the south.
+/// Mirrors the sphere-vertex mapping in `draw_cloud_shell` so the baked
+/// coverage lands on the matching cell.
+fn equirect_dir(u: f64, v: f64) -> DVec3 {
+    let lon = (u - 0.5) * std::f64::consts::TAU;
+    let lat = (0.5 - v) * std::f64::consts::PI;
+    let cl = lat.cos();
+    dvec3_make(cl * lon.cos(), lat.sin(), cl * lon.sin())
+}
+
+/// Bake (once per body) the far cloud shell's equirect coverage texture:
+/// white RGB, alpha = smoothed cloud coverage from the weather field so
+/// the wrap shows the same clumping as the near puffs. Returns the view +
+/// sampler to bind. Rebuilds when the active body changes.
+fn ensure_shell_texture(w: &World) -> (sg::View, sg::Sampler) {
+    let body_id = w.body.id as i64;
+    let (vid, sid, iid, cached) = SHELL_TEX.with(|c| c.get());
+    if vid != 0 && cached == body_id {
+        return (sg::View { id: vid }, sg::Sampler { id: sid });
+    }
+    /* Body changed - drop the previous body's shell texture. */
+    if iid != 0 {
+        sg::destroy_view(sg::View { id: vid });
+        sg::destroy_sampler(sg::Sampler { id: sid });
+        sg::destroy_image(sg::Image { id: iid });
+    }
+    let mut px = vec![0u8; (SHELL_TEX_W * SHELL_TEX_H * 4) as usize];
+    for py in 0..SHELL_TEX_H {
+        for pxi in 0..SHELL_TEX_W {
+            let u = (pxi as f64 + 0.5) / SHELL_TEX_W as f64;
+            let v = (py as f64 + 0.5) / SHELL_TEX_H as f64;
+            let dir = equirect_dir(u, v);
+            /* Base pattern at t=0; the sphere scrolls its UVs by drift for
+             * motion (see draw_cloud_shell), so bake the drift-free field. */
+            let cell = weather::cloud_cell(&w.body, dir, 0.0);
+            let cov = smoothstep(0.35, 0.95, cell.cover as f64);
+            let idx = ((py * SHELL_TEX_W + pxi) * 4) as usize;
+            px[idx] = 255;
+            px[idx + 1] = 255;
+            px[idx + 2] = 255;
+            px[idx + 3] = (cov * 255.0).clamp(0.0, 255.0) as u8;
+        }
+    }
+    let mut desc = sg::ImageDesc {
+        width: SHELL_TEX_W,
+        height: SHELL_TEX_H,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"cloud-shell-tex".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(&px);
+    let img = sg::make_image(&desc);
+    let view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: img, ..Default::default() },
+        label: c"cloud-shell-view".as_ptr(),
+        ..Default::default()
+    });
+    let smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Linear,
+        mag_filter: sg::Filter::Linear,
+        wrap_u: sg::Wrap::Repeat,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"cloud-shell-smp".as_ptr(),
+        ..Default::default()
+    });
+    SHELL_TEX.with(|c| c.set((view.id, smp.id, img.id, body_id)));
+    (view, smp)
+}
+
+/// Draw the far-LOD cloud shell: an alpha-blended textured lat/long
+/// sphere at the cloud radius, drifting via a UV scroll. Depth-tests
+/// against the distant planet (so the far hemisphere is occluded) but
+/// writes no depth. `alpha` is the peak opacity already scaled by the
+/// crossfade factor.
+#[allow(clippy::too_many_arguments)]
+fn draw_cloud_shell(
+    view: Mat4,
+    proj: Mat4,
+    w: &World,
+    center: DVec3,
+    shell_r: f64,
+    _planet_r: f64,
+    drift_ang: f64,
+    _time_s: f64,
+    alpha: f64,
+) {
+    if alpha <= 0.001 {
+        return;
+    }
+    let cfg = clouds_cfg::config();
+    let (tview, tsmp) = ensure_shell_texture(w);
+
+    renderer::sgl_world_begin();
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_matrix(&proj.m[0]);
+    sgl::matrix_mode_modelview();
+    sgl::load_matrix(&view.m[0]);
+
+    let mut pip = SHELL_PIP.with(|c| c.get());
+    if pip.id == 0 {
+        let mut desc = sg::PipelineDesc {
+            depth: sg::DepthState {
+                /* Test against the distant planet so the back hemisphere is
+                 * hidden, but don't write - it's translucent. */
+                write_enabled: false,
+                compare: sg::CompareFunc::Less,
+                ..Default::default()
+            },
+            /* Double-sided: the visible near hemisphere is the only surface
+             * a view ray hits (the far side is depth-culled by the planet),
+             * so winding doesn't matter and None avoids a handedness fight. */
+            cull_mode: sg::CullMode::None,
+            ..Default::default()
+        };
+        desc.colors[0].blend = sg::BlendState {
+            enabled: true,
+            src_factor_rgb: sg::BlendFactor::SrcAlpha,
+            dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+            src_factor_alpha: sg::BlendFactor::One,
+            dst_factor_alpha: sg::BlendFactor::OneMinusSrcAlpha,
+            ..Default::default()
+        };
+        pip = sgl::make_pipeline(&desc);
+        SHELL_PIP.with(|c| c.set(pip));
+    }
+    sgl::load_pipeline(pip);
+    sgl::enable_texture();
+    sgl::texture(tview, tsmp);
+    sgl::begin_triangles();
+
+    let du = (drift_ang / std::f64::consts::TAU) as f32;
+    let night_min = cfg.night_min;
+    /* One vertex: grid (i,j) in [0..LON]x[0..LAT] -> world pos on the
+     * shell + scrolled UV + day/night-lit colour. UV comes straight from
+     * the grid index (not atan2) so quads never straddle the u seam. */
+    let emit = |i: f64, j: f64| {
+        let ug = i / SHELL_LON as f64;
+        let vg = j / SHELL_LAT as f64;
+        let lon = (ug - 0.5) * std::f64::consts::TAU;
+        let lat = (0.5 - vg) * std::f64::consts::PI;
+        let cl = lat.cos();
+        let d = dvec3_make(cl * lon.cos(), lat.sin(), cl * lon.sin());
+        let pos_w = dvec3_add(center, dvec3_scale(d, shell_r));
+        let lit = renderer::entity_sun_brightness(pos_w).max(night_min);
+        let r = cfg.color[0] * lit;
+        let g = cfg.color[1] * lit;
+        let b = cfg.color[2] * lit;
+        sgl::v3f_t2f_c4f(
+            pos_w.x as f32,
+            pos_w.y as f32,
+            pos_w.z as f32,
+            ug as f32 + du,
+            vg as f32,
+            r,
+            g,
+            b,
+            alpha as f32,
+        );
+    };
+    for j in 0..SHELL_LAT {
+        for i in 0..SHELL_LON {
+            let (i0, i1, j0, j1) = (i as f64, (i + 1) as f64, j as f64, (j + 1) as f64);
+            emit(i0, j0);
+            emit(i1, j0);
+            emit(i1, j1);
+            emit(i0, j0);
+            emit(i1, j1);
+            emit(i0, j1);
+        }
+    }
+
+    sgl::end();
+    sgl::disable_texture();
     renderer::sgl_world_end();
 }

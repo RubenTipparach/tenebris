@@ -5252,10 +5252,27 @@ fn frame_inner(app: &mut App) {
              * vanishes to empty stars. Position is re-pinned each frame, so the
              * surface-gravity that this re-enables can't actually move us. */
             p.is_in_space = false;
-            /* Radial "up" at the cam == view_dir, so pitch just off -pi/2 looks
-             * straight down the radial at the planet centre and frames the disk. */
-            p.yaw = 0.0;
-            p.pitch = -1.552;
+            /* Aim DEAD AT THE PLANET CENTRE by solving yaw/pitch against the
+             * player's CURRENT basis (fwd/right/up) rather than assuming the
+             * basis is already radial. The old hard-coded yaw=0 / pitch=-1.552
+             * assumed basis.up == view_dir, but the basis is parallel-
+             * transported and stale for a frame or two after a teleport, so the
+             * fixed angles pointed off-centre. compute_look() builds the look as
+             *   look = fwd*cos(yaw)*cos(pitch) + right*sin(yaw)*cos(pitch)
+             *        + up*sin(pitch)
+             * so for a target direction `to_center` in the orthonormal basis:
+             *   pitch = asin(dot(to_center, up))
+             *   yaw   = atan2(dot(to_center, right), dot(to_center, fwd))
+             * which frames the full disk regardless of basis orientation. */
+            let to_center = dvec3_normalize(dvec3_sub(center, cam));
+            let b = &p.basis;
+            let sp = dvec3_dot(to_center, b.up).clamp(-1.0, 1.0);
+            let pitch = sp.asin();
+            let a = dvec3_dot(to_center, b.fwd);
+            let c = dvec3_dot(to_center, b.right);
+            let yaw = c.atan2(a);
+            p.yaw = yaw as f32;
+            p.pitch = pitch as f32;
         }
         DEV_FISH_CAM.with(|c| c.set(Some(cam)));
         /* Remesh the full disk ONCE gen has finished, so the whole globe is

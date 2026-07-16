@@ -25,6 +25,12 @@
 #   patch_clear  fraction (0..1) of the coverage field held cloud-free;
 #                negative = uniform sky (patchiness off)
 #   patch_soft   edge softness of a system (coverage-field units)
+#   lod_alt_m    camera altitude (m above surface) where the detailed
+#                per-puff shell hands over to the far cloud-texture wrap.
+#                Below this the puffs never distance-cull; above it a
+#                single transparent cloud shell wraps the planet.
+#   lod_fade_m   crossfade band (m) around lod_alt_m so the swap is smooth
+#   shell_alpha  peak opacity (0..1) of the far cloud-texture shell
 clouds:
   altitude_m: 60
   cell_m: 30
@@ -38,3 +44,6 @@ clouds:
   patch_scale: 4
   patch_clear: 0.45
   patch_soft: 0.18
+  lod_alt_m: 10000
+  lod_fade_m: 3000
+  shell_alpha: 0.6
