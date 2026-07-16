@@ -4327,6 +4327,13 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
     if menu::state() != GameState::InGameSp {
         return;
     }
+    /* The LOD-camera capture hook pins the player out in orbit every frame.
+     * Never let that synthetic pose get written back to the world save, or
+     * every later load spawns in space with the terrain unloaded (a poisoned
+     * save). The capture is read-only w.r.t. the world. */
+    if std::env::var("TENEBRIS_DEV_LODCAM").is_ok() {
+        return;
+    }
     let world = menu::active_world();
     if world.is_empty() {
         return; /* SP without a world - shouldn't happen */
@@ -5251,8 +5258,11 @@ fn frame_inner(app: &mut App) {
             p.pitch = -1.552;
         }
         DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+        /* Remesh the full disk ONCE gen has finished, so the whole globe is
+         * meshed (remeshing on frame 1 - before streaming completes - leaves a
+         * partial, off-centre-looking disk). */
         thread_local! { static LODCAM_REMESHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-        if !LODCAM_REMESHED.with(|c| c.get()) {
+        if !LODCAM_REMESHED.with(|c| c.get()) && app.world.borrow().gen_complete() {
             LODCAM_REMESHED.with(|c| c.set(true));
             renderer::remesh_body_now(body_id);
         }

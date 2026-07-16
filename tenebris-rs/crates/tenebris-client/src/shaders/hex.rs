@@ -105,6 +105,18 @@ pub struct HexFsLight {
     pub u_ambient: [f32; 3],
     pub _pad_28: [u8; 4],
     pub u_terminator: [f32; 4],
+    /// From-orbit atmospheric limb rim (hand-added): camera in planet-local
+    /// space (relative to centre), w = sea radius.
+    pub u_cam_local: [f32; 3],
+    pub u_sea_radius: f32,
+    /// Rim colour + fresnel power.
+    pub u_rim_color: [f32; 3],
+    pub u_rim_power: f32,
+    /// x = rim intensity, y = fog_height_m (the fade band), z/w pad.
+    pub u_rim_intensity: f32,
+    pub u_fog_height_m: f32,
+    pub _pad_84: f32,
+    pub _pad_88: f32,
 }
 #[repr(C, align(16))]
 pub struct HexFsTorch {
@@ -349,9 +361,9 @@ pub fn hex_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
             desc.uniform_blocks[1].glsl_uniforms[0].glsl_name = c"hex_vs_light".as_ptr();
             desc.uniform_blocks[2].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[2].layout = sg::UniformLayout::Std140;
-            desc.uniform_blocks[2].size = 48;
+            desc.uniform_blocks[2].size = 96;
             desc.uniform_blocks[2].glsl_uniforms[0]._type = sg::UniformType::Float4;
-            desc.uniform_blocks[2].glsl_uniforms[0].array_count = 3;
+            desc.uniform_blocks[2].glsl_uniforms[0].array_count = 6;
             desc.uniform_blocks[2].glsl_uniforms[0].glsl_name = c"hex_fs_light".as_ptr();
             desc.uniform_blocks[3].stage = sg::ShaderStage::Fragment;
             desc.uniform_blocks[3].layout = sg::UniformLayout::Std140;

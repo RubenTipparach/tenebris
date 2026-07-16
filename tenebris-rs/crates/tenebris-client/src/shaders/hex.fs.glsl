@@ -1,7 +1,12 @@
 #version 410
 
 uniform vec4 hex_fs_crack[10];
-uniform vec4 hex_fs_light[3];
+uniform vec4 hex_fs_light[6];
+// [0] sun dir, [1] ambient, [2] terminator/misc. Hand-added for the from-orbit
+// atmospheric limb rim (fades in as the ground fog fades out):
+//   [3] xyz = camera pos in PLANET-LOCAL space (relative to centre), w = sea radius
+//   [4] xyz = rim colour, w = rim fresnel power
+//   [5] x = rim intensity, y = fog_height_m (the fade band)
 uniform vec4 hex_fs_torch[1];
 uniform vec4 hex_fs_water[2];
 uniform vec4 hex_fs_rain[4];
@@ -310,6 +315,32 @@ void main()
         float glint = pow(max(dot(wet_n, sun_d), 0.0), k_glint_power);
         lit += vec3(k_glint_strength) * (glint * wet * v_sun_brightness);
     }
+
+    // ---- Atmospheric limb rim (from orbit) --------------------------------
+    // The planet's air shell scatters light at grazing angles, so brighten +
+    // tint the limb. This fades IN exactly as the ground fog fades OUT: the fog
+    // uses k = (1 - alt/H)^2, so the rim gate is 1 - k over the same altitude
+    // band H (fog_height_m). Uses the GEOMETRIC radial normal so the halo is a
+    // clean ring on the blocky voxels, brightened on the sunlit crescent with a
+    // floor so the night limb keeps a faint edge. v_sky_light keeps it off
+    // roofed/underground faces.
+    {
+        vec3 cam_local = hex_fs_light[3].xyz;
+        float sea_r = hex_fs_light[3].w;
+        float fog_h = max(hex_fs_light[5].y, 1.0);
+        float alt = length(cam_local) - sea_r;
+        float ff = clamp(1.0 - alt / fog_h, 0.0, 1.0);
+        float rim_gate = 1.0 - ff * ff;
+        if (rim_gate > 0.001) {
+            vec3 radial = normalize(v_local);
+            vec3 view = normalize(cam_local - v_local);
+            float fres = pow(1.0 - clamp(dot(radial, view), 0.0, 1.0), hex_fs_light[4].w);
+            float day = max(dot(radial, normalize(hex_fs_light[0].xyz)), 0.0);
+            float rim_lit = 0.25 + 0.75 * day;
+            lit += hex_fs_light[4].xyz * (fres * rim_lit * hex_fs_light[5].x * rim_gate * v_sky_light);
+        }
+    }
+
     frag_color = vec4(lit, v_wet);
 }
 

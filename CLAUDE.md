@@ -521,6 +521,48 @@ subsystems exist yet; when adding the first one, also add a
 field + the central catch-up dispatch, so each new system plugs
 into one place.
 
+## Screenshotting the planet from orbit — use the LOD camera, never hand-aim
+
+Aiming the screenshot camera at the planet from orbit by guessing
+`TENEBRIS_DEV_HOVER` / pitch / yaw wastes runs and repeatedly ends up
+staring at empty starfields. **Do not hand-aim the from-orbit camera.**
+Use the deterministic tool that always frames the full disk:
+
+- **`TENEBRIS_DEV_LODCAM=<metres>`** (combine with `TENEBRIS_DEV_SP=<name>`):
+  each frame parks the camera `<metres>` beyond the planet surface on a
+  sun-perpendicular azimuth (terminator bisects the disk), lifted off the
+  equatorial plane so the station drum isn't in front, and aims it dead at
+  the planet **centre** via the radial pitch. It forces `is_in_space =
+  false` and remeshes the full disk once gen completes, so the whole globe
+  renders as terrain. Lives in `app.rs` by the other per-frame dev-cam hooks.
+- **`tenebris-rs/tools/lodcam-capture.sh [OUT_DIR] [DISTANCES...]`**: boots
+  the client once per distance and grabs one PNG each — a consistent A/B
+  set for from-orbit visual work. Default sweep is `100 200 300 400`.
+
+Hard facts learned building it (don't relearn them the slow way):
+
+- **Working range is ~100..400 m from the surface.** By ~400 m the whole
+  globe fills the frame. Past ~400-500 m the terrain streaming radius culls
+  the planet back to empty stars — a distance limit, not a framing mistake.
+- **`is_in_space` must be forced false** for the capture. Past ~200 m the
+  space seam otherwise flips it true, unloads the voxel chunks, and the disk
+  vanishes.
+- **The capture MUST NOT autosave.** The hook pins the player in orbit every
+  frame; if that pose gets written to the world save, every later load
+  spawns in space with terrain unloaded (a poisoned save). `maybe_autosave_sp`
+  early-returns while `TENEBRIS_DEV_LODCAM` is set — keep it that way. Prefer
+  a throwaway world name (`TENEBRIS_DEV_SP=rimtest`) for captures.
+- **Fresh worlds need long boots** (120 s+) to stream-generate the full disk;
+  a partially-gen'd world reads as an off-centre partial arc.
+- At these orbit distances the planet is **voxel terrain + the atmosphere
+  shell**, NOT the distant-LOD impostor (that only shows when `is_in_space`
+  is genuinely true). So from-orbit terrain shading targets the **hex**
+  terrain shader (`hex_fs_light[3..6]` carries the camera + rim knobs) and
+  the atmosphere, not `distant.fs.glsl`.
+
+When doing any "planet from orbit" visual change, capture a before/after
+with this tool instead of guessing at the camera.
+
 ## Post-commit links
 
 After each commit, always show these links to the user:

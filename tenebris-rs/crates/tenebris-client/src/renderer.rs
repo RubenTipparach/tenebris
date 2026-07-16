@@ -4976,6 +4976,26 @@ pub fn draw_world(
                 );
             }
             {
+                /* From-orbit atmospheric limb rim: camera in the planet-LOCAL
+                 * frame (v_local is a_pos, i.e. relative to the body centre =
+                 * active.world_pos), plus the sea radius + fog band so the
+                 * shader can fade the rim IN as the ground fog fades OUT. Rim
+                 * look reuses the shared lod.yaml distant_rim_* knobs. */
+                let lodc = config::lod();
+                let (cam_local, sea_radius_rim, fog_h) = {
+                    let idx = r.active_body_idx;
+                    if idx >= 0 && (idx as usize) < r.bodies.len() {
+                        let ab = &r.bodies[idx as usize];
+                        let cl = vec3_sub(camera_world, ab.world_pos);
+                        let fh = {
+                            let bw = ab.world.borrow();
+                            if bw.body.atmo_fog_height_m > 0.0 { bw.body.atmo_fog_height_m } else { 60.0 }
+                        };
+                        ([cl.x, cl.y, cl.z], ab.radius_m, fh)
+                    } else {
+                        ([0.0, 0.0, 0.0], 1.0, 60.0)
+                    }
+                };
                 let hex_fs_light = shaders::hex::HexFsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -4990,6 +5010,14 @@ pub fn draw_world(
                         r.time_seconds as f32,
                         0.0,
                     ],
+                    u_cam_local: cam_local,
+                    u_sea_radius: sea_radius_rim,
+                    u_rim_color: [lodc.distant_rim_color.x, lodc.distant_rim_color.y, lodc.distant_rim_color.z],
+                    u_rim_power: lodc.distant_rim_power,
+                    u_rim_intensity: lodc.distant_rim_intensity,
+                    u_fog_height_m: fog_h,
+                    _pad_84: 0.0,
+                    _pad_88: 0.0,
                 };
                 sg::apply_uniforms(
                     shaders::hex::UB_HEX_FS_LIGHT,
@@ -6624,7 +6652,7 @@ mod tests {
          * shader's declared block size. */
         assert_eq!(size_of::<shaders::hex::HexVsParams>(), 80);
         assert_eq!(size_of::<shaders::hex::HexVsLight>(), 64); /* +u_sway +u_wind_dir (scatter wind) */
-        assert_eq!(size_of::<shaders::hex::HexFsLight>(), 48);
+        assert_eq!(size_of::<shaders::hex::HexFsLight>(), 96); /* +from-orbit rim (3 vec4s) */
         assert_eq!(size_of::<shaders::hex::HexFsWater>(), 32);
         assert_eq!(size_of::<shaders::hex::HexFsTorch>(), 16);
         assert_eq!(size_of::<shaders::starfield::StarfieldParams>(), 192);
