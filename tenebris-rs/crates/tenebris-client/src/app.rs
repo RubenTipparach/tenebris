@@ -3419,10 +3419,14 @@ fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
         /* Climb rate: the component of velocity along radial up. Signed, so
          * you can see an apoapsis coming. */
         let vspeed = tenebris_core::math::dvec3_dot(p.velocity, up);
-        /* Attitude: angle between the nose (the axis thrust fires along) and
-         * radial up. 0 = straight up off the pad, 90 = horizontal, which is
-         * where you want to be pointing to build orbital speed. */
-        let cosine = tenebris_core::math::dvec3_dot(p.basis.fwd, up).clamp(-1.0, 1.0);
+        /* Attitude: angle between the nose - basis.up, the axis thrust
+         * fires along and the model stacks along - and radial up. 0 =
+         * straight up off the pad, 90 = horizontal, where you point to
+         * build orbital speed. (This briefly measured basis.fwd, which is
+         * HORIZONTAL on the pad - so a rocket standing dead vertical read
+         * "90 deg from up (horizon)". The axis here must always be the
+         * thrust axis or the number lies about the burn.) */
+        let cosine = tenebris_core::math::dvec3_dot(p.basis.up, up).clamp(-1.0, 1.0);
         let pitch_deg = cosine.acos().to_degrees();
         (r - body.radius_m, vspeed, speed, pitch_deg)
     };
@@ -6189,7 +6193,7 @@ fn frame_inner(app: &mut App) {
              * half a stack up the nose to put the engine at the player's feet
              * and the capsule overhead - the player rides at the base rather
              * than halfway inside the tanks. */
-            let seg = 2.0f64 * 0.9; /* PART_HEIGHT * ROCKET_SCALE, rocket_fx */
+            let seg = crate::rocket_fx::part_seg_m() as f64;
             let half = parts.len() as f64 * seg * 0.5;
             let center = dvec3_add(p.position, dvec3_scale(p.basis.up, half));
             let ride_view = crate::falling_stage::StageView {

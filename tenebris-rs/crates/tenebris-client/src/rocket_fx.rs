@@ -294,32 +294,89 @@ fn draw_frustum(
     sgl::end();
 }
 
+/// World height (m) one stacked part occupies - what the ride pose needs to
+/// centre the flown stack on the player without copying these constants.
+pub fn part_seg_m() -> f32 {
+    PART_HEIGHT * ROCKET_SCALE
+}
+
+/// Draw one assembled part stack from its BASE (bottom face of the first
+/// engine) along the basis' +Y column: each part in its slot, vacuum bells
+/// at VAC_BELL_SCALE and TOP-ALIGNED so the housing meets the tank above,
+/// with the tapered interstage skirt + support struts closing the gap.
+///
+/// The one stack renderer - the pad, the ridden rocket, and jettisoned
+/// falling stages all go through here. It started as the pad's private
+/// loop, and the first ridden rocket drew through a second, simpler copy:
+/// bottom-aligned bells, no skirt, no struts - user-visible drift within a
+/// day of the fork existing.
+fn draw_stack(
+    models: &[RocketModel; 3],
+    base: DVec3,
+    basis: &[f32; 16],
+    up: DVec3,
+    parts: &[u16],
+    lit: f32,
+) {
+    for (i, &id) in parts.iter().enumerate() {
+        let midx = match part_role(id) {
+            Some(PartRole::Engine) => 0usize,
+            Some(PartRole::FuelTank) => 1,
+            Some(PartRole::Capsule) => 2,
+            None => 1,
+        };
+        let vac = tenebris_core::rocket::engine_kind(id)
+            == Some(tenebris_core::rocket::EngineKind::Vacuum);
+        let scale = if vac { ROCKET_SCALE * VAC_BELL_SCALE } else { ROCKET_SCALE };
+        let slot_off = (i as f32) * PART_HEIGHT * ROCKET_SCALE;
+        let gap = PART_HEIGHT * (ROCKET_SCALE - scale);
+        let part_off = if vac { slot_off + gap } else { slot_off };
+        let pbase = dvec3_add(base, dvec3_scale(up, part_off as f64));
+        draw_model(&models[midx], pbase, basis, scale, lit, renderer::rocket_view_id(midx));
+        if vac && i > 0 {
+            /* Interstage: from the slot bottom (sitting on the stage below,
+             * full radius) tapering up to the bell base. Skinned with the
+             * fuel-tank texture so it reads as airframe. */
+            let skirt_base = dvec3_add(base, dvec3_scale(up, slot_off as f64));
+            draw_frustum(
+                skirt_base,
+                basis,
+                PART_RADIUS * ROCKET_SCALE,
+                PART_RADIUS * scale,
+                gap,
+                PART_HEIGHT * ROCKET_SCALE,
+                lit,
+                renderer::rocket_view_id(1),
+            );
+        }
+    }
+}
+
 /// Draw every assembled rocket + its launch-tower gantry for the active
 /// body. Iterates the world's launch-pad block entities.
 pub fn draw(view: Mat4, proj: Mat4, world: &World) {
     if !models() {
         return;
     }
-    /* The rocket being flown is drawn around the player (app.rs), so skip
-     * its pad here - otherwise the same rocket renders twice, once parked on
-     * the pad and once under the camera. Every OTHER pad still draws its
-     * static rocket. */
+    /* The rocket being flown is drawn around the player (app.rs), so its
+     * pad hides ITS ROCKET ONLY - the launch tower is ground equipment and
+     * must stay standing while the rocket it serviced is up (hiding the
+     * whole pad entry took the gantry with it). Every other pad still draws
+     * its static rocket. */
     let in_flight = crate::rocket_ride::in_flight_pad();
 
-    /* Collect (tile, depth, parts, part-count) for pads that carry a rocket. */
-    let pads: Vec<(i32, i32, Vec<u16>)> = world
+    /* (tile, depth, parts, rocket-hidden) for pads that carry a rocket. */
+    let pads: Vec<(i32, i32, Vec<u16>, bool)> = world
         .block_entities
         .iter()
         .filter_map(|(tile, depth, e)| {
-            if in_flight == Some((tile, depth)) {
-                return None;
-            }
             let lp = e.launch_pad()?;
             let parts = lp.parts().to_vec();
             if parts.is_empty() {
                 None
             } else {
-                Some((tile, depth, parts))
+                let hidden = in_flight == Some((tile, depth));
+                Some((tile, depth, parts, hidden))
             }
         })
         .collect();
@@ -366,7 +423,7 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
             Some(a) => a,
             None => return,
         };
-        for (tile, depth, parts) in &pads {
+        for (tile, depth, parts, rocket_hidden) in &pads {
             let Some(t) = world.grid.tile(*tile) else { continue };
             let up = dvec3_normalize(t.center);
             let basis = basis_up(up);
@@ -382,43 +439,12 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
             let lit = renderer::entity_sun_brightness(dvec3_add(center, dvec3_scale(up, surf_r as f64)));
             let lit = lit.clamp(0.15, 1.5);
 
-            /* Rocket stack: engine at the bottom, then up the parts list.
-             * Vacuum engines draw smaller (VAC_BELL_SCALE), TOP-aligned in
-             * their slot so the housing meets the tank above; the gap left
-             * under the bell is closed by a tapered interstage skirt from the
-             * lower stage's full-width tank up to the bell base. */
-            sgl::load_pipeline(pip_ship);
-            for (i, &id) in parts.iter().enumerate() {
-                let midx = match part_role(id) {
-                    Some(PartRole::Engine) => 0usize,
-                    Some(PartRole::FuelTank) => 1,
-                    Some(PartRole::Capsule) => 2,
-                    None => 1,
-                };
-                let vac = tenebris_core::rocket::engine_kind(id)
-                    == Some(tenebris_core::rocket::EngineKind::Vacuum);
-                let scale = if vac { ROCKET_SCALE * VAC_BELL_SCALE } else { ROCKET_SCALE };
-                let slot_r = surf_r + (i as f32) * PART_HEIGHT * ROCKET_SCALE;
-                let gap = PART_HEIGHT * (ROCKET_SCALE - scale);
-                let base_r = if vac { slot_r + gap } else { slot_r };
-                let base = dvec3_add(center, dvec3_scale(up, base_r as f64));
-                draw_model(&models[midx], base, &basis, scale, lit, renderer::rocket_view_id(midx));
-                if vac && i > 0 {
-                    /* Interstage: from the slot bottom (sitting on the stage
-                     * below, full radius) tapering up to the bell base. Skinned
-                     * with the fuel-tank texture so it reads as airframe. */
-                    let skirt_base = dvec3_add(center, dvec3_scale(up, slot_r as f64));
-                    draw_frustum(
-                        skirt_base,
-                        &basis,
-                        PART_RADIUS * ROCKET_SCALE,
-                        PART_RADIUS * scale,
-                        gap,
-                        PART_HEIGHT * ROCKET_SCALE,
-                        lit,
-                        renderer::rocket_view_id(1),
-                    );
-                }
+            /* Rocket stack (shared renderer - see draw_stack). Hidden while
+             * this pad's rocket is the one being flown. */
+            if !*rocket_hidden {
+                sgl::load_pipeline(pip_ship);
+                let stack_base = dvec3_add(center, dvec3_scale(up, surf_r as f64));
+                draw_stack(models, stack_base, &basis, up, parts, lit);
             }
 
             /* Launch-tower gantry beside the rocket: box segments stacked as
@@ -496,24 +522,13 @@ pub fn draw_falling(view: Mat4, proj: Mat4, world: &World, stages: &[crate::fall
         for s in stages {
             let axis = dvec3_normalize(s.axis);
             let basis = basis_up(axis);
-            let seg = PART_HEIGHT * ROCKET_SCALE;
-            let total_h = s.parts.len() as f32 * seg;
+            let total_h = s.parts.len() as f32 * PART_HEIGHT * ROCKET_SCALE;
             let lit = renderer::entity_sun_brightness(s.center).clamp(0.15, 1.5);
-            for (i, &id) in s.parts.iter().enumerate() {
-                let midx = match part_role(id) {
-                    Some(PartRole::Engine) => 0usize,
-                    Some(PartRole::FuelTank) => 1,
-                    Some(PartRole::Capsule) => 2,
-                    None => 1,
-                };
-                let vac = tenebris_core::rocket::engine_kind(id)
-                    == Some(tenebris_core::rocket::EngineKind::Vacuum);
-                let scale = if vac { ROCKET_SCALE * VAC_BELL_SCALE } else { ROCKET_SCALE };
-                /* Slot bottom, measured from the stack centre along the axis. */
-                let off = (i as f32) * seg - total_h * 0.5;
-                let base = dvec3_add(s.center, dvec3_scale(axis, off as f64));
-                draw_model(&models[midx], base, &basis, scale, lit, renderer::rocket_view_id(midx));
-            }
+            /* Base = half a stack down the axis from the centre; the shared
+             * renderer takes it from there (same bells / skirt / struts as
+             * the pad - a flown rocket is the pad's rocket, moved). */
+            let base = dvec3_add(s.center, dvec3_scale(axis, -0.5 * total_h as f64));
+            draw_stack(models, base, &basis, axis, &s.parts, lit);
         }
     });
     renderer::sgl_world_end();
