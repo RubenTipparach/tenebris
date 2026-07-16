@@ -48,6 +48,9 @@ struct Layer {
     /// Stashed paint output from the last `run`, consumed by `draw`.
     prims: Vec<egui::ClippedPrimitive>,
     ppp: f32,
+    /// Last time value handed to egui - the monotonic floor (see
+    /// [`monotonize`]).
+    last_time: f64,
 }
 
 thread_local! {
@@ -56,6 +59,27 @@ thread_local! {
 
 fn now_s() -> f64 {
     sokol::time::sec(sokol::time::now())
+}
+
+/// Clamp `t` to be strictly monotonic against `last`, updating `last`.
+///
+/// egui's pointer-velocity history HARD-ASSERTS that the time it is fed
+/// never decreases - and because our frame callback is `extern "C"`, that
+/// panic cannot unwind and aborts the whole game. The wall clock is
+/// sokol_time's QueryPerformanceCounter, which on some Windows systems
+/// steps slightly BACKWARDS when a thread migrates cores (desynced TSCs) -
+/// exactly what a multi-second world-load stall invites. Crash report:
+/// "Time shouldn't move backwards" (emath history.rs) on the first
+/// gameplay frame after a 4.6 s loader stall.
+///
+/// The clamp holds egui's contract on any hardware: a backwards or equal
+/// read becomes "a hair after the last one".
+fn monotonize(last: &mut f64, t: f64) -> f64 {
+    /* NaN also fails egui's assert (all comparisons false), so it must not
+     * pass through either - treat it as a backwards step. */
+    let t = if t.is_finite() && t > *last { t } else { *last + 1e-6 };
+    *last = t;
+    t
 }
 
 pub fn init() {
@@ -77,6 +101,7 @@ pub fn init() {
             smp: sg::Sampler { id: 0 },
             prims: Vec::new(),
             ppp: 1.0,
+            last_time: 0.0,
         });
     });
 }
@@ -172,7 +197,10 @@ pub fn run(screen_w: f32, screen_h: f32, mut ui: impl FnMut(&egui::Context)) {
                 egui::Pos2::ZERO,
                 egui::vec2(screen_w, screen_h),
             )),
-            time: Some(now_s() - l.start),
+            time: {
+                let t = now_s() - l.start;
+                Some(monotonize(&mut l.last_time, t))
+            },
             modifiers: l.modifiers,
             events: std::mem::take(&mut l.events),
             ..Default::default()
@@ -322,4 +350,43 @@ pub fn draw() {
         sgl::disable_texture();
         sgl::pop_pipeline();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::monotonize;
+
+    /// The crash scenario: a QPC read that steps backwards after a long
+    /// stall. egui aborts the process on a non-increasing time (the panic
+    /// can't unwind out of the extern "C" frame callback), so the clamp
+    /// must turn a backwards read into a forward step.
+    #[test]
+    fn a_backwards_clock_read_still_moves_time_forward() {
+        let mut last = 0.0;
+        assert_eq!(monotonize(&mut last, 10.0), 10.0);
+        let t = monotonize(&mut last, 9.4); /* QPC stepped back 0.6 s */
+        assert!(t > 10.0, "must move forward, got {t}");
+        let t2 = monotonize(&mut last, 9.5); /* still behind the floor */
+        assert!(t2 > t, "and keep moving forward, got {t2}");
+        /* Once the clock catches back up, real time resumes. */
+        assert_eq!(monotonize(&mut last, 11.0), 11.0);
+    }
+
+    /// Equal timestamps also violate strict progress for velocity math;
+    /// nudge them forward.
+    #[test]
+    fn equal_reads_advance_by_a_hair() {
+        let mut last = 5.0;
+        let t = monotonize(&mut last, 5.0);
+        assert!(t > 5.0);
+    }
+
+    /// NaN fails egui's assert too (all comparisons are false), so it must
+    /// never pass through.
+    #[test]
+    fn nan_reads_do_not_pass_through() {
+        let mut last = 3.0;
+        let t = monotonize(&mut last, f64::NAN);
+        assert!(t.is_finite() && t > 3.0, "NaN must become a forward step, got {t}");
+    }
 }
