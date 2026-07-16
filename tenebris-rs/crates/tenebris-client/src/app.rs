@@ -6154,6 +6154,18 @@ fn frame_inner(app: &mut App) {
 
     renderer::begin_frame(sapp::width(), sapp::height(), env);
     /* Opaque scene -> offscreen colour + depth attachments. */
+    /* LOD load/unload decisions anchor to the PLAYER, never the camera:
+     * the rocket chase-cam zooms to 20 km for the map view, and measuring
+     * from its eye unloaded + reloaded the planet's whole detail mesh
+     * (2.7 s stall) on every zoom across the 5 km cutoff. */
+    {
+        let p = app.player.borrow();
+        renderer::set_lod_anchor(tenebris_core::math::Vec3 {
+            x: p.position.x as f32,
+            y: p.position.y as f32,
+            z: p.position.z as f32,
+        });
+    }
     profiler::begin("draw-skybox");
     renderer::draw_skybox(view, proj);
     profiler::end("draw-skybox");
@@ -6239,7 +6251,17 @@ fn frame_inner(app: &mut App) {
             /* The CHASE camera's eye (not the player) - it seeds the
              * eye-shell remap that keeps orbit lines inside the far plane. */
             cam_eye,
-            p.position,
+            /* The mesh centre, NOT p.position: the physics point is the
+             * player at the BASE of the stack (the engine), and drawing the
+             * conic + attitude arrows from there parked them a half-stack
+             * behind the visible ship - the reported "trajectory doesn't
+             * pass through my ship / axes cross behind the model". Same
+             * anchor as the chase camera and the drawn mesh, so line,
+             * arrows, ship and pivot share one origin. (The 5 m conic
+             * offset vs the true physics point is invisible at map scale;
+             * the base anchor itself stays - on the pad the stack must sit
+             * ON the pad, not half-buried.) */
+            crate::rocket_fx::ride_center(p.position, p.basis.up),
             p.velocity,
             p.basis.right,
             p.basis.fwd,
@@ -6505,7 +6527,8 @@ fn frame_inner(app: &mut App) {
             nav_ui::draw_hud(
                 sapp::widthf(),
                 sapp::heightf(),
-                p.position,
+                /* The ship's one origin (mesh centre) - see draw_world. */
+                crate::rocket_fx::ride_center(p.position, p.basis.up),
                 p.velocity,
                 p.basis.right,
                 p.basis.fwd,
@@ -6726,7 +6749,8 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
     }
     let (pos, vel) = {
         let p = app.player.borrow();
-        (p.position, p.velocity)
+        /* The ship's one origin (mesh centre) - see the draw_world call. */
+        (crate::rocket_fx::ride_center(p.position, p.basis.up), p.velocity)
     };
     let sim_t = tenebris_core::world_time::seconds();
     let mut do_stage = false;

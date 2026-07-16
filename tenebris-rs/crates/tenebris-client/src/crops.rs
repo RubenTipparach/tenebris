@@ -203,6 +203,17 @@ pub fn spawn_wild_near(w: &World, p: &PlayerCtrl) {
     const RADIUS_M: f64 = 40.0;
     const STEP_M: f64 = 5.0;
     const KEEP_M: f64 = 55.0; /* drop wild plants past this from the player */
+    /* Wild fruit is SURFACE gameplay: everything this scan could spawn or
+     * keep lives within KEEP_M of the player, so from higher than that the
+     * whole pass is a no-op by construction - skip it. Without the gate the
+     * ~200-point tangent scan ran its find_tile greedy walks every frame
+     * from SPACE, where the stale tile hint degenerates each walk on the
+     * 163k-tile grid: the mysterious ~7 ms "crops-sim / interact" row on
+     * the in-space profiler readout. */
+    const MAINT_MAX_ALT_M: f64 = 80.0;
+    if p.is_in_space || (r - w.body.radius_m) > MAINT_MAX_ALT_M {
+        return;
+    }
 
     S.with(|c| {
         let s = &mut *c.borrow_mut();

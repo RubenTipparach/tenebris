@@ -1453,6 +1453,29 @@ fn body_draws_chunked(is_active: bool, dist: f32) -> bool {
     is_active && dist <= MAX_DETAIL_DIST_M
 }
 
+/// Hysteresis on the detail UNLOAD: once a body is meshed it keeps its
+/// chunks until the LOD anchor has stayed beyond `cutoff * factor` for the
+/// debounce time. Reloading detail is a multi-second full remesh of the
+/// whole body (163k tiles observed at 2.7 s), so the 5 km boundary must
+/// never flap it - crossing back inside at any point cancels the timer.
+const DETAIL_UNLOAD_FACTOR: f32 = 1.5;
+const DETAIL_UNLOAD_DEBOUNCE_S: f32 = 3.0;
+
+thread_local! {
+    /// The point LOD load/unload decisions measure from: the PLAYER, set
+    /// by the app each frame. The camera is the wrong anchor - the rocket
+    /// chase-cam zooms out to 20 km for the map view, and using its eye
+    /// unloaded + reloaded the planet's entire detail mesh on every zoom
+    /// across the 5 km cutoff (the reported 2.7 s stalls). None falls back
+    /// to the camera (boot frames before the first set).
+    static LOD_ANCHOR: Cell<Option<Vec3>> = const { Cell::new(None) };
+}
+
+/// Publish this frame's LOD anchor (player world position).
+pub fn set_lod_anchor(p: Vec3) {
+    LOD_ANCHOR.with(|c| c.set(Some(p)));
+}
+
 /// The wall-clock remesh budget gate from renderer_draw_world: rebuild
 /// the next dirty chunk when nothing has been rebuilt yet (so progress
 /// is guaranteed no matter how small the budget) or when the budget
@@ -1565,6 +1588,13 @@ struct ChunkedBody {
     has_water: bool,
     chunks_allocated: bool, /* GPU buffers exist              */
     meshed: bool,           /* chunks have content + uploaded */
+    /// This frame's chunked-vs-LOD decision, computed ONCE in draw_world
+    /// (anchor + hysteresis) and mirrored by draw_moons / draw_water so
+    /// the three passes can never disagree mid-flap.
+    chunked_now: bool,
+    /// When the LOD anchor first went beyond the unload radius; -1 = it
+    /// is inside. Drives the unload debounce.
+    detail_out_since: f32,
     world_pos: Vec3,        /* model-translate origin (body centre) */
     radius_m: f32,
     distant_color: Vec3,
@@ -1592,6 +1622,8 @@ impl ChunkedBody {
             has_water: false,
             chunks_allocated: false,
             meshed: false,
+            chunked_now: false,
+            detail_out_since: -1.0,
             world_pos: Vec3::default(),
             radius_m: 0.0,
             distant_color: Vec3::default(),
@@ -3799,10 +3831,12 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             if dist < 1.0 {
                 dist = 1.0;
             }
-            /* Mirror the exact terrain-draw condition (inverted): LOD
-             * renders when chunked WOULDN'T. */
-            let is_active = bi as i32 == r.active_body_idx;
-            if body_draws_chunked(is_active, dist) {
+            /* Mirror the terrain pass's decision (inverted): LOD renders
+             * when chunked didn't. Reads the cached per-frame verdict
+             * (anchor + hysteresis) instead of recomputing, so the two
+             * passes can never disagree mid-flap. */
+            let _ = dist;
+            if body.chunked_now {
                 continue;
             }
 
@@ -5154,20 +5188,48 @@ pub fn draw_world(
                 {
                     continue;
                 }
-                let delta = vec3_sub(r.bodies[bi].world_pos, camera_world);
-                let mut dist = vec3_length(delta);
-                if dist < 1.0 {
-                    dist = 1.0;
-                }
                 /* Only the ACTIVE body draws chunked terrain, and only
                  * within the hard cutoff; everything else is far-LOD
-                 * (drawn by draw_moons). */
-                if !body_draws_chunked(is_active, dist) {
-                    /* Release the chunked mesh + GPU buffers once we
-                     * cross the cutoff; body_load_detail rebuilds on
+                 * (drawn by draw_moons).
+                 *
+                 * The decision measures from the LOD ANCHOR (the player),
+                 * NOT the camera - the chase-cam's map zoom must never
+                 * unload the mesh - and unloading is debounced behind the
+                 * hysteresis radius, because a reload is a multi-second
+                 * full remesh. Result cached in chunked_now so the moons /
+                 * water mirrors agree by construction. */
+                let anchor =
+                    LOD_ANCHOR.with(|c| c.get()).unwrap_or(camera_world);
+                let lod_dist =
+                    vec3_length(vec3_sub(r.bodies[bi].world_pos, anchor)).max(1.0);
+                let want = if r.bodies[bi].meshed {
+                    is_active && lod_dist <= MAX_DETAIL_DIST_M * DETAIL_UNLOAD_FACTOR
+                } else {
+                    body_draws_chunked(is_active, lod_dist)
+                };
+                let chunked = if r.bodies[bi].meshed && !want {
+                    /* Debounce the unload: flapping across the boundary
+                     * must never pay the reload. */
+                    let now_s = r.time_seconds;
+                    let since = r.bodies[bi].detail_out_since;
+                    if since < 0.0 {
+                        r.bodies[bi].detail_out_since = now_s;
+                        true
+                    } else {
+                        now_s - since < DETAIL_UNLOAD_DEBOUNCE_S
+                    }
+                } else {
+                    r.bodies[bi].detail_out_since = -1.0;
+                    want
+                };
+                r.bodies[bi].chunked_now = chunked;
+                if !chunked {
+                    /* Release the chunked mesh + GPU buffers; the far LOD
+                     * takes over and body_load_detail rebuilds on a real
                      * re-approach. */
                     if r.bodies[bi].meshed {
                         body_unload_detail(&mut r.bodies[bi]);
+                        r.bodies[bi].detail_out_since = -1.0;
                     }
                     continue;
                 }
@@ -5235,14 +5297,11 @@ pub fn draw_water(view: Mat4, proj: Mat4, camera_world: Vec3) {
             {
                 continue;
             }
-            let delta = vec3_sub(r.bodies[bi].world_pos, camera_world);
-            let mut dist = vec3_length(delta);
-            if dist < 1.0 {
-                dist = 1.0;
-            }
-            /* Mirror the terrain pass's rule: only the active body
-             * within 5 km draws its translucent cap. */
-            if !body_draws_chunked(is_active, dist) {
+            /* Mirror the terrain pass's decision: only a body that drew
+             * chunks this frame draws its translucent cap. Cached verdict
+             * (anchor + hysteresis), so the passes agree by construction. */
+            let _ = is_active;
+            if !r.bodies[bi].chunked_now {
                 continue;
             }
             let tris = body_draw_water(r, bi, vp, camera_world);
