@@ -1091,6 +1091,36 @@ fn sun_mvp(view: Mat4, proj: Mat4, sun_pos: Vec3, sun_radius: f32) -> Mat4 {
     mat4_mul(vp, model)
 }
 
+/// Far-shell compression - the "log-z protocol" for celestials. The sun
+/// sits 150 km out and the outer planets to 200+ km, far past the 20 km
+/// zfar, so drawn at their true positions the far plane slices them (the
+/// crescent-cut sun). Anything beyond the shell start slides along its
+/// own eye ray onto a compressed band inside zfar, scaled by the same
+/// factor so its APPARENT size is exactly unchanged; the map is
+/// monotonic in distance, so mutual occlusion order among compressed
+/// bodies is preserved. Angular positions are exact - only depth is
+/// squeezed, which is what a far plane can't see.
+fn far_shell(eye: Vec3, pos: Vec3, radius: f32) -> (Vec3, f32) {
+    /// Compression kicks in here (inside zfar with margin)...
+    const START_M: f32 = 14000.0;
+    /// ...and asymptotes at START + SPAN (well inside zfar 20 km).
+    const SPAN_M: f32 = 4500.0;
+    let d = vec3_length(vec3_sub(pos, eye));
+    if d <= START_M {
+        return (pos, radius);
+    }
+    let dp = START_M + SPAN_M * (1.0 - START_M / d);
+    let s = dp / d;
+    (
+        Vec3 {
+            x: eye.x + (pos.x - eye.x) * s,
+            y: eye.y + (pos.y - eye.y) * s,
+            z: eye.z + (pos.z - eye.z) * s,
+        },
+        radius * s,
+    )
+}
+
 /* ----------------------------------------------------------------------- */
 /* Chunk assignment - chunk_n() well-spread sphere anchors (Fibonacci
  * lattice). Tile -> chunk mapping is "nearest anchor by dot product". */
@@ -3091,7 +3121,10 @@ pub fn draw_sun(view: Mat4, proj: Mat4, camera_world: Vec3) {
         if r.env.sun_radius <= 0.0 {
             return;
         }
-        let mvp = sun_mvp(view, proj, r.env.sun_pos, r.env.sun_radius);
+        /* Far-shell: the 150 km sun slides inside zfar at identical
+         * apparent size (see far_shell) - no more crescent clipping. */
+        let (sun_pos, sun_radius) = far_shell(camera_world, r.env.sun_pos, r.env.sun_radius);
+        let mvp = sun_mvp(view, proj, sun_pos, sun_radius);
 
         sg::apply_pipeline(r.pip_sun);
         let sun_vs = shaders::sun::SunVsParams { u_mvp: mvp.m };
@@ -4018,8 +4051,11 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 continue;
             }
 
-            let model =
-                mat4_mul(mat4_translate(body.world_pos), mat4_scale_uniform(body.radius_m));
+            /* Far-shell: outer planets (Sequoia at 200 km, ...) slide
+             * inside zfar at identical apparent size, same protocol as
+             * the sun - order-preserving, so mutual occlusion holds. */
+            let (fs_pos, fs_radius) = far_shell(camera_world, body.world_pos, body.radius_m);
+            let model = mat4_mul(mat4_translate(fs_pos), mat4_scale_uniform(fs_radius));
             let mvp = mat4_mul(vp_base, model);
             /* Per-body distant albedo + normal views + the shared
              * linear-clamp sampler. Skip if not built yet (rare init

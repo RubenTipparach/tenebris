@@ -366,10 +366,16 @@ in: stick 2
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/config/recipes.yaml");
         let rs = load_recipes(path);
         assert!(rs.iter().any(|r| r.name == "planks"), "planks recipe present");
-        /* Wood torches were removed in favour of the bonfire (charcoal is
-         * the new fire path); the bonfire is now the early light source. */
+        /* The bonfire is the campsite light + cook station; torches came
+         * BACK as the portable light (stick + coal - you can't carry a
+         * bonfire down a mineshaft). */
         assert!(rs.iter().any(|r| r.name == "bonfire"), "bonfire recipe present");
-        assert!(!rs.iter().any(|r| r.name == "torch"), "wood torch recipe removed");
+        let torches = rs.iter().find(|r| r.name == "torches").expect("torches recipe present");
+        assert_eq!(torches.output.count, 4, "one craft lights four torches");
+        assert!(
+            torches.inputs.iter().any(|i| i.item == COAL),
+            "torches take coal (stick + coal)"
+        );
         // Every parsed recipe resolved a real output item + >=1 input.
         for r in &rs {
             assert!(r.output.count > 0 && !r.inputs.is_empty(), "recipe {} malformed", r.name);

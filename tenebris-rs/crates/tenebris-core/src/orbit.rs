@@ -252,6 +252,35 @@ pub fn heliocentric_pos(id: BodyId, t: f64) -> DVec3 {
     dvec3_add(base, tilted)
 }
 
+/// Sampled orbit TRACK of `moon` around `active`, expressed in the
+/// active body's render frame at time `t` (the same frame
+/// [`apparent_pos`] returns), as a closed ring of `segs + 1` points -
+/// what the nav overlay draws so a pilot can see the moons' orbits
+/// alongside the station's. Uses the exact circle construction of
+/// [`heliocentric_pos`] (in-plane circle tilted about X, moon radii
+/// structural) rotated by the active body's CURRENT spin, so the ring
+/// passes through the moon's apparent position. `None` unless `moon`
+/// actually orbits `active`.
+pub fn moon_track(active: BodyId, moon: BodyId, t: f64, segs: usize) -> Option<Vec<DVec3>> {
+    let e = elements(moon);
+    if e.parent != Some(active) || e.orbit_radius_m <= 0.0 {
+        return None;
+    }
+    let c = body_center(active);
+    let spin = spin_angle(active, t);
+    let (si, ci) = e.inclination.sin_cos();
+    let r = e.orbit_radius_m;
+    let mut out = Vec::with_capacity(segs + 1);
+    for k in 0..=segs {
+        let a = TAU * k as f64 / segs as f64;
+        let (sa, ca) = a.sin_cos();
+        let local = dvec3_make(r * ca, 0.0, r * sa);
+        let tilted = dvec3_make(local.x, -local.z * si, local.z * ci);
+        out.push(dvec3_add(c, rotate_about(tilted, SPIN_AXIS, spin)));
+    }
+    Some(out)
+}
+
 /// Spin angle (radians) of a body at sim-time `t`.
 pub fn spin_angle(id: BodyId, t: f64) -> f64 {
     let e = elements(id);

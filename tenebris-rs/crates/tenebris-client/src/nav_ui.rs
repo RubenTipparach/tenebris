@@ -66,6 +66,9 @@ const ORBIT_SEGS: usize = 768;
 const ELLIPSE_COL: [f32; 4] = [0.35, 0.9, 0.95, 0.85];
 const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
+/// The moons' orbit rings - cooler + fainter than the station's so the
+/// dockable target stays the loudest line on the chart.
+const MOON_TRACK_COL: [f32; 4] = [0.7, 0.72, 0.85, 0.45];
 const HYPERBOLA_CLIP_M: f64 = 40_000.0;
 /* Inside this many dock radii of the station the rocket's trajectory line
  * hides - the approach/docking UI is what matters there. */
@@ -337,7 +340,13 @@ pub fn draw_world(
      * never clip the orbit tracks however far out the camera zooms. */
     REMAP_EYE.with(|c| c.set(eye));
 
-    renderer::sgl_world_begin();
+    /* OVERLAY context, not the world context: the world scene gets the
+     * fog / atmosphere composite and then the WATER pass painted over it,
+     * which washed the orbit tracks out wherever they crossed a planet.
+     * The overlay (default) context flushes at the frame's final
+     * sgl::draw(), after water and the lens pass - nav lines are HUD
+     * data and read on top of all of it. */
+    renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
     sgl::load_matrix(&proj.m[0]);
@@ -355,6 +364,19 @@ pub fn draw_world(
     circle(ten_c, x_axis, z_axis, station::orbit_radius_m(), STATION_TRACK_COL, ORBIT_SEGS);
     let st_pos = station::orbit_pos(sim_t);
     cross_marker(st_pos, 40.0, STATION_TRACK_COL);
+
+    /* The two moons' tracks ride the same chart: their real orbit rings
+     * (inclination + current spin frame, so each ring passes through its
+     * moon) plus a marker at the moon itself. */
+    for moon in [BodyId::Luna, BodyId::Selene] {
+        if let Some(pts) =
+            tenebris_core::orbit::moon_track(BodyId::Tenebris, moon, sim_t, ORBIT_SEGS)
+        {
+            line_strip(&pts, MOON_TRACK_COL);
+            let mp = tenebris_core::orbit::apparent_pos(BodyId::Tenebris, moon, sim_t);
+            cross_marker(mp, 60.0, MOON_TRACK_COL);
+        }
+    }
 
     /* Target halo: a 3-ring cage around the body (or a bright station
      * marker), so the thing you're flying at reads across any distance. */
@@ -409,7 +431,7 @@ pub fn draw_world(
         arrow(pos, dvec3_scale(right, -1.0), len * 0.7, [0.95, 0.35, 0.3, 0.35]);
     }
 
-    renderer::sgl_world_end();
+    renderer::sgl_overlay_end();
 }
 
 /* ------------------------------- navball ------------------------------ */

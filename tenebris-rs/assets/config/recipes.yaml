@@ -26,14 +26,21 @@ in: plank 2
 
 # Bonfire: a pile of sticks sparked with flint. The flint-tier light + cook
 # station - interact (E) to feed it wood (sticks / logs / charcoal) and cook
-# meat or char logs into charcoal. It replaces the old wood torch as the
-# early-game light source (2x a torch's glow). Wood torches are removed now
-# that charcoal exists.
+# meat or char logs into charcoal. The bright CAMPSITE light (2x a torch).
 [bonfire]
 tier: 0
 out: bonfire 1
 in: stick 8
 in: flint 1
+
+# Torches: the PORTABLE light - a lump of coal lashed to a stick. The
+# bonfire owns the campsite, but you can't carry one down a mineshaft;
+# coal comes off mined stone, so the first ore run lights the second.
+[torches]
+tier: 0
+out: torch 4
+in: stick 1
+in: coal 1
 
 # Flint tools - the tier-1 toolkit. Knapped from flint (foraged off rocky
 # ground / chipped from mined stone) lashed to a stick. This is the old
