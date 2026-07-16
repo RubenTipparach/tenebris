@@ -2,6 +2,7 @@
 
 pub mod block_entity;
 pub mod blocks;
+pub mod casino;
 pub mod clouds;
 pub mod weather;
 pub mod config;

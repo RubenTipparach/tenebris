@@ -586,6 +586,21 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     out
 }
 
+/// World positions of every fixture of material `mat` at world-time `t`
+/// (e.g. all slot cabinets), mapped through the station's live orbit frame -
+/// the same frame the client draws the furniture in, so the player's
+/// distance to one of these is the walk-up-to-a-machine test. Cheap: the
+/// station structure is static, so this is a filter over the shell.
+pub fn fixture_world_positions(mat: StationMat, t: f64) -> Vec<DVec3> {
+    let cfg = config();
+    let sf = frame_sample(orbit_pos(t), t);
+    shell(&cfg)
+        .into_iter()
+        .filter(|p| p.mat == mat)
+        .map(|p| sf.local_to_world(dvec3_make(p.x as f64, p.y as f64, p.z as f64)))
+        .collect()
+}
+
 /// True for the station's function-fixture materials (POIs placed on
 /// the deck), as opposed to structural prisms.
 pub fn is_fixture(m: StationMat) -> bool {

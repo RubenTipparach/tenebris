@@ -16,7 +16,7 @@
 #   warehouse_slots_t1/2/3  station warehouse slots per tier (t1 = free)
 #   warehouse_cost_t2/3     credits the tier-2 / tier-3 upgrades cost
 
-starting_credits:    0
+starting_credits:    1000
 fuel_price_per_unit: 2.0
 sell_spread:         0.6
 price_drift_amp:     0.25

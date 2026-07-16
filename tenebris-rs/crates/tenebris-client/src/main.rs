@@ -25,6 +25,7 @@ mod station_fx;
 mod rocket_ride;
 mod reentry_fx;
 mod station_screen;
+mod slot_screen;
 mod egui_layer;
 mod gfx_math;
 mod hex_mesher;

@@ -1,0 +1,17 @@
+# Casino tunables (space-era) - the slot machine payout table.
+#
+# The reel ODDS (which symbols come up how often) are the machine's identity
+# and live in core (casino.rs REEL_WEIGHTS). The knobs here are the payout
+# MULTIPLIERS + the bet, so a designer can tune the house edge / feel without
+# a recompile. Payout = bet * mult.
+#
+#   slot_bet                credits wagered per spin
+#   slot_pair_mult          any single matching pair
+#   slot_triple_any_mult    three of a kind (Cherry / Lemon / Bell)
+#   slot_triple_bar_mult    three Bars
+#   slot_triple_seven_mult  three Sevens - the jackpot
+slot_bet: 10
+slot_pair_mult: 0.5
+slot_triple_any_mult: 6.0
+slot_triple_bar_mult: 20.0
+slot_triple_seven_mult: 80.0

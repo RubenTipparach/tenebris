@@ -76,6 +76,7 @@ roster! {
     Power     => power_ui,
     Rocket    => rocket_screen,
     Station   => station_screen,
+    Slot      => slot_screen,
 }
 
 /// `s` just opened: it owns the screen now. Closes every other panel (one

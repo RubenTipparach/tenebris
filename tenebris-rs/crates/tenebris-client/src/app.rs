@@ -56,6 +56,7 @@ use crate::input;
 use crate::interact::{self, InteractState};
 use crate::chest_screen;
 use crate::screens;
+use crate::slot_screen;
 use crate::station_screen;
 use crate::bonfire_fx;
 use crate::bonfire_screen;
@@ -2264,6 +2265,8 @@ extern "C" fn init() {
     tenebris_core::station::load_prices("assets/config/economy.yaml");
     /* Orbital station drum geometry + rendezvous tuning. */
     tenebris_core::station::load_config("assets/config/station.yaml");
+    /* Casino games (slot machine payout table). */
+    tenebris_core::casino::load_config("assets/config/casino.yaml");
     /* Start the world clock in daylight (start_day_fraction of a day),
      * unless a dev override pins the time of day. */
     {
@@ -3337,6 +3340,40 @@ fn draw_board_ship_hint(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::font(1);
     sdtx::pos(x, y);
     sdtx::color3b(0x90, 0xf0, 0xa0);
+    sdtx::puts(&msg);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Walk-up prompt shown on foot next to a station slot cabinet:
+/// `"[E] play slots"`. Gated on being IN the station field so a
+/// planet-surface player never pays the fixture enumeration.
+fn draw_slot_hint(app: &App, screen_w: f32, screen_h: f32) {
+    if rocket_ride::is_riding() || screens::any_open() {
+        return;
+    }
+    let pos = app.player.borrow().position;
+    let t = tenebris_core::world_time::seconds();
+    if !tenebris_core::station::frame_sample(pos, t).in_field {
+        return;
+    }
+    let slots = tenebris_core::station::fixture_world_positions(
+        tenebris_core::station::StationMat::Slots,
+        t,
+    );
+    if !slots.iter().any(|s| dvec3_length(dvec3_sub(pos, *s)) <= CASINO_REACH_M) {
+        return;
+    }
+    let key = crate::controls::action_label(crate::controls::Action::Interact);
+    let msg = format!("[{}] play slots", key);
+    let cell = 8.0f32;
+    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
+    let y = (screen_h * 0.5 + 24.0) / cell;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+    sdtx::pos(x, y);
+    sdtx::color3b(0xf0, 0x90, 0xe0);
     sdtx::puts(&msg);
     sdtx::font(0);
     sdtx::color3b(0xff, 0xff, 0xff);
@@ -5178,6 +5215,8 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     }
     chest_screen::egui_ui(ctx);
     station_screen::egui_ui(ctx);
+    slot_screen::set_player(Some(app.player.clone()));
+    slot_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
     bonfire_screen::egui_ui(ctx);
     power_ui::egui_ui(ctx);
@@ -6781,6 +6820,7 @@ fn frame_inner(app: &mut App) {
         draw_station_hint(app, sapp::widthf(), sapp::heightf());
         /* Board prompt when on foot next to a ship you climbed out of. */
         draw_board_ship_hint(app, sapp::widthf(), sapp::heightf());
+        draw_slot_hint(app, sapp::widthf(), sapp::heightf());
     }
     /* Sync the hamburger debug-menu + teleport-button visibility with
      * the master F2 toggle every frame. */
@@ -7037,6 +7077,31 @@ fn rocket_respawn_action(app: &App) {
     }
 }
 
+/// Interact reach for walking up to a casino machine on the station deck.
+const CASINO_REACH_M: f64 = 3.5;
+
+/// On foot on the station, within reach of a slot cabinet: open its game.
+/// Returns true when a machine was in reach (the caller consumes the key).
+/// No-op off the station (the in-field gate rejects a planet-surface player
+/// before enumerating fixtures).
+fn open_nearest_slot(app: &App) -> bool {
+    let pos = app.player.borrow().position;
+    let t = tenebris_core::world_time::seconds();
+    /* Cheap reject: only enumerate fixtures when actually on the station. */
+    if !tenebris_core::station::frame_sample(pos, t).in_field {
+        return false;
+    }
+    let slots = tenebris_core::station::fixture_world_positions(
+        tenebris_core::station::StationMat::Slots,
+        t,
+    );
+    if slots.iter().any(|s| dvec3_length(dvec3_sub(pos, *s)) <= CASINO_REACH_M) {
+        slot_screen::open(app.player.clone());
+        return true;
+    }
+    false
+}
+
 /// The clickable flight panel (egui, bottom-right): orbit + target
 /// readouts and the flight controls as real buttons. Every button is also
 /// a key; the button label carries the binding so the panel doubles as
@@ -7159,6 +7224,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if station_screen::event(e) {
         return;
     }
+    /* Casino slot machine: swallows input while open (Esc closes). */
+    if slot_screen::event(e) {
+        return;
+    }
     /* Survival craft screen: first crack after pause so B toggles it and,
      * while open, it owns clicks + Esc (closed, it ignores everything and
      * falls through). Always available - not gated on the F2 debug UI. */
@@ -7273,6 +7342,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * interactions so walking up to your own ship and pressing E always
      * boards it. */
     if interact_pressed && !rocket_ride::is_riding() && board_parked_action(app) {
+        return;
+    }
+    /* Walk-up casino: on foot next to a slot cabinet on the station, E opens
+     * its game (docking - the ship maneuver - stays gated on riding below). */
+    if interact_pressed && !rocket_ride::is_riding() && open_nearest_slot(app) {
         return;
     }
     /* Dock at the orbital trading station: Interact within dock range
