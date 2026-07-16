@@ -266,24 +266,28 @@ function cornerXZ(q, r, k) {
 }
 /* outward neighbour cell for side face k. */
 function sideDir(k) { return HEX_DIRS[(k + 1) % 6]; }
+/* world XZ direction (unit-ish) of an axial step, for side normals. */
+function axialDirVec(dq, dr) { const p = axialToPx(dq, dr); return [p.x, 0, p.y]; }
 
-function pushFace(q, r, l, dir, poly3, m, shade, w, h) {
+let curDpr = 1, curView = null;
+/* Collect a face: screen polygon, depth, normal, and the three world
+ * anchor points that map the tile's (0,0),(1,0),(0,1) onto the face so
+ * the real texture can be affine-mapped (exact under orthographic). */
+function pushFace(q, r, l, dir, normal, poly3, anchorsW, m, shade, w, h) {
   let d = 0;
   const p = poly3.map(P => { const s = screenOf(P, w, h); d += s.d; return s; });
   d /= p.length;
-  const col = COL[m] || [120, 120, 130];
-  const sh = EMISSIVE.has(m) ? Math.max(shade, 1.2) : shade;
-  const rr = Math.min(255, col[0] * sh) | 0, gg = Math.min(255, col[1] * sh) | 0, bb = Math.min(255, col[2] * sh) | 0;
-  const fill = m === "glass" ? `rgba(${rr},${gg},${bb},.6)` : `rgb(${rr},${gg},${bb})`;
-  faces3.push({ q, r, layer: l, dir, p, d, fill });
+  const anchors = anchorsW.map(P => screenOf(P, w, h));
+  faces3.push({ q, r, layer: l, dir, normal, p, anchors, d, m, shade });
 }
 
 function draw3d() {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = curDpr = window.devicePixelRatio || 1;
   const w = wrap.clientWidth, h = wrap.clientHeight;
   if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0b0c12"; ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = false;
 
   /* Ground guide: faint hex lattice at y = 0 so the scene is oriented. */
   ctx.strokeStyle = "rgba(44,48,66,.5)"; ctx.lineWidth = 1;
@@ -295,33 +299,83 @@ function draw3d() {
     }
   }
 
+  /* View direction into the scene (world), for backface culling. */
+  const vd = inv3([0, 0, 1]);
+  const faces = (n) => (n[0] * vd[0] + n[1] * vd[1] + n[2] * vd[2]) < 0;
+  const a = HEX; /* hex circumradius in world px = the tile half-span */
+
   faces3 = [];
   const occ = (q, r, l) => cells.has(key(q, r, l));
   for (const [ck, m] of cells) {
     const [q, r, l] = ck.split(",").map(Number);
+    const c = axialToPx(q, r), cx = c.x, cz = c.y;
     const y0 = l * LH3, y1 = (l + 1) * LH3;
-    if (!occ(q, r, l + 1)) { const top = []; for (let k = 0; k < 6; k++) { const c = cornerXZ(q, r, k); top.push([c[0], y1, c[1]]); } pushFace(q, r, l, [0, 0, 1], top, m, 1.0, w, h); }
-    if (!occ(q, r, l - 1)) { const bot = []; for (let k = 0; k < 6; k++) { const c = cornerXZ(q, r, k); bot.push([c[0], y0, c[1]]); } pushFace(q, r, l, [0, 0, -1], bot, m, 0.42, w, h); }
+    /* Top cap: tile square [-a,a] x [-a,a] over the hex, image upright. */
+    if (!occ(q, r, l + 1) && faces([0, 1, 0])) {
+      const poly = []; for (let k = 0; k < 6; k++) { const cc = cornerXZ(q, r, k); poly.push([cc[0], y1, cc[1]]); }
+      pushFace(q, r, l, [0, 0, 1], [0, 1, 0], poly,
+        [[cx - a, y1, cz - a], [cx + a, y1, cz - a], [cx - a, y1, cz + a]], m, 1.0, w, h);
+    }
+    if (!occ(q, r, l - 1) && faces([0, -1, 0])) {
+      const poly = []; for (let k = 0; k < 6; k++) { const cc = cornerXZ(q, r, k); poly.push([cc[0], y0, cc[1]]); }
+      pushFace(q, r, l, [0, 0, -1], [0, -1, 0], poly,
+        [[cx - a, y0, cz - a], [cx + a, y0, cz - a], [cx - a, y0, cz + a]], m, 0.5, w, h);
+    }
     for (let sK = 0; sK < 6; sK++) {
-      const dr = sideDir(sK);
-      if (occ(q + dr[0], r + dr[1], l)) continue;
+      const dd = sideDir(sK);
+      if (occ(q + dd[0], r + dd[1], l)) continue;
+      const nrm = axialDirVec(dd[0], dd[1]);
+      if (!faces(nrm)) continue;
       const c0 = cornerXZ(q, r, sK), c1 = cornerXZ(q, r, (sK + 1) % 6);
       const poly = [[c0[0], y0, c0[1]], [c1[0], y0, c1[1]], [c1[0], y1, c1[1]], [c0[0], y1, c0[1]]];
-      pushFace(q, r, l, [dr[0], dr[1], 0], poly, m, sK % 2 ? 0.6 : 0.78, w, h);
+      /* tex (0,0)=top-left (c0@y1), (1,0)=top-right (c1@y1), (0,1)=bottom-left (c0@y0). */
+      pushFace(q, r, l, [dd[0], dd[1], 0], nrm, poly,
+        [[c0[0], y1, c0[1]], [c1[0], y1, c1[1]], [c0[0], y0, c0[1]]], m, sK % 2 ? 0.68 : 0.82, w, h);
     }
   }
-  faces3.sort((a, b) => b.d - a.d); /* painter's: far first */
-  for (const f of faces3) {
-    ctx.beginPath();
-    f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y));
-    ctx.closePath();
-    ctx.fillStyle = f.fill; ctx.fill();
-    ctx.strokeStyle = "rgba(11,12,18,.5)"; ctx.lineWidth = 1; ctx.stroke();
-    if (hover3 && f.q === hover3.q && f.r === hover3.r && f.layer === hover3.layer
-      && f.dir[0] === hover3.dir[0] && f.dir[1] === hover3.dir[1] && f.dir[2] === hover3.dir[2]) {
-      ctx.strokeStyle = tool === "erase" ? "#ff5e5e" : "#52e2ff"; ctx.lineWidth = 2.5; ctx.stroke();
+  faces3.sort((f1, f2) => f2.d - f1.d); /* painter's: far first */
+  for (const f of faces3) drawTexFace(f, dpr);
+  /* hover highlight on top */
+  if (hover3) {
+    for (const f of faces3) {
+      if (f.q === hover3.q && f.r === hover3.r && f.layer === hover3.layer
+        && f.dir[0] === hover3.dir[0] && f.dir[1] === hover3.dir[1] && f.dir[2] === hover3.dir[2]) {
+        ctx.beginPath(); f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y)); ctx.closePath();
+        ctx.strokeStyle = tool === "erase" ? "#ff5e5e" : "#52e2ff"; ctx.lineWidth = 2.5; ctx.stroke();
+      }
     }
   }
+}
+
+/* Draw one face: affine-map its tile texture into the projected polygon
+ * (exact for an orthographic projection of a planar face), clip to the
+ * polygon, then a shade / emissive overlay. */
+function drawTexFace(f, dpr) {
+  const img = IMG[f.m];
+  ctx.save();
+  ctx.beginPath(); f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y)); ctx.closePath();
+  ctx.clip();
+  if (img && img.complete) {
+    const [P0, P1, P2] = f.anchors;
+    const ax = P1.x - P0.x, ay = P1.y - P0.y, bx = P2.x - P0.x, by = P2.y - P0.y;
+    ctx.setTransform(dpr * ax, dpr * ay, dpr * bx, dpr * by, dpr * P0.x, dpr * P0.y);
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = f.m === "glass" ? 0.6 : 1;
+    ctx.drawImage(img, 0, 0, 1, 1);
+    ctx.globalAlpha = 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  } else {
+    const col = COL[f.m] || [120, 120, 130];
+    ctx.fillStyle = `rgb(${col[0] | 0},${col[1] | 0},${col[2] | 0})`;
+    ctx.beginPath(); f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y)); ctx.closePath(); ctx.fill();
+  }
+  /* shade overlay: darken sides, brighten emissive faces */
+  const emis = EMISSIVE.has(f.m);
+  ctx.beginPath(); f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y)); ctx.closePath();
+  if (emis) { ctx.fillStyle = "rgba(160,230,255,.14)"; ctx.fill(); }
+  else if (f.shade < 1) { ctx.fillStyle = `rgba(0,0,0,${(1 - f.shade) * 0.55})`; ctx.fill(); }
+  ctx.strokeStyle = "rgba(11,12,18,.45)"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
 }
 
 function pointInPoly(x, y, p) {
