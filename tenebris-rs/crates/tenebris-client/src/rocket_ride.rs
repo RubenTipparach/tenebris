@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 
 use tenebris_core::items::ItemId;
-use tenebris_core::math::{dvec3_make, DVec3};
+use tenebris_core::math::{dvec3_add, dvec3_make, dvec3_scale, DVec3};
 use tenebris_core::rocket::{EngineKind, RocketRide};
 
 /// Where a ride came from: the launch pad and the pose the player boarded
@@ -141,6 +141,25 @@ pub fn park(pos: DVec3, up: DVec3, vel: DVec3) {
 /// Is there a ship parked in the world right now (climbed out, not flying)?
 pub fn has_parked() -> bool {
     PARKED.with(|c| c.borrow().is_some())
+}
+
+/// Coast the parked ship by `dt`: it keeps the orbital velocity it had when
+/// the player climbed out, so it stays ALONGSIDE the (also-coasting) player
+/// instead of being left behind at a fixed world point and vanishing at
+/// orbital speed the instant they exit (the "I exit and my ship is gone"
+/// bug). Straight-line ballistic - good enough over the short window before
+/// re-boarding; a docked-to-pad ship (station frame) will supersede this
+/// once the tractor lands. Persists nothing per-frame (the pose autosave
+/// already carries the parked snapshot on its cadence).
+pub fn advance_parked(dt: f32) {
+    if dt <= 0.0 {
+        return;
+    }
+    PARKED.with(|c| {
+        if let Some(pk) = c.borrow_mut().as_mut() {
+            pk.pos = dvec3_add(pk.pos, dvec3_scale(pk.vel, dt as f64));
+        }
+    });
 }
 
 /// The parked ship's draw pose + parts: (base pos, axis up, parts). `None`

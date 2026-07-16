@@ -5795,6 +5795,10 @@ fn frame_inner(app: &mut App) {
         let w = phys_world.borrow();
         player_ctrl::update(&mut app.player.borrow_mut(), Some(&w), dt);
     }
+    /* A ship the player climbed out of coasts its orbit so it stays with
+     * the (also-coasting) player instead of falling behind at orbital
+     * speed and vanishing. No-op unless one is parked. */
+    rocket_ride::advance_parked(dt);
     profiler::end("player-update");
     /* Throttled SP pose autosave + 5 s position trace. */
     maybe_autosave_sp(app, dt as f64);
