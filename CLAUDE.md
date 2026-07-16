@@ -527,3 +527,10 @@ After each commit, always show these links to the user:
 
 - Play the games: https://rubentipparach.github.io/tenebris/
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
+- Operator portal: https://tenebris-c.fly.dev/admin
+- Hex structure editor: https://tenebris-c.fly.dev/admin/tile-editor
+
+The `/admin` portal and the tile editor are served by the dedicated
+server itself (`tenebris-server` on Fly), so they update on the same
+push that deploys the server. The editor exports `*.template.json`
+into `tenebris-rs/assets/templates/`.

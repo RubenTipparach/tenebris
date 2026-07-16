@@ -5284,7 +5284,7 @@ fn frame_inner(app: &mut App) {
         let t = tenebris_core::world_time::seconds();
         let anchor = tenebris_core::station::orbit_pos(t);
         let sf = tenebris_core::station::frame_sample(anchor, t);
-        let roof = sf.deck_top_m.unwrap_or(0.0);
+        let roof = sf.column_top_m.unwrap_or(0.0);
         let mut p = app.player.borrow_mut();
         p.position = sf.local_to_world(dvec3_make(0.0, roof + 12.0, 0.0));
         p.velocity = sf.station_vel;
@@ -5312,6 +5312,41 @@ fn frame_inner(app: &mut App) {
             p.velocity = vel;
         }
         dev_aim_at(app, anchor);
+    }
+
+    /* Dev screenshot aid (TENEBRIS_DEV_HOTEL_CAM=<storey>): pin the
+     * camera INSIDE the casino hotel on the given storey (eye height
+     * over its slab, off-centre) looking across the room at the spiral
+     * stairs, riding the station frame - interior stills. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_HOTEL_CAM") {
+        let storey = v.parse::<i32>().unwrap_or(0).max(0);
+        let t = tenebris_core::world_time::seconds();
+        let cfg = tenebris_core::station::config();
+        let lh = tenebris_core::station::layer_h(&cfg) as f64;
+        let anchor = tenebris_core::station::orbit_pos(t);
+        let sf = tenebris_core::station::frame_sample(anchor, t);
+        /* Slab top of the requested storey (floor 0 = deck level). */
+        let pitch = tenebris_core::station::floor_pitch(&cfg) as f64;
+        let slab_top = (cfg.slab_layers as f64 + storey as f64 * pitch) * lh;
+        let (cx, cz) =
+            tenebris_core::station::axial_to_local(-3, 1, cfg.hex_size_m);
+        let eye = sf.local_to_world(dvec3_make(cx as f64, slab_top + 1.5, cz as f64));
+        /* Look at the central spiral staircase, tilted up the atrium
+         * shaft so the winding treads read. */
+        let look = sf.local_to_world(dvec3_make(1.0, slab_top + 5.5, -0.5));
+        {
+            /* Pin the 6DOF basis level with the room (station up), not
+             * whatever roll the free camera drifted to. */
+            let mut p = app.player.borrow_mut();
+            p.position = eye;
+            p.velocity = sf.station_vel;
+            let fwd = dvec3_normalize(dvec3_sub(look, eye));
+            p.basis.fwd = fwd;
+            p.basis.up = sf.up;
+            p.basis.right = tenebris_core::math::dvec3_cross(fwd, sf.up);
+            p.yaw = 0.0;
+            p.pitch = 0.0;
+        }
     }
 
     /* G-key toggles survival mode in SP only (MP is always survival).

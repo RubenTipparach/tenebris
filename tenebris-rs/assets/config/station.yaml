@@ -13,10 +13,17 @@
 #   ring_width    - ring deck width, in hex rings
 #   slab_layers   - deck slab thickness (ring / spokes / pads), layers
 #   tower_radius  - casino hotel footprint radius, hex rings
-#   tower_layers  - casino hotel height, layers
+#   tower_floors  - casino hotel storeys (each: 1 slab + air layers)
+#   floor_air_layers - clear walking headroom per storey, in layers
 #   layers/height_m - reference stack: one layer = height_m / layers m
+#                     (12 over 15 m = person-scale 1.25 m prisms)
 #   hex_size_m    - hex circumradius (centre -> corner) of one prism
 #   altitude_m    - orbit altitude above the Tenebris surface
+# Every courtyard opening between the spokes is glazed (glass floor -
+# no hole in the wheel to fall through, pinned by the no-holes test);
+# the hotel gets a window band and a neon storey ring per floor, a
+# lobby door facing +x, a spiral staircase (half-layer treads),
+# ceiling light tiles, and the marquee crown.
 #
 # Docking + artificial gravity:
 #   dock_radius_m     - how close the player must fly to interact
@@ -27,14 +34,20 @@
 #                             column (~20 blocks at 2 m hexes)
 #   artificial_gravity_mps2 - pull toward the deck inside the field, in
 #                             the station's free-falling orbit frame
+#   step_up_m         - ledge height auto-stepped while walking (also
+#                       what makes the stair treads climbable)
+#   head_clearance_m  - headroom used for ceiling collision indoors
 
 station:
   radius_hexes: 10
   ring_width: 3
   slab_layers: 2
-  tower_radius: 3
-  tower_layers: 10
-  layers: 6
+  tower_radius: 4
+  tower_floors: 5
+  # 5 air layers per storey: grand rooms, and what the connected
+  # central spiral needs to keep 3 clear blocks above every tread.
+  floor_air_layers: 5
+  layers: 12
   height_m: 15.0
   hex_size_m: 2.0
   altitude_m: 120.0
@@ -43,3 +56,8 @@ station:
   gravity_field_m: 40.0
   artificial_gravity_mps2: 15.0
   deck_friction: 6.0
+  step_up_m: 0.8
+  head_clearance_m: 1.8
+  # Start phase (degrees from +x) - keeps the station off the prime
+  # meridian so it never spawns parked over the launch complex.
+  orbit_phase0_deg: 120.0

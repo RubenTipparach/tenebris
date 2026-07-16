@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tenebris // Operator Portal</title>
+<style>
+  :root {
+    --space: #0b0c12; --panel: #171923; --panel-2: #1f2230; --line: #2c3042;
+    --text: #d9dce6; --dim: #8b90a3; --cyan: #52e2ff; --gold: #d9ac48;
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--space); color: var(--text);
+    font-family: var(--mono); font-size: 14px; line-height: 1.5;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 48px 20px;
+  }
+  .shell { width: 100%; max-width: 720px; }
+  header { margin-bottom: 32px; }
+  h1 {
+    margin: 0; font-size: 20px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--cyan); font-weight: 700;
+  }
+  .sub { color: var(--dim); font-size: 12px; letter-spacing: .06em; margin-top: 6px; }
+  h2 {
+    font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--dim); margin: 28px 0 10px; font-weight: 600;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  a.card {
+    display: block; text-decoration: none; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 16px 18px; transition: border-color .15s, background .15s;
+  }
+  a.card:hover { border-color: var(--cyan); background: var(--panel-2); }
+  a.card.feature { border-color: var(--gold); }
+  a.card.feature:hover { border-color: var(--gold); }
+  a.card b { display: block; font-size: 15px; margin-bottom: 4px; }
+  a.card.feature b { color: var(--gold); }
+  a.card span { color: var(--dim); font-size: 12px; }
+  ul.links { list-style: none; padding: 0; margin: 0;
+    display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  ul.links a { color: var(--cyan); text-decoration: none; font-size: 13px; }
+  ul.links a:hover { text-decoration: underline; }
+  footer { margin-top: 40px; color: var(--dim); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <h1>Tenebris // Operator Portal</h1>
+    <div class="sub">tenebris-server &middot; dedicated world host</div>
+  </header>
+
+  <h2>Tools</h2>
+  <div class="grid">
+    <a class="card feature" href="/admin/tile-editor">
+      <b>Hex Structure Editor &rarr;</b>
+      <span>Build station structures on the game's hex grid with the real
+      tile art, layer by layer. Autosaves locally; export
+      *.template.json into tenebris-rs/assets/templates/.</span>
+    </a>
+    <a class="card" href="https://rubentipparach.github.io/tenebris/dashboard/">
+      <b>Live Dashboard &rarr;</b>
+      <span>Players online, CPU / RAM, rooms, sessions, chat, and the
+      server-broadcast box. Polls this server's JSON endpoints.</span>
+    </a>
+  </div>
+
+  <h2>Server endpoints</h2>
+  <ul class="links">
+    <li><a href="/status">/status</a></li>
+    <li><a href="/rooms">/rooms</a></li>
+    <li><a href="/logins">/logins</a></li>
+    <li><a href="/chat">/chat</a></li>
+    <li><a href="/saves">/saves</a></li>
+    <li><a href="/health">/health</a></li>
+  </ul>
+
+  <footer>Everything here is served by the dedicated server itself, so
+  it is always in sync with the running build.</footer>
+</div>
+</body>
+</html>
