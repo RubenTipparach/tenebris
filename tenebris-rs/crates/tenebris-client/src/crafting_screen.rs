@@ -135,26 +135,31 @@ fn craft_row(idx: usize) -> bool {
     start_craft(&player, recipe)
 }
 
-/// Begin a timed craft: consume the recipe's inputs now and deliver its
-/// output when the timer finishes (`tick_craft`). If a craft is already
-/// running, the recipe joins the queue instead - inputs are checked when
-/// its turn comes, so a stick craft can wait behind the planks it needs.
+/// Begin a timed craft: RESERVE the recipe's inputs immediately (they leave
+/// the inventory the moment you click), then deliver the output when the
+/// timer finishes (`tick_craft`). If a craft is already running, the recipe
+/// joins the queue - but its inputs are still taken NOW, so the queue is a
+/// real reservation: you can't queue more than you can pay for, and a
+/// queued entry always runs (its inputs are already set aside). Cancel a
+/// queued entry with [`cancel_queued`] to get its inputs back.
 /// Returns true if the craft started or was queued.
 pub fn start_craft(player: &PlayerHandle, r: &Recipe) -> bool {
-    if player.borrow().crafting.is_some() {
-        return S.with(|c| {
-            let s = &mut *c.borrow_mut();
-            if s.queue.len() >= QUEUE_MAX {
-                return false;
-            }
-            s.queue.push(r.clone());
-            true
-        });
+    /* Reject a full queue before touching inputs so nothing is consumed
+     * on a click that can't be honoured. */
+    let will_queue = player.borrow().crafting.is_some();
+    if will_queue && S.with(|c| c.borrow().queue.len() >= QUEUE_MAX) {
+        return false;
     }
     let mut p = player.borrow_mut();
     let p = &mut *p;
+    /* Reserve inputs up front whether this starts now or waits in the
+     * queue - the whole point of the reservation model. */
     if !bag::consume_inputs(&mut p.inventory, &mut p.bag, r) {
         return false;
+    }
+    if will_queue {
+        S.with(|c| c.borrow_mut().queue.push(r.clone()));
+        return true;
     }
     p.crafting = Some(ActiveCraft {
         output: r.output.item,
@@ -183,10 +188,10 @@ pub fn tick_craft(player: &PlayerHandle, dt: f32) {
             p.bag.add(item, count);
         }
     }
-    /* Idle: start the next queued recipe that can pay its inputs NOW.
-     * Entries that can't afford their turn are dropped (the queue shows
-     * intent, not a reservation). */
-    while player.borrow().crafting.is_none() {
+    /* Idle: start the next queued recipe. Its inputs were RESERVED when it
+     * was queued (start_craft), so there's nothing to pay here - it always
+     * runs. */
+    if player.borrow().crafting.is_none() {
         let next = S.with(|c| {
             let s = &mut *c.borrow_mut();
             if s.queue.is_empty() {
@@ -195,11 +200,8 @@ pub fn tick_craft(player: &PlayerHandle, dt: f32) {
                 Some(s.queue.remove(0))
             }
         });
-        let Some(r) = next else { break };
-        let mut p = player.borrow_mut();
-        let p = &mut *p;
-        if bag::consume_inputs(&mut p.inventory, &mut p.bag, &r) {
-            p.crafting = Some(ActiveCraft {
+        if let Some(r) = next {
+            player.borrow_mut().crafting = Some(ActiveCraft {
                 output: r.output.item,
                 count: r.output.count,
                 total_s: r.time_s.max(0.01),
@@ -209,18 +211,34 @@ pub fn tick_craft(player: &PlayerHandle, dt: f32) {
     }
 }
 
-/// Drop every queued recipe. Called on world / session switches - the
-/// queue is transient intent, never persisted. (The ACTIVE craft lives
-/// on PlayerCtrl; the mode-priming path clears that separately.)
-pub fn clear_queue() {
-    S.with(|c| c.borrow_mut().queue.clear());
+/// Cancel the queued recipe at `idx` (0 = next up) and REFUND its reserved
+/// inputs to the bag. Does not touch the active craft. No-op if `idx` is out
+/// of range. This is the click-a-queued-item-to-cancel path.
+pub fn cancel_queued(player: &PlayerHandle, idx: usize) {
+    let removed = S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        if idx < s.queue.len() {
+            Some(s.queue.remove(idx))
+        } else {
+            None
+        }
+    });
+    if let Some(r) = removed {
+        let mut p = player.borrow_mut();
+        for inp in &r.inputs {
+            /* Reserved inputs come back to the bag (crafting's home stack);
+             * the player can re-slot them to the hotbar as needed. */
+            p.bag.add(inp.item, inp.count);
+        }
+    }
 }
 
-/// True when a craft is running or queued - clicking a recipe then
-/// enqueues rather than starts, and dim rows become queueable (their
-/// inputs may exist by the time their turn comes).
-fn craft_busy(player: &PlayerHandle) -> bool {
-    player.borrow().crafting.is_some() || S.with(|c| !c.borrow().queue.is_empty())
+/// Drop every queued recipe (does NOT refund - used on world / session
+/// switches where the whole session is being torn down). The queue is
+/// transient intent, never persisted. (The ACTIVE craft lives on
+/// PlayerCtrl; the mode-priming path clears that separately.)
+pub fn clear_queue() {
+    S.with(|c| c.borrow_mut().queue.clear());
 }
 
 /// Fixed-size "Crafting" status box drawn ABOVE the recipe list: always
@@ -249,6 +267,7 @@ fn craft_progress_box(ui: &mut egui::Ui, player: &PlayerHandle) {
         egui::FontId::proportional(12.0),
         egui::Color32::from_rgb(0xa0, 0xa8, 0xc0),
     );
+    let mut cancel_idx: Option<usize> = None;
     match ac {
         Some(ac) => {
             let frac = (ac.elapsed_s / ac.total_s).clamp(0.0, 1.0);
@@ -274,18 +293,35 @@ fn craft_progress_box(ui: &mut egui::Ui, player: &PlayerHandle) {
                 egui::FontId::proportional(11.0),
                 egui::Color32::WHITE,
             );
-            /* Queued outputs, small icons trailing the bar. */
+            /* Queued outputs, small icons trailing the bar. Each is
+             * clickable: click a queued item to cancel it and refund its
+             * reserved inputs. */
             let mut qx = bar.max.x + 10.0;
-            for (item, count) in &queued {
+            for (qi, (item, count)) in queued.iter().enumerate() {
                 if qx + 18.0 > rect.max.x - 6.0 {
                     break;
                 }
-                draw_icon(
-                    p,
-                    *item,
-                    *count,
-                    egui::Rect::from_center_size(egui::pos2(qx + 9.0, cy), egui::vec2(18.0, 18.0)),
-                );
+                let icon =
+                    egui::Rect::from_center_size(egui::pos2(qx + 9.0, cy), egui::vec2(18.0, 18.0));
+                draw_icon(p, *item, *count, icon);
+                let hit = ui
+                    .interact(
+                        icon.expand(2.0),
+                        ui.id().with(("cancel-queued", qi)),
+                        egui::Sense::click(),
+                    )
+                    .on_hover_text("click to cancel - refunds inputs");
+                if hit.hovered() {
+                    p.rect_stroke(
+                        icon.expand(1.0),
+                        2.0,
+                        egui::Stroke::new(1.5, egui::Color32::from_rgb(0xe0, 0x50, 0x50)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                if hit.clicked() {
+                    cancel_idx = Some(qi);
+                }
                 qx += 22.0;
             }
         }
@@ -298,6 +334,9 @@ fn craft_progress_box(ui: &mut egui::Ui, player: &PlayerHandle) {
                 egui::Color32::from_rgb(0x60, 0x66, 0x74),
             );
         }
+    }
+    if let Some(qi) = cancel_idx {
+        cancel_queued(player, qi);
     }
     ui.add_space(6.0);
 }
@@ -498,7 +537,6 @@ pub fn egui_ui(ctx: &egui::Context) {
     let mut craft_idx: Option<usize> = None;
     let mut do_close = false;
     let player = S.with(|c| c.borrow().player.clone());
-    let busy = player.as_ref().map(craft_busy).unwrap_or(false);
 
     egui::Window::new(title)
         .collapsible(false)
@@ -520,10 +558,10 @@ pub fn egui_ui(ctx: &egui::Context) {
                 for (i, r) in recipes.iter().enumerate() {
                     let ready = flags.get(i).copied().unwrap_or(false);
                     let resp = recipe_row(ui, r, ready);
-                    /* Ready rows craft / enqueue; while something is
-                     * already running, dim rows enqueue too (their
-                     * inputs may exist by the time their turn comes). */
-                    if resp.clicked() && (ready || busy) {
+                    /* Only affordable rows are clickable: a click RESERVES
+                     * the inputs (starts or queues), so you can never queue
+                     * more than you can pay for. */
+                    if resp.clicked() && ready {
                         craft_idx = Some(i);
                     }
                     ui.add_space(3.0);
@@ -554,7 +592,6 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
         recipes.iter().map(|r| bag::can_craft(&p.inventory, &p.bag, r)).collect()
     };
     let mut craft_idx: Option<usize> = None;
-    let busy = craft_busy(player);
 
     ui.label(
         egui::RichText::new("Click a recipe to craft - lit rows are ready")
@@ -566,7 +603,8 @@ pub fn hand_craft_panel(ui: &mut egui::Ui, player: &PlayerHandle) {
         for (i, r) in recipes.iter().enumerate() {
             let ready = flags.get(i).copied().unwrap_or(false);
             let resp = recipe_row(ui, r, ready);
-            if resp.clicked() && (ready || busy) {
+            /* Only affordable rows are clickable - a click reserves inputs. */
+            if resp.clicked() && ready {
                 craft_idx = Some(i);
             }
             ui.add_space(3.0);
@@ -654,12 +692,38 @@ in: plank 2
         set_player(Some(p.clone()));
         assert!(craft_row(0)); // row 0 = planks -> starts the craft
         assert_eq!(p.borrow().bag.count_of(PLANK), 0, "not instant");
-        // A second click while one is running QUEUES (returns true)...
-        assert!(craft_row(0));
+        // A second click with the only log already reserved can't pay its
+        // inputs UP FRONT -> rejected (the queue is a real reservation).
+        assert!(!craft_row(0));
         tick_craft(&p, 999.0);
         assert_eq!(p.borrow().bag.count_of(PLANK), 4);
-        // ...but with no logs left, its turn can't pay -> dropped, idle.
         assert!(p.borrow().crafting.is_none());
+    }
+
+    #[test]
+    fn queue_reserves_inputs_up_front_and_cancel_refunds() {
+        setup();
+        let log = tenebris_core::items::from_block(Block::Wood);
+        let p = player_with_logs(3);
+        set_player(Some(p.clone()));
+        // Start one + queue two: all three logs are reserved immediately.
+        assert!(craft_row(0), "starts (reserves log 1)");
+        assert!(craft_row(0), "queues (reserves log 2)");
+        assert!(craft_row(0), "queues (reserves log 3)");
+        assert_eq!(p.borrow().inventory.slots[1].count, 0, "all 3 logs reserved on click");
+        // A 4th can't be paid for -> rejected, nothing consumed.
+        assert!(!craft_row(0), "cannot queue past your resources");
+        // Cancel the first queued entry -> its reserved log comes back.
+        cancel_queued(&p, 0);
+        assert_eq!(p.borrow().bag.count_of(log), 1, "cancelled craft refunds its input");
+        // One craft active + one still queued; run them out.
+        tick_craft(&p, 999.0); // active finishes (4 planks), queued starts
+        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        assert!(p.borrow().crafting.is_some(), "the surviving queued craft runs");
+        tick_craft(&p, 999.0);
+        assert_eq!(p.borrow().bag.count_of(PLANK), 8);
+        assert!(p.borrow().crafting.is_none());
+        clear_queue();
     }
 
     #[test]
