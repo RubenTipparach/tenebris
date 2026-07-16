@@ -220,7 +220,11 @@ void main()
     // shader) get water TRICKLING down. The sheen is driven by SKY light so it
     // stays visible under the rain's own overcast (a direct-sun glint only adds
     // sparkle when the sun is out), on top of a wet darkening.
-    float wet_amt = clamp(hex_fs_light[2].y, 0.0, 1.0) * v_sky_light;
+    // Also gated ABOVE the water line: v_water_depth > 0 means the fragment is
+    // below sea level (submerged), where rain never lands - no drop ripples on
+    // the underwater floor. above_water is 0 underwater, 1 at/above the surface.
+    float above_water = 1.0 - step(0.001, v_water_depth);
+    float wet_amt = clamp(hex_fs_light[2].y, 0.0, 1.0) * v_sky_light * above_water;
     if (wet_amt > 0.001) {
         // Designer knobs from weather.yaml (hex_fs_rain uniform block).
         float k_ripple_scale   = hex_fs_rain[0].x;
