@@ -44,7 +44,9 @@ station:
   slab_layers: 2
   tower_radius: 4
   tower_floors: 5
-  floor_air_layers: 3
+  # 5 air layers per storey: grand rooms, and what the connected
+  # central spiral needs to keep 3 clear blocks above every tread.
+  floor_air_layers: 5
   layers: 12
   height_m: 15.0
   hex_size_m: 2.0
@@ -54,7 +56,7 @@ station:
   gravity_field_m: 40.0
   artificial_gravity_mps2: 15.0
   deck_friction: 6.0
-  step_up_m: 0.75
+  step_up_m: 0.8
   head_clearance_m: 1.8
   # Start phase (degrees from +x) - keeps the station off the prime
   # meridian so it never spawns parked over the launch complex.

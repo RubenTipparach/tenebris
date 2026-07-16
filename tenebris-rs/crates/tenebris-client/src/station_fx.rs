@@ -29,7 +29,7 @@ use sokol::gl as sgl;
 
 use tenebris_core::math::{dvec3_cross, dvec3_make, dvec3_normalize, dvec3_sub};
 use tenebris_core::planet::{self, BodyId};
-use tenebris_core::station::{self, Prism, StairStep, StationMat, HEX_DIRS, STAIR_TREAD_M};
+use tenebris_core::station::{self, Prism, StairStep, StationMat, HEX_DIRS};
 
 use crate::gfx_math::Mat4;
 use crate::renderer;
@@ -269,7 +269,7 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
              * grid and neighbouring pads touch edge to edge. */
             if tex == TEX_HULL {
                 for s in &cache.steps {
-                    let (y0, y1) = (s.top_m - STAIR_TREAD_M, s.top_m);
+                    let (y0, y1) = (s.bot_m, s.top_m);
                     emit_cap(s.x, s.z, a, y1, SHADE_TOP * lit);
                     emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * lit);
                     for k in 0..6 {

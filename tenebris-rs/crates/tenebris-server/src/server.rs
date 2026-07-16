@@ -3836,6 +3836,21 @@ impl Server {
             req.respond(JSON_MIME, body.as_bytes());
             return;
         }
+        /* Operator portal (HTML). `/admin` lists the tools; the tile
+         * editor is a self-contained page baked into the binary
+         * (assets/tile-editor.html) so it ships with the server and
+         * needs no external host. Exports download as
+         * *.template.json for assets/templates/. */
+        if clean == "/admin" || clean == "/admin/" {
+            const PORTAL: &str = include_str!("../assets/admin-portal.html");
+            req.respond("text/html; charset=utf-8", PORTAL.as_bytes());
+            return;
+        }
+        if clean == "/admin/tile-editor" {
+            const EDITOR: &str = include_str!("../assets/tile-editor.html");
+            req.respond("text/html; charset=utf-8", EDITOR.as_bytes());
+            return;
+        }
         if clean == "/" || clean == "/health" {
             const MSG: &str = concat!(
                 "tenebris-server alive\n",
@@ -3855,6 +3870,9 @@ impl Server {
                 "                              (extra ?body=N etc still works)\n",
                 "  GET /saves/body?body=N    - BINARY: every persisted column for one body\n",
                 "                              also ?room=ABC123 (default lobby) and ?seed=N\n",
+                "  GET /admin                - operator portal (HTML): tools + links\n",
+                "  GET /admin/tile-editor    - hex structure editor (HTML): build station\n",
+                "                              templates on the game grid, export JSON\n",
                 "  GET /admin/clear_water_above_sea[?room=X] - clear every BLOCK_WATER\n",
                 "                              above sea level (depth >= 64). Default room is\n",
                 "                              the public lobby; pass &room=__all__ to fan\n",
@@ -4368,6 +4386,20 @@ mod tests {
         let text = String::from_utf8_lossy(&resp).into_owned();
         assert!(text.starts_with("HTTP/1.1 200 OK"));
         assert!(text.contains("tenebris-server alive"));
+        assert!(text.contains("/admin/tile-editor"), "help lists the editor route");
+
+        /* Operator portal + baked-in tile editor serve HTML. */
+        let resp = http_get_ticking(&mut s, "/admin");
+        let text = String::from_utf8_lossy(&resp).into_owned();
+        assert!(text.contains("text/html"), "portal is HTML: {}", &text[..80.min(text.len())]);
+        assert!(text.contains("Operator Portal"));
+        assert!(text.contains("/admin/tile-editor"), "portal links the editor");
+
+        let resp = http_get_ticking(&mut s, "/admin/tile-editor");
+        let text = String::from_utf8_lossy(&resp).into_owned();
+        assert!(text.contains("text/html"));
+        assert!(text.contains("Hex Structure Editor"), "editor page served");
+        assert!(text.contains("tenebris-station-template"), "editor exports the template format");
 
         let resp = http_get_ticking(&mut s, "/status");
         let text = String::from_utf8_lossy(&resp).into_owned();
