@@ -53,7 +53,8 @@ pub struct StationConfig {
     /// Clear walking headroom per storey, in air layers.
     pub floor_air_layers: u32,
     /// How high a ledge the player steps up onto while walking the
-    /// station (sized to make the spiral's 0.714 m treads climbable).
+    /// station (sized to make the stairway's full-layer 1.25 m treads
+    /// climbable).
     pub step_up_m: f32,
     /// Head clearance used for ceiling collision inside the hotel.
     pub head_clearance_m: f32,
@@ -104,7 +105,9 @@ impl StationConfig {
          * value the connected central spiral needs so each tread keeps
          * 3 clear blocks above it (see STAIR_STEPS_PER_FLOOR). */
         floor_air_layers: 5,
-        step_up_m: 0.8,
+        /* One full 1.25 m layer + slack: the stairway treads are
+         * one-layer prisms (the user's template), climbed by step-up. */
+        step_up_m: 1.3,
         head_clearance_m: 1.8,
         gravity_field_m: 40.0,
         artificial_gravity_mps2: 15.0,
@@ -254,20 +257,6 @@ pub struct Prism {
     pub mat: StationMat,
 }
 
-/// One stair tread of the hotel's spiral staircase: a walkable pad
-/// spanning `bot_m..top_m` (station-local). Each tread's underside
-/// reaches the top of the step below, so the treads form ONE connected
-/// solid staircase (no floating gap) that the player walks straight up.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StairStep {
-    pub q: i32,
-    pub r: i32,
-    pub x: f32,
-    pub z: f32,
-    pub bot_m: f32,
-    pub top_m: f32,
-}
-
 /// Centered hexagonal number: hexes in a full disk of radius `n` rings.
 pub fn hexes_per_deck(n: u32) -> u32 {
     3 * n * (n + 1) + 1
@@ -329,86 +318,25 @@ fn roof_layer(cfg: &StationConfig) -> i32 {
     floor_slab_layer(cfg, cfg.tower_floors.max(1) as i32)
 }
 
-/// The stair ring: the six cells IMMEDIATELY around the centre column -
-/// a true central spiral staircase winding up the building's core,
-/// ordered by angle so consecutive indices are adjacent.
-fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
-    let a = cfg.hex_size_m;
-    let mut cells: Vec<(i32, i32)> = HEX_DIRS.to_vec();
-    cells.sort_by(|&(q0, r0), &(q1, r1)| {
-        let (x0, z0) = axial_to_local(q0, r0, a);
-        let (x1, z1) = axial_to_local(q1, r1, a);
-        (z0.atan2(x0)).partial_cmp(&z1.atan2(x1)).unwrap()
-    });
-    cells
-}
+/// The hotel stairway's winding order - the user's stairway template
+/// (`assets/templates/stairway.template.json`), verbatim: one
+/// full-layer tread per layer stepping around the six ring-1 cells in
+/// exactly this sequence (consecutive cells are hex-adjacent, one lap
+/// per storey at the default 6-layer pitch).
+pub const STAIR_RING_ORDER: [(i32, i32); 6] =
+    [(1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0)];
 
-/// Treads per stair run (floor to floor). With the default 6-layer
-/// storey pitch this is exactly 10 treads of 0.75 m rise (inside the
-/// `step_up_m` allowance). The count is chosen so that the SAME core
-/// cell - revisited every 6 treads around the 6-cell ring - carries
-/// its next tread `6 * rise = 4.5 m` higher, leaving exactly
-/// `floor_air_layers` (3.75 m = 3 blocks) of clear air above each
-/// tread even though the treads are connected solid. Pinned by the
-/// stair-clearance test; a `debug_assert` guards the ratio at build.
-pub const STAIR_STEPS_PER_FLOOR: i32 = 10;
-
-/// Clear air blocks the spiral guarantees above every tread - the
-/// user's "a set of stairs should always have 3 air blocks above".
-pub const STAIR_MIN_AIR_LAYERS: i32 = 3;
-
-/// The hotel's central spiral staircase: for each floor,
-/// STAIR_STEPS_PER_FLOOR treads winding around the lit centre column.
-/// Each tread is TWO hexes deep - its ring-1 cell plus the on-axis
-/// cell one ring further out - both pads at the same height and
-/// snapped to the hex grid, so the stair reads as a wide contiguous
-/// spiral. The slabs above open a matching atrium shaft (see the
-/// interior slab build) so the floor you are climbing to never blocks
-/// the run. The final run tops out on the roof deck.
-pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
-    let ring = stair_ring(cfg);
-    let lh = layer_h(cfg);
-    let a = cfg.hex_size_m;
-    let rise = floor_pitch(cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
-    /* Connected-spiral clearance guard: the tread 6 steps up in the
-     * same core cell must clear STAIR_MIN_AIR_LAYERS blocks above this
-     * one, i.e. `(6 - 1) * rise >= STAIR_MIN_AIR_LAYERS * lh`. */
-    debug_assert!(
-        5.0 * rise >= STAIR_MIN_AIR_LAYERS as f32 * lh - 1e-3,
-        "stair rise too steep for the 3-air-block clearance rule"
-    );
-    let mut out = Vec::new();
-    for f in 0..cfg.tower_floors.max(1) as i32 {
-        let base_top = (floor_slab_layer(cfg, f) + 1) as f32 * lh;
-        for k in 0..STAIR_STEPS_PER_FLOOR {
-            let (q, r) = ring[((f * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()];
-            let top_m = base_top + (k + 1) as f32 * rise;
-            /* Underside reaches the top of the step below (the floor
-             * slab for the first step of the run) so consecutive treads
-             * touch - one solid staircase, not floating pads. */
-            let bot_m = top_m - rise;
-            /* Inner pad on the ring-1 cell, outer pad on the aligned
-             * dist-2 cell - a 2-hex-deep tread. */
-            for (pq, pr) in [(q, r), (q * 2, r * 2)] {
-                let (x, z) = axial_to_local(pq, pr, a);
-                out.push(StairStep { q: pq, r: pr, x, z, bot_m, top_m });
-            }
-        }
-    }
-    out
-}
+/// Gold-band period of the stairway's centre column, in layers - also
+/// from the template (a lit core: floor plating with a `neon_gold`
+/// band every third layer, starting level with the first tread).
+pub const STAIR_CORE_GOLD_PERIOD: i32 = 3;
 
 /// True when slab `f`'s cell (q, r) is part of the central atrium
-/// shaft the spiral climbs through: every slab above the lobby (and
-/// the roof, `f == tower_floors`) opens the ring around the centre
-/// column PLUS the six on-axis dist-2 cells the wide treads sweep, so
-/// no floor blocks the stairs and every tread keeps its full headroom.
-fn stairwell_open(_cfg: &StationConfig, _ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
-    if f < 1 {
-        return false;
-    }
-    let d = hex_dist(q, r);
-    d == 1 || (d == 2 && HEX_DIRS.iter().any(|&(dq, dr)| (q, r) == (dq * 2, dr * 2)))
+/// shaft the stairway climbs through: every slab above the lobby (and
+/// the roof, `f == tower_floors`) opens the six ring-1 cells the
+/// treads wind, so no floor blocks the climb.
+fn stairwell_open(f: i32, q: i32, r: i32) -> bool {
+    f >= 1 && hex_dist(q, r) == 1
 }
 
 /// Generate the wheel station. Pure function of the config; the client
@@ -435,7 +363,6 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     let floors = cfg.tower_floors.max(1) as i32;
     let pitch = floor_pitch(cfg);
     let roof = roof_layer(cfg);
-    let ring = stair_ring(cfg);
 
     let mut out: Vec<Prism> = Vec::new();
     let mut occupied = std::collections::HashSet::new();
@@ -500,6 +427,29 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     }
 
+    /* 4a. Central stairway - the user's stairway template, verbatim
+     * pattern: a solid lit core column (floor plating with a gold
+     * light band every STAIR_CORE_GOLD_PERIOD layers) from the lobby
+     * slab up to just under the roof, and ONE full-layer hull tread
+     * per layer winding the ring-1 cells in STAIR_RING_ORDER. Each
+     * tread is a one-layer step (inside `step_up_m`); the same cell is
+     * revisited every 6 layers, so every tread keeps 5 clear layers
+     * overhead, and the run tops out level with the roof deck. Pushed
+     * BEFORE the tower interior so the core column wins the (0,0)
+     * cells (first-writer rule). */
+    for l in (slab - 1)..roof {
+        let mat = if l >= slab && (l - slab) % STAIR_CORE_GOLD_PERIOD == 0 {
+            StationMat::NeonGold
+        } else {
+            StationMat::Floor
+        };
+        push(0, 0, l, mat);
+    }
+    for l in slab..=roof {
+        let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+        push(sq, sr, l, StationMat::Hull);
+    }
+
     /* 4. Casino hotel tower: `floors` storeys, each one slab + clear air
      * layers, spiral stairwell openings, glazed windows per storey, a
      * lobby door facing the +x spoke, neon storey bands, marquee crown,
@@ -546,18 +496,16 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
                     push(q, r, l, mat);
                 }
             } else {
-                /* Interior: one slab per storey (carpet, neon light tile
-                 * at the room centre) with stairwell openings, plus the
-                 * hull roof deck. */
+                /* Interior: one slab per storey (carpet; the stair core
+                 * column - pushed in 4a - owns the room centres) with
+                 * stairwell openings, plus the hull roof deck. */
                 for f in 0..=floors {
-                    if stairwell_open(cfg, &ring, f, q, r) {
+                    if stairwell_open(f, q, r) {
                         continue;
                     }
                     let l = floor_slab_layer(cfg, f);
                     let mat = if f == floors {
                         StationMat::Hull /* roof deck */
-                    } else if q == 0 && r == 0 {
-                        StationMat::NeonGold /* warm room light / lit lobby tile */
                     } else {
                         StationMat::Carpet
                     };
@@ -720,18 +668,16 @@ pub fn light_field(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32, 
 }
 
 /// Solid vertical spans per occupied column, in station-local metres:
-/// `(bottom, top)` per prism plus the stair treads, sorted by bottom.
-/// The physics samples these for multi-level floor support (landing on
-/// the storey under your feet, not the roof) and ceiling collision.
+/// `(bottom, top)` per prism, sorted by bottom (the stairway treads are
+/// ordinary shell prisms, so they're covered). The physics samples
+/// these for multi-level floor support (landing on the storey under
+/// your feet, not the roof) and ceiling collision.
 pub fn column_spans(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> {
     let lh = layer_h(cfg);
     let mut map: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> =
         std::collections::HashMap::new();
     for p in shell(cfg) {
         map.entry((p.q, p.r)).or_default().push((p.y, p.y + lh));
-    }
-    for s in stairs(cfg) {
-        map.entry((s.q, s.r)).or_default().push((s.bot_m, s.top_m));
     }
     /* Merge touching/overlapping spans so a wall column reads as ONE
      * solid interval: support/embedded tests then treat mid-wall prism
@@ -1383,25 +1329,28 @@ mod tests {
             glass_windows >= 5 * 8,
             "every storey carries a glazed window band (got {glass_windows} panes)"
         );
-        /* Interior slabs: full 37-cell lobby, then 25 cells per slab
-         * above it (5 slabs incl. roof) - the central atrium shaft
-         * (6-cell core ring + the 6 on-axis dist-2 cells the wide
-         * treads sweep) stays open - PLUS the 12 lobby fixtures (6
-         * trade/research consoles + 6 gaming tables/slots) that sit on
-         * floor 0 inside the tower. */
+        /* Interior (layer >= 1, non-sign): the full 37-cell lobby slab;
+         * 4 upper storey slabs + the roof at 31 cells each (the 6-cell
+         * ring-1 stairwell shaft stays open; the roof recovers its
+         * centre cell as deck); the stair core column (30 prisms,
+         * lobby slab layer 1 counted with the lobby) minus the 4 upper
+         * slab-layer cells it already owns... counted directly: 37
+         * lobby + core column layers 2..30 (29) + 30 treads + 4x30
+         * upper slabs + 31 roof + the 12 lobby fixtures. */
         let interior = prisms
             .iter()
             .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
-        assert_eq!(interior, 37 + 5 * (37 - 12) + 12);
+        assert_eq!(interior, 37 + 29 + 30 + 4 * 30 + 31 + 12);
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
-         * storey bands; pink alternate bands; warm-gold room lights (5
-         * storeys) + 6 pad markers; signs = crown ring + spire + the
-         * 2-cell entrance arch marquee. */
+         * storey bands; pink alternate bands; warm gold = the stair
+         * core's light bands (every 3rd layer from the first tread) + 6
+         * pad markers; signs = crown ring + spire + the 2-cell entrance
+         * arch marquee. */
         assert!(count(StationMat::Neon) >= 54 + 48, "cyan parapet + bands");
         assert!(count(StationMat::NeonPink) >= 2 * 24 - 2, "pink storey bands");
-        assert_eq!(count(StationMat::NeonGold), 5 + 6, "room lights + pad markers");
+        assert_eq!(count(StationMat::NeonGold), 10 + 6, "core light bands + pad markers");
         assert_eq!(count(StationMat::Sign), 24 + 2 + 2, "crown + spire + entrance arch");
     }
 
@@ -1522,10 +1471,11 @@ mod tests {
         assert_eq!(at(mq, mr, slab + 2), lamp, "lamp cell seeds at its emission");
         assert_eq!(at(mq, mr, slab + 3), lamp - 1, "one step up = one dimmer");
         assert_eq!(at(mq + dq, mr + dr, slab + 2), lamp - 1, "one lateral step");
-        /* The hotel interior is lit: the air over the lobby's gold
-         * room-light tile reads the lamp one step dimmer. */
-        let lobby_gold = slab - 1;
-        assert_eq!(at(0, 0, lobby_gold + 1), lamp - 1, "lobby air above room light");
+        /* The hotel interior is lit by the stair core's gold bands: the
+         * band cell seeds at the lamp emission, and the open ring-1 air
+         * beside it reads one step dimmer. */
+        assert_eq!(at(0, 0, slab), lamp, "core gold band seeds at emission");
+        assert_eq!(at(1, 0, slab), lamp - 1, "lobby air beside the core band");
         /* Light decays with distance - three steps out is dimmer than
          * one - and far-off empty space is dark. */
         assert!(at(mq, mr, slab + 5) < at(mq, mr, slab + 3));
@@ -1555,59 +1505,59 @@ mod tests {
         }
         /* Ground floor is level with the courtyard deck. */
         assert!((col[0].1 - cfg.slab_layers as f32 * lh).abs() < 1e-4);
-        /* Stairs: a CENTRAL spiral around the core column - treads two
-         * hexes deep (ring-1 pad + aligned dist-2 pad at the same
-         * height), connected solid, rising within the step-up
-         * allowance, consecutive treads on adjacent cells, topping out
-         * exactly on the roof deck. */
-        let steps = stairs(&cfg);
-        assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize * 2);
-        let treads: Vec<_> = steps.chunks(2).collect();
-        for t in &treads {
-            let (inner, outer) = (&t[0], &t[1]);
-            assert_eq!(hex_dist(inner.q, inner.r), 1, "inner pad hugs the core");
-            assert_eq!((outer.q, outer.r), (inner.q * 2, inner.r * 2), "outer pad aligned");
-            assert_eq!(inner.top_m, outer.top_m, "both pads level - one tread");
+        /* Stairway: the user's template pattern - ONE full-layer hull
+         * tread per layer winding the ring-1 cells in STAIR_RING_ORDER
+         * around a solid lit core column, one lap per storey, topping
+         * out level with the roof deck. */
+        let prisms = shell(&cfg);
+        let slab = cfg.slab_layers as i32;
+        let roof = 1 + 5 * floor_pitch(&cfg); /* roof slab layer */
+        let at = |q: i32, r: i32, l: i32| prisms.iter().find(|p| (p.q, p.r, p.layer) == (q, r, l));
+        for l in slab..=roof {
+            let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+            let tread = at(sq, sr, l).expect("tread prism");
+            assert_eq!(tread.mat, StationMat::Hull, "treads are hull plating");
+            /* Consecutive treads sit on hex-adjacent cells, one layer
+             * apart - a connected winding staircase. */
+            let (nq, nr) = STAIR_RING_ORDER[((l - slab + 1) as usize) % 6];
+            assert_eq!(hex_dist(nq - sq, nr - sr), 1, "next tread is adjacent");
         }
-        for w in treads.windows(2) {
-            let d = hex_dist(w[0][0].q - w[1][0].q, w[0][0].r - w[1][0].r);
-            assert!(d <= 1, "consecutive treads are adjacent cells");
-            /* Connected: each step's underside meets the top of the one
-             * below - a solid staircase, no floating gap. */
-            assert!(
-                (w[1][0].bot_m - w[0][0].top_m).abs() < 1e-4,
-                "step {} does not meet step below (top {} vs next bot {})",
-                1,
-                w[0][0].top_m,
-                w[1][0].bot_m
-            );
-        }
-        /* The first step of the ground run sits on the lobby slab. */
-        let lobby_top = cfg.slab_layers as f32 * lh;
-        assert!((treads[0][0].bot_m - lobby_top).abs() < 1e-4, "run starts on the floor");
-        let rise = floor_pitch(&cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
-        assert!(rise <= cfg.step_up_m, "tread rise {rise} must be walkable");
-        let roof_top = (roof_layer(&cfg) + 1) as f32 * lh;
-        let max_top = steps.iter().map(|s| s.top_m).fold(f32::MIN, f32::max);
-        assert!((max_top - roof_top).abs() < 1e-4, "spiral tops out on the roof");
-        /* THE user rule: every tread keeps at least floor_air_layers of
-         * clear air above it in its own column - no slab, no tread, no
-         * anything blocks the climb. */
-        let min_air = STAIR_MIN_AIR_LAYERS as f32 * lh;
-        for s in &steps {
-            let col = spans.get(&(s.q, s.r)).expect("tread column");
+        /* Each step's rise is one layer, inside the step-up allowance. */
+        assert!(lh <= cfg.step_up_m, "tread rise {lh} must be walkable");
+        /* The top tread is level with the roof deck. */
+        let (tq, tr) = STAIR_RING_ORDER[((roof - slab) as usize) % 6];
+        let top = at(tq, tr, roof).expect("top tread");
+        assert!((top.y + lh - (roof + 1) as f32 * lh).abs() < 1e-4);
+        /* The template's clearance property: the same ring cell is
+         * revisited every 6 layers, so every tread keeps at least
+         * floor_air_layers - 1 (= 5 - 1 >= 3) clear layers overhead in
+         * its own column. */
+        for l in slab..=roof {
+            let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+            let tread_top = (l + 1) as f32 * lh;
+            let col = spans.get(&(sq, sr)).expect("tread column");
             let over = col
                 .iter()
                 .map(|sp| sp.0)
-                .filter(|&bot| bot > s.top_m + 1e-4)
+                .filter(|&bot| bot > tread_top + 1e-4)
                 .fold(f32::INFINITY, f32::min);
             assert!(
-                over - s.top_m >= min_air - 1e-3,
-                "tread at {:?} top {} has only {} m of air above (need {})",
-                (s.q, s.r),
-                s.top_m,
-                over - s.top_m,
-                min_air
+                over - tread_top >= 3.0 * lh - 1e-3,
+                "tread at {:?} layer {} has only {} m of air above",
+                (sq, sr),
+                l,
+                over - tread_top
+            );
+        }
+        /* The stair core: a solid lit column from the lobby slab to the
+         * roof, gold light band every STAIR_CORE_GOLD_PERIOD layers. */
+        for l in (slab - 1)..roof {
+            let core = at(0, 0, l).expect("core column prism");
+            let want_gold = l >= slab && (l - slab) % STAIR_CORE_GOLD_PERIOD == 0;
+            assert_eq!(
+                core.mat,
+                if want_gold { StationMat::NeonGold } else { StationMat::Floor },
+                "core column mat at layer {l}"
             );
         }
         /* The hotel wall is one merged solid: no mid-wall ledge to stand

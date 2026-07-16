@@ -29,7 +29,7 @@ use sokol::gl as sgl;
 
 use tenebris_core::math::{dvec3_cross, dvec3_make, dvec3_normalize, dvec3_sub};
 use tenebris_core::planet::{self, BodyId};
-use tenebris_core::station::{self, Prism, StairStep, StationMat, HEX_DIRS};
+use tenebris_core::station::{self, Prism, StationMat, HEX_DIRS};
 
 use crate::gfx_math::Mat4;
 use crate::renderer;
@@ -93,7 +93,6 @@ fn is_emissive(tex: usize) -> bool {
 
 struct ShellCache {
     groups: [Vec<Prism>; TEX_COUNT],
-    steps: Vec<StairStep>,
     occupied: HashSet<(i32, i32, i32)>,
     /// Baked torch-style block-light field (core::station::light_field):
     /// cell -> 0..15, sampled per face like the world mesher samples the
@@ -121,12 +120,7 @@ fn build_cache() -> ShellCache {
         occupied.insert((p.q, p.r, p.layer));
         groups[tex_for(p.mat)].push(p);
     }
-    ShellCache {
-        groups,
-        steps: station::stairs(&cfg),
-        occupied,
-        light: station::light_field(&cfg),
-    }
+    ShellCache { groups, occupied, light: station::light_field(&cfg) }
 }
 
 /// Hex corner k (pointy-top) at circumradius `a`, in the local xz plane.
@@ -370,21 +364,6 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
                     if !solid || !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
                         let l = lit.max(cache.light01(p.q + dq, p.r + dr, p.layer));
                         emit_side(p.x, p.z, a, k, y0, y1, l);
-                    }
-                }
-            }
-            /* The spiral stair treads ride the hull group: thin steel
-             * pads at FULL cell size, so each tread snaps to the hex
-             * grid and neighbouring pads touch edge to edge. Sampled at
-             * the cell holding the tread's top surface. */
-            if tex == TEX_HULL {
-                for s in &cache.steps {
-                    let (y0, y1) = (s.bot_m, s.top_m);
-                    let l = lit.max(cache.light01(s.q, s.r, (y1 / lh).floor() as i32));
-                    emit_cap(s.x, s.z, a, y1, SHADE_TOP * l);
-                    emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * l);
-                    for k in 0..6 {
-                        emit_side(s.x, s.z, a, k, y0, y1, l);
                     }
                 }
             }
