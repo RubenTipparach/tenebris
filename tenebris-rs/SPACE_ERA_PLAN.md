@@ -349,3 +349,40 @@ Shipped:
 Possible follow-ups (not yet done): a bright impact-flash/explosion particle
 burst on land touchdown (today it's just the scrap drops), and camera shake
 during the player's own reentry.
+
+## Station overhaul - user requirements (2026-07-16)
+
+Direct asks from playtest; status notes per item. The station perf kernel
+(batched drum mesh) SHIPPED with this note; the rest is design-ready work.
+
+1. **Exiting the ship must leave it in the world.** Climbing out mid-orbit
+   should park a persistent free-flying ship entity on its current orbit
+   (on-rails from the exit state vector, like the station), boardable
+   later with E. Today exit just ends the ride (parts stay on the origin
+   pad) - the ship visually vanishes. Needs: a `parked_ships` client/core
+   store (stack + fuel + orbital elements), drawn via rocket_fx, saved in
+   the ride save's format, raycast target for re-boarding.
+2. **Docking = guided landing on a pad.** Within the dock gate (radius +
+   rel-speed), guide the ship onto a free external docking pad: simple
+   spline from current pose to pad approach point, then settle upright
+   (nose radially out of the deck). Obstacle avoidance can be "approach
+   from the pad's outward normal" rather than true path planning. On
+   touchdown the ship parks (item 1's store, station-frame anchored).
+3. **Ship stays parked on the pad; re-board with E.** Falls out of 1+2.
+4. **Station sphere-of-influence reference frame.** Within ~2 km the
+   station becomes the SIMULATION ORIGIN: the player/ship state is stored
+   station-local so there is zero orbital drift while walking/parking;
+   the world (planet, sky) is posed around the station frame per frame.
+   The station still orbits Tenebris - only the frame of expression
+   changes. The artificial-gravity + deck-friction physics already work
+   station-locally; this extends that to the whole in-SOI sim. DONE HERE:
+   the drum renders as ONE BAKED MESH (station_fx bake +
+   shaders/station_mesh, ~15 draw calls, pose = one mvp) - the render
+   half of "station is a rigid fixed thing".
+5. **On-foot station UX.** No dock menu on foot (DONE: dock prompt + E
+   dock now gate on rocket_ride::is_riding). Trade / warehouse / fuel
+   become walk-up consoles: the TradeTerminal / ResearchConsole furniture
+   already renders - add an interact raycast against station furniture in
+   the station frame, opening the matching screen tab. Gravity/walking
+   already exists (station.yaml artificial gravity, deck friction,
+   step-up).

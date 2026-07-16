@@ -34,8 +34,11 @@ use tenebris_core::math::{
 use tenebris_core::planet::{self, BodyId};
 use tenebris_core::station::{self, Prism, StationMat, HEX_DIRS};
 
-use crate::gfx_math::Mat4;
+use crate::gfx_math::{mat4_mul, mat4_translate, Mat4};
 use crate::renderer;
+use crate::shaders::station_mesh as smesh;
+use sokol::gfx as sg;
+use tenebris_core::math::Vec3;
 
 /// Texture slot per skin - order matches renderer::load_station_textures.
 const TEX_HULL: usize = 0;
@@ -132,31 +135,47 @@ fn corner(a: f32, k: usize) -> (f32, f32) {
     (a * th.cos(), a * th.sin())
 }
 
+/* The station's geometry is STATIC in its own frame: the emitters below
+ * write baked vertices (station-local pos + uv + face shade + brightness
+ * floor) into a Vec once, and the whole drum draws as a handful of
+ * buffer draw-calls per frame (shaders::station_mesh). The old path
+ * re-recorded every prism through immediate-mode sokol_gl every frame -
+ * the red "draw-station" profiler row anywhere near the station. The
+ * per-frame sun term rides a uniform; a face's brightness floor (its
+ * material's emissive minimum, maxed with the baked block light of the
+ * cell it faces) is per-vertex, so `shade * max(u_lit, floor)` in the
+ * shader reproduces the old per-face `shade * max(lit_material,
+ * light01)` exactly. */
+
+/// Push one baked station vertex (7 floats - shaders::station_mesh).
+#[inline]
+fn push_v(out: &mut Vec<f32>, x: f32, y: f32, z: f32, u: f32, v: f32, shade: f32, floor: f32) {
+    out.extend_from_slice(&[x, y, z, u, v, shade, floor]);
+}
+
 /// Emit one hexagonal cap (6 triangles) at local height `y`.
-fn emit_cap(x: f32, z: f32, a: f32, y: f32, shade: f32) {
-    sgl::c3f(shade, shade, shade);
+fn emit_cap(out: &mut Vec<f32>, x: f32, z: f32, a: f32, y: f32, shade: f32, floor: f32) {
     for k in 0..6 {
         let (x0, z0) = corner(a, k);
         let (x1, z1) = corner(a, (k + 1) % 6);
-        sgl::v3f_t2f(x, y, z, 0.5, 0.5);
-        sgl::v3f_t2f(x + x0, y, z + z0, 0.5 + 0.5 * x0 / a, 0.5 + 0.5 * z0 / a);
-        sgl::v3f_t2f(x + x1, y, z + z1, 0.5 + 0.5 * x1 / a, 0.5 + 0.5 * z1 / a);
+        push_v(out, x, y, z, 0.5, 0.5, shade, floor);
+        push_v(out, x + x0, y, z + z0, 0.5 + 0.5 * x0 / a, 0.5 + 0.5 * z0 / a, shade, floor);
+        push_v(out, x + x1, y, z + z1, 0.5 + 0.5 * x1 / a, 0.5 + 0.5 * z1 / a, shade, floor);
     }
 }
 
 /// Emit side quad k (two triangles) of a prism spanning y0..y1.
-fn emit_side(x: f32, z: f32, a: f32, k: usize, y0: f32, y1: f32, lit: f32) {
+fn emit_side(out: &mut Vec<f32>, x: f32, z: f32, a: f32, k: usize, y0: f32, y1: f32, floor: f32) {
     let (x0, z0) = corner(a, k);
     let (x1, z1) = corner(a, (k + 1) % 6);
-    let s = if k % 2 == 0 { SHADE_SIDE_A } else { SHADE_SIDE_B } * lit;
-    sgl::c3f(s, s, s);
+    let s = if k % 2 == 0 { SHADE_SIDE_A } else { SHADE_SIDE_B };
     let (bx0, bz0, bx1, bz1) = (x + x0, z + z0, x + x1, z + z1);
-    sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
-    sgl::v3f_t2f(bx1, y0, bz1, 1.0, 1.0);
-    sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
-    sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
-    sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
-    sgl::v3f_t2f(bx0, y1, bz0, 0.0, 0.0);
+    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor);
+    push_v(out, bx1, y0, bz1, 1.0, 1.0, s, floor);
+    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor);
+    push_v(out, bx0, y0, bz0, 0.0, 1.0, s, floor);
+    push_v(out, bx1, y1, bz1, 1.0, 0.0, s, floor);
+    push_v(out, bx0, y1, bz0, 0.0, 0.0, s, floor);
 }
 
 /// True for the fixtures the client draws as real furniture (built from
@@ -170,31 +189,38 @@ fn is_furniture(tex: usize) -> bool {
 /// Emit one textured quad (two triangles). Corners wind p0->p1->p2->p3;
 /// uv maps 0..1 across the face (p0 bottom-left). Cull mode is None so
 /// winding doesn't matter - both sides show.
-fn emit_quad(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], s: f32) {
-    sgl::c3f(s, s, s);
-    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
-    sgl::v3f_t2f(p1[0], p1[1], p1[2], 1.0, 1.0);
-    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
-    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
-    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
-    sgl::v3f_t2f(p3[0], p3[1], p3[2], 0.0, 0.0);
+fn emit_quad(
+    out: &mut Vec<f32>,
+    p0: [f32; 3],
+    p1: [f32; 3],
+    p2: [f32; 3],
+    p3: [f32; 3],
+    s: f32,
+    floor: f32,
+) {
+    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor);
+    push_v(out, p1[0], p1[1], p1[2], 1.0, 1.0, s, floor);
+    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor);
+    push_v(out, p0[0], p0[1], p0[2], 0.0, 1.0, s, floor);
+    push_v(out, p2[0], p2[1], p2[2], 1.0, 0.0, s, floor);
+    push_v(out, p3[0], p3[1], p3[2], 0.0, 0.0, s, floor);
 }
 
 /// Emit a textured axis-aligned box centred at (cx, cz) with half-extents
 /// (hx, hz), spanning y0..y1. Faces use the same cap/side shading as the
 /// prisms so the furniture reads with the scene light; the bound texture
 /// wraps each face 0..1.
-fn emit_box(cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, lit: f32) {
+fn emit_box(out: &mut Vec<f32>, cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, floor: f32) {
     let (x0, x1) = (cx - hx, cx + hx);
     let (z0, z1) = (cz - hz, cz + hz);
     /* Top + bottom caps. */
-    emit_quad([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP * lit);
-    emit_quad([x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM * lit);
+    emit_quad(out, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP, floor);
+    emit_quad(out, [x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM, floor);
     /* Four sides (alternating shade so the block's facets read). */
-    emit_quad([x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A * lit);
-    emit_quad([x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A * lit);
-    emit_quad([x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B * lit);
-    emit_quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B * lit);
+    emit_quad(out, [x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A, floor);
+    emit_quad(out, [x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A, floor);
+    emit_quad(out, [x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B, floor);
+    emit_quad(out, [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B, floor);
 }
 
 /// Draw one casino fixture as furniture on the lobby floor at (x, z),
@@ -203,24 +229,209 @@ fn emit_box(cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, lit: f32) {
 ///   - Slots: a chunky slot-machine cabinet (stepped base, body, marquee);
 ///   - CardTable: a felt table top on a pedestal;
 ///   - Trade/Research: a console desk with an upright screen.
-fn emit_furniture(tex: usize, x: f32, z: f32, y0: f32, lit: f32) {
+fn emit_furniture(out: &mut Vec<f32>, tex: usize, x: f32, z: f32, y0: f32, floor: f32) {
     match tex {
         TEX_SLOTS => {
-            emit_box(x, z, 0.58, 0.48, y0, y0 + 0.28, lit); /* stepped base */
-            emit_box(x, z, 0.5, 0.4, y0 + 0.28, y0 + 1.7, lit); /* reel body */
-            emit_box(x, z, 0.6, 0.5, y0 + 1.7, y0 + 2.0, lit); /* lit marquee */
+            emit_box(out, x, z, 0.58, 0.48, y0, y0 + 0.28, floor); /* stepped base */
+            emit_box(out, x, z, 0.5, 0.4, y0 + 0.28, y0 + 1.7, floor); /* reel body */
+            emit_box(out, x, z, 0.6, 0.5, y0 + 1.7, y0 + 2.0, floor); /* lit marquee */
         }
         TEX_CARDS => {
-            emit_box(x, z, 0.22, 0.22, y0, y0 + 0.72, lit); /* pedestal */
-            emit_box(x, z, 0.92, 0.92, y0 + 0.72, y0 + 0.9, lit); /* felt top */
+            emit_box(out, x, z, 0.22, 0.22, y0, y0 + 0.72, floor); /* pedestal */
+            emit_box(out, x, z, 0.92, 0.92, y0 + 0.72, y0 + 0.9, floor); /* felt top */
         }
         _ => {
             /* Trade / research console: a desk with an upright flat
              * screen. The thin screen box shows the trade-chart /
              * holo-console skin on its broad faces from any approach. */
-            emit_box(x, z, 0.74, 0.5, y0, y0 + 0.9, lit); /* desk */
-            emit_box(x, z, 0.62, 0.12, y0 + 0.9, y0 + 1.72, lit); /* screen */
+            emit_box(out, x, z, 0.74, 0.5, y0, y0 + 0.9, floor); /* desk */
+            emit_box(out, x, z, 0.62, 0.12, y0 + 0.9, y0 + 1.72, floor); /* screen */
         }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Baked-mesh state: built once on first near-draw, then a handful of
+ * buffer draw-calls per frame. */
+/* ------------------------------------------------------------------ */
+
+struct BakedStation {
+    vbuf: sg::Buffer,
+    /// (first vertex, vertex count) per texture group.
+    ranges: [(i32, i32); TEX_COUNT],
+}
+
+thread_local! {
+    static BAKED: RefCell<Option<BakedStation>> = const { RefCell::new(None) };
+    /// This frame's near-station draw request: (mvp, sun lit). Set by
+    /// draw() while within LOD range; drained by the renderer's two
+    /// flush hooks inside the offscreen pass.
+    static PENDING: std::cell::Cell<Option<([f32; 16], f32)>> =
+        const { std::cell::Cell::new(None) };
+    static PIP_MESH_OPAQUE: std::cell::Cell<sg::Pipeline> =
+        const { std::cell::Cell::new(sg::Pipeline { id: 0 }) };
+    static PIP_MESH_GLASS: std::cell::Cell<sg::Pipeline> =
+        const { std::cell::Cell::new(sg::Pipeline { id: 0 }) };
+}
+
+/// Build the whole drum's baked vertex buffer: identical face set to the
+/// old per-frame sgl walk (occupancy culling, per-face block light,
+/// furniture boxes), emitted once in station-local space.
+fn bake() -> BakedStation {
+    let cfg = station::config();
+    let cache = build_cache();
+    let lh = station::layer_h(&cfg);
+    let a = cfg.hex_size_m;
+    let mut verts: Vec<f32> = Vec::new();
+    let mut ranges = [(0i32, 0i32); TEX_COUNT];
+    for tex in 0..TEX_COUNT {
+        let start = (verts.len() / smesh::STATION_VERT_FLOATS) as i32;
+        /* The material's brightness floor: the station's own lights stay
+         * bright at night; glazing keeps a soft floor so panes never read
+         * as holes. Block light maxes in per FACE below. */
+        let mat_floor = if is_emissive(tex) {
+            EMISSIVE_MIN_LIT
+        } else if tex == TEX_GLASS {
+            GLASS_MIN_LIT
+        } else {
+            0.0
+        };
+        for p in &cache.groups[tex] {
+            if is_furniture(tex) {
+                let fl = mat_floor.max(cache.light01(p.q, p.r, p.layer));
+                emit_furniture(&mut verts, tex, p.x, p.z, p.y, fl);
+                continue;
+            }
+            let (y0, y1) = (p.y, p.y + lh);
+            let solid = tex != TEX_GLASS;
+            if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
+                let fl = mat_floor.max(cache.light01(p.q, p.r, p.layer + 1));
+                emit_cap(&mut verts, p.x, p.z, a, y1, SHADE_TOP, fl);
+            }
+            if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
+                let fl = mat_floor.max(cache.light01(p.q, p.r, p.layer - 1));
+                emit_cap(&mut verts, p.x, p.z, a, y0, SHADE_BOTTOM, fl);
+            }
+            for k in 0..6 {
+                let (dq, dr) = HEX_DIRS[(k + 1) % 6];
+                if !solid || !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
+                    let fl = mat_floor.max(cache.light01(p.q + dq, p.r + dr, p.layer));
+                    emit_side(&mut verts, p.x, p.z, a, k, y0, y1, fl);
+                }
+            }
+        }
+        ranges[tex] = (start, (verts.len() / smesh::STATION_VERT_FLOATS) as i32 - start);
+    }
+    let vbuf = sg::make_buffer(&sg::BufferDesc {
+        data: sg::slice_as_range(&verts),
+        label: c"station-mesh".as_ptr(),
+        ..Default::default()
+    });
+    println!(
+        "[station] baked drum mesh: {} verts, {} floats",
+        verts.len() / smesh::STATION_VERT_FLOATS,
+        verts.len()
+    );
+    BakedStation { vbuf, ranges }
+}
+
+/// Lazy pipeline against the OFFSCREEN pass formats (Rgba8 +
+/// DepthStencil, no MSAA - same recipe as the glow pipeline). Opaque
+/// writes depth; glass tests but doesn't write and alpha-blends.
+fn make_mesh_pipeline(glass: bool) -> sg::Pipeline {
+    let shd = sg::make_shader(&smesh::station_mesh_shader_desc(sg::query_backend()));
+    let mut desc = sg::PipelineDesc {
+        shader: shd,
+        index_type: sg::IndexType::None,
+        depth: sg::DepthState {
+            pixel_format: sg::PixelFormat::DepthStencil,
+            compare: sg::CompareFunc::LessEqual,
+            write_enabled: !glass,
+            ..Default::default()
+        },
+        cull_mode: sg::CullMode::None,
+        sample_count: 1,
+        label: if glass { c"station-mesh-glass".as_ptr() } else { c"station-mesh".as_ptr() },
+        ..Default::default()
+    };
+    desc.colors[0].pixel_format = sg::PixelFormat::Rgba8;
+    if glass {
+        desc.colors[0].blend = sg::BlendState {
+            enabled: true,
+            src_factor_rgb: sg::BlendFactor::SrcAlpha,
+            dst_factor_rgb: sg::BlendFactor::OneMinusSrcAlpha,
+            src_factor_alpha: sg::BlendFactor::One,
+            dst_factor_alpha: sg::BlendFactor::OneMinusSrcAlpha,
+            ..Default::default()
+        };
+    }
+    desc.layout.attrs[smesh::ATTR_STATION_MESH_A_POS].format = sg::VertexFormat::Float3;
+    desc.layout.attrs[smesh::ATTR_STATION_MESH_A_UV].format = sg::VertexFormat::Float2;
+    desc.layout.attrs[smesh::ATTR_STATION_MESH_A_SHADE].format = sg::VertexFormat::Float;
+    desc.layout.attrs[smesh::ATTR_STATION_MESH_A_FLOOR].format = sg::VertexFormat::Float;
+    sg::make_pipeline(&desc)
+}
+
+/// Opaque group draw order (glass excluded - it flushes separately after
+/// the sgl entities so blending sees the finished scene).
+const OPAQUE_ORDER: [usize; 14] = [
+    TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_TRADE, TEX_RESEARCH, TEX_MUSEUM, TEX_SLOTS,
+    TEX_CARDS, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD, TEX_LIGHT, TEX_SIGN,
+];
+
+fn draw_groups(texs: &[usize], mvp: [f32; 16], lit: f32, glass: bool) {
+    let pip_cell = if glass { &PIP_MESH_GLASS } else { &PIP_MESH_OPAQUE };
+    let pip = pip_cell.with(|p| {
+        if p.get().id == 0 {
+            p.set(make_mesh_pipeline(glass));
+        }
+        p.get()
+    });
+    BAKED.with(|cell| {
+        let mut baked = cell.borrow_mut();
+        let baked = baked.get_or_insert_with(bake);
+        sg::apply_pipeline(pip);
+        sg::apply_uniforms(
+            smesh::UB_STATION_MESH_VS_PARAMS,
+            &sg::value_as_range(&smesh::StationMeshVsParams { u_mvp: mvp }),
+        );
+        sg::apply_uniforms(
+            smesh::UB_STATION_MESH_FS_PARAMS,
+            &sg::value_as_range(&smesh::StationMeshFsParams {
+                u_fs: [lit, if glass { 1.0 } else { 0.0 }, 0.0, 0.0],
+            }),
+        );
+        for &tex in texs {
+            let (first, count) = baked.ranges[tex];
+            if count == 0 {
+                continue;
+            }
+            let mut bind = sg::Bindings::new();
+            bind.vertex_buffers[0] = baked.vbuf;
+            bind.views[smesh::VIEW_STATION_MESH_TEX] =
+                sg::View { id: renderer::station_view_id(tex) };
+            bind.samplers[smesh::SMP_STATION_MESH_SMP] =
+                sg::Sampler { id: renderer::rocket_sampler_id() };
+            sg::apply_bindings(&bind);
+            sg::draw(first as usize, count as usize, 1);
+        }
+    });
+}
+
+/// Renderer hook: draw the station's OPAQUE groups into the offscreen
+/// pass (before the sgl entity flush, so entities depth-test against the
+/// drum). No-op when the station wasn't requested this frame.
+pub fn flush_baked_opaque() {
+    if let Some((mvp, lit)) = PENDING.with(|c| c.get()) {
+        draw_groups(&OPAQUE_ORDER, mvp, lit, false);
+    }
+}
+
+/// Renderer hook: draw the GLASS group after the sgl entities, so the
+/// glazing blends over the finished scene. Drains the request.
+pub fn flush_baked_glass() {
+    if let Some((mvp, lit)) = PENDING.with(|c| c.take()) {
+        draw_groups(&[TEX_GLASS], mvp, lit, true);
     }
 }
 
@@ -275,31 +486,6 @@ fn draw_glint(view: Mat4, proj: Mat4, anchor: DVec3, dist: f64, glint_frac: f32)
     renderer::sgl_world_end();
 }
 
-fn make_pipeline(blend: bool) -> sgl::Pipeline {
-    let mut desc = sokol::gfx::PipelineDesc {
-        depth: sokol::gfx::DepthState {
-            /* Glass tests depth but doesn't write it, so panes layer
-             * over each other and the world shows through. */
-            write_enabled: !blend,
-            compare: sokol::gfx::CompareFunc::Less,
-            ..Default::default()
-        },
-        cull_mode: sokol::gfx::CullMode::None,
-        ..Default::default()
-    };
-    if blend {
-        desc.colors[0].blend = sokol::gfx::BlendState {
-            enabled: true,
-            src_factor_rgb: sokol::gfx::BlendFactor::SrcAlpha,
-            dst_factor_rgb: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
-            src_factor_alpha: sokol::gfx::BlendFactor::One,
-            dst_factor_alpha: sokol::gfx::BlendFactor::OneMinusSrcAlpha,
-            ..Default::default()
-        };
-    }
-    sgl::make_pipeline(&desc)
-}
-
 /// Draw the orbital station for this frame. `sim_t` is the world clock
 /// the on-rails orbit is a function of; `cam_world` drives the distance
 /// LOD.
@@ -335,108 +521,21 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
     ];
 
     let lit = renderer::entity_sun_brightness(anchor).clamp(0.15, 1.5);
-    let lh = station::layer_h(&cfg);
-    let a = cfg.hex_size_m;
 
-    renderer::sgl_world_begin();
-    sgl::defaults();
-    sgl::matrix_mode_projection();
-    sgl::load_matrix(&proj.m[0]);
-    sgl::matrix_mode_modelview();
-    sgl::load_matrix(&view.m[0]);
-
-    thread_local! {
-        static PIP_OPAQUE: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
-        static PIP_GLASS: std::cell::Cell<sgl::Pipeline> = const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
-    }
-    let pip_opaque = PIP_OPAQUE.with(|p| {
-        if p.get().id == 0 {
-            p.set(make_pipeline(false));
-        }
-        p.get()
-    });
-    let pip_glass = PIP_GLASS.with(|p| {
-        if p.get().id == 0 {
-            p.set(make_pipeline(true));
-        }
-        p.get()
-    });
-
-    sgl::push_matrix();
-    /* Keel plane (local y = 0) at the anchor - same origin the physics
-     * frame_sample uses. */
-    sgl::translate(anchor.x as f32, anchor.y as f32, anchor.z as f32);
-    sgl::mult_matrix(&basis[0]);
-
-    SHELL.with(|cell| {
-        let mut cache = cell.borrow_mut();
-        let cache = cache.get_or_insert_with(build_cache);
-        /* Opaque materials first, glass last so blending sees the scene. */
-        let order = [
-            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_TRADE, TEX_RESEARCH, TEX_MUSEUM,
-            TEX_SLOTS, TEX_CARDS, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD, TEX_LIGHT, TEX_SIGN,
-            TEX_GLASS,
-        ];
-        for tex in order {
-            let prisms = &cache.groups[tex];
-            if prisms.is_empty() && tex != TEX_HULL {
-                continue;
-            }
-            /* Neon variants + signs are the station's own lighting: they
-             * stay bright indoors and at night. Glass keeps a softer
-             * floor so the glazed deck openings always read as solid
-             * panes (a night-black pane looks like a hole). */
-            let lit = if is_emissive(tex) {
-                lit.max(EMISSIVE_MIN_LIT)
-            } else if tex == TEX_GLASS {
-                lit.max(GLASS_MIN_LIT)
-            } else {
-                lit
-            };
-            sgl::load_pipeline(if tex == TEX_GLASS { pip_glass } else { pip_opaque });
-            sgl::enable_texture();
-            sgl::texture(
-                sokol::gfx::View { id: renderer::station_view_id(tex) },
-                sokol::gfx::Sampler { id: renderer::rocket_sampler_id() },
-            );
-            sgl::begin_triangles();
-            for p in prisms {
-                /* The casino games + trading/research stations draw as
-                 * real furniture built from boxes, not hex prisms. Lit
-                 * by the block light in their own cell. */
-                if is_furniture(tex) {
-                    let l = lit.max(cache.light01(p.q, p.r, p.layer));
-                    emit_furniture(tex, p.x, p.z, p.y, l);
-                    continue;
-                }
-                let (y0, y1) = (p.y, p.y + lh);
-                /* Glass never culls against neighbours (a pane next to a
-                 * wall still shows); solids cull occupied neighbours.
-                 * Every face samples the propagated block light of the
-                 * air cell it faces - max(sun, light), exactly how the
-                 * world mesher lights faces from torches - so lamps /
-                 * neon / marquees light the casino rooms. */
-                let solid = tex != TEX_GLASS;
-                if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
-                    let l = lit.max(cache.light01(p.q, p.r, p.layer + 1));
-                    emit_cap(p.x, p.z, a, y1, SHADE_TOP * l);
-                }
-                if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
-                    let l = lit.max(cache.light01(p.q, p.r, p.layer - 1));
-                    emit_cap(p.x, p.z, a, y0, SHADE_BOTTOM * l);
-                }
-                for k in 0..6 {
-                    /* Side k's outward normal points at 60(k+1) degrees,
-                     * which is axial direction HEX_DIRS[(k+1) % 6]. */
-                    let (dq, dr) = HEX_DIRS[(k + 1) % 6];
-                    if !solid || !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
-                        let l = lit.max(cache.light01(p.q + dq, p.r + dr, p.layer));
-                        emit_side(p.x, p.z, a, k, y0, y1, l);
-                    }
-                }
-            }
-            sgl::end();
-        }
-    });
-    sgl::pop_matrix();
+    /* Baked-mesh path: the drum is STATIC in its own frame, so the only
+     * per-frame work is the pose. model = translate(anchor) * basis (the
+     * keel plane at the anchor, exactly the old sgl translate+mult), and
+     * the renderer's flush hooks draw the prebuilt buffer inside the
+     * offscreen pass - opaque before the sgl entities (they depth-test
+     * against the drum), glass after (blends over the finished scene). */
+    let model = mat4_mul(
+        mat4_translate(Vec3 {
+            x: anchor.x as f32,
+            y: anchor.y as f32,
+            z: anchor.z as f32,
+        }),
+        Mat4 { m: basis },
+    );
+    let mvp = mat4_mul(mat4_mul(proj, view), model);
+    PENDING.with(|c| c.set(Some((mvp.m, lit))));
 }

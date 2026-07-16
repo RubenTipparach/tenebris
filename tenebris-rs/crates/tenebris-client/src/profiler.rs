@@ -230,6 +230,38 @@ pub fn visible() -> bool {
     P.lock().unwrap().visible
 }
 
+/// One-line "who ate the frame" summary of the LAST finalized frame's
+/// slots, heaviest first - the lag-spike logger prints it so a stall
+/// names its culprit in the console without the F3 readout open. Slots
+/// under 0.5 ms are noise and skipped; an empty result means the stall
+/// happened OUTSIDE every instrumented region (GPU sync, OS, IO on the
+/// main thread, ...), which is itself a lead.
+pub fn spike_report(top: usize) -> String {
+    let p = P.lock().unwrap();
+    let mut idx: Vec<usize> = (0..p.slot_count).collect();
+    idx.sort_by(|&a, &b| {
+        p.slots[b]
+            .ms_last
+            .partial_cmp(&p.slots[a].ms_last)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut out = String::new();
+    for &i in idx.iter().take(top) {
+        let s = &p.slots[i];
+        if s.ms_last < 0.5 {
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str("  ");
+        }
+        out.push_str(&format!("{}={:.1}ms", s.name.unwrap_or("?"), s.ms_last));
+    }
+    if out.is_empty() {
+        out.push_str("(no slot >0.5ms - stall outside instrumented regions)");
+    }
+    out
+}
+
 /// A windowed view of the frame-time history for the on-screen graph.
 /// `samples` runs oldest -> newest in milliseconds; `max_ms` is the
 /// peak in the window (vertical scale); `span_s` is the wall time the

@@ -40,6 +40,7 @@ pub mod distant;
 pub mod glow;
 pub mod hex;
 pub mod starfield;
+pub mod station_mesh;
 pub mod sun;
 pub mod torch;
 pub mod tower;

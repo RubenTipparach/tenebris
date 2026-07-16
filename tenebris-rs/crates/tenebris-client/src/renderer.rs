@@ -4082,6 +4082,10 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
          * still bound: terrain occludes them properly and they get the
          * composite + water refraction. The default sgl context (UI)
          * keeps its own buffer and flushes at end-of-frame as before. */
+        /* Baked station drum, OPAQUE groups: before the sgl entity flush
+         * so entities depth-test against the hull. (Glass flushes after -
+         * see below.) No-op unless station_fx requested a near-draw. */
+        crate::station_fx::flush_baked_opaque();
         let world_ctx = SGL_WORLD_CTX.with(|c| c.get());
         if world_ctx.id != 0 {
             /* Overflow watchdog: a saturated sokol_gl context DRAWS NOTHING
@@ -4107,6 +4111,9 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             }
             sgl::context_draw(world_ctx);
         }
+        /* Baked station GLASS: after the entities so the glazing blends
+         * over the finished scene (depth-tested, no write). */
+        crate::station_fx::flush_baked_glass();
         sg::end_pass();
 
         /* Desktop: composite (droplets stripped) renders into the INTERMEDIATE

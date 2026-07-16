@@ -3276,7 +3276,9 @@ fn machine_label(b: Block) -> Option<&'static str> {
 /// instead of the dock key. The key label tracks the Interact binding.
 fn draw_station_hint(app: &App, screen_w: f32, screen_h: f32) {
     let p = app.player.borrow();
-    if crate::station_screen::is_open() {
+    /* Docking is a SHIP maneuver: no dock prompt while walking the
+     * station on foot (matches the riding gate on the E handler). */
+    if crate::station_screen::is_open() || !rocket_ride::is_riding() {
         return;
     }
     let d = crate::station_screen::dock_distance_m(p.position);
@@ -5188,6 +5190,9 @@ fn frame_inner(app: &mut App) {
              discarding {}/{} px of accumulated mouse delta",
             dt, LAG_SPIKE_S, s.mouse_dx as i32, s.mouse_dy as i32
         );
+        /* Name the culprit: the stalled frame's heaviest profiler slots,
+         * so a spike in the wild carries its own diagnosis. */
+        println!("[ERROR] [lag]   slots: {}", profiler::spike_report(5));
         input::state_mut(|s| {
             s.mouse_dx = 0.0;
             s.mouse_dy = 0.0;
@@ -6968,10 +6973,14 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * flies at 120 m altitude, far above any interact raycast target,
      * so this can't shadow a machine. */
     if interact_pressed
+        && rocket_ride::is_riding()
         && station_screen::dock_distance_m(app.player.borrow().position)
             <= station_screen::dock_radius_m()
         && station_screen::dock_speed_ok(app.player.borrow().velocity)
     {
+        /* Riding only: DOCKING is a ship maneuver. On foot inside the
+         * station E keeps its normal meaning (the trade/warehouse/fuel
+         * hub will move to walk-up consoles - see SPACE_ERA_PLAN). */
         station_screen::open(app.player.clone());
         return;
     }
