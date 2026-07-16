@@ -2721,6 +2721,21 @@ fn draw_frame_graph() {
         fg.span_s, avg_ms, fg.max_ms, fps
     ));
     sdtx::color3b(0xff, 0xff, 0xff);
+
+    /* Per-step CPU breakdown under the graph: every profiler scope's
+     * last/avg ms, heaviest first (hot rows tinted orange / red by the
+     * profiler itself). This is the "what is eating the frame" readout -
+     * profiler::draw_rows was fully built + tested but never rendered
+     * (profiler::draw is a documented no-op from before the sdtx binding
+     * existed), so F3 only ever showed the graph, never the culprits. */
+    let rows = profiler::draw_rows();
+    sdtx::origin((x0 + 6.0) / 8.0, (y0 + panel_h + 10.0) / 8.0);
+    sdtx::home();
+    for row in &rows {
+        sdtx::color3b(row.color.0, row.color.1, row.color.2);
+        sdtx::puts(&row.text);
+    }
+    sdtx::color3b(0xff, 0xff, 0xff);
 }
 
 fn update_overlay(app: &mut App, dt: f32) {
@@ -2898,7 +2913,7 @@ fn update_overlay(app: &mut App, dt: f32) {
     } else {
         sdtx::puts("[K] hide sky/atmo\n");
     }
-    sdtx::puts("[T] teleport menu   [F3 / P] profiler   [F1] players\n");
+    sdtx::puts("[T] teleport menu   [F3] profiler   [F1] players\n");
 }
 
 /* Tiny static-pipeline helper shared by the three sgl panel draws
@@ -3427,14 +3442,15 @@ fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
     let throttle_key = crate::controls::action_label(crate::controls::Action::Jump);
     let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
     let exit_key = crate::controls::action_label(crate::controls::Action::ExitRocket);
+    let respawn_key = crate::controls::action_label(crate::controls::Action::RespawnRocket);
     let lines = [
         format!("ROCKET  stage {}  {} engine", stages, eng),
         format!("fuel {}%   dv {:.0} m/s   TWR {:.2}", pct, dv, twr),
         format!("alt {:.0} m   speed {:.0} m/s   climb {:+.0} m/s", alt_m, speed, vspeed),
         format!("attitude {:.0} deg from up ({})", pitch_deg, att),
         format!(
-            "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit",
-            throttle_key, stage_key, exit_key
+            "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit  [{}] respawn",
+            throttle_key, stage_key, exit_key, respawn_key
         ),
     ];
     sdtx::canvas(screen_w, screen_h);
@@ -6139,7 +6155,11 @@ fn frame_inner(app: &mut App) {
     renderer::draw_light_glow(view, proj);
     profiler::end("draw-torches");
     /* Animals + crops - same offscreen opaque pass so terrain/torches
-     * z-sort correctly against them. */
+     * z-sort correctly against them. One profiler scope over the whole
+     * sgl entity stretch (animals / rocket / station / stages / fishing /
+     * crops / drops / bonfires); clouds and weather get their own scopes
+     * below since storms are the usual suspects. */
+    profiler::begin("draw-entities");
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
     /* Orbital trading station drum, sweeping its on-rails track. */
@@ -6160,9 +6180,21 @@ fn frame_inner(app: &mut App) {
         let parts = rocket_ride::remaining_parts();
         if !parts.is_empty() {
             let p = app.player.borrow();
+            /* Upright along basis.up - the rocket's nose and thrust axis,
+             * which is radial-up on the pad and steers with the ship in
+             * flight. (The first cut stacked it along basis.fwd, so it lay
+             * on its side and read "90 deg from up" parked on the pad.)
+             *
+             * draw_falling centres the stack on `center`, so lift the centre
+             * half a stack up the nose to put the engine at the player's feet
+             * and the capsule overhead - the player rides at the base rather
+             * than halfway inside the tanks. */
+            let seg = 2.0f64 * 0.9; /* PART_HEIGHT * ROCKET_SCALE, rocket_fx */
+            let half = parts.len() as f64 * seg * 0.5;
+            let center = dvec3_add(p.position, dvec3_scale(p.basis.up, half));
             let ride_view = crate::falling_stage::StageView {
-                center: p.position,
-                axis: p.basis.fwd,
+                center,
+                axis: p.basis.up,
                 flow: p.velocity,
                 parts,
                 heat: 0.0,
@@ -6218,14 +6250,19 @@ fn frame_inner(app: &mut App) {
         let w = app.world.borrow();
         bonfire_fx::draw(&w, view, proj, renderer::time_seconds());
     }
+    profiler::end("draw-entities");
     /* Cloud layer above the surface - same pass, drifts with sim time
      * so every peer's sky agrees. */
     {
         let w = phys_world.borrow();
         let p = app.player.borrow();
+        profiler::begin("draw-clouds");
         clouds::draw(view, proj, &w, &p, sim_t);
+        profiler::end("draw-clouds");
         /* Rain / snow around the player when their column is precipitating. */
+        profiler::begin("draw-weather");
         weather_fx::draw(view, proj, &w, &p, sim_t);
+        profiler::end("draw-weather");
     }
 
     /* First-person held tool (survival): the baked wood-tool model the
@@ -6312,7 +6349,9 @@ fn frame_inner(app: &mut App) {
     }
     if app.debug_ui_visible {
         draw_error_overlay();
-        profiler::draw();
+        /* profiler::draw() was a no-op stub; the real per-step readout now
+         * renders with the F3 frame graph (draw_frame_graph), where the
+         * profiler's own toggle gates it - not the F2 debug UI. */
     }
     /* F1 players panel is independent of the F2 master. */
     draw_players_panel(app, sapp::widthf(), sapp::heightf());
@@ -6582,33 +6621,45 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
         return;
     }
-    /* Exit rocket (default Z, beside X/stage). Climbing out hands the whole
-     * remaining rocket back as items rather than deleting it - the ride owns
-     * the only copy of those parts once LAUNCH clears the pad, so a bare
-     * `clear()` here would quietly destroy everything the player built.
+    /* Exit rocket (default Z, beside X/stage). Just ends the ride - the
+     * parts stay on the launch pad they were built on (board no longer
+     * empties it), so there's nothing to hand back and nothing to lose.
+     * Walk back to the pad and E to fly again, or respawn.
      *
      * Allowed at any altitude on purpose: refusing to let go in space would
      * strand you in the exact situation you're trying to get out of. In
-     * space you keep 6DOF RCS; on the ground you just stand up.
+     * space you drop to 6DOF RCS; on the ground you just stand up.
      *
      * (Not V - the JS's exit key - because V is Eat here.) */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::ExitRocket)
         && crate::rocket_ride::is_riding()
     {
-        let parts = crate::rocket_ride::remaining_parts();
-        let mut lost = 0u16;
-        {
-            let mut p = app.player.borrow_mut();
-            for id in parts {
-                lost += p.bag.add(id, 1);
-            }
-        }
-        if lost > 0 {
-            /* Only reachable with a full bag; say so rather than swallow it. */
-            println!("[rocket] WARN: bag full - {lost} rocket part(s) lost on exit");
-        }
         crate::rocket_ride::clear();
+        return;
+    }
+    /* Respawn rocket (default P): reset to a full-fuelled rocket back on the
+     * pad. For a botched launch, a burnout, or a rocket that drifted off -
+     * you don't have to walk back and re-board. No duplication: it re-boards
+     * the same rocket still sitting on the pad. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code)
+            == Some(crate::controls::Action::RespawnRocket)
+        && crate::rocket_ride::can_respawn()
+    {
+        if let Some((pos, up)) = crate::rocket_ride::respawn() {
+            let mut p = app.player.borrow_mut();
+            p.position = pos;
+            p.velocity = dvec3_make(0.0, 0.0, 0.0);
+            p.grounded = false;
+            /* Rebuild the basis at the pad so the nose points radially up
+             * again (a fresh vertical launch), not wherever the last flight
+             * left it. */
+            p.basis_ready = false;
+            p.last_tile = -1;
+            player_ctrl::rebuild_basis(&mut p);
+            let _ = up;
+        }
         return;
     }
     if e._type == sapp::EventType::KeyDown

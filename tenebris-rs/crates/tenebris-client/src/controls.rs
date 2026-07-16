@@ -36,6 +36,8 @@ pub enum Action {
     Stage,
     /// Climb out of the rocket, handing the remaining parts back.
     ExitRocket,
+    /// Reset the rocket to a full tank back on its launch pad.
+    RespawnRocket,
     Eat,
     Plant,
     SurvivalToggle,
@@ -87,6 +89,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Interact", "Plant / till", Action::Plant),
     ("Rocket", "Stage / jettison", Action::Stage),
     ("Rocket", "Exit rocket", Action::ExitRocket),
+    ("Rocket", "Respawn rocket", Action::RespawnRocket),
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
     ("Menus", "Crafting", Action::OpenCrafting),
@@ -227,6 +230,7 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
          * V is Eat here, and the bindings are the player's muscle memory,
          * not the reference implementation's. */
         (Z, Action::ExitRocket),
+        (P, Action::RespawnRocket),
         /* Menus + debug. */
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),

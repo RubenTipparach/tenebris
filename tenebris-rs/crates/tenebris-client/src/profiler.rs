@@ -249,7 +249,9 @@ fn rows_for(p: &ProfilerState) -> Vec<DrawRow> {
     let mut rows = Vec::new();
     rows.push(DrawRow {
         color: (0xff, 0xe0, 0x40),
-        text: "\n=== profiler [F3 / P] ===\n".to_string(),
+        /* F3 is the ToggleProfiler binding (controls.rs); the C-era "/ P"
+         * alternate never got a Rust binding, so don't advertise it. */
+        text: "\n=== profiler [F3] ===\n".to_string(),
     });
     let fps = if p.frame_ms_avg > 0.01 { 1000.0 / p.frame_ms_avg } else { 0.0 };
     rows.push(DrawRow {
@@ -481,7 +483,7 @@ mod tests {
         assert_eq!(rows.len(), 6); // header + frame + 3 slots + color reset
 
         assert_eq!(rows[0].color, (0xff, 0xe0, 0x40));
-        assert_eq!(rows[0].text, "\n=== profiler [F3 / P] ===\n");
+        assert_eq!(rows[0].text, "\n=== profiler [F3] ===\n");
 
         assert_eq!(rows[1].color, (0xc0, 0xd0, 0xff));
         assert_eq!(

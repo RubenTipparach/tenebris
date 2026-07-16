@@ -300,11 +300,20 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
     if !models() {
         return;
     }
+    /* The rocket being flown is drawn around the player (app.rs), so skip
+     * its pad here - otherwise the same rocket renders twice, once parked on
+     * the pad and once under the camera. Every OTHER pad still draws its
+     * static rocket. */
+    let in_flight = crate::rocket_ride::in_flight_pad();
+
     /* Collect (tile, depth, parts, part-count) for pads that carry a rocket. */
     let pads: Vec<(i32, i32, Vec<u16>)> = world
         .block_entities
         .iter()
         .filter_map(|(tile, depth, e)| {
+            if in_flight == Some((tile, depth)) {
+                return None;
+            }
             let lp = e.launch_pad()?;
             let parts = lp.parts().to_vec();
             if parts.is_empty() {
