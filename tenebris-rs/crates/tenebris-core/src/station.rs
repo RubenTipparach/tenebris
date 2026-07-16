@@ -184,8 +184,12 @@ pub enum StationMat {
     Carpet,
     /// Plum art-deco hotel facade.
     Wall,
-    /// Emissive neon trim (parapets, storey bands, ceiling lights).
+    /// Emissive cyan neon trim (parapet, alternating storey bands).
     Neon,
+    /// Emissive hot-pink neon (the other storey bands).
+    NeonPink,
+    /// Emissive warm-gold neon (room lights, pad markers).
+    NeonGold,
     /// Emissive lucky-7 marquee.
     Sign,
     /// Semi-transparent glazing (courtyard floor, hotel windows).
@@ -391,7 +395,10 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     };
 
-    /* 1. Ring deck annulus + neon parapet on the outer rim. */
+    /* 1. Ring deck annulus + neon parapet on the outer rim. The
+     * parapet BREAKS at the six ring corners where the pad bridges
+     * connect - those are the gates a player walks through coming in
+     * from a landing pad (an unbroken parapet blocked the route). */
     for q in -n_out..=n_out {
         for r in (-n_out).max(-q - n_out)..=n_out.min(-q + n_out) {
             let d = hex_dist(q, r);
@@ -399,7 +406,8 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
                 continue;
             }
             slab_col(&mut push, q, r, StationMat::Floor);
-            if d == n_out {
+            let gate = HEX_DIRS.iter().any(|&(dq, dr)| (q, r) == (dq * n_out, dr * n_out));
+            if d == n_out && !gate {
                 push(q, r, slab, StationMat::Neon);
             }
         }
@@ -441,22 +449,32 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
             let d = hex_dist(q, r);
             if d == t_rad {
                 /* Facade. Window band: the middle air layer of each
-                 * storey, on alternating cells (glazed). Door: the +x
-                 * cell's ground-storey air layers stay OPEN. */
+                 * storey, on alternating cells (glazed). Entrance: a
+                 * DOUBLE-WIDE arch facing the +x spoke - two cells of
+                 * ground-storey air (3 layers = 3.75 m clear, over the
+                 * 3 m arch requirement) crowned by a lucky-7 marquee. */
                 let (x0, z0) = axial_to_local(q, r, a);
                 let angle_idx = (z0.atan2(x0) / std::f32::consts::TAU * 24.0).round() as i32;
-                let is_door = q == t_rad && r == 0;
+                let is_door = q == t_rad && (r == 0 || r == -1);
                 for l in 0..=roof {
                     if is_door && door_layers.contains(&l) {
-                        continue; /* lobby doorway */
+                        continue; /* lobby entrance */
                     }
                     let in_floor = (l - (slab - 1)).rem_euclid(pitch);
                     let storey_band = l > slab && in_floor == 0 && l < roof;
                     let window = in_floor == 2 && l < roof && angle_idx % 2 == 0;
                     let mat = if l == roof {
                         StationMat::Sign /* marquee crown ring */
+                    } else if is_door && l == door_layers.end {
+                        StationMat::Sign /* entrance arch marquee */
                     } else if storey_band {
-                        StationMat::Neon
+                        /* Alternate the storey band colours: cyan, pink. */
+                        let f = (l - (slab - 1)) / pitch;
+                        if f % 2 == 0 {
+                            StationMat::Neon
+                        } else {
+                            StationMat::NeonPink
+                        }
                     } else if window {
                         StationMat::Glass
                     } else if l < slab {
@@ -478,7 +496,7 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
                     let mat = if f == floors {
                         StationMat::Hull /* roof deck */
                     } else if q == 0 && r == 0 {
-                        StationMat::Neon /* room light / lit lobby tile */
+                        StationMat::NeonGold /* warm room light / lit lobby tile */
                     } else {
                         StationMat::Carpet
                     };
@@ -495,7 +513,7 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     for (dq, dr) in HEX_DIRS {
         slab_col(&mut push, dq * (n_out + 1), dr * (n_out + 1), StationMat::Floor);
         let (cq, cr) = (dq * (n_out + 2), dr * (n_out + 2));
-        slab_col(&mut push, cq, cr, StationMat::Neon);
+        slab_col(&mut push, cq, cr, StationMat::NeonGold);
         for (nq, nr) in HEX_DIRS {
             slab_col(&mut push, cq + nq, cr + nr, StationMat::Floor);
         }
@@ -1166,9 +1184,14 @@ mod tests {
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
         assert_eq!(interior, 37 * 6 - 5 * 4);
-        /* Room lights: the (0,0) light tile on every storey slab. */
-        assert!(count(StationMat::Neon) > 60, "parapet + storey bands + room lights");
-        assert_eq!(count(StationMat::Sign), 24 + 2, "marquee crown ring + spire");
+        /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
+         * storey bands; pink alternate bands; warm-gold room lights (5
+         * storeys) + 6 pad markers; signs = crown ring + spire + the
+         * 2-cell entrance arch marquee. */
+        assert!(count(StationMat::Neon) >= 54 + 48, "cyan parapet + bands");
+        assert!(count(StationMat::NeonPink) >= 2 * 24 - 2, "pink storey bands");
+        assert_eq!(count(StationMat::NeonGold), 5 + 6, "room lights + pad markers");
+        assert_eq!(count(StationMat::Sign), 24 + 2 + 2, "crown + spire + entrance arch");
     }
 
     #[test]
@@ -1236,14 +1259,30 @@ mod tests {
         let max_top = steps.iter().map(|s| s.top_m).fold(f32::MIN, f32::max);
         assert!((max_top - roof_top).abs() < 1e-4, "spiral tops out on the roof");
         /* The hotel wall is one merged solid: no mid-wall ledge to stand
-         * on (walls are impassable), while the lobby door column keeps a
-         * walkable gap at deck level. */
-        let wall = spans.get(&(4, -1)).expect("facade column");
+         * on (walls are impassable), while BOTH entrance columns (the
+         * double-wide arch) keep a walkable gap at deck level - at
+         * least 3 m tall per the entrance-arch requirement. */
+        let wall = spans.get(&(0, 4)).expect("facade column");
         assert_eq!(wall.len(), 1, "facade merges into one solid interval");
-        let door = spans.get(&(4, 0)).expect("door column");
-        assert_eq!(door.len(), 2, "doorway splits the column");
-        let gap = door[1].0 - door[0].1;
-        assert!(gap >= 3.0 * lh - 1e-4, "door gap {gap} walkable");
+        for door_cell in [(4, 0), (4, -1)] {
+            let door = spans.get(&door_cell).expect("entrance column");
+            assert_eq!(door.len(), 2, "entrance splits the column at {door_cell:?}");
+            let gap = door[1].0 - door[0].1;
+            assert!(gap >= 3.0, "entrance arch {gap} m must clear 3 m");
+            assert!(gap >= 3.0 * lh - 1e-4, "entrance gap {gap} walkable");
+        }
+        /* Parapet gates: the six bridge corners are open at deck level
+         * so a player can walk in from every landing pad. */
+        let n_out = cfg.radius_hexes as i32;
+        for (dq, dr) in HEX_DIRS {
+            let corner = spans.get(&(dq * n_out, dr * n_out)).expect("ring corner");
+            let deck = cfg.slab_layers as f32 * lh;
+            assert!(
+                corner.iter().all(|&(bot, top)| top <= deck + 1e-4 || bot >= deck + lh),
+                "parapet gate at {:?} stays open",
+                (dq * n_out, dr * n_out)
+            );
+        }
         /* Axial pick still inverts across the structure. */
         for (q, r) in [(0, 0), (10, 0), (-7, 3), (4, -9), (12, 0), (0, -12)] {
             let (x, z) = axial_to_local(q, r, cfg.hex_size_m);

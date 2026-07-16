@@ -42,7 +42,9 @@ const TEX_NEON: usize = 3;
 const TEX_SIGN: usize = 4;
 const TEX_WALL: usize = 5;
 const TEX_GLASS: usize = 6;
-const TEX_COUNT: usize = 7;
+const TEX_NEON_PINK: usize = 7;
+const TEX_NEON_GOLD: usize = 8;
+const TEX_COUNT: usize = 9;
 
 /// Face shading (multiplied by the sun term): caps bright, keels dark,
 /// sides alternating so the hex facets read in silhouette.
@@ -63,10 +65,18 @@ fn tex_for(m: StationMat) -> usize {
         StationMat::Floor => TEX_FLOOR,
         StationMat::Carpet => TEX_CARPET,
         StationMat::Neon => TEX_NEON,
+        StationMat::NeonPink => TEX_NEON_PINK,
+        StationMat::NeonGold => TEX_NEON_GOLD,
         StationMat::Sign => TEX_SIGN,
         StationMat::Wall => TEX_WALL,
         StationMat::Glass => TEX_GLASS,
     }
+}
+
+/// True for the station's own light sources - drawn with a sun-term
+/// floor so they glow indoors and at night.
+fn is_emissive(tex: usize) -> bool {
+    matches!(tex, TEX_NEON | TEX_NEON_PINK | TEX_NEON_GOLD | TEX_SIGN)
 }
 
 struct ShellCache {
@@ -207,17 +217,20 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
         let mut cache = cell.borrow_mut();
         let cache = cache.get_or_insert_with(build_cache);
         /* Opaque materials first, glass last so blending sees the scene. */
-        let order = [TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_NEON, TEX_SIGN, TEX_GLASS];
+        let order = [
+            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD,
+            TEX_SIGN, TEX_GLASS,
+        ];
         for tex in order {
             let prisms = &cache.groups[tex];
             if prisms.is_empty() && tex != TEX_HULL {
                 continue;
             }
-            /* Neon + signs are the station's own lighting: they stay
-             * bright indoors and at night. Glass keeps a softer floor so
-             * the glazed deck openings always read as solid panes (a
-             * night-black pane looks like a hole to fall through). */
-            let lit = if tex == TEX_NEON || tex == TEX_SIGN {
+            /* Neon variants + signs are the station's own lighting: they
+             * stay bright indoors and at night. Glass keeps a softer
+             * floor so the glazed deck openings always read as solid
+             * panes (a night-black pane looks like a hole). */
+            let lit = if is_emissive(tex) {
                 lit.max(EMISSIVE_MIN_LIT)
             } else if tex == TEX_GLASS {
                 lit.max(GLASS_MIN_LIT)

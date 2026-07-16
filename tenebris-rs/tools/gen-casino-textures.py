@@ -10,6 +10,8 @@ technology, not natural terrain:
   casino_carpet      - purple casino carpet, gold diamond lattice
   casino_wall        - plum art-deco wall panel with gold banding
   neon_trim          - graphite panel crossed by a cyan neon tube
+  neon_trim_pink     - the same panel, hot-pink tube (colour variety)
+  neon_trim_gold     - the same panel, warm gold tube (room lights)
   casino_sign        - bulb-bordered marquee with a neon lucky 7
   slot_machine_face  - slot cabinet face (marquee, 3 reels, coin slit)
   card_table_face    - green felt, dealt cards, chips, gold rim
@@ -70,6 +72,13 @@ PAL = {
     "f": (32, 92, 54, 255),     # felt green dark
     "U": (58, 92, 198, 255),    # chip blue
     "x": (30, 30, 34, 255),     # black pip
+    # neon colour variants (same tube layout as w/c/W, recoloured)
+    "4": (150, 40, 110, 255),   # pink outer glow
+    "5": (255, 80, 200, 255),   # pink tube
+    "6": (255, 225, 250, 255),  # pink core
+    "7": (150, 105, 30, 255),   # gold outer glow
+    "8": (255, 190, 70, 255),   # gold tube
+    "9": (255, 240, 205, 255),  # gold core
     # glass (semi-transparent - drawn through the blend pipeline). Alpha
     # is deliberately high and the frame heavy so glazed deck openings
     # read as SOLID glass panes, never as holes.
@@ -249,12 +258,20 @@ def floor_rows():
     return ["".join(r) for r in rows]
 
 
+def recolor(rows, mapping):
+    """Copy a pixel grid with palette chars swapped (neon variants)."""
+    table = str.maketrans(mapping)
+    return [row.translate(table) for row in rows]
+
+
 TILES = {
     "station_hull": STATION_HULL,
     "station_floor": floor_rows(),
     "casino_carpet": carpet_rows(),
     "casino_wall": CASINO_WALL,
     "neon_trim": NEON_TRIM,
+    "neon_trim_pink": recolor(NEON_TRIM, {"w": "4", "c": "5", "W": "6"}),
+    "neon_trim_gold": recolor(NEON_TRIM, {"w": "7", "c": "8", "W": "9"}),
     "casino_sign": CASINO_SIGN,
     "slot_machine_face": SLOT_MACHINE_FACE,
     "card_table_face": CARD_TABLE_FACE,
