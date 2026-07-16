@@ -13,6 +13,8 @@ technology, not natural terrain:
   casino_sign        - bulb-bordered marquee with a neon lucky 7
   slot_machine_face  - slot cabinet face (marquee, 3 reels, coin slit)
   card_table_face    - green felt, dealt cards, chips, gold rim
+  station_glass      - semi-transparent courtyard glass (alpha < 255)
+  hedge              - leafy decorative shrub in a planter
 
 Baked-asset path: deterministic 16x16 RGBA PNGs, stdlib+zlib only.
 Run from tenebris-rs/:  python tools/gen-casino-textures.py
@@ -68,6 +70,17 @@ PAL = {
     "f": (32, 92, 54, 255),     # felt green dark
     "U": (58, 92, 198, 255),    # chip blue
     "x": (30, 30, 34, 255),     # black pip
+    # glass (semi-transparent - drawn through the blend pipeline)
+    "1": (150, 200, 255, 90),   # pane
+    "2": (210, 235, 255, 130),  # sparkle streak
+    "3": (110, 150, 200, 150),  # pane edge shade
+    "T": (120, 128, 140, 255),  # glazing frame
+    # hedge
+    "e": (46, 110, 52, 255),    # leaf dark
+    "l": (74, 152, 66, 255),    # leaf mid
+    "j": (108, 190, 84, 255),   # leaf light
+    "u": (94, 66, 42, 255),     # planter wood
+    "V": (120, 88, 56, 255),    # planter wood light
 }
 
 STATION_HULL = [
@@ -185,6 +198,45 @@ CARD_TABLE_FACE = [
 ]
 
 
+STATION_GLASS = [
+    "TTTTTTTTTTTTTTTT",
+    "T11111111111113T",
+    "T12111111111113T",
+    "T11211111111113T",
+    "T11121111111113T",
+    "T11112111111113T",
+    "T11111111111113T",
+    "T11111121111113T",
+    "T11111112111113T",
+    "T11111111211113T",
+    "T11111111111113T",
+    "T11111111112113T",
+    "T11111111111213T",
+    "T11111111111113T",
+    "T33333333333333T",
+    "TTTTTTTTTTTTTTTT",
+]
+
+HEDGE = [
+    "................",
+    "....jl..jj......",
+    "..jllelljlljj...",
+    ".jlelleljellelj.",
+    ".lejlleljllejll.",
+    "jllejjlelljlllej",
+    "lejlleljellejlle",
+    "elljelljlleljjel",
+    "lejllejlelljelle",
+    "jelljlleljellejl",
+    ".ellejlelljlle..",
+    "uVuVuVuVuVuVuVuV",
+    "uuVuuVuuVuuVuuVu",
+    "uVuVuVuVuVuVuVuV",
+    "uuuuuuuuuuuuuuuu",
+    "uVuVuVuVuVuVuVuV",
+]
+
+
 def carpet_rows():
     """Purple casino carpet: gold diamond lattice on an 8-px period with a
     magenta dot in each diamond heart, over a subtly speckled purple."""
@@ -229,6 +281,8 @@ TILES = {
     "casino_sign": CASINO_SIGN,
     "slot_machine_face": SLOT_MACHINE_FACE,
     "card_table_face": CARD_TABLE_FACE,
+    "station_glass": STATION_GLASS,
+    "hedge": HEDGE,
 }
 
 

@@ -13,7 +13,6 @@
 //! All knobs live in `assets/config/economy.yaml` ([`crate::economy`] scalars
 //! + the `[prices]` section parsed by [`load_prices`]).
 
-use crate::blocks::Block;
 use crate::economy::{self, Wallet};
 use crate::items::{self, ItemId};
 use crate::math::{dvec3_make, DVec3};
@@ -49,8 +48,15 @@ pub struct StationConfig {
     pub slab_layers: u32,
     /// Casino hotel tower footprint radius, hex rings.
     pub tower_radius: u32,
-    /// Casino hotel tower height, layers.
-    pub tower_layers: u32,
+    /// Casino hotel storeys (each: one slab + `floor_air_layers` clear).
+    pub tower_floors: u32,
+    /// Clear walking headroom per storey, in air layers.
+    pub floor_air_layers: u32,
+    /// How high a ledge the player steps up onto while walking the
+    /// station (also what makes the half-layer stair treads climbable).
+    pub step_up_m: f32,
+    /// Head clearance used for ceiling collision inside the hotel.
+    pub head_clearance_m: f32,
     /// Artificial-gravity field reach above each deck column, metres
     /// ("about 20 blocks" at the default 2 m hex).
     pub gravity_field_m: f32,
@@ -60,12 +66,19 @@ pub struct StationConfig {
     /// Exponential damping rate (1/s) of relative slide while standing
     /// on a deck - how quickly you come to rest on the moving station.
     pub deck_friction: f32,
+    /// Orbit phase at world-time zero, degrees from the +x axis. Kept
+    /// OFF the prime meridian so a fresh world's station is not parked
+    /// over the spawn/launch complex - an ascending rocket should meet
+    /// the artificial-gravity field by rendezvous, not by accident.
+    pub orbit_phase0_deg: f32,
 }
 
 impl StationConfig {
     pub const DEFAULT: StationConfig = StationConfig {
         radius_hexes: 10,
-        layers: 6,
+        /* 12 layers over 15 m = person-scale 1.25 m prisms, so storeys
+         * and stair treads work at walking proportions. */
+        layers: 12,
         height_m: 15.0,
         hex_size_m: 2.0,
         altitude_m: 120.0,
@@ -73,11 +86,15 @@ impl StationConfig {
         dock_max_rel_mps: 8.0,
         ring_width: 3,
         slab_layers: 2,
-        tower_radius: 3,
-        tower_layers: 10,
+        tower_radius: 4,
+        tower_floors: 5,
+        floor_air_layers: 3,
+        step_up_m: 0.7,
+        head_clearance_m: 1.8,
         gravity_field_m: 40.0,
         artificial_gravity_mps2: 15.0,
         deck_friction: 6.0,
+        orbit_phase0_deg: 120.0,
     };
 }
 
@@ -117,7 +134,14 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
             "ring_width" => c.ring_width = if f > 0.0 { f as u32 } else { c.ring_width },
             "slab_layers" => c.slab_layers = if f > 0.0 { f as u32 } else { c.slab_layers },
             "tower_radius" => c.tower_radius = if f > 0.0 { f as u32 } else { c.tower_radius },
-            "tower_layers" => c.tower_layers = if f > 0.0 { f as u32 } else { c.tower_layers },
+            "tower_floors" => c.tower_floors = if f > 0.0 { f as u32 } else { c.tower_floors },
+            "floor_air_layers" => {
+                c.floor_air_layers = if f > 0.0 { f as u32 } else { c.floor_air_layers }
+            }
+            "step_up_m" => c.step_up_m = if f > 0.0 { f } else { c.step_up_m },
+            "head_clearance_m" => {
+                c.head_clearance_m = if f > 0.0 { f } else { c.head_clearance_m }
+            }
             "gravity_field_m" => {
                 c.gravity_field_m = if f > 0.0 { f } else { c.gravity_field_m }
             }
@@ -125,6 +149,9 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
                 c.artificial_gravity_mps2 = if f > 0.0 { f } else { c.artificial_gravity_mps2 }
             }
             "deck_friction" => c.deck_friction = if f > 0.0 { f } else { c.deck_friction },
+            "orbit_phase0_deg" => {
+                c.orbit_phase0_deg = if f > 0.0 { f } else { c.orbit_phase0_deg }
+            }
             _ => println!("[station] {}: unknown key '{}'", path, key),
         }
     }
@@ -142,6 +169,31 @@ pub fn load_config(path: &str) {
 /* Ring-station geometry: outer ring deck + spokes + casino hotel      */
 /* tower + external docking pads (the classic wheel-station look).     */
 
+/// Surface material of a station prism. Station-only - these are NOT
+/// world blocks: the structure is not voxel terrain, so its pieces can
+/// never be mined, broken, or built over (the casino is private
+/// property; that protection holds by construction). The client maps
+/// each material to a texture from the casino tile set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StationMat {
+    /// Brushed steel structure / roof plating.
+    Hull,
+    /// Diamond-plate deck walking surface.
+    Floor,
+    /// Casino carpet (hotel floors).
+    Carpet,
+    /// Plum art-deco hotel facade.
+    Wall,
+    /// Emissive neon trim (parapets, storey bands, ceiling lights).
+    Neon,
+    /// Emissive lucky-7 marquee.
+    Sign,
+    /// Semi-transparent glazing (courtyard floor, hotel windows).
+    Glass,
+    /// Decorative hedge planter.
+    Plant,
+}
+
 /// One hex prism of the station structure. `q`/`r`/`layer` are the
 /// axial-grid + stack coordinates (the renderer culls faces against
 /// neighbouring occupancy with them); `x`/`y`/`z` are the precomputed
@@ -157,8 +209,23 @@ pub struct Prism {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    pub block: Block,
+    pub mat: StationMat,
 }
+
+/// One stair tread of the hotel's spiral staircase: a thin walkable
+/// pad whose top sits at `top_m` (station-local). Treads rise in
+/// half-layer steps so the player can walk floors without flying.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StairStep {
+    pub q: i32,
+    pub r: i32,
+    pub x: f32,
+    pub z: f32,
+    pub top_m: f32,
+}
+
+/// Tread thickness (m) - the physics span and render height of a step.
+pub const STAIR_TREAD_M: f32 = 0.5;
 
 /// Centered hexagonal number: hexes in a full disk of radius `n` rings.
 pub fn hexes_per_deck(n: u32) -> u32 {
@@ -204,6 +271,83 @@ fn ring_inner(cfg: &StationConfig) -> i32 {
     (cfg.radius_hexes as i32 - cfg.ring_width as i32 + 1).max(1)
 }
 
+/// Layers between one hotel floor's walking surface and the next:
+/// one slab layer plus the configured clear air layers.
+pub fn floor_pitch(cfg: &StationConfig) -> i32 {
+    1 + cfg.floor_air_layers.max(1) as i32
+}
+
+/// Layer index of hotel floor `f`'s slab (its top is the walking
+/// surface). Floor 0 sits level with the ring/courtyard deck.
+fn floor_slab_layer(cfg: &StationConfig, f: i32) -> i32 {
+    cfg.slab_layers.max(1) as i32 - 1 + f * floor_pitch(cfg)
+}
+
+/// Roof slab layer - the top of the hotel wall.
+fn roof_layer(cfg: &StationConfig) -> i32 {
+    floor_slab_layer(cfg, cfg.tower_floors.max(1) as i32)
+}
+
+/// The interior stair ring (one ring inside the facade), cells ordered
+/// by angle so consecutive indices are adjacent - the spiral walks it.
+fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
+    let n = cfg.tower_radius as i32 - 1;
+    let a = cfg.hex_size_m;
+    let mut cells: Vec<(i32, i32)> = Vec::new();
+    for q in -n..=n {
+        for r in (-n).max(-q - n)..=n.min(-q + n) {
+            if hex_dist(q, r) == n {
+                cells.push((q, r));
+            }
+        }
+    }
+    cells.sort_by(|&(q0, r0), &(q1, r1)| {
+        let (x0, z0) = axial_to_local(q0, r0, a);
+        let (x1, z1) = axial_to_local(q1, r1, a);
+        (z0.atan2(x0)).partial_cmp(&z1.atan2(x1)).unwrap()
+    });
+    cells
+}
+
+/// Treads per stair run (floor to floor). The rise per tread is
+/// `floor_pitch * layer_h / STAIR_STEPS_PER_FLOOR` - 0.625 m at the
+/// defaults, walkable under the `step_up_m` allowance.
+pub const STAIR_STEPS_PER_FLOOR: i32 = 8;
+
+/// The hotel's spiral staircase: for each floor, STAIR_STEPS_PER_FLOOR
+/// treads walking the interior ring upward in half-layer rises; the top
+/// treads of each run pass through a stairwell opening in the slab
+/// above (see `stairwell_open`). The final run tops out on the roof.
+pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
+    let ring = stair_ring(cfg);
+    let lh = layer_h(cfg);
+    let a = cfg.hex_size_m;
+    let rise = floor_pitch(cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
+    let mut out = Vec::new();
+    for f in 0..cfg.tower_floors.max(1) as i32 {
+        let base_top = (floor_slab_layer(cfg, f) + 1) as f32 * lh;
+        for k in 0..STAIR_STEPS_PER_FLOOR {
+            let (q, r) = ring[((f * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()];
+            let (x, z) = axial_to_local(q, r, a);
+            out.push(StairStep { q, r, x, z, top_m: base_top + (k + 1) as f32 * rise });
+        }
+    }
+    out
+}
+
+/// True when slab `f`'s cell (q, r) is a stairwell opening - the cell
+/// sits over the upper half of the run arriving from the floor below,
+/// so the spiral can pass through. `f == tower_floors` is the roof.
+fn stairwell_open(_cfg: &StationConfig, ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
+    if f < 1 {
+        return false;
+    }
+    let run = f - 1;
+    (STAIR_STEPS_PER_FLOOR / 2..STAIR_STEPS_PER_FLOOR).any(|k| {
+        ring[((run * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()] == (q, r)
+    })
+}
+
 /// Generate the wheel station. Pure function of the config; the client
 /// meshes it once and re-poses it per frame. Layout (all radii in hex
 /// rings, heights in layers of [`layer_h`]):
@@ -225,24 +369,27 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     let n_in = ring_inner(cfg);
     let slab = cfg.slab_layers.max(1) as i32;
     let t_rad = cfg.tower_radius as i32;
-    let t_lay = cfg.tower_layers.max(2) as i32;
+    let floors = cfg.tower_floors.max(1) as i32;
+    let pitch = floor_pitch(cfg);
+    let roof = roof_layer(cfg);
+    let ring = stair_ring(cfg);
 
     let mut out: Vec<Prism> = Vec::new();
     let mut occupied = std::collections::HashSet::new();
     /* First writer wins; overlapping sections (e.g. a pad ring touching
      * its bridge cell) stay watertight without duplicate prisms. */
-    let mut push = |q: i32, r: i32, layer: i32, block: Block| {
+    let mut push = |q: i32, r: i32, layer: i32, mat: StationMat| {
         if !occupied.insert((q, r, layer)) {
             return;
         }
         let (x, z) = axial_to_local(q, r, a);
-        out.push(Prism { q, r, layer, x, y: layer as f32 * lh, z, block });
+        out.push(Prism { q, r, layer, x, y: layer as f32 * lh, z, mat });
     };
 
-    /* Slab column: hull keel layers with a chosen deck block on top. */
-    let slab_col = |push: &mut dyn FnMut(i32, i32, i32, Block), q: i32, r: i32, top: Block| {
+    /* Slab column: hull keel layers with a chosen deck material on top. */
+    let slab_col = |push: &mut dyn FnMut(i32, i32, i32, StationMat), q: i32, r: i32, top: StationMat| {
         for l in 0..slab {
-            push(q, r, l, if l == slab - 1 { top } else { Block::StationHull });
+            push(q, r, l, if l == slab - 1 { top } else { StationMat::Hull });
         }
     };
 
@@ -253,9 +400,9 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
             if d < n_in || d > n_out {
                 continue;
             }
-            slab_col(&mut push, q, r, Block::StationFloor);
+            slab_col(&mut push, q, r, StationMat::Floor);
             if d == n_out {
-                push(q, r, slab, Block::NeonTrim);
+                push(q, r, slab, StationMat::Neon);
             }
         }
     }
@@ -263,65 +410,133 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     /* 2. Spokes: tower edge -> ring inner edge, one hex wide. */
     for (dq, dr) in HEX_DIRS {
         for k in (t_rad + 1)..n_in {
-            slab_col(&mut push, dq * k, dr * k, Block::StationFloor);
+            slab_col(&mut push, dq * k, dr * k, StationMat::Floor);
         }
     }
 
-    /* 3. Casino hotel tower. */
+    /* 3. Courtyard: the openings between the spokes are GLAZED - a
+     * single glass layer at deck level, open space below, so the planet
+     * scrolls past under your feet. Decorative hedges scatter over the
+     * glass on a deterministic hash. */
+    for q in -(n_in - 1)..=(n_in - 1) {
+        for r in (-(n_in - 1)).max(-q - (n_in - 1))..=(n_in - 1).min(-q + (n_in - 1)) {
+            let d = hex_dist(q, r);
+            if d <= t_rad || d >= n_in {
+                continue;
+            }
+            /* Spoke cells lie on the six axial lines through the origin. */
+            let on_spoke = (r == 0 && q != 0) || (q == 0 && r != 0) || (q == -r && q != 0);
+            if on_spoke {
+                continue;
+            }
+            push(q, r, slab - 1, StationMat::Glass);
+            if crate::rng::hash2(q * 7 + 3, r * 5 - 1) < 0.16 {
+                push(q, r, slab, StationMat::Plant);
+            }
+        }
+    }
+
+    /* 4. Casino hotel tower: `floors` storeys, each one slab + clear air
+     * layers, spiral stairwell openings, glazed windows per storey, a
+     * lobby door facing the +x spoke, neon storey bands, marquee crown,
+     * sign spire, and a ceiling light tile in every room. */
+    let door_layers = slab..(slab + cfg.floor_air_layers.max(1) as i32);
     for q in -t_rad..=t_rad {
         for r in (-t_rad).max(-q - t_rad)..=t_rad.min(-q + t_rad) {
             let d = hex_dist(q, r);
             if d == t_rad {
-                /* Hotel facade: plum casino wall, neon band every third
-                 * layer, lucky-7 marquees ringing the crown layer. */
-                for l in 0..t_lay {
-                    let block = if l == t_lay - 1 {
-                        Block::CasinoSign
-                    } else if l % 3 == 2 {
-                        Block::NeonTrim
-                    } else if l == 0 {
-                        Block::StationHull
+                /* Facade. Window band: the middle air layer of each
+                 * storey, on alternating cells (glazed). Door: the +x
+                 * cell's ground-storey air layers stay OPEN. */
+                let (x0, z0) = axial_to_local(q, r, a);
+                let angle_idx = (z0.atan2(x0) / std::f32::consts::TAU * 24.0).round() as i32;
+                let is_door = q == t_rad && r == 0;
+                for l in 0..=roof {
+                    if is_door && door_layers.contains(&l) {
+                        continue; /* lobby doorway */
+                    }
+                    let in_floor = (l - (slab - 1)).rem_euclid(pitch);
+                    let storey_band = l > slab && in_floor == 0 && l < roof;
+                    let window = in_floor == 2 && l < roof && angle_idx % 2 == 0;
+                    let mat = if l == roof {
+                        StationMat::Sign /* marquee crown ring */
+                    } else if storey_band {
+                        StationMat::Neon
+                    } else if window {
+                        StationMat::Glass
+                    } else if l < slab {
+                        StationMat::Hull
                     } else {
-                        Block::CasinoWall
+                        StationMat::Wall
                     };
-                    push(q, r, l, block);
+                    push(q, r, l, mat);
                 }
             } else {
-                /* Lobby floor + roof deck; hollow hotel in between. */
-                push(q, r, 0, Block::CasinoCarpet);
-                push(q, r, t_lay - 1, Block::StationHull);
+                /* Interior: one slab per storey (carpet, neon light tile
+                 * at the room centre) with stairwell openings, plus the
+                 * hull roof deck. */
+                for f in 0..=floors {
+                    if stairwell_open(cfg, &ring, f, q, r) {
+                        continue;
+                    }
+                    let l = floor_slab_layer(cfg, f);
+                    let mat = if f == floors {
+                        StationMat::Hull /* roof deck */
+                    } else if q == 0 && r == 0 {
+                        StationMat::Neon /* room light / lit lobby tile */
+                    } else {
+                        StationMat::Carpet
+                    };
+                    push(q, r, l, mat);
+                }
             }
         }
     }
     /* Sign spire on the roof. */
-    push(0, 0, t_lay, Block::CasinoSign);
-    push(0, 0, t_lay + 1, Block::CasinoSign);
+    push(0, 0, roof + 1, StationMat::Sign);
+    push(0, 0, roof + 2, StationMat::Sign);
 
-    /* 4. Docking pads: bridge cell + 7-hex pad off each ring corner. */
+    /* 5. Docking pads: bridge cell + 7-hex pad off each ring corner. */
     for (dq, dr) in HEX_DIRS {
-        slab_col(&mut push, dq * (n_out + 1), dr * (n_out + 1), Block::StationFloor);
+        slab_col(&mut push, dq * (n_out + 1), dr * (n_out + 1), StationMat::Floor);
         let (cq, cr) = (dq * (n_out + 2), dr * (n_out + 2));
-        slab_col(&mut push, cq, cr, Block::NeonTrim);
+        slab_col(&mut push, cq, cr, StationMat::Neon);
         for (nq, nr) in HEX_DIRS {
-            slab_col(&mut push, cq + nq, cr + nr, Block::StationFloor);
+            slab_col(&mut push, cq + nq, cr + nr, StationMat::Floor);
         }
     }
 
     out
 }
 
-/// Highest walkable support height per occupied column, in station-local
-/// metres (top face of the topmost prism). The artificial-gravity field
-/// and deck landing sample this - one entry per (q, r) column.
-pub fn deck_map(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32), f32> {
+/// Solid vertical spans per occupied column, in station-local metres:
+/// `(bottom, top)` per prism plus the stair treads, sorted by bottom.
+/// The physics samples these for multi-level floor support (landing on
+/// the storey under your feet, not the roof) and ceiling collision.
+pub fn column_spans(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> {
     let lh = layer_h(cfg);
-    let mut map = std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> =
+        std::collections::HashMap::new();
     for p in shell(cfg) {
-        let top = (p.layer + 1) as f32 * lh;
-        let e = map.entry((p.q, p.r)).or_insert(top);
-        if top > *e {
-            *e = top;
+        map.entry((p.q, p.r)).or_default().push((p.y, p.y + lh));
+    }
+    for s in stairs(cfg) {
+        map.entry((s.q, s.r)).or_default().push((s.top_m - STAIR_TREAD_M, s.top_m));
+    }
+    /* Merge touching/overlapping spans so a wall column reads as ONE
+     * solid interval: support/embedded tests then treat mid-wall prism
+     * seams as interior, which is what makes walls impassable and
+     * doorway gaps walkable. */
+    for spans in map.values_mut() {
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut merged: Vec<(f32, f32)> = Vec::with_capacity(spans.len());
+        for &(bot, top) in spans.iter() {
+            match merged.last_mut() {
+                Some(last) if bot <= last.1 + 0.01 => last.1 = last.1.max(top),
+                _ => merged.push((bot, top)),
+            }
         }
+        *spans = merged;
     }
     map
 }
@@ -351,13 +566,13 @@ pub fn orbit_period_s() -> f64 {
 }
 
 /// Station anchor position at world-time `t` (seconds): a circular track
-/// in Tenebris's equatorial (XZ) plane, phase 0 on the +x axis - the
-/// same axis the old parked dock point used, so a fresh world's station
-/// starts where it always did and sweeps from there.
+/// in Tenebris's equatorial (XZ) plane, starting `orbit_phase0_deg` from
+/// the +x axis (off the prime meridian so it never spawns parked over
+/// the launch complex).
 pub fn orbit_pos(t: f64) -> DVec3 {
     let b = planet::get(BodyId::Tenebris);
     let r = orbit_radius_m();
-    let ph = (orbit_speed_mps() / r) * t;
+    let ph = (orbit_speed_mps() / r) * t + (config().orbit_phase0_deg as f64).to_radians();
     dvec3_make(b.pos_x + r * ph.cos(), b.pos_y, b.pos_z + r * ph.sin())
 }
 
@@ -366,7 +581,7 @@ pub fn orbit_pos(t: f64) -> DVec3 {
 pub fn orbit_vel(t: f64) -> DVec3 {
     let r = orbit_radius_m();
     let v = orbit_speed_mps();
-    let ph = (v / r) * t;
+    let ph = (v / r) * t + (config().orbit_phase0_deg as f64).to_radians();
     dvec3_make(-v * ph.sin(), 0.0, v * ph.cos())
 }
 
@@ -374,12 +589,15 @@ pub fn orbit_vel(t: f64) -> DVec3 {
 /* Station frame + artificial-gravity field (physics support).         */
 
 /// A world-position sample expressed in the station's orbit frame, plus
-/// the deck support and artificial-gravity field test under it. The
-/// player integrator uses this to land on and walk the station: the
-/// basis carries the sample around the orbit, `deck_top_m` is the floor,
-/// and while `in_field` the integrator applies `artificial_gravity_mps2`
-/// toward the deck IN THE STATION FRAME (the frame itself is in free
-/// fall, so real gravity drops out of relative motion).
+/// the floor support / ceiling / artificial-gravity field tests under
+/// it. The player integrator uses this to land on and walk the station
+/// - including INSIDE the hotel: `support_m` is the highest solid top
+/// at or under the feet (plus the step-up allowance, so stair treads
+/// climb), `ceiling_m` is the next solid underside above the support,
+/// and while `in_field` the integrator applies
+/// `artificial_gravity_mps2` toward the deck IN THE STATION FRAME (the
+/// frame itself is in free fall, so real gravity drops out of relative
+/// motion).
 #[derive(Clone, Copy, Debug)]
 pub struct StationFrame {
     pub anchor: DVec3,
@@ -393,28 +611,38 @@ pub struct StationFrame {
     pub station_vel: DVec3,
     /// The sampled position in station-local metres.
     pub local: DVec3,
-    /// Walkable support height (local y, m) of the occupied deck column
-    /// under the sample, or `None` off the structure.
-    pub deck_top_m: Option<f64>,
-    /// True inside the artificial-gravity capture band: over a deck
-    /// column, from just under its top to `gravity_field_m` above it.
+    /// Walkable support (local y, m): highest solid top at or below
+    /// feet + `step_up_m` in this column, or `None` in open space.
+    pub support_m: Option<f64>,
+    /// Underside (local y, m) of the next solid above the support -
+    /// the ceiling of the room the feet are in - or `None`.
+    pub ceiling_m: Option<f64>,
+    /// Top of the column's highest solid, if the column is occupied.
+    pub column_top_m: Option<f64>,
+    /// True when the feet are INSIDE a solid interval (walked into a
+    /// wall) - the integrator cancels the horizontal motion that put
+    /// them there.
+    pub embedded: bool,
+    /// True inside the artificial-gravity capture band: over an
+    /// occupied column, from just under its lowest solid to
+    /// `gravity_field_m` above its highest.
     pub in_field: bool,
 }
 
-/// Deck-map cache - rebuilt when the config changes (boot / yaml edit).
-static S_DECK_CACHE: Mutex<Option<(StationConfig, std::collections::HashMap<(i32, i32), f32>)>> =
-    Mutex::new(None);
+/// Column-span cache - rebuilt when the config changes (boot / yaml edit).
+type SpanMap = std::collections::HashMap<(i32, i32), Vec<(f32, f32)>>;
+static S_SPAN_CACHE: Mutex<Option<(StationConfig, SpanMap)>> = Mutex::new(None);
 
-fn deck_lookup(cfg: &StationConfig, q: i32, r: i32) -> Option<f32> {
-    let mut cache = S_DECK_CACHE.lock().unwrap();
+fn with_spans<R>(cfg: &StationConfig, q: i32, r: i32, f: impl FnOnce(&[(f32, f32)]) -> R) -> R {
+    let mut cache = S_SPAN_CACHE.lock().unwrap();
     let rebuild = match cache.as_ref() {
         Some((c, _)) => c != cfg,
         None => true,
     };
     if rebuild {
-        *cache = Some((*cfg, deck_map(cfg)));
+        *cache = Some((*cfg, column_spans(cfg)));
     }
-    cache.as_ref().unwrap().1.get(&(q, r)).copied()
+    f(cache.as_ref().unwrap().1.get(&(q, r)).map(|v| v.as_slice()).unwrap_or(&[]))
 }
 
 /// Sample `world_pos` against the station at world-time `t`.
@@ -434,11 +662,48 @@ pub fn frame_sample(world_pos: DVec3, t: f64) -> StationFrame {
     let d = dvec3_make(world_pos.x - anchor.x, world_pos.y - anchor.y, world_pos.z - anchor.z);
     let local = dvec3_make(dvec3_dot(d, prograde), dvec3_dot(d, up), dvec3_dot(d, normal));
     let (q, r) = local_to_axial(local.x as f32, local.z as f32, cfg.hex_size_m);
-    let deck_top_m = deck_lookup(&cfg, q, r).map(|v| v as f64);
-    let in_field = deck_top_m.is_some_and(|top| {
-        local.y >= top - 2.0 && local.y <= top + cfg.gravity_field_m as f64
+
+    let feet = local.y as f32;
+    let (support_m, ceiling_m, column_top_m, embedded, in_field) = with_spans(&cfg, q, r, |spans| {
+        if spans.is_empty() {
+            return (None, None, None, false, false);
+        }
+        let embedded = spans.iter().any(|&(bot, top)| feet > bot + 0.05 && feet < top - 0.05);
+        /* Highest solid top the feet can rest on (step-up included). */
+        let support = spans
+            .iter()
+            .map(|s| s.1)
+            .filter(|&top| top <= feet + cfg.step_up_m)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let support = (support > f32::NEG_INFINITY).then_some(support as f64);
+        /* Underside of the next solid strictly above the support (or
+         * the feet when hanging in open air below every span). */
+        let over = support.map(|s| s as f32).unwrap_or(feet);
+        let ceiling = spans
+            .iter()
+            .map(|s| s.0)
+            .filter(|&bot| bot > over + 0.01)
+            .fold(f32::INFINITY, f32::min);
+        let ceiling = (ceiling < f32::INFINITY).then_some(ceiling as f64);
+        let lowest = spans.iter().map(|s| s.0).fold(f32::INFINITY, f32::min);
+        let top = spans.iter().map(|s| s.1).fold(f32::NEG_INFINITY, f32::max);
+        let in_field = feet >= lowest - 2.0 && feet <= top + cfg.gravity_field_m;
+        (support, ceiling, Some(top as f64), embedded, in_field)
     });
-    StationFrame { anchor, prograde, up, normal, station_vel, local, deck_top_m, in_field }
+
+    StationFrame {
+        anchor,
+        prograde,
+        up,
+        normal,
+        station_vel,
+        local,
+        support_m,
+        ceiling_m,
+        column_top_m,
+        embedded,
+        in_field,
+    }
 }
 
 impl StationFrame {
@@ -877,53 +1142,87 @@ mod tests {
     }
 
     #[test]
-    fn wheel_station_shell_counts_by_section() {
-        /* Default wheel: outer ring 10, 3 wide, 2-layer slab; six spokes;
-         * radius-3 hotel, 10 layers; six 7-hex pads + bridges. All counts
-         * derived from the centered-hex identities, not eyeballed. */
+    fn hotel_station_shell_sections_and_palette() {
+        /* Default wheel: ring 10 (3 wide), 2-layer slab, radius-4 hotel
+         * with 5 storeys of (1 slab + 3 air), glazed courtyard, pads. */
         let cfg = StationConfig::DEFAULT;
+        assert!((layer_h(&cfg) - 1.25).abs() < 1e-6, "person-scale layers");
         let prisms = shell(&cfg);
-        let annulus = hexes_per_deck(10) - hexes_per_deck(7); /* 162 ring cells */
-        assert_eq!(annulus, 162);
-        let ring = annulus * 2 + 60; /* slab x2 + neon parapet */
-        let spokes = 6 * 4 * 2; /* k = 4..7, 2 slab layers */
-        let tower = 18 * 10 + 19 * 2 + 2; /* walls + floor/roof + spire */
-        /* Bridge + centre + 6 neighbours, minus the neighbour that lands
-         * back on the bridge cell (dedup keeps the first writer). */
-        let pads = 6 * (2 + 2 + 6 * 2 - 2);
-        assert_eq!(prisms.len() as u32, ring + spokes as u32 + tower + pads as u32);
-        assert_eq!(prisms.len(), 736);
-        /* Palette: neon = parapet 60 + hotel bands 3x18 + pad markers 6;
-         * signs = crown ring 18 + spire 2; carpet = hotel lobby 19. */
-        let count = |b: Block| prisms.iter().filter(|p| p.block == b).count();
-        assert_eq!(count(Block::NeonTrim), 60 + 54 + 6);
-        assert_eq!(count(Block::CasinoSign), 20);
-        assert_eq!(count(Block::CasinoCarpet), 19);
-        assert_eq!(count(Block::CasinoWall), 5 * 18); /* facade minus bands/base/crown */
         /* No duplicate cells: every (q, r, layer) appears once. */
         let mut seen = std::collections::HashSet::new();
         for p in &prisms {
             assert!(seen.insert((p.q, p.r, p.layer)), "dup at {:?}", (p.q, p.r, p.layer));
         }
+        let count = |m: StationMat| prisms.iter().filter(|p| p.mat == m).count();
+        /* Courtyard glazing: D(7)-D(4) cells minus the 18 spoke cells,
+         * one glass layer each, plus a glazed window band per storey. */
+        let courtyard = (hexes_per_deck(7) - hexes_per_deck(4) - 18) as usize;
+        assert_eq!(courtyard, 90);
+        let glass_windows = count(StationMat::Glass) - courtyard;
+        assert!(
+            glass_windows >= 5 * 8,
+            "every storey carries a glazed window band (got {glass_windows} panes)"
+        );
+        /* Plants: deterministic hash scatter over the courtyard glass. */
+        let plants: Vec<_> = prisms.iter().filter(|p| p.mat == StationMat::Plant).collect();
+        assert!(plants.len() >= 8, "courtyard has decorative planting");
+        for p in &plants {
+            assert!(
+                seen.contains(&(p.q, p.r, p.layer - 1)),
+                "hedge at {:?} sits on the glass deck",
+                (p.q, p.r)
+            );
+        }
+        /* Interior slabs: 37 interior cells x (5 storeys + roof) minus
+         * 4 stairwell-opening cells per slab above the ground floor. */
+        let interior = prisms
+            .iter()
+            .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
+            .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
+            .count();
+        assert_eq!(interior, 37 * 6 - 5 * 4);
+        /* Room lights: the (0,0) light tile on every storey slab. */
+        assert!(count(StationMat::Neon) > 60, "parapet + storey bands + room lights");
+        assert_eq!(count(StationMat::Sign), 24 + 2, "marquee crown ring + spire");
     }
 
     #[test]
-    fn deck_map_and_axial_roundtrip() {
+    fn hotel_floors_are_walkable_and_stairs_climb() {
         let cfg = StationConfig::DEFAULT;
-        let map = deck_map(&cfg);
-        let lh = layer_h(&cfg); /* 2.5 m */
-        /* Spire column tops the hotel; ring deck 5 m; parapet 7.5 m;
-         * pad centre 5 m; hotel wall/roof 25 m; between-spoke gap: none. */
-        assert_eq!(map.get(&(0, 0)).copied(), Some(12.0 * lh)); /* spire top 30 m */
-        assert_eq!(map.get(&(9, 0)).copied(), Some(2.0 * lh));
-        assert_eq!(map.get(&(10, 0)).copied(), Some(3.0 * lh));
-        assert_eq!(map.get(&(12, 0)).copied(), Some(2.0 * lh));
-        assert_eq!(map.get(&(3, 0)).copied(), Some(10.0 * lh));
-        assert_eq!(map.get(&(1, 1)).copied(), Some(10.0 * lh)); /* under the roof */
-        /* (4,2) is dist 6: inside the wheel but off every spoke line -
-         * open space between spokes. ((5,3) would be ring deck, dist 8.) */
-        assert!(map.get(&(4, 2)).is_none(), "gap between spokes is open space");
-        /* local_to_axial inverts axial_to_local across the structure. */
+        let lh = layer_h(&cfg);
+        let spans = column_spans(&cfg);
+        /* An interior room column: six storey slabs (incl. roof), each
+         * with >= 3 air layers of clearance above its walking surface. */
+        let col = spans.get(&(1, 1)).expect("interior column occupied");
+        assert_eq!(col.len(), 6, "5 storeys + roof");
+        for w in col.windows(2) {
+            let clearance = w[1].0 - w[0].1;
+            assert!(
+                clearance >= 3.0 * lh - 1e-4,
+                "storey clearance {clearance} < 3 air layers"
+            );
+        }
+        /* Ground floor is level with the courtyard deck. */
+        assert!((col[0].1 - cfg.slab_layers as f32 * lh).abs() < 1e-4);
+        /* Stairs: 8 treads per storey, each rise within the step-up
+         * allowance, topping out exactly on the roof deck. */
+        let steps = stairs(&cfg);
+        assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize);
+        let rise = floor_pitch(&cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
+        assert!(rise <= cfg.step_up_m, "tread rise {rise} must be walkable");
+        let roof_top = (roof_layer(&cfg) + 1) as f32 * lh;
+        let max_top = steps.iter().map(|s| s.top_m).fold(f32::MIN, f32::max);
+        assert!((max_top - roof_top).abs() < 1e-4, "spiral tops out on the roof");
+        /* The hotel wall is one merged solid: no mid-wall ledge to stand
+         * on (walls are impassable), while the lobby door column keeps a
+         * walkable gap at deck level. */
+        let wall = spans.get(&(4, -1)).expect("facade column");
+        assert_eq!(wall.len(), 1, "facade merges into one solid interval");
+        let door = spans.get(&(4, 0)).expect("door column");
+        assert_eq!(door.len(), 2, "doorway splits the column");
+        let gap = door[1].0 - door[0].1;
+        assert!(gap >= 3.0 * lh - 1e-4, "door gap {gap} walkable");
+        /* Axial pick still inverts across the structure. */
         for (q, r) in [(0, 0), (10, 0), (-7, 3), (4, -9), (12, 0), (0, -12)] {
             let (x, z) = axial_to_local(q, r, cfg.hex_size_m);
             assert_eq!(local_to_axial(x, z, cfg.hex_size_m), (q, r));
@@ -931,26 +1230,54 @@ mod tests {
     }
 
     #[test]
-    fn frame_sample_field_and_deck_support() {
+    fn frame_sample_supports_interior_floors() {
         set_config(StationConfig::DEFAULT);
+        let cfg = config();
+        let lh = layer_h(&cfg);
         let t = 12.34;
         let anchor = orbit_pos(t);
-        /* Directly over the hotel spire: deck under us, inside the field. */
         let f0 = frame_sample(anchor, t);
-        /* The anchor itself sits at local origin: over column (0,0). */
-        assert_eq!(f0.deck_top_m.map(|v| v as f32), Some(30.0));
-        let over = f0.local_to_world(dvec3_make(0.0, 40.0, 0.0));
-        let f = frame_sample(over, t);
-        assert!(f.in_field, "10 m over the spire top is inside the field");
-        assert!((f.local.y - 40.0).abs() < 1e-6);
-        /* 100 m above: out of the field. */
+        /* Inside storey 2 of the hotel at cell (1,1): feet just above
+         * the storey slab -> support is THAT slab, ceiling the next one,
+         * still inside the artificial-gravity field. */
+        let (x, z) = axial_to_local(1, 1, cfg.hex_size_m);
+        let slab_top = (floor_slab_layer(&cfg, 2) + 1) as f32 * lh; /* 12.5 */
+        let inside = f0.local_to_world(dvec3_make(x as f64, slab_top as f64 + 0.4, z as f64));
+        let fi = frame_sample(inside, t);
+        assert!(fi.in_field);
+        assert_eq!(fi.support_m.map(|v| v as f32), Some(slab_top));
+        let next_bottom = floor_slab_layer(&cfg, 3) as f32 * lh;
+        assert_eq!(fi.ceiling_m.map(|v| v as f32), Some(next_bottom));
+        assert!(!fi.embedded);
+        /* Embedded inside the facade wall: flagged for pushback. */
+        let (wx, wz) = axial_to_local(4, -1, cfg.hex_size_m);
+        let in_wall = f0.local_to_world(dvec3_make(wx as f64, 10.0, wz as f64));
+        assert!(frame_sample(in_wall, t).embedded);
+        /* Far above the roof: out of the field; between spokes with the
+         * glass floor: the glass top IS the support. */
         let high = f0.local_to_world(dvec3_make(0.0, 130.0, 0.0));
         assert!(!frame_sample(high, t).in_field);
-        /* Off the structure (between spokes): no deck, no field. */
-        let (x, z) = axial_to_local(4, 2, config().hex_size_m);
-        let gap = f0.local_to_world(dvec3_make(x as f64, 10.0, z as f64));
-        let fg = frame_sample(gap, t);
-        assert!(fg.deck_top_m.is_none() && !fg.in_field);
+        let mut glass_checked = false;
+        for (gq, gr) in [(5, 1), (6, 1), (5, 2), (-5, 2), (1, 5)] {
+            if hex_dist(gq, gr) > cfg.tower_radius as i32 && hex_dist(gq, gr) < 8 {
+                let (gx, gz) = axial_to_local(gq, gr, cfg.hex_size_m);
+                let over = f0.local_to_world(dvec3_make(gx as f64, 4.0, gz as f64));
+                let fg = frame_sample(over, t);
+                if let Some(s) = fg.support_m {
+                    /* Bare glass supports at deck level; a scattered
+                     * hedge cell supports one layer higher. */
+                    let glass_top = cfg.slab_layers as f32 * lh;
+                    let hedge_top = glass_top + lh;
+                    let s = s as f32;
+                    assert!(
+                        (s - glass_top).abs() < 1e-4 || (s - hedge_top).abs() < 1e-4,
+                        "courtyard support {s} is neither glass nor hedge top"
+                    );
+                    glass_checked = true;
+                }
+            }
+        }
+        assert!(glass_checked, "at least one courtyard glass column sampled");
         /* Round trip: local -> world -> local. */
         let p = f0.local_to_world(dvec3_make(7.0, 9.0, -3.0));
         let fr = frame_sample(p, t);
@@ -994,11 +1321,14 @@ mod tests {
             let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
             assert!((speed - orbit_speed_mps()).abs() < 1e-9);
         }
-        /* Full period returns to the phase-0 anchor on the +x axis. */
+        /* Full period returns to the phase-0 anchor, which sits
+         * orbit_phase0_deg off the +x axis (clear of the launch site). */
         let p0 = orbit_pos(0.0);
         let p1 = orbit_pos(orbit_period_s());
         assert!((p0.x - p1.x).abs() < 1e-6 && (p0.z - p1.z).abs() < 1e-6);
-        assert!((p0.x - (b.pos_x + r)).abs() < 1e-9);
+        let ph0 = (config().orbit_phase0_deg as f64).to_radians();
+        assert!((p0.x - (b.pos_x + r * ph0.cos())).abs() < 1e-6);
+        assert!((p0.z - (b.pos_z + r * ph0.sin())).abs() < 1e-6);
     }
 
     #[test]

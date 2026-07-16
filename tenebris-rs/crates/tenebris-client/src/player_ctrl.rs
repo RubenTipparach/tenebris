@@ -1544,29 +1544,50 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             let damp = (-(l.space_drag as f64) * dt as f64).exp();
             p.velocity = dvec3_scale(p.velocity, damp);
         }
+        let pre_step = p.position;
         p.position = dvec3_add(p.position, dvec3_scale(p.velocity, dt as f64));
         p.grounded = false;
-        /* Deck landing: resample at the integrated position; if the feet
-         * crossed the deck column's top while moving deck-ward RELATIVE
-         * to the station, clamp onto the deck, kill the vertical relative
-         * velocity, and bleed the tangential slide (deck friction) - the
-         * player stands on the station and rides its orbit. */
+        /* Station collision: resample at the integrated position.
+         * - Walked into a wall column (embedded): cancel the horizontal
+         *   step that put us there (cheap lateral wall collision).
+         * - Floor landing: feet crossed the SUPPORT under them (the
+         *   storey / stair tread they're over, not just the roof) while
+         *   moving deck-ward relative to the station -> clamp on, kill
+         *   vertical relative velocity, bleed slide via deck friction.
+         * - Ceiling: head met the underside of the storey above while
+         *   rising -> stop the rise. */
         if sf.in_field {
-            let sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
-            if let Some(top) = sf2.deck_top_m {
-                let mut rel =
-                    sf2.world_vec_to_local(dvec3_sub(p.velocity, sf2.station_vel));
-                if sf2.local.y <= top + 0.05 && rel.y <= 0.0 {
-                    let mut lp = sf2.local;
-                    lp.y = top;
+            let mut sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
+            if sf2.embedded {
+                let pre = tenebris_core::station::frame_sample(pre_step, sim_t);
+                let lp = dvec3_make(pre.local.x, sf2.local.y, pre.local.z);
+                p.position = sf2.local_to_world(lp);
+                sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
+            }
+            let mut rel = sf2.world_vec_to_local(dvec3_sub(p.velocity, sf2.station_vel));
+            let mut lp = sf2.local;
+            let mut touched = false;
+            if let Some(support) = sf2.support_m {
+                if lp.y <= support + 0.05 && rel.y <= 0.0 {
+                    lp.y = support;
                     rel.y = 0.0;
                     let damp = (-(scfg.deck_friction as f64) * dt as f64).exp();
                     rel.x *= damp;
                     rel.z *= damp;
-                    p.position = sf2.local_to_world(lp);
-                    p.velocity = dvec3_add(sf2.station_vel, sf2.local_vec_to_world(rel));
                     p.grounded = true;
+                    touched = true;
                 }
+            }
+            if let Some(ceiling) = sf2.ceiling_m {
+                if lp.y + scfg.head_clearance_m as f64 >= ceiling && rel.y > 0.0 {
+                    lp.y = ceiling - scfg.head_clearance_m as f64;
+                    rel.y = 0.0;
+                    touched = true;
+                }
+            }
+            if touched {
+                p.position = sf2.local_to_world(lp);
+                p.velocity = dvec3_add(sf2.station_vel, sf2.local_vec_to_world(rel));
             }
         }
         p.last_tile = -1;
