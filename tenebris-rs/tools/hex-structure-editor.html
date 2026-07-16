@@ -38,6 +38,11 @@
     border-radius: 4px; padding: 5px 8px; font: inherit; width: 150px;
   }
   input[type=text]:focus { outline: none; border-color: var(--cyan); }
+  select {
+    background: #14161f; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 6px; font: inherit; max-width: 150px;
+  }
+  select:focus { outline: none; border-color: var(--cyan); }
   button {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 4px; padding: 5px 10px; font: inherit; cursor: pointer;
@@ -125,6 +130,18 @@
     <span class="lbl">View</span>
     <button class="view active" id="view2d" title="2 — top-down grid">2D</button>
     <button class="view" id="view3d" title="3 — orbit preview, click faces to build">3D</button>
+    <button class="view" id="viewFp" title="4 — perspective walk: WASD move, Q/E down/up, drag looks">Walk</button>
+  </div>
+  <div class="group layerbox">
+    <span class="lbl">Slice</span>
+    <button id="sliceDn" title="{ key">&minus;</button>
+    <span class="num" id="sliceNum">off</span>
+    <button id="sliceUp" title="} key">+</button>
+  </div>
+  <div class="group">
+    <span class="lbl">Templates</span>
+    <select id="tplSel" aria-label="Built-in templates"></select>
+    <button id="tplLoad">Load</button>
   </div>
   <div class="spacer"></div>
   <div class="group">
@@ -147,7 +164,7 @@
   <span>cells placed <b id="countOut">0</b></span>
   <span>zoom <b id="zoomOut">100%</b></span>
   <span id="saveState">saved</span>
-  <span class="hint"><a href="/admin" style="color:var(--cyan);text-decoration:none">&larr; portal</a> &middot; <b>V</b> 2D/3D &middot; 2D: drag paints &middot; 3D: drag orbits, click a face to build, right-click erases &middot; wheel zoom &middot; space-drag pan &middot; alt-click pick &middot; [ ] layer &middot; exports belong in tenebris-rs/assets/templates/</span>
+  <span class="hint"><a href="/admin" style="color:var(--cyan);text-decoration:none">&larr; portal</a> &middot; <b>V</b> cycles 2D/3D/Walk &middot; 2D: drag paints &middot; 3D: drag orbits, click a face builds, right-click erases &middot; Walk: WASD + Q/E move, drag looks, wheel dollies &middot; [ ] layer &middot; { } slice &middot; exports belong in tenebris-rs/assets/templates/</span>
 </footer>
 <div id="toast" role="status"></div>
 
@@ -169,6 +186,10 @@ const TILES = {
   glass:        { name: "Station Glass", b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAX0lEQVR42mOYNm/Nf0owA4h4+PX/iWln/y/FwDCFWOQyp13aBzcAJIDVEFIMwGoIqQZgGEKOASiGkGsA3BCiDaA0GkdQOkCWJzsdwOQpSgcgeRQDQBxsGGYAPnmKoxEAsNvzCw3PDDUAAAAASUVORK5CYII=" },
   slot_machine: { name: "Slot Machine",  b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAYElEQVR42mO4ssLhPyWYAUSc0LD4/yElD0wjY0JiKAaQg+EGUOQFBRWb/5RguAGvX3+AY2L4WA04K6eLogEfnzYGUOQFigORbANokg5snLywYpK9ALOFtmEgIqbynxIMADDzHEnf0gPMAAAAAElFTkSuQmCC" },
   card_table:   { name: "Card Table",    b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAj0lEQVR42mO4ssLhPyWYAURo5DmhYIUYMwwxbOIoBhCrCVmcJBdgE8Mw4PXrDyiYZC+ANMnJKeE0gCwX4HMVTgNgroCJnZXTRTEA5hWsXsDlApgheF2ALaBI8gK2qMJmAFYvgJwIw7gSD7pFGAbA/IpNk1XMMTjG6gVkF+AyAGQBTgPQnY3OR3cBSl6gBAMAlLZYvXAMFAIAAAAASUVORK5CYII=" },
+  trade_terminal:   { name: "Trade Terminal",   b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAYElEQVR42mO4ssLhPyWYAUTI6WiQhckywONSBekGwDSBaBgmaACyTcga8RqAbhMuzVgNwKUIhM/K6YIxuuH0MQCmGd0QigwgKRopNoColIgrqghhuAF5Fe1kYeoZQAkGAG5ZJqvtqv1fAAAAAElFTkSuQmCC" },
+  research_console: { name: "Research Console", b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAW0lEQVR42mPIq2j/TwlmABFyOhpkYZwGRF36jxUTNACXQlzyKAagS+KyHZmPYQC6omkVr8EYmyE4DUDWjI1NewMo8gJFgUhxNFIlIZGdlNH9RSwfbgDFuZESDADk3UTeg+NrNAAAAABJRU5ErkJggg==" },
+  museum_case:      { name: "Museum Case",      b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAT0lEQVR42mO4ssLhPyWYAUS4TbtEFkYxQErJhCRMlAHTVp0AY7IMgGnGZQheA9A1YzOEdgbg0oxuCFEuwBeY1I9GihJSXkU7WXg4GUAJBgDZ+Fq/05tsbgAAAABJRU5ErkJggg==" },
+  light_fixture:    { name: "Light Fixture",    b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAATklEQVR42mPIq2j/TwlmwCWx5dl/FEy0AegaCRnEgEvzr1+vUTAuQxiI0YzPEAZiNeMyBMUAQprRDRmOBpAdiBRHI1USElWSMlUyE6kYAEw9MxbMucDzAAAAAElFTkSuQmCC" },
 };
 TILES.neon_pink.b64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAbklEQVR42mNQUtX5D8M6Bhb/kfnoGJs8Az6N+AyEyTEQqwmXOAOxzsdlGAOpfsbpAhCeNmcZXsXY5BmmaeT9pwQz/A848Z8SzPD/4a//lGDKXUBxGFAcC+TEP0ZCIicTEUyJxKRCkBoGUjWgiwEAtYzsBkNeNN0AAAAASUVORK5CYII=";
 TILES.neon_gold.b64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAbklEQVR42mNQUtX5D8M6Bhb/kfnoGJs8Az6N+AyEyTEQqwmXOAOxzsdlGAOpfsbpAhCeNmcZXsXY5BmmZcr9pwQz/N/n9p8SzPD/w9n/lGDKXUBxGFAcC+TEP0ZCIicTEUyJxKRCkBoGUjWgiwEA5+jlxjqoRkoAAAAASUVORK5CYII=";
@@ -192,6 +213,8 @@ for (const m of MATS) {
   img.onload = () => { try { COL[m] = avgColor(img); } catch (e) {} draw(); };
   IMG[m] = img;
 }
+const BUILTIN_TEMPLATES = {"stairway":{"name":"stairway","mats":["floor","hull","neon_gold"],"cells":[[0,-1,0,1],[1,-1,0,1],[-1,0,0,1],[0,0,0,0],[1,0,0,1],[-1,1,0,1],[0,1,0,1],[1,-1,1,1],[0,0,1,2],[0,-1,2,1],[0,0,2,0],[-1,0,3,1],[0,0,3,0],[0,0,4,2],[-1,1,4,1],[0,0,5,0],[0,1,5,1],[0,0,6,0],[1,0,6,1],[1,-1,7,1],[0,0,7,2],[0,-1,8,1],[0,0,8,0],[-1,0,9,1],[0,0,9,0],[0,0,10,2],[-1,1,10,1],[0,0,11,0],[0,1,11,1],[0,0,12,0],[1,0,12,1],[1,-1,13,1],[0,0,13,2],[0,-1,14,1],[0,0,14,0],[-1,0,15,1],[0,0,15,0],[0,0,16,2],[-1,1,16,1]]},"casino-station":{"name":"casino-station","mats":["card_table","carpet","floor","glass","hull","light_fixture","museum_case","neon","neon_gold","neon_pink","research_console","sign","slot_machine","trade_terminal","wall"],"cells":[[0,-13,0,4],[1,-13,0,4],[12,-13,0,4],[13,-13,0,4],[-1,-12,0,4],[0,-12,0,4],[1,-12,0,4],[11,-12,0,4],[12,-12,0,4],[13,-12,0,4],[-1,-11,0,4],[0,-11,0,4],[11,-11,0,4],[12,-11,0,4],[0,-10,0,4],[1,-10,0,4],[2,-10,0,4],[3,-10,0,4],[4,-10,0,4],[5,-10,0,4],[6,-10,0,4],[7,-10,0,4],[8,-10,0,4],[9,-10,0,4],[10,-10,0,4],[-1,-9,0,4],[0,-9,0,4],[1,-9,0,4],[2,-9,0,4],[3,-9,0,4],[4,-9,0,4],[5,-9,0,4],[6,-9,0,4],[7,-9,0,4],[8,-9,0,4],[9,-9,0,4],[10,-9,0,4],[-2,-8,0,4],[-1,-8,0,4],[0,-8,0,4],[1,-8,0,4],[2,-8,0,4],[3,-8,0,4],[4,-8,0,4],[5,-8,0,4],[6,-8,0,4],[7,-8,0,4],[8,-8,0,4],[9,-8,0,4],[10,-8,0,4],[-3,-7,0,4],[-2,-7,0,4],[-1,-7,0,4],[0,-7,0,4],[7,-7,0,4],[8,-7,0,4],[9,-7,0,4],[10,-7,0,4],[-4,-6,0,4],[-3,-6,0,4],[-2,-6,0,4],[0,-6,0,4],[6,-6,0,4],[8,-6,0,4],[9,-6,0,4],[10,-6,0,4],[-5,-5,0,4],[-4,-5,0,4],[-3,-5,0,4],[0,-5,0,4],[5,-5,0,4],[8,-5,0,4],[9,-5,0,4],[10,-5,0,4],[-6,-4,0,4],[-5,-4,0,4],[-4,-4,0,4],[0,-4,0,4],[1,-4,0,4],[2,-4,0,4],[3,-4,0,4],[4,-4,0,4],[8,-4,0,4],[9,-4,0,4],[10,-4,0,4],[-7,-3,0,4],[-6,-3,0,4],[-5,-3,0,4],[-1,-3,0,4],[4,-3,0,4],[8,-3,0,4],[9,-3,0,4],[10,-3,0,4],[-8,-2,0,4],[-7,-2,0,4],[-6,-2,0,4],[-2,-2,0,4],[4,-2,0,4],[8,-2,0,4],[9,-2,0,4],[10,-2,0,4],[-12,-1,0,4],[-11,-1,0,4],[-9,-1,0,4],[-8,-1,0,4],[-7,-1,0,4],[-3,-1,0,4],[4,-1,0,4],[8,-1,0,4],[9,-1,0,4],[10,-1,0,4],[12,-1,0,4],[13,-1,0,4],[-13,0,0,4],[-12,0,0,4],[-11,0,0,4],[-10,0,0,4],[-9,0,0,4],[-8,0,0,4],[-7,0,0,4],[-6,0,0,4],[-5,0,0,4],[-4,0,0,4],[4,0,0,4],[5,0,0,4],[6,0,0,4],[7,0,0,4],[8,0,0,4],[9,0,0,4],[10,0,0,4],[11,0,0,4],[12,0,0,4],[13,0,0,4],[-13,1,0,4],[-12,1,0,4],[-10,1,0,4],[-9,1,0,4],[-8,1,0,4],[-4,1,0,4],[3,1,0,4],[7,1,0,4],[8,1,0,4],[9,1,0,4],[11,1,0,4],[12,1,0,4],[-10,2,0,4],[-9,2,0,4],[-8,2,0,4],[-4,2,0,4],[2,2,0,4],[6,2,0,4],[7,2,0,4],[8,2,0,4],[-10,3,0,4],[-9,3,0,4],[-8,3,0,4],[-4,3,0,4],[1,3,0,4],[5,3,0,4],[6,3,0,4],[7,3,0,4],[-10,4,0,4],[-9,4,0,4],[-8,4,0,4],[-4,4,0,4],[-3,4,0,4],[-2,4,0,4],[-1,4,0,4],[0,4,0,4],[4,4,0,4],[5,4,0,4],[6,4,0,4],[-10,5,0,4],[-9,5,0,4],[-8,5,0,4],[-5,5,0,4],[0,5,0,4],[3,5,0,4],[4,5,0,4],[5,5,0,4],[-10,6,0,4],[-9,6,0,4],[-8,6,0,4],[-6,6,0,4],[0,6,0,4],[2,6,0,4],[3,6,0,4],[4,6,0,4],[-10,7,0,4],[-9,7,0,4],[-8,7,0,4],[-7,7,0,4],[0,7,0,4],[1,7,0,4],[2,7,0,4],[3,7,0,4],[-10,8,0,4],[-9,8,0,4],[-8,8,0,4],[-7,8,0,4],[-6,8,0,4],[-5,8,0,4],[-4,8,0,4],[-3,8,0,4],[-2,8,0,4],[-1,8,0,4],[0,8,0,4],[1,8,0,4],[2,8,0,4],[-10,9,0,4],[-9,9,0,4],[-8,9,0,4],[-7,9,0,4],[-6,9,0,4],[-5,9,0,4],[-4,9,0,4],[-3,9,0,4],[-2,9,0,4],[-1,9,0,4],[0,9,0,4],[1,9,0,4],[-10,10,0,4],[-9,10,0,4],[-8,10,0,4],[-7,10,0,4],[-6,10,0,4],[-5,10,0,4],[-4,10,0,4],[-3,10,0,4],[-2,10,0,4],[-1,10,0,4],[0,10,0,4],[-12,11,0,4],[-11,11,0,4],[0,11,0,4],[1,11,0,4],[-13,12,0,4],[-12,12,0,4],[-11,12,0,4],[-1,12,0,4],[0,12,0,4],[1,12,0,4],[-13,13,0,4],[-12,13,0,4],[-1,13,0,4],[0,13,0,4],[0,-13,1,2],[1,-13,1,2],[12,-13,1,2],[13,-13,1,2],[-1,-12,1,2],[0,-12,1,8],[1,-12,1,2],[11,-12,1,2],[12,-12,1,8],[13,-12,1,2],[-1,-11,1,2],[0,-11,1,2],[11,-11,1,2],[12,-11,1,2],[0,-10,1,2],[1,-10,1,2],[2,-10,1,2],[3,-10,1,2],[4,-10,1,2],[5,-10,1,2],[6,-10,1,2],[7,-10,1,2],[8,-10,1,2],[9,-10,1,2],[10,-10,1,2],[-1,-9,1,2],[0,-9,1,2],[1,-9,1,2],[2,-9,1,2],[3,-9,1,2],[4,-9,1,2],[5,-9,1,2],[6,-9,1,2],[7,-9,1,2],[8,-9,1,2],[9,-9,1,2],[10,-9,1,2],[-2,-8,1,2],[-1,-8,1,2],[0,-8,1,2],[1,-8,1,2],[2,-8,1,2],[3,-8,1,2],[4,-8,1,2],[5,-8,1,2],[6,-8,1,2],[7,-8,1,2],[8,-8,1,2],[9,-8,1,2],[10,-8,1,2],[-3,-7,1,2],[-2,-7,1,2],[-1,-7,1,2],[0,-7,1,2],[1,-7,1,3],[2,-7,1,3],[3,-7,1,3],[4,-7,1,3],[5,-7,1,3],[6,-7,1,3],[7,-7,1,2],[8,-7,1,2],[9,-7,1,2],[10,-7,1,2],[-4,-6,1,2],[-3,-6,1,2],[-2,-6,1,2],[-1,-6,1,3],[0,-6,1,2],[1,-6,1,3],[2,-6,1,3],[3,-6,1,3],[4,-6,1,3],[5,-6,1,3],[6,-6,1,2],[7,-6,1,3],[8,-6,1,2],[9,-6,1,2],[10,-6,1,2],[-5,-5,1,2],[-4,-5,1,2],[-3,-5,1,2],[-2,-5,1,3],[-1,-5,1,3],[0,-5,1,2],[1,-5,1,3],[2,-5,1,3],[3,-5,1,3],[4,-5,1,3],[5,-5,1,2],[6,-5,1,3],[7,-5,1,3],[8,-5,1,2],[9,-5,1,2],[10,-5,1,2],[-6,-4,1,2],[-5,-4,1,2],[-4,-4,1,2],[-3,-4,1,3],[-2,-4,1,3],[-1,-4,1,3],[0,-4,1,4],[1,-4,1,4],[2,-4,1,4],[3,-4,1,4],[4,-4,1,4],[5,-4,1,3],[6,-4,1,3],[7,-4,1,3],[8,-4,1,2],[9,-4,1,2],[10,-4,1,2],[-7,-3,1,2],[-6,-3,1,2],[-5,-3,1,2],[-4,-3,1,3],[-3,-3,1,3],[-2,-3,1,3],[-1,-3,1,4],[0,-3,1,1],[1,-3,1,1],[2,-3,1,1],[3,-3,1,1],[4,-3,1,4],[5,-3,1,3],[6,-3,1,3],[7,-3,1,3],[8,-3,1,2],[9,-3,1,2],[10,-3,1,2],[-8,-2,1,2],[-7,-2,1,2],[-6,-2,1,2],[-5,-2,1,3],[-4,-2,1,3],[-3,-2,1,3],[-2,-2,1,4],[-1,-2,1,1],[0,-2,1,1],[1,-2,1,1],[2,-2,1,1],[3,-2,1,1],[4,-2,1,4],[5,-2,1,3],[6,-2,1,3],[7,-2,1,3],[8,-2,1,2],[9,-2,1,2],[10,-2,1,2],[-12,-1,1,2],[-11,-1,1,2],[-9,-1,1,2],[-8,-1,1,2],[-7,-1,1,2],[-6,-1,1,3],[-5,-1,1,3],[-4,-1,1,3],[-3,-1,1,4],[-2,-1,1,1],[-1,-1,1,1],[0,-1,1,1],[1,-1,1,1],[2,-1,1,1],[3,-1,1,1],[4,-1,1,4],[5,-1,1,3],[6,-1,1,3],[7,-1,1,3],[8,-1,1,2],[9,-1,1,2],[10,-1,1,2],[12,-1,1,2],[13,-1,1,2],[-13,0,1,2],[-12,0,1,8],[-11,0,1,2],[-10,0,1,2],[-9,0,1,2],[-8,0,1,2],[-7,0,1,2],[-6,0,1,2],[-5,0,1,2],[-4,0,1,4],[-3,0,1,1],[-2,0,1,1],[-1,0,1,1],[0,0,1,2],[1,0,1,1],[2,0,1,1],[3,0,1,1],[4,0,1,4],[5,0,1,2],[6,0,1,2],[7,0,1,2],[8,0,1,2],[9,0,1,2],[10,0,1,2],[11,0,1,2],[12,0,1,8],[13,0,1,2],[-13,1,1,2],[-12,1,1,2],[-10,1,1,2],[-9,1,1,2],[-8,1,1,2],[-7,1,1,3],[-6,1,1,3],[-5,1,1,3],[-4,1,1,4],[-3,1,1,1],[-2,1,1,1],[-1,1,1,1],[0,1,1,1],[1,1,1,1],[2,1,1,1],[3,1,1,4],[4,1,1,3],[5,1,1,3],[6,1,1,3],[7,1,1,2],[8,1,1,2],[9,1,1,2],[11,1,1,2],[12,1,1,2],[-10,2,1,2],[-9,2,1,2],[-8,2,1,2],[-7,2,1,3],[-6,2,1,3],[-5,2,1,3],[-4,2,1,4],[-3,2,1,1],[-2,2,1,1],[-1,2,1,1],[0,2,1,1],[1,2,1,1],[2,2,1,4],[3,2,1,3],[4,2,1,3],[5,2,1,3],[6,2,1,2],[7,2,1,2],[8,2,1,2],[-10,3,1,2],[-9,3,1,2],[-8,3,1,2],[-7,3,1,3],[-6,3,1,3],[-5,3,1,3],[-4,3,1,4],[-3,3,1,1],[-2,3,1,1],[-1,3,1,1],[0,3,1,1],[1,3,1,4],[2,3,1,3],[3,3,1,3],[4,3,1,3],[5,3,1,2],[6,3,1,2],[7,3,1,2],[-10,4,1,2],[-9,4,1,2],[-8,4,1,2],[-7,4,1,3],[-6,4,1,3],[-5,4,1,3],[-4,4,1,4],[-3,4,1,4],[-2,4,1,4],[-1,4,1,4],[0,4,1,4],[1,4,1,3],[2,4,1,3],[3,4,1,3],[4,4,1,2],[5,4,1,2],[6,4,1,2],[-10,5,1,2],[-9,5,1,2],[-8,5,1,2],[-7,5,1,3],[-6,5,1,3],[-5,5,1,2],[-4,5,1,3],[-3,5,1,3],[-2,5,1,3],[-1,5,1,3],[0,5,1,2],[1,5,1,3],[2,5,1,3],[3,5,1,2],[4,5,1,2],[5,5,1,2],[-10,6,1,2],[-9,6,1,2],[-8,6,1,2],[-7,6,1,3],[-6,6,1,2],[-5,6,1,3],[-4,6,1,3],[-3,6,1,3],[-2,6,1,3],[-1,6,1,3],[0,6,1,2],[1,6,1,3],[2,6,1,2],[3,6,1,2],[4,6,1,2],[-10,7,1,2],[-9,7,1,2],[-8,7,1,2],[-7,7,1,2],[-6,7,1,3],[-5,7,1,3],[-4,7,1,3],[-3,7,1,3],[-2,7,1,3],[-1,7,1,3],[0,7,1,2],[1,7,1,2],[2,7,1,2],[3,7,1,2],[-10,8,1,2],[-9,8,1,2],[-8,8,1,2],[-7,8,1,2],[-6,8,1,2],[-5,8,1,2],[-4,8,1,2],[-3,8,1,2],[-2,8,1,2],[-1,8,1,2],[0,8,1,2],[1,8,1,2],[2,8,1,2],[-10,9,1,2],[-9,9,1,2],[-8,9,1,2],[-7,9,1,2],[-6,9,1,2],[-5,9,1,2],[-4,9,1,2],[-3,9,1,2],[-2,9,1,2],[-1,9,1,2],[0,9,1,2],[1,9,1,2],[-10,10,1,2],[-9,10,1,2],[-8,10,1,2],[-7,10,1,2],[-6,10,1,2],[-5,10,1,2],[-4,10,1,2],[-3,10,1,2],[-2,10,1,2],[-1,10,1,2],[0,10,1,2],[-12,11,1,2],[-11,11,1,2],[0,11,1,2],[1,11,1,2],[-13,12,1,2],[-12,12,1,8],[-11,12,1,2],[-1,12,1,2],[0,12,1,8],[1,12,1,2],[-13,13,1,2],[-12,13,1,2],[-1,13,1,2],[0,13,1,2],[1,-10,2,7],[2,-10,2,7],[3,-10,2,7],[4,-10,2,7],[5,-10,2,7],[6,-10,2,7],[7,-10,2,7],[8,-10,2,7],[9,-10,2,7],[-1,-9,2,7],[10,-9,2,7],[-2,-8,2,7],[10,-8,2,7],[-3,-7,2,7],[10,-7,2,7],[-4,-6,2,7],[3,-6,2,6],[10,-6,2,7],[-5,-5,2,7],[10,-5,2,7],[-6,-4,2,7],[0,-4,2,14],[1,-4,2,14],[2,-4,2,14],[3,-4,2,14],[4,-4,2,14],[10,-4,2,7],[-7,-3,2,7],[-3,-3,2,6],[-1,-3,2,14],[0,-3,2,13],[3,-3,2,10],[4,-3,2,14],[6,-3,2,6],[10,-3,2,7],[-8,-2,2,7],[-2,-2,2,14],[1,-2,2,12],[4,-2,2,14],[10,-2,2,7],[-9,-1,2,7],[-3,-1,2,14],[-1,-1,2,0],[1,-1,2,4],[2,-1,2,0],[10,-1,2,7],[-4,0,2,14],[-3,0,2,10],[0,0,2,8],[3,0,2,13],[-10,1,2,7],[-4,1,2,14],[-2,1,2,12],[1,1,2,12],[3,1,2,14],[9,1,2,7],[-10,2,2,7],[-4,2,2,14],[-1,2,2,0],[2,2,2,14],[8,2,2,7],[-10,3,2,7],[-6,3,2,6],[-4,3,2,14],[-3,3,2,13],[0,3,2,10],[1,3,2,14],[3,3,2,6],[7,3,2,7],[-10,4,2,7],[-4,4,2,14],[-3,4,2,14],[-2,4,2,14],[-1,4,2,14],[0,4,2,14],[6,4,2,7],[-10,5,2,7],[5,5,2,7],[-10,6,2,7],[-3,6,2,6],[4,6,2,7],[-10,7,2,7],[3,7,2,7],[-10,8,2,7],[2,8,2,7],[-10,9,2,7],[1,9,2,7],[-9,10,2,7],[-8,10,2,7],[-7,10,2,7],[-6,10,2,7],[-5,10,2,7],[-4,10,2,7],[-3,10,2,7],[-2,10,2,7],[-1,10,2,7],[0,-4,3,3],[1,-4,3,14],[2,-4,3,3],[3,-4,3,14],[4,-4,3,3],[-1,-3,3,14],[4,-3,3,14],[-2,-2,3,3],[4,-2,3,3],[-3,-1,3,14],[0,-1,3,4],[-4,0,3,3],[0,0,3,2],[-4,1,3,14],[3,1,3,14],[-4,2,3,3],[2,2,3,3],[-4,3,3,14],[1,3,3,14],[-4,4,3,3],[-3,4,3,14],[-2,4,3,3],[-1,4,3,14],[0,4,3,3],[3,-6,4,5],[0,-4,4,14],[1,-4,4,14],[2,-4,4,14],[3,-4,4,14],[4,-4,4,14],[-3,-3,4,5],[-1,-3,4,14],[4,-3,4,14],[6,-3,4,5],[-2,-2,4,14],[4,-2,4,14],[-3,-1,4,14],[-4,0,4,14],[-1,0,4,4],[0,0,4,2],[-4,1,4,14],[3,1,4,14],[-4,2,4,14],[2,2,4,14],[-6,3,4,5],[-4,3,4,14],[1,3,4,14],[3,3,4,5],[-4,4,4,14],[-3,4,4,14],[-2,4,4,14],[-1,4,4,14],[0,4,4,14],[-3,6,4,5],[0,-4,5,14],[1,-4,5,14],[2,-4,5,14],[3,-4,5,14],[4,-4,5,14],[-1,-3,5,14],[4,-3,5,14],[-2,-2,5,14],[4,-2,5,14],[-3,-1,5,14],[-4,0,5,14],[0,0,5,8],[-4,1,5,14],[-1,1,5,4],[3,1,5,14],[-4,2,5,14],[2,2,5,14],[-4,3,5,14],[1,3,5,14],[-4,4,5,14],[-3,4,5,14],[-2,4,5,14],[-1,4,5,14],[0,4,5,14],[0,-4,6,14],[1,-4,6,14],[2,-4,6,14],[3,-4,6,14],[4,-4,6,14],[-1,-3,6,14],[4,-3,6,14],[-2,-2,6,14],[4,-2,6,14],[-3,-1,6,14],[-4,0,6,14],[0,0,6,2],[-4,1,6,14],[0,1,6,4],[3,1,6,14],[-4,2,6,14],[2,2,6,14],[-4,3,6,14],[1,3,6,14],[-4,4,6,14],[-3,4,6,14],[-2,4,6,14],[-1,4,6,14],[0,4,6,14],[0,-4,7,9],[1,-4,7,9],[2,-4,7,9],[3,-4,7,9],[4,-4,7,9],[-1,-3,7,9],[0,-3,7,1],[1,-3,7,1],[2,-3,7,1],[3,-3,7,1],[4,-3,7,9],[-2,-2,7,9],[-1,-2,7,1],[0,-2,7,1],[1,-2,7,1],[2,-2,7,1],[3,-2,7,1],[4,-2,7,9],[-3,-1,7,9],[-2,-1,7,1],[-1,-1,7,1],[2,-1,7,1],[3,-1,7,1],[4,-1,7,11],[-4,0,7,9],[-3,0,7,1],[-2,0,7,1],[0,0,7,2],[1,0,7,4],[2,0,7,1],[3,0,7,1],[4,0,7,11],[-4,1,7,9],[-3,1,7,1],[-2,1,7,1],[1,1,7,1],[2,1,7,1],[3,1,7,9],[-4,2,7,9],[-3,2,7,1],[-2,2,7,1],[-1,2,7,1],[0,2,7,1],[1,2,7,1],[2,2,7,9],[-4,3,7,9],[-3,3,7,1],[-2,3,7,1],[-1,3,7,1],[0,3,7,1],[1,3,7,9],[-4,4,7,9],[-3,4,7,9],[-2,4,7,9],[-1,4,7,9],[0,4,7,9],[0,-4,8,14],[1,-4,8,14],[2,-4,8,14],[3,-4,8,14],[4,-4,8,14],[-1,-3,8,14],[4,-3,8,14],[-2,-2,8,14],[4,-2,8,14],[-3,-1,8,14],[1,-1,8,4],[4,-1,8,14],[-4,0,8,14],[0,0,8,8],[4,0,8,14],[-4,1,8,14],[3,1,8,14],[-4,2,8,14],[2,2,8,14],[-4,3,8,14],[1,3,8,14],[-4,4,8,14],[-3,4,8,14],[-2,4,8,14],[-1,4,8,14],[0,4,8,14],[0,-4,9,3],[1,-4,9,14],[2,-4,9,3],[3,-4,9,14],[4,-4,9,3],[-1,-3,9,14],[4,-3,9,14],[-2,-2,9,3],[4,-2,9,3],[-3,-1,9,14],[0,-1,9,4],[4,-1,9,14],[-4,0,9,3],[0,0,9,2],[4,0,9,3],[-4,1,9,14],[3,1,9,14],[-4,2,9,3],[2,2,9,3],[-4,3,9,14],[1,3,9,14],[-4,4,9,3],[-3,4,9,14],[-2,4,9,3],[-1,4,9,14],[0,4,9,3],[0,-4,10,14],[1,-4,10,14],[2,-4,10,14],[3,-4,10,14],[4,-4,10,14],[-1,-3,10,14],[4,-3,10,14],[-2,-2,10,14],[4,-2,10,14],[-3,-1,10,14],[4,-1,10,14],[-4,0,10,14],[-1,0,10,4],[0,0,10,2],[4,0,10,14],[-4,1,10,14],[3,1,10,14],[-4,2,10,14],[2,2,10,14],[-4,3,10,14],[1,3,10,14],[-4,4,10,14],[-3,4,10,14],[-2,4,10,14],[-1,4,10,14],[0,4,10,14],[0,-4,11,14],[1,-4,11,14],[2,-4,11,14],[3,-4,11,14],[4,-4,11,14],[-1,-3,11,14],[4,-3,11,14],[-2,-2,11,14],[4,-2,11,14],[-3,-1,11,14],[4,-1,11,14],[-4,0,11,14],[0,0,11,8],[4,0,11,14],[-4,1,11,14],[-1,1,11,4],[3,1,11,14],[-4,2,11,14],[2,2,11,14],[-4,3,11,14],[1,3,11,14],[-4,4,11,14],[-3,4,11,14],[-2,4,11,14],[-1,4,11,14],[0,4,11,14],[0,-4,12,14],[1,-4,12,14],[2,-4,12,14],[3,-4,12,14],[4,-4,12,14],[-1,-3,12,14],[4,-3,12,14],[-2,-2,12,14],[4,-2,12,14],[-3,-1,12,14],[4,-1,12,14],[-4,0,12,14],[0,0,12,2],[4,0,12,14],[-4,1,12,14],[0,1,12,4],[3,1,12,14],[-4,2,12,14],[2,2,12,14],[-4,3,12,14],[1,3,12,14],[-4,4,12,14],[-3,4,12,14],[-2,4,12,14],[-1,4,12,14],[0,4,12,14],[0,-4,13,7],[1,-4,13,7],[2,-4,13,7],[3,-4,13,7],[4,-4,13,7],[-1,-3,13,7],[0,-3,13,1],[1,-3,13,1],[2,-3,13,1],[3,-3,13,1],[4,-3,13,7],[-2,-2,13,7],[-1,-2,13,1],[0,-2,13,1],[1,-2,13,1],[2,-2,13,1],[3,-2,13,1],[4,-2,13,7],[-3,-1,13,7],[-2,-1,13,1],[-1,-1,13,1],[2,-1,13,1],[3,-1,13,1],[4,-1,13,7],[-4,0,13,7],[-3,0,13,1],[-2,0,13,1],[0,0,13,2],[1,0,13,4],[2,0,13,1],[3,0,13,1],[4,0,13,7],[-4,1,13,7],[-3,1,13,1],[-2,1,13,1],[1,1,13,1],[2,1,13,1],[3,1,13,7],[-4,2,13,7],[-3,2,13,1],[-2,2,13,1],[-1,2,13,1],[0,2,13,1],[1,2,13,1],[2,2,13,7],[-4,3,13,7],[-3,3,13,1],[-2,3,13,1],[-1,3,13,1],[0,3,13,1],[1,3,13,7],[-4,4,13,7],[-3,4,13,7],[-2,4,13,7],[-1,4,13,7],[0,4,13,7],[0,-4,14,14],[1,-4,14,14],[2,-4,14,14],[3,-4,14,14],[4,-4,14,14],[-1,-3,14,14],[4,-3,14,14],[-2,-2,14,14],[4,-2,14,14],[-3,-1,14,14],[1,-1,14,4],[4,-1,14,14],[-4,0,14,14],[0,0,14,8],[4,0,14,14],[-4,1,14,14],[3,1,14,14],[-4,2,14,14],[2,2,14,14],[-4,3,14,14],[1,3,14,14],[-4,4,14,14],[-3,4,14,14],[-2,4,14,14],[-1,4,14,14],[0,4,14,14],[0,-4,15,3],[1,-4,15,14],[2,-4,15,3],[3,-4,15,14],[4,-4,15,3],[-1,-3,15,14],[4,-3,15,14],[-2,-2,15,3],[4,-2,15,3],[-3,-1,15,14],[0,-1,15,4],[4,-1,15,14],[-4,0,15,3],[0,0,15,2],[4,0,15,3],[-4,1,15,14],[3,1,15,14],[-4,2,15,3],[2,2,15,3],[-4,3,15,14],[1,3,15,14],[-4,4,15,3],[-3,4,15,14],[-2,4,15,3],[-1,4,15,14],[0,4,15,3],[0,-4,16,14],[1,-4,16,14],[2,-4,16,14],[3,-4,16,14],[4,-4,16,14],[-1,-3,16,14],[4,-3,16,14],[-2,-2,16,14],[4,-2,16,14],[-3,-1,16,14],[4,-1,16,14],[-4,0,16,14],[-1,0,16,4],[0,0,16,2],[4,0,16,14],[-4,1,16,14],[3,1,16,14],[-4,2,16,14],[2,2,16,14],[-4,3,16,14],[1,3,16,14],[-4,4,16,14],[-3,4,16,14],[-2,4,16,14],[-1,4,16,14],[0,4,16,14],[0,-4,17,14],[1,-4,17,14],[2,-4,17,14],[3,-4,17,14],[4,-4,17,14],[-1,-3,17,14],[4,-3,17,14],[-2,-2,17,14],[4,-2,17,14],[-3,-1,17,14],[4,-1,17,14],[-4,0,17,14],[0,0,17,8],[4,0,17,14],[-4,1,17,14],[-1,1,17,4],[3,1,17,14],[-4,2,17,14],[2,2,17,14],[-4,3,17,14],[1,3,17,14],[-4,4,17,14],[-3,4,17,14],[-2,4,17,14],[-1,4,17,14],[0,4,17,14],[0,-4,18,14],[1,-4,18,14],[2,-4,18,14],[3,-4,18,14],[4,-4,18,14],[-1,-3,18,14],[4,-3,18,14],[-2,-2,18,14],[4,-2,18,14],[-3,-1,18,14],[4,-1,18,14],[-4,0,18,14],[0,0,18,2],[4,0,18,14],[-4,1,18,14],[0,1,18,4],[3,1,18,14],[-4,2,18,14],[2,2,18,14],[-4,3,18,14],[1,3,18,14],[-4,4,18,14],[-3,4,18,14],[-2,4,18,14],[-1,4,18,14],[0,4,18,14],[0,-4,19,9],[1,-4,19,9],[2,-4,19,9],[3,-4,19,9],[4,-4,19,9],[-1,-3,19,9],[0,-3,19,1],[1,-3,19,1],[2,-3,19,1],[3,-3,19,1],[4,-3,19,9],[-2,-2,19,9],[-1,-2,19,1],[0,-2,19,1],[1,-2,19,1],[2,-2,19,1],[3,-2,19,1],[4,-2,19,9],[-3,-1,19,9],[-2,-1,19,1],[-1,-1,19,1],[2,-1,19,1],[3,-1,19,1],[4,-1,19,9],[-4,0,19,9],[-3,0,19,1],[-2,0,19,1],[0,0,19,2],[1,0,19,4],[2,0,19,1],[3,0,19,1],[4,0,19,9],[-4,1,19,9],[-3,1,19,1],[-2,1,19,1],[1,1,19,1],[2,1,19,1],[3,1,19,9],[-4,2,19,9],[-3,2,19,1],[-2,2,19,1],[-1,2,19,1],[0,2,19,1],[1,2,19,1],[2,2,19,9],[-4,3,19,9],[-3,3,19,1],[-2,3,19,1],[-1,3,19,1],[0,3,19,1],[1,3,19,9],[-4,4,19,9],[-3,4,19,9],[-2,4,19,9],[-1,4,19,9],[0,4,19,9],[0,-4,20,14],[1,-4,20,14],[2,-4,20,14],[3,-4,20,14],[4,-4,20,14],[-1,-3,20,14],[4,-3,20,14],[-2,-2,20,14],[4,-2,20,14],[-3,-1,20,14],[1,-1,20,4],[4,-1,20,14],[-4,0,20,14],[0,0,20,8],[4,0,20,14],[-4,1,20,14],[3,1,20,14],[-4,2,20,14],[2,2,20,14],[-4,3,20,14],[1,3,20,14],[-4,4,20,14],[-3,4,20,14],[-2,4,20,14],[-1,4,20,14],[0,4,20,14],[0,-4,21,3],[1,-4,21,14],[2,-4,21,3],[3,-4,21,14],[4,-4,21,3],[-1,-3,21,14],[4,-3,21,14],[-2,-2,21,3],[4,-2,21,3],[-3,-1,21,14],[0,-1,21,4],[4,-1,21,14],[-4,0,21,3],[0,0,21,2],[4,0,21,3],[-4,1,21,14],[3,1,21,14],[-4,2,21,3],[2,2,21,3],[-4,3,21,14],[1,3,21,14],[-4,4,21,3],[-3,4,21,14],[-2,4,21,3],[-1,4,21,14],[0,4,21,3],[0,-4,22,14],[1,-4,22,14],[2,-4,22,14],[3,-4,22,14],[4,-4,22,14],[-1,-3,22,14],[4,-3,22,14],[-2,-2,22,14],[4,-2,22,14],[-3,-1,22,14],[4,-1,22,14],[-4,0,22,14],[-1,0,22,4],[0,0,22,2],[4,0,22,14],[-4,1,22,14],[3,1,22,14],[-4,2,22,14],[2,2,22,14],[-4,3,22,14],[1,3,22,14],[-4,4,22,14],[-3,4,22,14],[-2,4,22,14],[-1,4,22,14],[0,4,22,14],[0,-4,23,14],[1,-4,23,14],[2,-4,23,14],[3,-4,23,14],[4,-4,23,14],[-1,-3,23,14],[4,-3,23,14],[-2,-2,23,14],[4,-2,23,14],[-3,-1,23,14],[4,-1,23,14],[-4,0,23,14],[0,0,23,8],[4,0,23,14],[-4,1,23,14],[-1,1,23,4],[3,1,23,14],[-4,2,23,14],[2,2,23,14],[-4,3,23,14],[1,3,23,14],[-4,4,23,14],[-3,4,23,14],[-2,4,23,14],[-1,4,23,14],[0,4,23,14],[0,-4,24,14],[1,-4,24,14],[2,-4,24,14],[3,-4,24,14],[4,-4,24,14],[-1,-3,24,14],[4,-3,24,14],[-2,-2,24,14],[4,-2,24,14],[-3,-1,24,14],[4,-1,24,14],[-4,0,24,14],[0,0,24,2],[4,0,24,14],[-4,1,24,14],[0,1,24,4],[3,1,24,14],[-4,2,24,14],[2,2,24,14],[-4,3,24,14],[1,3,24,14],[-4,4,24,14],[-3,4,24,14],[-2,4,24,14],[-1,4,24,14],[0,4,24,14],[0,-4,25,7],[1,-4,25,7],[2,-4,25,7],[3,-4,25,7],[4,-4,25,7],[-1,-3,25,7],[0,-3,25,1],[1,-3,25,1],[2,-3,25,1],[3,-3,25,1],[4,-3,25,7],[-2,-2,25,7],[-1,-2,25,1],[0,-2,25,1],[1,-2,25,1],[2,-2,25,1],[3,-2,25,1],[4,-2,25,7],[-3,-1,25,7],[-2,-1,25,1],[-1,-1,25,1],[2,-1,25,1],[3,-1,25,1],[4,-1,25,7],[-4,0,25,7],[-3,0,25,1],[-2,0,25,1],[0,0,25,2],[1,0,25,4],[2,0,25,1],[3,0,25,1],[4,0,25,7],[-4,1,25,7],[-3,1,25,1],[-2,1,25,1],[1,1,25,1],[2,1,25,1],[3,1,25,7],[-4,2,25,7],[-3,2,25,1],[-2,2,25,1],[-1,2,25,1],[0,2,25,1],[1,2,25,1],[2,2,25,7],[-4,3,25,7],[-3,3,25,1],[-2,3,25,1],[-1,3,25,1],[0,3,25,1],[1,3,25,7],[-4,4,25,7],[-3,4,25,7],[-2,4,25,7],[-1,4,25,7],[0,4,25,7],[0,-4,26,14],[1,-4,26,14],[2,-4,26,14],[3,-4,26,14],[4,-4,26,14],[-1,-3,26,14],[4,-3,26,14],[-2,-2,26,14],[4,-2,26,14],[-3,-1,26,14],[1,-1,26,4],[4,-1,26,14],[-4,0,26,14],[0,0,26,8],[4,0,26,14],[-4,1,26,14],[3,1,26,14],[-4,2,26,14],[2,2,26,14],[-4,3,26,14],[1,3,26,14],[-4,4,26,14],[-3,4,26,14],[-2,4,26,14],[-1,4,26,14],[0,4,26,14],[0,-4,27,3],[1,-4,27,14],[2,-4,27,3],[3,-4,27,14],[4,-4,27,3],[-1,-3,27,14],[4,-3,27,14],[-2,-2,27,3],[4,-2,27,3],[-3,-1,27,14],[0,-1,27,4],[4,-1,27,14],[-4,0,27,3],[0,0,27,2],[4,0,27,3],[-4,1,27,14],[3,1,27,14],[-4,2,27,3],[2,2,27,3],[-4,3,27,14],[1,3,27,14],[-4,4,27,3],[-3,4,27,14],[-2,4,27,3],[-1,4,27,14],[0,4,27,3],[0,-4,28,14],[1,-4,28,14],[2,-4,28,14],[3,-4,28,14],[4,-4,28,14],[-1,-3,28,14],[4,-3,28,14],[-2,-2,28,14],[4,-2,28,14],[-3,-1,28,14],[4,-1,28,14],[-4,0,28,14],[-1,0,28,4],[0,0,28,2],[4,0,28,14],[-4,1,28,14],[3,1,28,14],[-4,2,28,14],[2,2,28,14],[-4,3,28,14],[1,3,28,14],[-4,4,28,14],[-3,4,28,14],[-2,4,28,14],[-1,4,28,14],[0,4,28,14],[0,-4,29,14],[1,-4,29,14],[2,-4,29,14],[3,-4,29,14],[4,-4,29,14],[-1,-3,29,14],[4,-3,29,14],[-2,-2,29,14],[4,-2,29,14],[-3,-1,29,14],[4,-1,29,14],[-4,0,29,14],[0,0,29,8],[4,0,29,14],[-4,1,29,14],[-1,1,29,4],[3,1,29,14],[-4,2,29,14],[2,2,29,14],[-4,3,29,14],[1,3,29,14],[-4,4,29,14],[-3,4,29,14],[-2,4,29,14],[-1,4,29,14],[0,4,29,14],[0,-4,30,14],[1,-4,30,14],[2,-4,30,14],[3,-4,30,14],[4,-4,30,14],[-1,-3,30,14],[4,-3,30,14],[-2,-2,30,14],[4,-2,30,14],[-3,-1,30,14],[4,-1,30,14],[-4,0,30,14],[0,0,30,2],[4,0,30,14],[-4,1,30,14],[0,1,30,4],[3,1,30,14],[-4,2,30,14],[2,2,30,14],[-4,3,30,14],[1,3,30,14],[-4,4,30,14],[-3,4,30,14],[-2,4,30,14],[-1,4,30,14],[0,4,30,14],[0,-4,31,11],[1,-4,31,11],[2,-4,31,11],[3,-4,31,11],[4,-4,31,11],[-1,-3,31,11],[0,-3,31,4],[1,-3,31,4],[2,-3,31,4],[3,-3,31,4],[4,-3,31,11],[-2,-2,31,11],[-1,-2,31,4],[0,-2,31,4],[1,-2,31,4],[2,-2,31,4],[3,-2,31,4],[4,-2,31,11],[-3,-1,31,11],[-2,-1,31,4],[-1,-1,31,4],[2,-1,31,4],[3,-1,31,4],[4,-1,31,11],[-4,0,31,11],[-3,0,31,4],[-2,0,31,4],[0,0,31,4],[1,0,31,4],[2,0,31,4],[3,0,31,4],[4,0,31,11],[-4,1,31,11],[-3,1,31,4],[-2,1,31,4],[1,1,31,4],[2,1,31,4],[3,1,31,11],[-4,2,31,11],[-3,2,31,4],[-2,2,31,4],[-1,2,31,4],[0,2,31,4],[1,2,31,4],[2,2,31,11],[-4,3,31,11],[-3,3,31,4],[-2,3,31,4],[-1,3,31,4],[0,3,31,4],[1,3,31,11],[-4,4,31,11],[-3,4,31,11],[-2,4,31,11],[-1,4,31,11],[0,4,31,11],[0,0,32,11],[0,0,33,11]]}};
+
 /* The six axial hex directions (pointy-top), matching core/station.rs. */
 const HEX_DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
 /* Emissive materials glow in 3D (station's own lights). */
@@ -217,7 +240,14 @@ let strokeBatch = null;
  * proportions. */
 const LH3 = HEX * 0.625;
 let view = "2d";
-let cam3 = { yaw: 0.85, pitch: 0.62, scale: 1.0, panX: 0, panY: 0 };
+/* pitch < 0 looks DOWN at the deck (pitch > 0 orbits under the keel). */
+let cam3 = { yaw: 0.85, pitch: -0.62, scale: 1.0, panX: 0, panY: 0 };
+/* Perspective walk camera (world px; y up; eye ~1.6 m at 12 px/m). */
+let camFp = { x: HEX * 6, y: LH3 * 3.4, z: HEX * 6, yaw: -2.4, pitch: -0.1 };
+const FP_FOV = 70 * Math.PI / 180;  /* vertical field of view */
+const FP_NEAR = 4;                  /* near plane, world px */
+/* Layer slice: hide cells above this layer in 3D/Walk (null = off). */
+let slice = null;
 let faces3 = [];   /* last-rendered faces, for picking */
 let hover3 = null; /* {q,r,layer,dir} face under the cursor */
 
@@ -247,13 +277,35 @@ function hexPath(c, x, y, rad) {
 /* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
-function draw() { if (view === "3d") draw3d(); else draw2d(); }
+function draw() { if (view === "3d" || view === "fp") draw3d(); else draw2d(); }
 
 /* ----- 3D isometric view (orthographic orbit, Canvas 2D) ----- */
 function rotY(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]; }
 function rotX(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]; }
 function fwd3(p) { return rotX(rotY(p, cam3.yaw), cam3.pitch); }   /* world -> camera */
 function inv3(p) { return rotY(rotX(p, -cam3.pitch), -cam3.yaw); } /* camera -> world */
+/* Walk-mode transforms: world <-> the perspective camera. */
+function fpCam(p) { return rotX(rotY([p[0] - camFp.x, p[1] - camFp.y, p[2] - camFp.z], camFp.yaw), camFp.pitch); }
+function fpInv(p) { return rotY(rotX(p, -camFp.pitch), -camFp.yaw); }
+function screenFpC(c, w, h) {
+  const f = (h / 2) / Math.tan(FP_FOV / 2);
+  return { x: w / 2 + c[0] * f / c[2], y: h / 2 - c[1] * f / c[2], d: c[2] };
+}
+/* Sutherland-Hodgman clip of a camera-space polygon against z = FP_NEAR. */
+function clipNear(poly) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const A = poly[i], B = poly[(i + 1) % poly.length];
+    const ain = A[2] > FP_NEAR, bin = B[2] > FP_NEAR;
+    if (ain) out.push(A);
+    if (ain !== bin) {
+      const t = (FP_NEAR - A[2]) / (B[2] - A[2]);
+      out.push([A[0] + t * (B[0] - A[0]), A[1] + t * (B[1] - A[1]), FP_NEAR]);
+    }
+  }
+  return out;
+}
+function sliceMax() { return slice === null ? Infinity : slice; }
 function screenOf(P, w, h) {
   const c = fwd3(P);
   return { x: w / 2 + cam3.panX + c[0] * cam3.scale, y: h / 2 + cam3.panY - c[1] * cam3.scale, d: c[2] };
@@ -274,6 +326,23 @@ let curDpr = 1, curView = null;
  * anchor points that map the tile's (0,0),(1,0),(0,1) onto the face so
  * the real texture can be affine-mapped (exact under orthographic). */
 function pushFace(q, r, l, dir, normal, poly3, anchorsW, m, shade, w, h) {
+  if (view === "fp") {
+    /* Perspective: transform to camera space, clip against the near
+     * plane, project. A face the near plane cuts loses its texture
+     * anchors (affine mapping needs all three) and falls back to the
+     * flat average colour - close-up popping beats holes. */
+    const cpoly = poly3.map(fpCam);
+    const behind = cpoly.reduce((n, c) => n + (c[2] <= FP_NEAR ? 1 : 0), 0);
+    if (behind === cpoly.length) return;
+    const poly = behind ? clipNear(cpoly) : cpoly;
+    if (poly.length < 3) return;
+    let d = 0;
+    const p = poly.map(c => { const s = screenFpC(c, w, h); d += s.d; return s; });
+    d /= p.length;
+    const anchors = behind ? null : anchorsW.map(P => screenFpC(fpCam(P), w, h));
+    faces3.push({ q, r, layer: l, dir, normal, p, anchors, d, m, shade });
+    return;
+  }
   let d = 0;
   const p = poly3.map(P => { const s = screenOf(P, w, h); d += s.d; return s; });
   d /= p.length;
@@ -299,24 +368,30 @@ function draw3d() {
     }
   }
 
-  /* View direction into the scene (world), for backface culling. */
+  /* Backface culling: orthographic tests the fixed view direction,
+   * perspective tests the direction from the face to the camera. */
   const vd = inv3([0, 0, 1]);
-  const faces = (n) => (n[0] * vd[0] + n[1] * vd[1] + n[2] * vd[2]) < 0;
+  const vis = view === "fp"
+    ? (n, P) => n[0] * (camFp.x - P[0]) + n[1] * (camFp.y - P[1]) + n[2] * (camFp.z - P[2]) > 0
+    : (n) => (n[0] * vd[0] + n[1] * vd[1] + n[2] * vd[2]) < 0;
   const a = HEX; /* hex circumradius in world px = the tile half-span */
 
   faces3 = [];
-  const occ = (q, r, l) => cells.has(key(q, r, l));
+  /* Layer slice: cells above the slice are hidden AND read as open air
+   * so the slice level renders as a clean cut-away cap. */
+  const occ = (q, r, l) => l <= sliceMax() && cells.has(key(q, r, l));
   for (const [ck, m] of cells) {
     const [q, r, l] = ck.split(",").map(Number);
+    if (l > sliceMax()) continue;
     const c = axialToPx(q, r), cx = c.x, cz = c.y;
     const y0 = l * LH3, y1 = (l + 1) * LH3;
     /* Top cap: tile square [-a,a] x [-a,a] over the hex, image upright. */
-    if (!occ(q, r, l + 1) && faces([0, 1, 0])) {
+    if (!occ(q, r, l + 1) && vis([0, 1, 0], [cx, y1, cz])) {
       const poly = []; for (let k = 0; k < 6; k++) { const cc = cornerXZ(q, r, k); poly.push([cc[0], y1, cc[1]]); }
       pushFace(q, r, l, [0, 0, 1], [0, 1, 0], poly,
         [[cx - a, y1, cz - a], [cx + a, y1, cz - a], [cx - a, y1, cz + a]], m, 1.0, w, h);
     }
-    if (!occ(q, r, l - 1) && faces([0, -1, 0])) {
+    if (!occ(q, r, l - 1) && vis([0, -1, 0], [cx, y0, cz])) {
       const poly = []; for (let k = 0; k < 6; k++) { const cc = cornerXZ(q, r, k); poly.push([cc[0], y0, cc[1]]); }
       pushFace(q, r, l, [0, 0, -1], [0, -1, 0], poly,
         [[cx - a, y0, cz - a], [cx + a, y0, cz - a], [cx - a, y0, cz + a]], m, 0.5, w, h);
@@ -324,9 +399,9 @@ function draw3d() {
     for (let sK = 0; sK < 6; sK++) {
       const dd = sideDir(sK);
       if (occ(q + dd[0], r + dd[1], l)) continue;
-      const nrm = axialDirVec(dd[0], dd[1]);
-      if (!faces(nrm)) continue;
       const c0 = cornerXZ(q, r, sK), c1 = cornerXZ(q, r, (sK + 1) % 6);
+      const nrm = axialDirVec(dd[0], dd[1]);
+      if (!vis(nrm, [c0[0], y0, c0[1]])) continue;
       const poly = [[c0[0], y0, c0[1]], [c1[0], y0, c1[1]], [c1[0], y1, c1[1]], [c0[0], y1, c0[1]]];
       /* tex (0,0)=top-left (c0@y1), (1,0)=top-right (c1@y1), (0,1)=bottom-left (c0@y0). */
       pushFace(q, r, l, [dd[0], dd[1], 0], nrm, poly,
@@ -355,7 +430,7 @@ function drawTexFace(f, dpr) {
   ctx.save();
   ctx.beginPath(); f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y)); ctx.closePath();
   ctx.clip();
-  if (img && img.complete) {
+  if (img && img.complete && f.anchors) {
     const [P0, P1, P2] = f.anchors;
     const ax = P1.x - P0.x, ay = P1.y - P0.y, bx = P2.x - P0.x, by = P2.y - P0.y;
     ctx.setTransform(dpr * ax, dpr * ay, dpr * bx, dpr * by, dpr * P0.x, dpr * P0.y);
@@ -408,7 +483,9 @@ function edit3(sx, sy, w, h, erase) {
   if (f) {
     if (erase) setCell(f.q, f.r, f.layer, null);
     else setCell(f.q + f.dir[0], f.r + f.dir[1], f.layer + f.dir[2], mat);
-  } else if (!erase) {
+  } else if (!erase && view !== "fp") {
+    /* Ground-plane placement is orthographic-only; in Walk mode you
+     * build on faces you can see. */
     const a = groundPick(sx, sy, w, h, layer * LH3);
     if (a) setCell(a.q, a.r, layer, mat);
   }
@@ -520,7 +597,7 @@ function saveLocal() {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
       name: document.getElementById("tplName").value,
-      layer, cam, cam3, view, cells: [...cells.entries()],
+      layer, cam, cam3, camFp, slice, view, cells: [...cells.entries()],
     }));
     document.getElementById("saveState").textContent = "saved to localStorage";
   } catch (e) {
@@ -534,6 +611,8 @@ function loadLocal() {
     document.getElementById("tplName").value = d.name || "my-structure";
     layer = d.layer | 0; cam = d.cam || cam;
     if (d.cam3) cam3 = d.cam3;
+    if (d.camFp) camFp = d.camFp;
+    if (d.slice !== undefined) slice = d.slice;
     if (d.view) view = d.view;
     cells = new Map(d.cells || []);
   } catch (e) { /* fresh start */ }
@@ -585,9 +664,22 @@ function setView(v) {
   view = v;
   document.getElementById("view2d").classList.toggle("active", v === "2d");
   document.getElementById("view3d").classList.toggle("active", v === "3d");
+  document.getElementById("viewFp").classList.toggle("active", v === "fp");
   document.getElementById("zoomOut").textContent =
+    v === "fp" ? "walk" :
     v === "3d" ? Math.round(cam3.scale * 100) + "%" : Math.round(cam.z * 100) + "%";
   hover3 = null; draw();
+}
+function setSlice(v) {
+  slice = v;
+  document.getElementById("sliceNum").textContent = slice === null ? "off" : slice;
+  dirty();
+}
+/* Highest occupied layer, for a sensible slice starting point. */
+function topLayer() {
+  let t = 0;
+  for (const k of cells.keys()) t = Math.max(t, +k.split(",")[2]);
+  return t;
 }
 /* Select a palette material (from a swatch click or an eyedrop). */
 function setMat(m) {
@@ -607,6 +699,35 @@ for (const m of MATS) {
   pal.appendChild(el);
 }
 
+/* Built-in templates: load one into the canvas as a single undoable
+ * stroke (the previous scene comes back with Ctrl+Z). */
+function loadBuiltin(name) {
+  const t = BUILTIN_TEMPLATES[name];
+  if (!t) return;
+  /* Swap the whole map in one go (per-cell setCell would redraw the
+   * scene once per cell - thousands of repaints for the station), with
+   * a single undo batch so Ctrl+Z restores the previous scene. */
+  const next = new Map();
+  for (const [q, r, l, mi] of t.cells) next.set(key(q, r, l), t.mats[mi]);
+  const batch = [];
+  for (const [k, prev] of cells) batch.push({ k, prev });
+  for (const k of next.keys()) if (!cells.has(k)) batch.push({ k, prev: null });
+  undoStack.push(batch); if (undoStack.length > 200) undoStack.shift();
+  cells = next;
+  document.getElementById("tplName").value = t.name;
+  dirty(); saveLocal();
+  toast("loaded " + name + " (" + t.cells.length + " cells) - Ctrl+Z restores your scene");
+}
+const tplSel = document.getElementById("tplSel");
+for (const name of Object.keys(BUILTIN_TEMPLATES)) {
+  const o = document.createElement("option");
+  o.value = name; o.textContent = name;
+  tplSel.appendChild(o);
+}
+document.getElementById("tplLoad").onclick = () => loadBuiltin(tplSel.value);
+document.getElementById("sliceUp").onclick = () => setSlice(slice === null ? topLayer() : (slice >= MAX_LAYER ? null : slice + 1));
+document.getElementById("sliceDn").onclick = () => setSlice(slice === null ? topLayer() : Math.max(0, slice - 1));
+document.getElementById("viewFp").onclick = () => setView("fp");
 document.getElementById("layerUp").onclick = () => setLayer(layer + 1);
 document.getElementById("layerDn").onclick = () => setLayer(layer - 1);
 document.getElementById("toolPaint").onclick = () => setTool("paint");
@@ -660,9 +781,9 @@ cv.addEventListener("pointerdown", e => {
   last = { x: e.clientX, y: e.clientY };
   if (e.button === 1 || spaceHeld) { mode = "pan"; return; }
 
-  if (view === "3d") {
+  if (view === "3d" || view === "fp") {
     if (e.altKey) { const f = pick3(r.x, r.y); if (f) { setMat(cells.get(key(f.q, f.r, f.layer))); toast("picked " + TILES[cells.get(key(f.q, f.r, f.layer))].name); } return; }
-    mode = e.button === 2 ? "erase3" : "orbit";   /* left may become orbit on drag */
+    mode = e.button === 2 ? "erase3" : "orbit";   /* left may become orbit/look on drag */
     return;
   }
   /* 2D */
@@ -680,10 +801,16 @@ cv.addEventListener("pointermove", e => {
     else { cam.x += e.clientX - last.x; cam.y += e.clientY - last.y; }
     last = { x: e.clientX, y: e.clientY }; draw(); return;
   }
-  if (view === "3d") {
+  if (view === "3d" || view === "fp") {
     if (mode === "orbit" && moved) {
-      cam3.yaw += (e.clientX - last.x) * 0.01;
-      cam3.pitch = Math.max(-1.45, Math.min(1.45, cam3.pitch + (e.clientY - last.y) * 0.01));
+      if (view === "fp") {
+        /* Mouse-look: drag right looks right, drag up looks up. */
+        camFp.yaw -= (e.clientX - last.x) * 0.005;
+        camFp.pitch = Math.max(-1.5, Math.min(1.5, camFp.pitch - (e.clientY - last.y) * 0.005));
+      } else {
+        cam3.yaw += (e.clientX - last.x) * 0.01;
+        cam3.pitch = Math.max(-1.45, Math.min(1.45, cam3.pitch + (e.clientY - last.y) * 0.01));
+      }
       last = { x: e.clientX, y: e.clientY }; draw(); return;
     }
     if (mode === null) { /* hover-highlight the face under the cursor */
@@ -708,7 +835,7 @@ cv.addEventListener("pointermove", e => {
   }
 });
 window.addEventListener("pointerup", () => {
-  if (view === "3d" && !moved && (mode === "orbit" || mode === "erase3")) {
+  if ((view === "3d" || view === "fp") && !moved && (mode === "orbit" || mode === "erase3")) {
     edit3(downX, downY, wrap.clientWidth, wrap.clientHeight, mode === "erase3" || tool === "erase");
   }
   if (mode === "2dpaint" || mode === "2derase") {
@@ -719,6 +846,12 @@ window.addEventListener("pointerup", () => {
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
+  if (view === "fp") {
+    /* Dolly along the view direction. */
+    const f = fpInv([0, 0, 1]), d = (e.deltaY < 0 ? 1 : -1) * HEX * 0.6;
+    camFp.x += f[0] * d; camFp.y += f[1] * d; camFp.z += f[2] * d;
+    draw(); return;
+  }
   if (view === "3d") {
     cam3.scale = Math.max(0.15, Math.min(8, cam3.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
     document.getElementById("zoomOut").textContent = Math.round(cam3.scale * 100) + "%";
@@ -734,23 +867,57 @@ cv.addEventListener("wheel", e => {
   draw();
 }, { passive: false });
 
+/* Walk-mode movement: held keys advance the camera each frame. */
+const fpKeys = new Set();
+let fpRaf = null;
+function fpTick() {
+  fpRaf = null;
+  if (view !== "fp" || fpKeys.size === 0) return;
+  const sp = (fpKeys.has("shift") ? 3 : 1) * HEX * 0.14;
+  const f = fpInv([0, 0, 1]), rgt = fpInv([1, 0, 0]);
+  const fl = Math.hypot(f[0], f[2]) || 1;
+  const fx = f[0] / fl, fz = f[2] / fl; /* level forward: walk, don't fly-dive */
+  if (fpKeys.has("w")) { camFp.x += fx * sp; camFp.z += fz * sp; }
+  if (fpKeys.has("s")) { camFp.x -= fx * sp; camFp.z -= fz * sp; }
+  if (fpKeys.has("a")) { camFp.x -= rgt[0] * sp; camFp.z -= rgt[2] * sp; }
+  if (fpKeys.has("d")) { camFp.x += rgt[0] * sp; camFp.z += rgt[2] * sp; }
+  if (fpKeys.has("q")) camFp.y -= sp;
+  if (fpKeys.has("e")) camFp.y += sp;
+  draw();
+  fpRaf = requestAnimationFrame(fpTick);
+}
+const FP_MOVE_KEYS = new Set(["w", "a", "s", "d", "q", "e", "shift"]);
 window.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const lk = e.key.toLowerCase();
+  if (view === "fp" && FP_MOVE_KEYS.has(lk)) {
+    fpKeys.add(lk);
+    if (!fpRaf) fpRaf = requestAnimationFrame(fpTick);
+    e.preventDefault();
+    return;
+  }
   if (e.code === "Space") { spaceHeld = true; e.preventDefault(); }
+  else if (e.key === "{") setSlice(slice === null ? topLayer() : Math.max(0, slice - 1));
+  else if (e.key === "}") setSlice(slice === null ? topLayer() : (slice >= MAX_LAYER ? null : slice + 1));
   else if (e.key === "[") setLayer(layer - 1);
   else if (e.key === "]") setLayer(layer + 1);
   else if (e.key === "p" || e.key === "P") setTool("paint");
   else if (e.key === "e" || e.key === "E") setTool("erase");
   else if (e.key === "2") setView("2d");
   else if (e.key === "3") setView("3d");
-  else if (e.key === "v" || e.key === "V") setView(view === "2d" ? "3d" : "2d");
+  else if (e.key === "4") setView("fp");
+  else if (e.key === "v" || e.key === "V") setView(view === "2d" ? "3d" : view === "3d" ? "fp" : "2d");
   else if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undo(); }
 });
-window.addEventListener("keyup", e => { if (e.code === "Space") spaceHeld = false; });
+window.addEventListener("keyup", e => {
+  fpKeys.delete(e.key.toLowerCase());
+  if (e.code === "Space") spaceHeld = false;
+});
 new ResizeObserver(draw).observe(wrap);
 
 /* boot */
 loadLocal();
+document.getElementById("sliceNum").textContent = slice === null ? "off" : slice;
 setLayer(layer);
 setTool("paint");
 setView(view);

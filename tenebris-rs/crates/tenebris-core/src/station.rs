@@ -53,7 +53,8 @@ pub struct StationConfig {
     /// Clear walking headroom per storey, in air layers.
     pub floor_air_layers: u32,
     /// How high a ledge the player steps up onto while walking the
-    /// station (sized to make the spiral's 0.714 m treads climbable).
+    /// station (sized to make the stairway's full-layer 1.25 m treads
+    /// climbable).
     pub step_up_m: f32,
     /// Head clearance used for ceiling collision inside the hotel.
     pub head_clearance_m: f32,
@@ -71,6 +72,13 @@ pub struct StationConfig {
     /// over the spawn/launch complex - an ascending rocket should meet
     /// the artificial-gravity field by rendezvous, not by accident.
     pub orbit_phase0_deg: f32,
+    /// Block-light emission (0..15, torch-style) of the lamp materials:
+    /// the courtyard light fixtures and the gold room-light tiles.
+    pub lamp_emission: u32,
+    /// Block-light emission of the neon trim (cyan/pink bands, parapet).
+    pub neon_emission: u32,
+    /// Block-light emission of the lucky-7 marquees / sign spire.
+    pub sign_emission: u32,
     /// Camera distance (m) within which the FULL prism drum renders.
     /// Beyond it the station draws as a single bright glint quad - the
     /// whole ~40 m wheel is sub-pixel from the surface 9.7 km below, yet
@@ -105,12 +113,19 @@ impl StationConfig {
          * value the connected central spiral needs so each tread keeps
          * 3 clear blocks above it (see STAIR_STEPS_PER_FLOOR). */
         floor_air_layers: 5,
-        step_up_m: 0.8,
+        /* One full 1.25 m layer + slack: the stairway treads are
+         * one-layer prisms (the user's template), climbed by step-up. */
+        step_up_m: 1.3,
         head_clearance_m: 1.8,
         gravity_field_m: 40.0,
         artificial_gravity_mps2: 15.0,
         deck_friction: 6.0,
         orbit_phase0_deg: 120.0,
+        /* Torch-scale emissions (world torches seed at 14): the lamps
+         * carry the room, neon is trim, marquees sit between. */
+        lamp_emission: 15,
+        neon_emission: 8,
+        sign_emission: 12,
         lod_full_range_m: 3000.0,
         lod_glint_frac: 0.004,
     };
@@ -172,6 +187,9 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
             "orbit_phase0_deg" => {
                 c.orbit_phase0_deg = if f > 0.0 { f } else { c.orbit_phase0_deg }
             }
+            "lamp_emission" => c.lamp_emission = if f > 0.0 { f as u32 } else { c.lamp_emission },
+            "neon_emission" => c.neon_emission = if f > 0.0 { f as u32 } else { c.neon_emission },
+            "sign_emission" => c.sign_emission = if f > 0.0 { f as u32 } else { c.sign_emission },
             _ => println!("[station] {}: unknown key '{}'", path, key),
         }
     }
@@ -214,6 +232,23 @@ pub enum StationMat {
     Sign,
     /// Semi-transparent glazing (courtyard floor, hotel windows).
     Glass,
+
+    /* Function fixtures - the station's POIs, one-hex prisms on the
+     * deck. Placed with 6-fold symmetry (see the shell fixture pass).
+     * Interaction (opening the actual trade/research/zoo/casino UIs)
+     * reuses the station hub screens; these are the in-world markers. */
+    /// Stock-exchange kiosk (the trading station).
+    TradeTerminal,
+    /// Science console (the research station).
+    ResearchConsole,
+    /// Animal-museum display case (the courtyard zoo).
+    MuseumCase,
+    /// Emissive hex lamp (courtyard lighting).
+    LightFixture,
+    /// Slot-machine cabinet (casino game).
+    Slots,
+    /// Blackjack / poker table (casino game).
+    CardTable,
 }
 
 /// One hex prism of the station structure. `q`/`r`/`layer` are the
@@ -232,20 +267,6 @@ pub struct Prism {
     pub y: f32,
     pub z: f32,
     pub mat: StationMat,
-}
-
-/// One stair tread of the hotel's spiral staircase: a walkable pad
-/// spanning `bot_m..top_m` (station-local). Each tread's underside
-/// reaches the top of the step below, so the treads form ONE connected
-/// solid staircase (no floating gap) that the player walks straight up.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StairStep {
-    pub q: i32,
-    pub r: i32,
-    pub x: f32,
-    pub z: f32,
-    pub bot_m: f32,
-    pub top_m: f32,
 }
 
 /// Centered hexagonal number: hexes in a full disk of radius `n` rings.
@@ -309,86 +330,25 @@ fn roof_layer(cfg: &StationConfig) -> i32 {
     floor_slab_layer(cfg, cfg.tower_floors.max(1) as i32)
 }
 
-/// The stair ring: the six cells IMMEDIATELY around the centre column -
-/// a true central spiral staircase winding up the building's core,
-/// ordered by angle so consecutive indices are adjacent.
-fn stair_ring(cfg: &StationConfig) -> Vec<(i32, i32)> {
-    let a = cfg.hex_size_m;
-    let mut cells: Vec<(i32, i32)> = HEX_DIRS.to_vec();
-    cells.sort_by(|&(q0, r0), &(q1, r1)| {
-        let (x0, z0) = axial_to_local(q0, r0, a);
-        let (x1, z1) = axial_to_local(q1, r1, a);
-        (z0.atan2(x0)).partial_cmp(&z1.atan2(x1)).unwrap()
-    });
-    cells
-}
+/// The hotel stairway's winding order - the user's stairway template
+/// (`assets/templates/stairway.template.json`), verbatim: one
+/// full-layer tread per layer stepping around the six ring-1 cells in
+/// exactly this sequence (consecutive cells are hex-adjacent, one lap
+/// per storey at the default 6-layer pitch).
+pub const STAIR_RING_ORDER: [(i32, i32); 6] =
+    [(1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1), (1, 0)];
 
-/// Treads per stair run (floor to floor). With the default 6-layer
-/// storey pitch this is exactly 10 treads of 0.75 m rise (inside the
-/// `step_up_m` allowance). The count is chosen so that the SAME core
-/// cell - revisited every 6 treads around the 6-cell ring - carries
-/// its next tread `6 * rise = 4.5 m` higher, leaving exactly
-/// `floor_air_layers` (3.75 m = 3 blocks) of clear air above each
-/// tread even though the treads are connected solid. Pinned by the
-/// stair-clearance test; a `debug_assert` guards the ratio at build.
-pub const STAIR_STEPS_PER_FLOOR: i32 = 10;
-
-/// Clear air blocks the spiral guarantees above every tread - the
-/// user's "a set of stairs should always have 3 air blocks above".
-pub const STAIR_MIN_AIR_LAYERS: i32 = 3;
-
-/// The hotel's central spiral staircase: for each floor,
-/// STAIR_STEPS_PER_FLOOR treads winding around the lit centre column.
-/// Each tread is TWO hexes deep - its ring-1 cell plus the on-axis
-/// cell one ring further out - both pads at the same height and
-/// snapped to the hex grid, so the stair reads as a wide contiguous
-/// spiral. The slabs above open a matching atrium shaft (see the
-/// interior slab build) so the floor you are climbing to never blocks
-/// the run. The final run tops out on the roof deck.
-pub fn stairs(cfg: &StationConfig) -> Vec<StairStep> {
-    let ring = stair_ring(cfg);
-    let lh = layer_h(cfg);
-    let a = cfg.hex_size_m;
-    let rise = floor_pitch(cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
-    /* Connected-spiral clearance guard: the tread 6 steps up in the
-     * same core cell must clear STAIR_MIN_AIR_LAYERS blocks above this
-     * one, i.e. `(6 - 1) * rise >= STAIR_MIN_AIR_LAYERS * lh`. */
-    debug_assert!(
-        5.0 * rise >= STAIR_MIN_AIR_LAYERS as f32 * lh - 1e-3,
-        "stair rise too steep for the 3-air-block clearance rule"
-    );
-    let mut out = Vec::new();
-    for f in 0..cfg.tower_floors.max(1) as i32 {
-        let base_top = (floor_slab_layer(cfg, f) + 1) as f32 * lh;
-        for k in 0..STAIR_STEPS_PER_FLOOR {
-            let (q, r) = ring[((f * STAIR_STEPS_PER_FLOOR + k) as usize) % ring.len()];
-            let top_m = base_top + (k + 1) as f32 * rise;
-            /* Underside reaches the top of the step below (the floor
-             * slab for the first step of the run) so consecutive treads
-             * touch - one solid staircase, not floating pads. */
-            let bot_m = top_m - rise;
-            /* Inner pad on the ring-1 cell, outer pad on the aligned
-             * dist-2 cell - a 2-hex-deep tread. */
-            for (pq, pr) in [(q, r), (q * 2, r * 2)] {
-                let (x, z) = axial_to_local(pq, pr, a);
-                out.push(StairStep { q: pq, r: pr, x, z, bot_m, top_m });
-            }
-        }
-    }
-    out
-}
+/// Gold-band period of the stairway's centre column, in layers - also
+/// from the template (a lit core: floor plating with a `neon_gold`
+/// band every third layer, starting level with the first tread).
+pub const STAIR_CORE_GOLD_PERIOD: i32 = 3;
 
 /// True when slab `f`'s cell (q, r) is part of the central atrium
-/// shaft the spiral climbs through: every slab above the lobby (and
-/// the roof, `f == tower_floors`) opens the ring around the centre
-/// column PLUS the six on-axis dist-2 cells the wide treads sweep, so
-/// no floor blocks the stairs and every tread keeps its full headroom.
-fn stairwell_open(_cfg: &StationConfig, _ring: &[(i32, i32)], f: i32, q: i32, r: i32) -> bool {
-    if f < 1 {
-        return false;
-    }
-    let d = hex_dist(q, r);
-    d == 1 || (d == 2 && HEX_DIRS.iter().any(|&(dq, dr)| (q, r) == (dq * 2, dr * 2)))
+/// shaft the stairway climbs through: every slab above the lobby (and
+/// the roof, `f == tower_floors`) opens the six ring-1 cells the
+/// treads wind, so no floor blocks the climb.
+fn stairwell_open(f: i32, q: i32, r: i32) -> bool {
+    f >= 1 && hex_dist(q, r) == 1
 }
 
 /// Generate the wheel station. Pure function of the config; the client
@@ -415,7 +375,6 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
     let floors = cfg.tower_floors.max(1) as i32;
     let pitch = floor_pitch(cfg);
     let roof = roof_layer(cfg);
-    let ring = stair_ring(cfg);
 
     let mut out: Vec<Prism> = Vec::new();
     let mut occupied = std::collections::HashSet::new();
@@ -480,6 +439,29 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     }
 
+    /* 4a. Central stairway - the user's stairway template, verbatim
+     * pattern: a solid lit core column (floor plating with a gold
+     * light band every STAIR_CORE_GOLD_PERIOD layers) from the lobby
+     * slab up to just under the roof, and ONE full-layer hull tread
+     * per layer winding the ring-1 cells in STAIR_RING_ORDER. Each
+     * tread is a one-layer step (inside `step_up_m`); the same cell is
+     * revisited every 6 layers, so every tread keeps 5 clear layers
+     * overhead, and the run tops out level with the roof deck. Pushed
+     * BEFORE the tower interior so the core column wins the (0,0)
+     * cells (first-writer rule). */
+    for l in (slab - 1)..roof {
+        let mat = if l >= slab && (l - slab) % STAIR_CORE_GOLD_PERIOD == 0 {
+            StationMat::NeonGold
+        } else {
+            StationMat::Floor
+        };
+        push(0, 0, l, mat);
+    }
+    for l in slab..=roof {
+        let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+        push(sq, sr, l, StationMat::Hull);
+    }
+
     /* 4. Casino hotel tower: `floors` storeys, each one slab + clear air
      * layers, spiral stairwell openings, glazed windows per storey, a
      * lobby door facing the +x spoke, neon storey bands, marquee crown,
@@ -526,18 +508,16 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
                     push(q, r, l, mat);
                 }
             } else {
-                /* Interior: one slab per storey (carpet, neon light tile
-                 * at the room centre) with stairwell openings, plus the
-                 * hull roof deck. */
+                /* Interior: one slab per storey (carpet; the stair core
+                 * column - pushed in 4a - owns the room centres) with
+                 * stairwell openings, plus the hull roof deck. */
                 for f in 0..=floors {
-                    if stairwell_open(cfg, &ring, f, q, r) {
+                    if stairwell_open(f, q, r) {
                         continue;
                     }
                     let l = floor_slab_layer(cfg, f);
                     let mat = if f == floors {
                         StationMat::Hull /* roof deck */
-                    } else if q == 0 && r == 0 {
-                        StationMat::NeonGold /* warm room light / lit lobby tile */
                     } else {
                         StationMat::Carpet
                     };
@@ -560,22 +540,156 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     }
 
+    /* 6. Function fixtures, placed with 6-fold symmetry (one loop over
+     * the six sectors). The gaming floor and the trading / research
+     * stations live INSIDE the casino tower - the client draws them as
+     * real furniture (slot cabinets, felt tables, console desks), not
+     * hex prisms. The OUTSIDE (courtyard + ring) is reserved for the
+     * animal museum and the courtyard lights. Every fixture sits ON the
+     * lobby / courtyard walking surface (layer `slab`, the top of floor
+     * 0's slab), clear of the central spiral (rings 1-2 on-axis).
+     *   - inside, on-axis ring-3 cell (dir*3): trade terminal / research
+     *     console, alternating -> the trading + research stations;
+     *   - inside, between-sector ring-2 cell (dir_i+dir_{i+1}): slots /
+     *     card table, alternating -> the casino gaming floor;
+     *   - outside, courtyard sector ((dir_i+dir_{i+1})*3): an animal-
+     *     museum case with a hex lamp hovering two layers above it ->
+     *     the zoo in the lit courtyard. */
+    for i in 0..6 {
+        let (dq, dr) = HEX_DIRS[i];
+        let (eq, er) = HEX_DIRS[(i + 1) % 6];
+        /* Inside the tower: trading / research consoles on the ring-3
+         * cells, gaming tables / slots on the between-sector ring-2
+         * cells. Both clear the ring-1 + on-axis ring-2 spiral cells. */
+        let kiosk = if i % 2 == 0 { StationMat::TradeTerminal } else { StationMat::ResearchConsole };
+        push(dq * 3, dr * 3, slab, kiosk);
+        let game = if i % 2 == 0 { StationMat::Slots } else { StationMat::CardTable };
+        push(dq + eq, dr + er, slab, game);
+        /* Outside in the courtyard: animal-museum case + hovering lamp. */
+        let (mq, mr) = ((dq + eq) * 3, (dr + er) * 3);
+        push(mq, mr, slab, StationMat::MuseumCase);
+        push(mq, mr, slab + 2, StationMat::LightFixture);
+    }
+
     out
 }
 
+/// True for the station's function-fixture materials (POIs placed on
+/// the deck), as opposed to structural prisms.
+pub fn is_fixture(m: StationMat) -> bool {
+    matches!(
+        m,
+        StationMat::TradeTerminal
+            | StationMat::ResearchConsole
+            | StationMat::MuseumCase
+            | StationMat::LightFixture
+            | StationMat::Slots
+            | StationMat::CardTable
+    )
+}
+
+/* ------------------------------------------------------------------ */
+/* Torch-style propagated block lighting over the station grid.        */
+
+/// Block-light emission (0..15) of a station material - the same scale
+/// the world's torch lighting uses (`world_light::Torch::intensity`).
+/// Zero = not a light source.
+pub fn mat_emission(cfg: &StationConfig, m: StationMat) -> u8 {
+    let e = match m {
+        /* The lamps carry the rooms: courtyard fixtures + the gold
+         * room-light tiles (and their pad-marker siblings). */
+        StationMat::LightFixture | StationMat::NeonGold => cfg.lamp_emission,
+        StationMat::Neon | StationMat::NeonPink => cfg.neon_emission,
+        StationMat::Sign => cfg.sign_emission,
+        _ => 0,
+    };
+    e.min(15) as u8
+}
+
+/// True when a station cell BLOCKS light propagation. Mirrors the
+/// world's `covers_face` rule: structural solids block; glass panes
+/// transmit (a glazed courtyard still reads its lamps at night) and the
+/// furniture fixtures are thin pieces light flows around.
+fn mat_blocks_light(m: StationMat) -> bool {
+    m != StationMat::Glass && !is_fixture(m)
+}
+
+/// The station's baked block-light field: cell (q, r, layer) -> light
+/// 0..15, the exact algorithm the world's torch lighting uses (seed
+/// each source at its emission, BFS -1 per step through non-blocking
+/// cells) run over the station's own hex-prism grid. The structure is
+/// static, so this bakes once per config; the client shades every face
+/// by `max(sun, light/15)` - the casino lights itself the way torches
+/// light a mine.
+pub fn light_field(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32, i32), u8> {
+    use std::collections::{HashMap, VecDeque};
+    let shell = shell(cfg);
+    let mut solid: std::collections::HashSet<(i32, i32, i32)> =
+        std::collections::HashSet::new();
+    for p in &shell {
+        if mat_blocks_light(p.mat) {
+            solid.insert((p.q, p.r, p.layer));
+        }
+    }
+    /* Domain bounds keep the BFS on the premises: the pads reach ring
+     * n_out+3, the sign spire tops out at roof+3. One ring / layer of
+     * slack lets light wrap the outer rim and the roof edge. */
+    let max_ring = cfg.radius_hexes as i32 + 4;
+    let max_layer = roof_layer(cfg) + 4;
+    let mut light: HashMap<(i32, i32, i32), u8> = HashMap::new();
+    let mut q: VecDeque<(i32, i32, i32)> = VecDeque::new();
+    /* Seed: every emissive prism radiates at its emission value. The
+     * source cell itself is solid; the BFS steps out of it into air
+     * (matching the world seed, where the torch anchors the cell). */
+    for p in &shell {
+        let e = mat_emission(cfg, p.mat);
+        if e > 0 && light.get(&(p.q, p.r, p.layer)).copied().unwrap_or(0) < e {
+            light.insert((p.q, p.r, p.layer), e);
+            q.push_back((p.q, p.r, p.layer));
+        }
+    }
+    while let Some((cq, cr, cl)) = q.pop_front() {
+        let cur = light.get(&(cq, cr, cl)).copied().unwrap_or(0);
+        if cur <= 1 {
+            continue;
+        }
+        let next = cur - 1;
+        let mut nbrs: [(i32, i32, i32); 8] = [(0, 0, 0); 8];
+        let mut n = 0;
+        for (dq, dr) in HEX_DIRS {
+            nbrs[n] = (cq + dq, cr + dr, cl);
+            n += 1;
+        }
+        nbrs[n] = (cq, cr, cl + 1);
+        nbrs[n + 1] = (cq, cr, cl - 1);
+        for &(nq, nr, nl) in nbrs.iter().take(n + 2) {
+            if hex_dist(nq, nr) > max_ring || nl < -2 || nl > max_layer {
+                continue;
+            }
+            if solid.contains(&(nq, nr, nl)) {
+                continue;
+            }
+            if light.get(&(nq, nr, nl)).copied().unwrap_or(0) >= next {
+                continue;
+            }
+            light.insert((nq, nr, nl), next);
+            q.push_back((nq, nr, nl));
+        }
+    }
+    light
+}
+
 /// Solid vertical spans per occupied column, in station-local metres:
-/// `(bottom, top)` per prism plus the stair treads, sorted by bottom.
-/// The physics samples these for multi-level floor support (landing on
-/// the storey under your feet, not the roof) and ceiling collision.
+/// `(bottom, top)` per prism, sorted by bottom (the stairway treads are
+/// ordinary shell prisms, so they're covered). The physics samples
+/// these for multi-level floor support (landing on the storey under
+/// your feet, not the roof) and ceiling collision.
 pub fn column_spans(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> {
     let lh = layer_h(cfg);
     let mut map: std::collections::HashMap<(i32, i32), Vec<(f32, f32)>> =
         std::collections::HashMap::new();
     for p in shell(cfg) {
         map.entry((p.q, p.r)).or_default().push((p.y, p.y + lh));
-    }
-    for s in stairs(cfg) {
-        map.entry((s.q, s.r)).or_default().push((s.bot_m, s.top_m));
     }
     /* Merge touching/overlapping spans so a wall column reads as ONE
      * solid interval: support/embedded tests then treat mid-wall prism
@@ -1107,6 +1221,16 @@ impl StationState {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that WRITE the global station config: the
+    /// orbit helpers read `config()`, so two set_config-tests running
+    /// on parallel test threads race each other's altitudes. A poisoned
+    /// lock (a prior holder's assert fired) is fine to reuse - the
+    /// guard exists for exclusion, not state.
+    static CFG_LOCK: Mutex<()> = Mutex::new(());
+    fn cfg_guard() -> std::sync::MutexGuard<'static, ()> {
+        CFG_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn setup() -> StationState {
         economy::set_config(economy::EconomyConfig::default());
         set_prices(vec![(items::FLINT, 10.0), (items::STICK, 4.0)]);
@@ -1217,23 +1341,28 @@ mod tests {
             glass_windows >= 5 * 8,
             "every storey carries a glazed window band (got {glass_windows} panes)"
         );
-        /* Interior slabs: full 37-cell lobby, then 25 cells per slab
-         * above it (5 slabs incl. roof) - the central atrium shaft
-         * (6-cell core ring + the 6 on-axis dist-2 cells the wide
-         * treads sweep) stays open. */
+        /* Interior (layer >= 1, non-sign): the full 37-cell lobby slab;
+         * 4 upper storey slabs + the roof at 31 cells each (the 6-cell
+         * ring-1 stairwell shaft stays open; the roof recovers its
+         * centre cell as deck); the stair core column (30 prisms,
+         * lobby slab layer 1 counted with the lobby) minus the 4 upper
+         * slab-layer cells it already owns... counted directly: 37
+         * lobby + core column layers 2..30 (29) + 30 treads + 4x30
+         * upper slabs + 31 roof + the 12 lobby fixtures. */
         let interior = prisms
             .iter()
             .filter(|p| hex_dist(p.q, p.r) < cfg.tower_radius as i32)
             .filter(|p| p.layer >= 1 && p.mat != StationMat::Sign)
             .count();
-        assert_eq!(interior, 37 + 5 * (37 - 12));
+        assert_eq!(interior, 37 + 29 + 30 + 4 * 30 + 31 + 12);
         /* Light palette: cyan parapet (minus 6 bridge gates) + cyan
-         * storey bands; pink alternate bands; warm-gold room lights (5
-         * storeys) + 6 pad markers; signs = crown ring + spire + the
-         * 2-cell entrance arch marquee. */
+         * storey bands; pink alternate bands; warm gold = the stair
+         * core's light bands (every 3rd layer from the first tread) + 6
+         * pad markers; signs = crown ring + spire + the 2-cell entrance
+         * arch marquee. */
         assert!(count(StationMat::Neon) >= 54 + 48, "cyan parapet + bands");
         assert!(count(StationMat::NeonPink) >= 2 * 24 - 2, "pink storey bands");
-        assert_eq!(count(StationMat::NeonGold), 5 + 6, "room lights + pad markers");
+        assert_eq!(count(StationMat::NeonGold), 10 + 6, "core light bands + pad markers");
         assert_eq!(count(StationMat::Sign), 24 + 2 + 2, "crown + spire + entrance arch");
     }
 
@@ -1275,13 +1404,109 @@ mod tests {
     }
 
     #[test]
+    fn function_fixtures_are_placed_six_fold_symmetric() {
+        let cfg = StationConfig::DEFAULT;
+        let prisms = shell(&cfg);
+        let count = |m: StationMat| prisms.iter().filter(|p| p.mat == m).count();
+        /* Six sectors: 3 trade + 3 research kiosks, 3 slots + 3 tables,
+         * 6 museum cases, 6 courtyard lamps. */
+        assert_eq!(count(StationMat::TradeTerminal), 3);
+        assert_eq!(count(StationMat::ResearchConsole), 3);
+        assert_eq!(count(StationMat::Slots), 3);
+        assert_eq!(count(StationMat::CardTable), 3);
+        assert_eq!(count(StationMat::MuseumCase), 6);
+        assert_eq!(count(StationMat::LightFixture), 6);
+        /* Games + trading/research stations live INSIDE the casino
+         * tower; the outside (courtyard + ring) carries ONLY the animal
+         * museum and the courtyard lights. */
+        let t_rad = cfg.tower_radius as i32;
+        for p in &prisms {
+            match p.mat {
+                StationMat::TradeTerminal
+                | StationMat::ResearchConsole
+                | StationMat::Slots
+                | StationMat::CardTable => assert!(
+                    hex_dist(p.q, p.r) < t_rad,
+                    "{:?} at {:?} must be inside the tower",
+                    p.mat,
+                    (p.q, p.r)
+                ),
+                StationMat::MuseumCase | StationMat::LightFixture => assert!(
+                    hex_dist(p.q, p.r) > t_rad,
+                    "{:?} at {:?} must be outside the tower",
+                    p.mat,
+                    (p.q, p.r)
+                ),
+                _ => {}
+            }
+        }
+        /* Every fixture sits on the deck slab (or the lamp two above),
+         * and each material's cells are a full 6-fold orbit: rotating a
+         * fixture cell by 60 degrees lands on another cell of the same
+         * material. Rotation in axial coords: (q,r) -> (-r, q+r). */
+        let rot = |q: i32, r: i32| (-r, q + r);
+        for m in [
+            StationMat::TradeTerminal, StationMat::ResearchConsole, StationMat::Slots,
+            StationMat::CardTable, StationMat::MuseumCase, StationMat::LightFixture,
+        ] {
+            let set: std::collections::HashSet<(i32, i32)> =
+                prisms.iter().filter(|p| p.mat == m).map(|p| (p.q, p.r)).collect();
+            for &(q, r) in &set {
+                assert!(is_fixture(m));
+                /* 3 (trade/slots/etc) or 6 fixtures form orbits under
+                 * repeated 60-deg rotation; two rotations (120 deg) map
+                 * a 3-fold set onto itself, one rotation a 6-fold set. */
+                let (rq, rr) = rot(q, r);
+                let (rq2, rr2) = rot(rq, rr);
+                assert!(
+                    set.contains(&(rq, rr)) || set.contains(&(rq2, rr2)),
+                    "{:?} at {:?} has no rotational partner",
+                    m, (q, r)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn station_light_field_glows_from_lamps_and_decays() {
+        let cfg = StationConfig::DEFAULT;
+        let slab = cfg.slab_layers as i32;
+        let field = light_field(&cfg);
+        let at = |q: i32, r: i32, l: i32| field.get(&(q, r, l)).copied().unwrap_or(0);
+        /* A courtyard lamp seeds its cell at lamp_emission and the air
+         * above it one step dimmer - identical semantics to a world
+         * torch (seed at intensity, -1 per BFS step). */
+        let (dq, dr) = HEX_DIRS[0];
+        let (eq, er) = HEX_DIRS[1];
+        let (mq, mr) = ((dq + eq) * 3, (dr + er) * 3);
+        let lamp = cfg.lamp_emission as u8;
+        assert_eq!(at(mq, mr, slab + 2), lamp, "lamp cell seeds at its emission");
+        assert_eq!(at(mq, mr, slab + 3), lamp - 1, "one step up = one dimmer");
+        assert_eq!(at(mq + dq, mr + dr, slab + 2), lamp - 1, "one lateral step");
+        /* The hotel interior is lit by the stair core's gold bands: the
+         * band cell seeds at the lamp emission, and the open ring-1 air
+         * beside it reads one step dimmer. */
+        assert_eq!(at(0, 0, slab), lamp, "core gold band seeds at emission");
+        assert_eq!(at(1, 0, slab), lamp - 1, "lobby air beside the core band");
+        /* Light decays with distance - three steps out is dimmer than
+         * one - and far-off empty space is dark. */
+        assert!(at(mq, mr, slab + 5) < at(mq, mr, slab + 3));
+        assert_eq!(at(cfg.radius_hexes as i32 + 4, 0, 40), 0, "space stays dark");
+        /* The field inherits the structure's 6-fold symmetry. */
+        let rot = |q: i32, r: i32| (-r, q + r);
+        let (rq, rr) = rot(mq, mr);
+        assert_eq!(at(mq, mr, slab + 3), at(rq, rr, slab + 3));
+    }
+
+    #[test]
     fn hotel_floors_are_walkable_and_stairs_climb() {
         let cfg = StationConfig::DEFAULT;
         let lh = layer_h(&cfg);
         let spans = column_spans(&cfg);
-        /* An interior room column: six storey slabs (incl. roof), each
-         * with >= 3 air layers of clearance above its walking surface. */
-        let col = spans.get(&(1, 1)).expect("interior column occupied");
+        /* A plain interior room column - clear of the central spiral AND
+         * of the lobby fixtures - with six storey slabs (incl. roof),
+         * each with >= 3 air layers of clearance above its surface. */
+        let col = spans.get(&(2, 1)).expect("interior column occupied");
         assert_eq!(col.len(), 6, "5 storeys + roof");
         for w in col.windows(2) {
             let clearance = w[1].0 - w[0].1;
@@ -1292,59 +1517,59 @@ mod tests {
         }
         /* Ground floor is level with the courtyard deck. */
         assert!((col[0].1 - cfg.slab_layers as f32 * lh).abs() < 1e-4);
-        /* Stairs: a CENTRAL spiral around the core column - treads two
-         * hexes deep (ring-1 pad + aligned dist-2 pad at the same
-         * height), connected solid, rising within the step-up
-         * allowance, consecutive treads on adjacent cells, topping out
-         * exactly on the roof deck. */
-        let steps = stairs(&cfg);
-        assert_eq!(steps.len(), 5 * STAIR_STEPS_PER_FLOOR as usize * 2);
-        let treads: Vec<_> = steps.chunks(2).collect();
-        for t in &treads {
-            let (inner, outer) = (&t[0], &t[1]);
-            assert_eq!(hex_dist(inner.q, inner.r), 1, "inner pad hugs the core");
-            assert_eq!((outer.q, outer.r), (inner.q * 2, inner.r * 2), "outer pad aligned");
-            assert_eq!(inner.top_m, outer.top_m, "both pads level - one tread");
+        /* Stairway: the user's template pattern - ONE full-layer hull
+         * tread per layer winding the ring-1 cells in STAIR_RING_ORDER
+         * around a solid lit core column, one lap per storey, topping
+         * out level with the roof deck. */
+        let prisms = shell(&cfg);
+        let slab = cfg.slab_layers as i32;
+        let roof = 1 + 5 * floor_pitch(&cfg); /* roof slab layer */
+        let at = |q: i32, r: i32, l: i32| prisms.iter().find(|p| (p.q, p.r, p.layer) == (q, r, l));
+        for l in slab..=roof {
+            let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+            let tread = at(sq, sr, l).expect("tread prism");
+            assert_eq!(tread.mat, StationMat::Hull, "treads are hull plating");
+            /* Consecutive treads sit on hex-adjacent cells, one layer
+             * apart - a connected winding staircase. */
+            let (nq, nr) = STAIR_RING_ORDER[((l - slab + 1) as usize) % 6];
+            assert_eq!(hex_dist(nq - sq, nr - sr), 1, "next tread is adjacent");
         }
-        for w in treads.windows(2) {
-            let d = hex_dist(w[0][0].q - w[1][0].q, w[0][0].r - w[1][0].r);
-            assert!(d <= 1, "consecutive treads are adjacent cells");
-            /* Connected: each step's underside meets the top of the one
-             * below - a solid staircase, no floating gap. */
-            assert!(
-                (w[1][0].bot_m - w[0][0].top_m).abs() < 1e-4,
-                "step {} does not meet step below (top {} vs next bot {})",
-                1,
-                w[0][0].top_m,
-                w[1][0].bot_m
-            );
-        }
-        /* The first step of the ground run sits on the lobby slab. */
-        let lobby_top = cfg.slab_layers as f32 * lh;
-        assert!((treads[0][0].bot_m - lobby_top).abs() < 1e-4, "run starts on the floor");
-        let rise = floor_pitch(&cfg) as f32 * lh / STAIR_STEPS_PER_FLOOR as f32;
-        assert!(rise <= cfg.step_up_m, "tread rise {rise} must be walkable");
-        let roof_top = (roof_layer(&cfg) + 1) as f32 * lh;
-        let max_top = steps.iter().map(|s| s.top_m).fold(f32::MIN, f32::max);
-        assert!((max_top - roof_top).abs() < 1e-4, "spiral tops out on the roof");
-        /* THE user rule: every tread keeps at least floor_air_layers of
-         * clear air above it in its own column - no slab, no tread, no
-         * anything blocks the climb. */
-        let min_air = STAIR_MIN_AIR_LAYERS as f32 * lh;
-        for s in &steps {
-            let col = spans.get(&(s.q, s.r)).expect("tread column");
+        /* Each step's rise is one layer, inside the step-up allowance. */
+        assert!(lh <= cfg.step_up_m, "tread rise {lh} must be walkable");
+        /* The top tread is level with the roof deck. */
+        let (tq, tr) = STAIR_RING_ORDER[((roof - slab) as usize) % 6];
+        let top = at(tq, tr, roof).expect("top tread");
+        assert!((top.y + lh - (roof + 1) as f32 * lh).abs() < 1e-4);
+        /* The template's clearance property: the same ring cell is
+         * revisited every 6 layers, so every tread keeps at least
+         * floor_air_layers - 1 (= 5 - 1 >= 3) clear layers overhead in
+         * its own column. */
+        for l in slab..=roof {
+            let (sq, sr) = STAIR_RING_ORDER[((l - slab) as usize) % 6];
+            let tread_top = (l + 1) as f32 * lh;
+            let col = spans.get(&(sq, sr)).expect("tread column");
             let over = col
                 .iter()
                 .map(|sp| sp.0)
-                .filter(|&bot| bot > s.top_m + 1e-4)
+                .filter(|&bot| bot > tread_top + 1e-4)
                 .fold(f32::INFINITY, f32::min);
             assert!(
-                over - s.top_m >= min_air - 1e-3,
-                "tread at {:?} top {} has only {} m of air above (need {})",
-                (s.q, s.r),
-                s.top_m,
-                over - s.top_m,
-                min_air
+                over - tread_top >= 3.0 * lh - 1e-3,
+                "tread at {:?} layer {} has only {} m of air above",
+                (sq, sr),
+                l,
+                over - tread_top
+            );
+        }
+        /* The stair core: a solid lit column from the lobby slab to the
+         * roof, gold light band every STAIR_CORE_GOLD_PERIOD layers. */
+        for l in (slab - 1)..roof {
+            let core = at(0, 0, l).expect("core column prism");
+            let want_gold = l >= slab && (l - slab) % STAIR_CORE_GOLD_PERIOD == 0;
+            assert_eq!(
+                core.mat,
+                if want_gold { StationMat::NeonGold } else { StationMat::Floor },
+                "core column mat at layer {l}"
             );
         }
         /* The hotel wall is one merged solid: no mid-wall ledge to stand
@@ -1381,6 +1606,7 @@ mod tests {
 
     #[test]
     fn frame_sample_supports_interior_floors() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let cfg = config();
         let lh = layer_h(&cfg);
@@ -1434,6 +1660,7 @@ mod tests {
 
     #[test]
     fn orbit_speed_and_period_derive_from_gravity() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let b = crate::planet::get(BodyId::Tenebris);
         let r = orbit_radius_m();
@@ -1464,6 +1691,7 @@ mod tests {
     /// of the whole thing against a future altitude tweak.
     #[test]
     fn the_station_orbits_slowly_enough_to_rendezvous_with() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let v = orbit_speed_mps();
         assert!(v < 20.0, "orbit speed {v} m/s is too fast to fly alongside");
@@ -1484,6 +1712,7 @@ mod tests {
     /// because anything was hand-tuned.
     #[test]
     fn orbit_obeys_keplers_third_law() {
+        let _cfg = cfg_guard();
         let b = crate::planet::get(BodyId::Tenebris);
         let gm = (crate::planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64
             * b.radius_m
@@ -1506,6 +1735,7 @@ mod tests {
     /// serve both "further out" and "easier to catch".
     #[test]
     fn a_higher_orbit_is_a_slower_orbit() {
+        let _cfg = cfg_guard();
         let mut low = StationConfig::DEFAULT;
         low.altitude_m = 120.0;
         set_config(low);
@@ -1520,6 +1750,7 @@ mod tests {
 
     #[test]
     fn orbit_track_is_circular_and_velocity_is_tangent() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let b = crate::planet::get(BodyId::Tenebris);
         let r = orbit_radius_m();

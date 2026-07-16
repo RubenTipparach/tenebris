@@ -27,8 +27,25 @@ directory.
   metres per layer.
 - `mat` - one of: `hull`, `floor`, `carpet`, `wall`, `neon`,
   `neon_pink`, `neon_gold`, `sign`, `glass`, `slot_machine`,
-  `card_table`. These map to `station::StationMat` (the machines are
-  reserved for the Phase 5 casino interior pass).
+  `card_table`, `trade_terminal`, `research_console`, `museum_case`,
+  `light_fixture`. These map to `station::StationMat`.
 
-A loader that builds a checked-in template into the station shell is
-the follow-up once the first real template lands here.
+## Checked-in templates
+
+- **`stairway.template.json`** - the casino hotel's central stairway
+  (user-authored): one full-layer hull tread per layer winding the six
+  ring-1 cells around a solid lit core column (floor plating, gold
+  band every third layer). `core/station.rs` builds this exact pattern
+  into the tower (`STAIR_RING_ORDER` / `STAIR_CORE_GOLD_PERIOD`).
+- **`casino-station.template.json`** - the full orbital casino wheel,
+  generated from `station::shell(DEFAULT)`. Regenerate after any
+  shell() change:
+
+  ```sh
+  cargo run -p tenebris-core --example dump-station-template \
+      > assets/templates/casino-station.template.json
+  ```
+
+Both ship as built-in templates in the tile editor (the Templates
+dropdown at https://tenebris-c.fly.dev/admin/tile-editor) - loading
+one is a single undoable action, so Ctrl+Z restores your scene.

@@ -32,7 +32,7 @@ use tenebris_core::math::{
     DVec3,
 };
 use tenebris_core::planet::{self, BodyId};
-use tenebris_core::station::{self, Prism, StairStep, StationMat, HEX_DIRS};
+use tenebris_core::station::{self, Prism, StationMat, HEX_DIRS};
 
 use crate::gfx_math::Mat4;
 use crate::renderer;
@@ -47,7 +47,13 @@ const TEX_WALL: usize = 5;
 const TEX_GLASS: usize = 6;
 const TEX_NEON_PINK: usize = 7;
 const TEX_NEON_GOLD: usize = 8;
-const TEX_COUNT: usize = 9;
+const TEX_TRADE: usize = 9;
+const TEX_RESEARCH: usize = 10;
+const TEX_MUSEUM: usize = 11;
+const TEX_LIGHT: usize = 12;
+const TEX_SLOTS: usize = 13;
+const TEX_CARDS: usize = 14;
+const TEX_COUNT: usize = 15;
 
 /// Face shading (multiplied by the sun term): caps bright, keels dark,
 /// sides alternating so the hex facets read in silhouette.
@@ -73,19 +79,35 @@ fn tex_for(m: StationMat) -> usize {
         StationMat::Sign => TEX_SIGN,
         StationMat::Wall => TEX_WALL,
         StationMat::Glass => TEX_GLASS,
+        StationMat::TradeTerminal => TEX_TRADE,
+        StationMat::ResearchConsole => TEX_RESEARCH,
+        StationMat::MuseumCase => TEX_MUSEUM,
+        StationMat::LightFixture => TEX_LIGHT,
+        StationMat::Slots => TEX_SLOTS,
+        StationMat::CardTable => TEX_CARDS,
     }
 }
 
 /// True for the station's own light sources - drawn with a sun-term
 /// floor so they glow indoors and at night.
 fn is_emissive(tex: usize) -> bool {
-    matches!(tex, TEX_NEON | TEX_NEON_PINK | TEX_NEON_GOLD | TEX_SIGN)
+    matches!(tex, TEX_NEON | TEX_NEON_PINK | TEX_NEON_GOLD | TEX_SIGN | TEX_LIGHT)
 }
 
 struct ShellCache {
     groups: [Vec<Prism>; TEX_COUNT],
-    steps: Vec<StairStep>,
     occupied: HashSet<(i32, i32, i32)>,
+    /// Baked torch-style block-light field (core::station::light_field):
+    /// cell -> 0..15, sampled per face like the world mesher samples the
+    /// voxel grid, so the lamps / neon / marquees light the casino.
+    light: std::collections::HashMap<(i32, i32, i32), u8>,
+}
+
+impl ShellCache {
+    /// Block light at a cell as a 0..1 brightness fraction.
+    fn light01(&self, q: i32, r: i32, layer: i32) -> f32 {
+        self.light.get(&(q, r, layer)).copied().unwrap_or(0) as f32 / 15.0
+    }
 }
 
 thread_local! {
@@ -101,7 +123,7 @@ fn build_cache() -> ShellCache {
         occupied.insert((p.q, p.r, p.layer));
         groups[tex_for(p.mat)].push(p);
     }
-    ShellCache { groups, steps: station::stairs(&cfg), occupied }
+    ShellCache { groups, occupied, light: station::light_field(&cfg) }
 }
 
 /// Hex corner k (pointy-top) at circumradius `a`, in the local xz plane.
@@ -135,6 +157,71 @@ fn emit_side(x: f32, z: f32, a: f32, k: usize, y0: f32, y1: f32, lit: f32) {
     sgl::v3f_t2f(bx0, y0, bz0, 0.0, 1.0);
     sgl::v3f_t2f(bx1, y1, bz1, 1.0, 0.0);
     sgl::v3f_t2f(bx0, y1, bz0, 0.0, 0.0);
+}
+
+/// True for the fixtures the client draws as real furniture (built from
+/// boxes) rather than hex prisms: the casino games and the trading /
+/// research stations, all INSIDE the tower. The museum case + courtyard
+/// lamp stay hex prisms out in the courtyard.
+fn is_furniture(tex: usize) -> bool {
+    matches!(tex, TEX_TRADE | TEX_RESEARCH | TEX_SLOTS | TEX_CARDS)
+}
+
+/// Emit one textured quad (two triangles). Corners wind p0->p1->p2->p3;
+/// uv maps 0..1 across the face (p0 bottom-left). Cull mode is None so
+/// winding doesn't matter - both sides show.
+fn emit_quad(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], s: f32) {
+    sgl::c3f(s, s, s);
+    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
+    sgl::v3f_t2f(p1[0], p1[1], p1[2], 1.0, 1.0);
+    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
+    sgl::v3f_t2f(p0[0], p0[1], p0[2], 0.0, 1.0);
+    sgl::v3f_t2f(p2[0], p2[1], p2[2], 1.0, 0.0);
+    sgl::v3f_t2f(p3[0], p3[1], p3[2], 0.0, 0.0);
+}
+
+/// Emit a textured axis-aligned box centred at (cx, cz) with half-extents
+/// (hx, hz), spanning y0..y1. Faces use the same cap/side shading as the
+/// prisms so the furniture reads with the scene light; the bound texture
+/// wraps each face 0..1.
+fn emit_box(cx: f32, cz: f32, hx: f32, hz: f32, y0: f32, y1: f32, lit: f32) {
+    let (x0, x1) = (cx - hx, cx + hx);
+    let (z0, z1) = (cz - hz, cz + hz);
+    /* Top + bottom caps. */
+    emit_quad([x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], SHADE_TOP * lit);
+    emit_quad([x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], SHADE_BOTTOM * lit);
+    /* Four sides (alternating shade so the block's facets read). */
+    emit_quad([x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], SHADE_SIDE_A * lit);
+    emit_quad([x0, y0, z1], [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], SHADE_SIDE_A * lit);
+    emit_quad([x1, y0, z1], [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], SHADE_SIDE_B * lit);
+    emit_quad([x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], SHADE_SIDE_B * lit);
+}
+
+/// Draw one casino fixture as furniture on the lobby floor at (x, z),
+/// floor surface `y0`. Built from boxes, textured with the bound fixture
+/// skin, sized in metres so it reads human-scale inside the tower:
+///   - Slots: a chunky slot-machine cabinet (stepped base, body, marquee);
+///   - CardTable: a felt table top on a pedestal;
+///   - Trade/Research: a console desk with an upright screen.
+fn emit_furniture(tex: usize, x: f32, z: f32, y0: f32, lit: f32) {
+    match tex {
+        TEX_SLOTS => {
+            emit_box(x, z, 0.58, 0.48, y0, y0 + 0.28, lit); /* stepped base */
+            emit_box(x, z, 0.5, 0.4, y0 + 0.28, y0 + 1.7, lit); /* reel body */
+            emit_box(x, z, 0.6, 0.5, y0 + 1.7, y0 + 2.0, lit); /* lit marquee */
+        }
+        TEX_CARDS => {
+            emit_box(x, z, 0.22, 0.22, y0, y0 + 0.72, lit); /* pedestal */
+            emit_box(x, z, 0.92, 0.92, y0 + 0.72, y0 + 0.9, lit); /* felt top */
+        }
+        _ => {
+            /* Trade / research console: a desk with an upright flat
+             * screen. The thin screen box shows the trade-chart /
+             * holo-console skin on its broad faces from any approach. */
+            emit_box(x, z, 0.74, 0.5, y0, y0 + 0.9, lit); /* desk */
+            emit_box(x, z, 0.62, 0.12, y0 + 0.9, y0 + 1.72, lit); /* screen */
+        }
+    }
 }
 
 /// Far-LOD stand-in: one camera-facing quad at the station anchor, sized
@@ -286,8 +373,9 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
         let cache = cache.get_or_insert_with(build_cache);
         /* Opaque materials first, glass last so blending sees the scene. */
         let order = [
-            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD,
-            TEX_SIGN, TEX_GLASS,
+            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_TRADE, TEX_RESEARCH, TEX_MUSEUM,
+            TEX_SLOTS, TEX_CARDS, TEX_NEON, TEX_NEON_PINK, TEX_NEON_GOLD, TEX_LIGHT, TEX_SIGN,
+            TEX_GLASS,
         ];
         for tex in order {
             let prisms = &cache.groups[tex];
@@ -313,35 +401,37 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
             );
             sgl::begin_triangles();
             for p in prisms {
+                /* The casino games + trading/research stations draw as
+                 * real furniture built from boxes, not hex prisms. Lit
+                 * by the block light in their own cell. */
+                if is_furniture(tex) {
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer));
+                    emit_furniture(tex, p.x, p.z, p.y, l);
+                    continue;
+                }
                 let (y0, y1) = (p.y, p.y + lh);
                 /* Glass never culls against neighbours (a pane next to a
-                 * wall still shows); solids cull occupied neighbours. */
+                 * wall still shows); solids cull occupied neighbours.
+                 * Every face samples the propagated block light of the
+                 * air cell it faces - max(sun, light), exactly how the
+                 * world mesher lights faces from torches - so lamps /
+                 * neon / marquees light the casino rooms. */
                 let solid = tex != TEX_GLASS;
                 if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
-                    emit_cap(p.x, p.z, a, y1, SHADE_TOP * lit);
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer + 1));
+                    emit_cap(p.x, p.z, a, y1, SHADE_TOP * l);
                 }
                 if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
-                    emit_cap(p.x, p.z, a, y0, SHADE_BOTTOM * lit);
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer - 1));
+                    emit_cap(p.x, p.z, a, y0, SHADE_BOTTOM * l);
                 }
                 for k in 0..6 {
                     /* Side k's outward normal points at 60(k+1) degrees,
                      * which is axial direction HEX_DIRS[(k+1) % 6]. */
                     let (dq, dr) = HEX_DIRS[(k + 1) % 6];
                     if !solid || !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
-                        emit_side(p.x, p.z, a, k, y0, y1, lit);
-                    }
-                }
-            }
-            /* The spiral stair treads ride the hull group: thin steel
-             * pads at FULL cell size, so each tread snaps to the hex
-             * grid and neighbouring pads touch edge to edge. */
-            if tex == TEX_HULL {
-                for s in &cache.steps {
-                    let (y0, y1) = (s.bot_m, s.top_m);
-                    emit_cap(s.x, s.z, a, y1, SHADE_TOP * lit);
-                    emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * lit);
-                    for k in 0..6 {
-                        emit_side(s.x, s.z, a, k, y0, y1, lit);
+                        let l = lit.max(cache.light01(p.q + dq, p.r + dr, p.layer));
+                        emit_side(p.x, p.z, a, k, y0, y1, l);
                     }
                 }
             }
