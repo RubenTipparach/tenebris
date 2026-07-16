@@ -1621,7 +1621,14 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * the deck. */
         let scfg = tenebris_core::station::config();
         let sf = tenebris_core::station::frame_sample(p.position, sim_t);
-        if sf.in_field {
+        /* Station physics applies ON FOOT only. A ridden ship must fly
+         * free through the field - no gravity suck, no deck clamp, no
+         * basis roll - until the pilot explicitly docks (E): "the
+         * ship-to-station pad snapping is happening by distance, but it
+         * needs to be when I press E to dock". The docking sequence
+         * drives the ship's pose itself. */
+        let station_walk = sf.in_field && !riding;
+        if station_walk {
             p.velocity = dvec3_sub(
                 p.velocity,
                 dvec3_scale(sf.up, scfg.artificial_gravity_mps2 as f64 * dt as f64),
@@ -1673,7 +1680,7 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          *   vertical relative velocity, bleed slide via deck friction.
          * - Ceiling: head met the underside of the storey above while
          *   rising -> stop the rise. */
-        if sf.in_field {
+        if station_walk {
             let mut sf2 = tenebris_core::station::frame_sample(p.position, sim_t);
             if sf2.embedded {
                 let pre = tenebris_core::station::frame_sample(pre_step, sim_t);
@@ -1701,6 +1708,27 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                     rel.y = 0.0;
                     touched = true;
                 }
+            }
+            /* DECK WALKING: while grounded the deck owns the player's
+             * motion. Station-RELATIVE velocity is set directly from the
+             * walk wish (the same yaw-aware wish planet walking uses), so
+             * every trace of orbital-frame velocity cancels out of the
+             * controls - walking and jumping on the station feel exactly
+             * like planet ground. Jump is a clean up-impulse in the deck
+             * frame; the artificial gravity above brings it back down.
+             * RCS drift only exists while airborne off the deck. */
+            if p.grounded {
+                let wish = walk_wish(p, &inp.phys);
+                let speed =
+                    if inp.phys.sprint { SPRINT_SPEED } else { WALK_SPEED } as f64;
+                let wish_l = sf2.world_vec_to_local(wish);
+                rel.x = wish_l.x * speed;
+                rel.z = wish_l.z * speed;
+                if inp.phys.jump {
+                    rel.y = l.jump_velocity_mps as f64;
+                    p.grounded = false;
+                }
+                touched = true;
             }
             if touched {
                 p.position = sf2.local_to_world(lp);

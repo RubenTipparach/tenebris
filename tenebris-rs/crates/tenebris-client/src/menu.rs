@@ -264,6 +264,13 @@ struct Menu {
     /* Resume pose handed off to main_web on entering IN_GAME_SP.
      * C: bool pending_sp_resume + persistence_save_t resume. */
     resume: Option<PersistenceSave>,
+    /// Whether the world being entered HAD a save when start_sp_for_world
+    /// ran. `pending_is_new_world` must read THIS, not `resume.is_none()`:
+    /// the pose-apply TAKES `resume` earlier in the frame than the EnterSp
+    /// priming reads it, so every reload of a space world looked "brand
+    /// new" - the launch complex rebuilt and teleported the player to the
+    /// pad vantage on the planet instead of their saved station pose.
+    entered_with_save: bool,
 
     /* World-picker delete flow: the world awaiting its two-button
      * confirm dialog (a real in-panel dialog per CLAUDE.md - never
@@ -477,10 +484,16 @@ pub fn dev_set_space_mode() {
 }
 
 /// True when the SP world being entered has NO existing save yet - i.e. it
-/// is being created fresh this session (resume is None). Used to build the
+/// is being created fresh this session. Used to build the
 /// space-exploration launch complex exactly once, at creation.
+///
+/// Reads the sticky `entered_with_save` flag, NOT `resume.is_none()`: the
+/// pose-apply takes `resume` earlier in the same frame than the EnterSp
+/// priming runs, so the Option is always empty by then and every RELOAD of
+/// a space world read as "new" - rebuilding the launch complex and
+/// teleporting the player from their saved station pose down to the pad.
 pub fn pending_is_new_world() -> bool {
-    with_menu(|m| m.resume.is_none())
+    with_menu(|m| !m.entered_with_save)
 }
 
 /// A consistent full-width menu button.
@@ -1934,8 +1947,10 @@ fn start_sp_for_world(m: &mut Menu, world_name: &str) {
         m.new_world_survival = s.survival;
         m.new_world_space = s.space;
         m.resume = Some(s);
+        m.entered_with_save = true;
     } else {
         m.resume = None;
+        m.entered_with_save = false;
         println!(
             "[menu] SP new '{}' (no save yet, mode={})",
             world_name,
