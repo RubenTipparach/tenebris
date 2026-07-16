@@ -43,6 +43,9 @@
 #   map_ship_default_dist_m  camera distance when the map opens on the ship
 #   map_drag_sens            drag-orbit sensitivity, radians per pixel
 #   map_zoom_step            wheel zoom step multiplier per notch
+#   map_teleport             >0.5 shows a WARP button on each map card that
+#                            jumps the ship/player to that body or station
+#                            (debug/creative). 0 hides it.
 solar:
   sun_distance_m: 150000
   sun_visual_dist_m: 18000
@@ -66,3 +69,4 @@ solar:
   map_ship_default_dist_m: 300
   map_drag_sens: 0.008
   map_zoom_step: 1.25
+  map_teleport: 1.0

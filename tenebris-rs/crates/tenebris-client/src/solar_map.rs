@@ -41,6 +41,28 @@ pub enum Focus {
     /// The player / rocket - the map's home view.
     Ship,
     Body(BodyId),
+    /// The orbital station (rides Tenebris orbit).
+    Station,
+}
+
+use crate::player_ctrl::PlayerCtrl;
+use std::rc::Rc;
+pub type PlayerHandle = Rc<RefCell<PlayerCtrl>>;
+
+thread_local! {
+    static PLAYER: RefCell<Option<PlayerHandle>> = const { RefCell::new(None) };
+}
+
+/// Provide the player handle the WARP buttons teleport (fed each frame from
+/// the egui dispatch, like the other survival screens).
+pub fn set_player(p: Option<PlayerHandle>) {
+    PLAYER.with(|c| *c.borrow_mut() = p);
+}
+
+/// Is the debug WARP (teleport) button enabled in the map? Gated on the
+/// `map_teleport` solar-config flag so it ships off unless a world turns it on.
+fn teleport_enabled() -> bool {
+    tenebris_core::config::solar().map_teleport > 0.5
 }
 
 struct MapScreen {
@@ -116,8 +138,54 @@ pub fn set_focus(f: Focus) {
         g.dist_m = match f {
             Focus::Ship => sc.map_ship_default_dist_m as f64,
             Focus::Body(id) => planet::get(id).radius_m * 8.0,
+            Focus::Station => 200.0,
         };
     });
+}
+
+/// WARP the player to `id`: teleports the SHIP if flying (keeps them in
+/// space, still flying) or the walking player onto the surface otherwise,
+/// then closes the map so they arrive there. Debug/creative - gated on the
+/// map_teleport config at the button.
+fn warp_to_body(id: BodyId) {
+    if let Some(player) = PLAYER.with(|c| c.borrow().clone()) {
+        let b = planet::get(id);
+        if crate::rocket_ride::is_riding() {
+            crate::player_ctrl::teleport_ride_to_body(&mut player.borrow_mut(), &b);
+        } else {
+            crate::player_ctrl::teleport_to(&mut player.borrow_mut(), &b);
+        }
+        if let Some(w) = crate::renderer::world_for_body(id as u32) {
+            crate::renderer::set_active_world(&w);
+        }
+    }
+    end_warp();
+}
+
+/// WARP to the orbital station: the ship stands off beside it (matched to
+/// its velocity) if flying, or the walking player lands on the deck.
+fn warp_to_station() {
+    if let Some(player) = PLAYER.with(|c| c.borrow().clone()) {
+        if crate::rocket_ride::is_riding() {
+            crate::player_ctrl::teleport_ride_to_station(&mut player.borrow_mut());
+        } else {
+            crate::player_ctrl::teleport_to_station(&mut player.borrow_mut());
+        }
+        let ten = planet::get(BodyId::Tenebris);
+        if let Some(w) = crate::renderer::world_for_body(ten.id as u32) {
+            crate::renderer::set_active_world(&w);
+        }
+    }
+    end_warp();
+}
+
+/// Close the map after a warp and restore the right cursor state: locked
+/// for on-foot mouse-look, free while flying (the flight panel is clickable).
+fn end_warp() {
+    close();
+    if !crate::rocket_ride::is_riding() {
+        crate::screens::grab_pointer();
+    }
 }
 
 /// While open: swallow mouse events (egui + the drag-orbit own the
@@ -157,6 +225,9 @@ fn focus_pos(g: &MapScreen, t: f64) -> DVec3 {
     match g.focus {
         Focus::Ship => g.player_world,
         Focus::Body(id) => orbit::apparent_pos(g.active, id, t),
+        /* The station rides Tenebris orbit in world coords, the same frame
+         * the ship marker (player_world) lives in. */
+        Focus::Station => tenebris_core::station::orbit_pos(t),
     }
 }
 
@@ -166,6 +237,7 @@ fn dist_limits(f: Focus) -> (f64, f64) {
     let min = match f {
         Focus::Ship => sc.map_ship_min_dist_m as f64,
         Focus::Body(id) => planet::get(id).radius_m * sc.map_min_dist_mult as f64,
+        Focus::Station => 40.0,
     };
     (min, sc.map_max_dist_m as f64)
 }
@@ -222,6 +294,17 @@ pub fn camera(aspect: f32) -> Option<(Mat4, Mat4, DVec3)> {
 
 const CARD_THUMB_PX: f32 = 40.0;
 const PANEL_W: f32 = 240.0;
+/// Wider panel when the WARP button is shown, so the extra pill has room
+/// beside FOCUS/TGT without covering the body name.
+const PANEL_W_WARP: f32 = 300.0;
+
+fn panel_w() -> f32 {
+    if teleport_enabled() {
+        PANEL_W_WARP
+    } else {
+        PANEL_W
+    }
+}
 
 /// Maneuver-target pink - matches nav_ui's TARGET_COL so the panel, the
 /// navball marker, and the in-world halo read as one system.
@@ -279,7 +362,7 @@ pub fn egui_ui(ctx: &egui::Context) {
 
     /* ---- Fly-out body panel (right edge, slides in with the mode). ---- */
     egui::SidePanel::right("solar-bodies")
-        .exact_width(PANEL_W)
+        .exact_width(panel_w())
         .resizable(false)
         .show_animated(ctx, true, |ui| {
             ui.add_space(4.0);
@@ -291,6 +374,10 @@ pub fn egui_ui(ctx: &egui::Context) {
             ui.separator();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ship_card(ui, focus);
+                ui.add_space(2.0);
+                /* The orbital station rides Tenebris orbit - list it right
+                 * under MY SHIP since it's the near-space destination. */
+                station_card(ui, focus);
                 ui.add_space(2.0);
                 for &id in &PLANETS {
                     body_card(ui, id, focus, 0.0);
@@ -322,6 +409,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                     let focus_name = match focus {
                         Focus::Ship => "My Ship",
                         Focus::Body(id) => planet::get(id).name,
+                        Focus::Station => "Orbital Station",
                     };
                     ui.label(
                         egui::RichText::new(format!(
@@ -392,7 +480,7 @@ fn fmt_dist(m: f64) -> String {
 fn ship_card(ui: &mut egui::Ui, focus: Focus) {
     let is_focus = focus == Focus::Ship;
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(PANEL_W - 16.0, CARD_THUMB_PX + 6.0),
+        egui::vec2(panel_w() - 16.0, CARD_THUMB_PX + 6.0),
         egui::Sense::click(),
     );
     let p = ui.painter_at(rect);
@@ -446,6 +534,39 @@ fn tgt_btn_rect(card: egui::Rect) -> egui::Rect {
     )
 }
 
+/// WARP pill - sits left of FOCUS (only shown when teleport is enabled, so
+/// the panel is widened to make room).
+fn warp_btn_rect(card: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(card.max.x - 142.0, card.center().y - 10.0),
+        egui::vec2(48.0, 20.0),
+    )
+}
+
+/// Draw the WARP pill on `card` and run `on_click` when pressed. Amber so it
+/// reads as a distinct "jump there now" action from FOCUS/TGT.
+fn warp_pill(ui: &mut egui::Ui, card: egui::Rect, id_src: egui::Id, on_click: impl FnOnce()) {
+    let r = warp_btn_rect(card);
+    let resp = ui.interact(r, id_src.with("warp"), egui::Sense::click());
+    let p = ui.painter_at(card);
+    let bg = if resp.hovered() {
+        egui::Color32::from_rgb(0x6a, 0x54, 0x1c)
+    } else {
+        egui::Color32::from_rgb(0x3a, 0x2e, 0x12)
+    };
+    p.rect_filled(r, 3.0, bg);
+    p.text(
+        r.center(),
+        egui::Align2::CENTER_CENTER,
+        "WARP",
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_rgb(0xf0, 0xc8, 0x60),
+    );
+    if resp.clicked() {
+        on_click();
+    }
+}
+
 fn draw_pill(p: &egui::Painter, r: egui::Rect, label: &str, hovered: bool, lit: bool) {
     let bg = if lit {
         egui::Color32::from_rgb(0x3a, 0x62, 0x8f)
@@ -471,7 +592,7 @@ fn body_card(ui: &mut egui::Ui, id: BodyId, focus: Focus, indent: f32) {
     let is_tgt = nav_ui::target() == Some(Target::Body(id));
 
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(PANEL_W - 16.0, CARD_THUMB_PX + 6.0),
+        egui::vec2(panel_w() - 16.0, CARD_THUMB_PX + 6.0),
         egui::Sense::click(),
     );
     let p = ui.painter_at(rect);
@@ -530,10 +651,55 @@ fn body_card(ui: &mut egui::Ui, id: BodyId, focus: Focus, indent: f32) {
         if is_tgt { egui::Color32::BLACK } else { TGT_COL },
     );
 
+    if teleport_enabled() {
+        warp_pill(ui, rect, resp.id, || warp_to_body(id));
+    }
+
     if tresp.clicked() {
         nav_ui::set_target(if is_tgt { None } else { Some(Target::Body(id)) });
     } else if fresp.clicked() || resp.clicked() {
         set_focus(Focus::Body(id));
+    }
+}
+
+/// The orbital-station row: station glyph + name + FOCUS + (config-gated)
+/// WARP. No TGT - the nav target system is body-keyed; docking is the
+/// station's "target" mechanic.
+fn station_card(ui: &mut egui::Ui, focus: Focus) {
+    let is_focus = focus == Focus::Station;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(panel_w() - 16.0, CARD_THUMB_PX + 6.0),
+        egui::Sense::click(),
+    );
+    let p = ui.painter_at(rect);
+    let bg = if is_focus {
+        egui::Color32::from_rgb(0x26, 0x2c, 0x3a)
+    } else if resp.hovered() {
+        egui::Color32::from_rgb(0x1e, 0x22, 0x2c)
+    } else {
+        egui::Color32::from_rgb(0x14, 0x17, 0x1e)
+    };
+    p.rect_filled(rect, 4.0, bg);
+    /* A little ring glyph for the drum (echoes the station's shape). */
+    let c = rect.min + egui::vec2(4.0 + CARD_THUMB_PX * 0.5, 3.0 + CARD_THUMB_PX * 0.5);
+    p.circle_stroke(c, 12.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0x8c, 0xd0, 0xf0)));
+    p.text(
+        egui::pos2(rect.min.x + CARD_THUMB_PX + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Orbital Station",
+        egui::FontId::proportional(13.0),
+        if is_focus { egui::Color32::WHITE } else { egui::Color32::from_rgb(0xc2, 0xc8, 0xd4) },
+    );
+    let fbtn = focus_btn_rect(rect);
+    let fresp = ui.interact(fbtn, resp.id.with("focus"), egui::Sense::click());
+    draw_pill(&p, fbtn, "FOCUS", fresp.hovered(), is_focus);
+
+    if teleport_enabled() {
+        warp_pill(ui, rect, resp.id, warp_to_station);
+    }
+
+    if fresp.clicked() || resp.clicked() {
+        set_focus(Focus::Station);
     }
 }
 

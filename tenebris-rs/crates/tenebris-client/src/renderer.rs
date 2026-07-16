@@ -5399,7 +5399,6 @@ pub fn draw_world(
                 );
             }
 
-            let frustum = extract_frustum(vp);
             /* This frame's mining state (one-shot; app re-publishes
              * every frame it's actively mining). */
             let break_req = BREAK_REQ.with(|c| c.take());
@@ -5409,17 +5408,29 @@ pub fn draw_world(
             let crack_alpha = tenebris_core::mining::config().crack_alpha;
             for bi in 0..r.bodies.len() {
                 let is_active = bi as i32 == r.active_body_idx;
-                /* No frustum cull on the active body - its bounding
-                 * sphere is mostly behind the camera when standing on
-                 * the surface, and the player must never lose chunks
-                 * underfoot. Non-active bodies get a 1.5x radius pad. */
-                if !is_active
-                    && !sphere_visible(
-                        &frustum,
-                        r.bodies[bi].world_pos,
-                        r.bodies[bi].radius_m * 1.5,
-                    )
-                {
+                /* Non-active bodies are ALWAYS far-LOD: they never draw
+                 * chunked terrain (see body_draws_chunked), so force their
+                 * cached verdict to "not chunked" and release any detail
+                 * mesh here - BEFORE any frustum cull. This is the "every
+                 * astro body always shows its low-detail LOD" invariant.
+                 *
+                 * The old code frustum-culled a non-active body with a bare
+                 * `continue` that skipped updating chunked_now. A body that
+                 * lost active status (a teleport / body switch) while
+                 * off-screen therefore kept a STALE chunked_now=true and
+                 * drew NEITHER chunks (not active) NOR its distant impostor
+                 * (draw_moons skips chunked_now bodies) - it vanished, and
+                 * stayed gone until it happened to swing back on-screen.
+                 * Clearing it unconditionally makes draw_moons draw the
+                 * impostor the instant the body is in view; draw_moons still
+                 * frustum-culls the impostor itself, so off-screen bodies
+                 * cost nothing. */
+                if !is_active {
+                    if r.bodies[bi].meshed {
+                        body_unload_detail(&mut r.bodies[bi]);
+                    }
+                    r.bodies[bi].chunked_now = false;
+                    r.bodies[bi].detail_out_since = -1.0;
                     continue;
                 }
                 /* Only the ACTIVE body draws chunked terrain, and only

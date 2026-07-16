@@ -2065,6 +2065,9 @@ pub struct SolarConfig {
     pub map_drag_sens: f32,
     /// Wheel zoom step multiplier per notch.
     pub map_zoom_step: f32,
+    /// Debug: >0.5 shows a WARP (teleport) button on each map card, jumping
+    /// the ship/player straight to that body or the station. 0 = hidden.
+    pub map_teleport: f32,
 }
 
 const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
@@ -2096,6 +2099,7 @@ const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
     map_ship_default_dist_m: 300.0,
     map_drag_sens: 0.008,
     map_zoom_step: 1.25,
+    map_teleport: 0.0,
 };
 
 static S_SOLAR: Mutex<SolarConfig> = Mutex::new(SOLAR_DEFAULTS);
@@ -2156,6 +2160,7 @@ pub fn parse_solar(src: &str, path: &str) -> i32 {
             "map_ship_default_dist_m" => cfg.map_ship_default_dist_m = v,
             "map_drag_sens" => cfg.map_drag_sens = v,
             "map_zoom_step" => cfg.map_zoom_step = v,
+            "map_teleport" => cfg.map_teleport = v,
             _ => println!("[config] {}:{}: unknown solar key '{}'", path, line_no, key),
         }
         0

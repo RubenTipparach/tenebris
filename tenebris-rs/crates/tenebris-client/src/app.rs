@@ -5166,6 +5166,7 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
         let p = app.player.borrow();
         solar_map::set_active(p.body.unwrap_or(app.body).id, p.position);
     }
+    solar_map::set_player(Some(app.player.clone()));
     solar_map::egui_ui(ctx);
     /* The one-click MAP chip (top-right) - shown whenever the player is
      * actually in a world and not paused; the map key still works
