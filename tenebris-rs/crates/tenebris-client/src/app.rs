@@ -7413,17 +7413,40 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * gate - too fast and the HUD shows the gap instead). The station
      * flies at 120 m altitude, far above any interact raycast target,
      * so this can't shadow a machine. */
-    if interact_pressed
-        && rocket_ride::is_riding()
-        && station_screen::dock_distance_m(app.player.borrow().position)
-            <= station_screen::dock_radius_m()
-        && station_screen::dock_speed_ok(app.player.borrow().velocity)
-    {
-        /* Riding only: DOCKING is a ship maneuver. On foot inside the
-         * station E keeps its normal meaning (the trade/warehouse/fuel
-         * hub will move to walk-up consoles - see SPACE_ERA_PLAN). */
-        station_screen::open(app.player.clone());
-        return;
+    if interact_pressed && rocket_ride::is_riding() {
+        /* Log the rendezvous gate on EVERY E-while-riding so a failed dock
+         * shows WHY in the console (too far / too fast) instead of just
+         * doing nothing - the "start logging, stop guessing" ask. */
+        let (pos, vel) = {
+            let p = app.player.borrow();
+            (p.position, p.velocity)
+        };
+        let dist = station_screen::dock_distance_m(pos);
+        let radius = station_screen::dock_radius_m();
+        let rel = station_screen::dock_rel_speed_mps(vel);
+        let speed_ok = station_screen::dock_speed_ok(vel);
+        let in_range = dist <= radius;
+        let verdict = if !in_range {
+            "TOO FAR - close the gap"
+        } else if !speed_ok {
+            "TOO FAST - match the station's velocity"
+        } else {
+            "IN RANGE - opening dock"
+        };
+        println!(
+            "[dock] E while riding: dist={:.1} m (dock radius {:.1} m), \
+             rel_speed={:.2} m/s (matched={}) -> {}",
+            dist, radius, rel, speed_ok, verdict
+        );
+        if in_range && speed_ok {
+            /* Riding only: DOCKING is a ship maneuver. (Tractor-to-pad
+             * sequence is the next build; for now this opens the hub once
+             * you're in range + velocity-matched.) */
+            station_screen::open(app.player.clone());
+            return;
+        }
+        /* Gate failed - fall through; E isn't consumed so other handlers
+         * (none while riding) still get a shot. */
     }
     if interact_pressed && app.interact.has_target && !app.interact.is_torch_target {
         let targeted = app
