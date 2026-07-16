@@ -320,6 +320,7 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         | Action::Pause
         | Action::OpenTechTree
         | Action::OpenCrafting
+        | Action::OpenSolarMap
         | Action::ToggleDebugUi
         | Action::PlayersPanel
         | Action::ToggleProfiler

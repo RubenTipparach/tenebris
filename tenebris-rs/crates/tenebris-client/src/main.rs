@@ -50,6 +50,7 @@ mod screens;
 mod settings;
 mod slot_dnd;
 mod shaders;
+mod solar_map;
 mod tech_tree;
 mod teleport_menu;
 mod viewmodel;

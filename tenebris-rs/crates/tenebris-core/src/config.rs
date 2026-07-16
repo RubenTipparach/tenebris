@@ -2004,6 +2004,77 @@ pub fn parse_time(src: &str, path: &str) -> i32 {
 }
 
 /* ------------------------------------------------------------------------ */
+/* solar.yaml - solar-system scale + the sun's rendered disc.               */
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolarConfig {
+    /// Distance from the home world (Tenebris) to the star, metres. The
+    /// whole system scales with it: every star-orbiting body's structural
+    /// orbit radius (see orbit::elements) is multiplied by
+    /// sun_distance_m / Tenebris's structural radius, so the system keeps
+    /// its shape while the star recedes.
+    pub sun_distance_m: f32,
+    /// Where the sun's DISC is drawn, metres from the active body's centre
+    /// along the sun direction. Must sit inside the camera zfar (20 km) or
+    /// the disc clips away; the disc is angular-size-correct for the real
+    /// distance, so moving this knob doesn't change how big the sun looks.
+    pub sun_visual_dist_m: f32,
+    /// The star's "physical" radius, metres. Sets the sun's angular size:
+    /// drawn radius = sun_radius_m * (sun_visual_dist_m / sun_distance_m).
+    pub sun_radius_m: f32,
+}
+
+const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
+    sun_distance_m: 150_000.0,
+    sun_visual_dist_m: 18_000.0,
+    /* 2250 m at 150 km = 15 mrad angular radius - half the old 8 km disc,
+     * so the star reads as far away instead of looming. */
+    sun_radius_m: 2_250.0,
+};
+
+static S_SOLAR: Mutex<SolarConfig> = Mutex::new(SOLAR_DEFAULTS);
+
+/// Current solar-system config (a copy, like the other getters).
+pub fn solar() -> SolarConfig {
+    *S_SOLAR.lock().unwrap()
+}
+
+/// Load solar.yaml from disk (native). Missing file keeps the defaults.
+pub fn load_solar(path: &str) -> i32 {
+    match slurp_file(path) {
+        None => {
+            println!("[config] {} not found, using compiled-in solar defaults", path);
+            -1
+        }
+        Some(src) => parse_solar(&src, path),
+    }
+}
+
+/// Parse solar.yaml content (WASM preload path / tests). A field set to
+/// zero (or omitted) keeps the compiled-in default.
+pub fn parse_solar(src: &str, path: &str) -> i32 {
+    let mut cfg = S_SOLAR.lock().unwrap();
+    let parse_errors = scan(src, path, |line_no, key, val| {
+        if val.is_empty() {
+            return 0; /* "solar:" section header */
+        }
+        let v = fval(val);
+        if v == 0.0 {
+            return 0; /* zero keeps the compiled-in default */
+        }
+        match key {
+            "sun_distance_m" => cfg.sun_distance_m = v,
+            "sun_visual_dist_m" => cfg.sun_visual_dist_m = v,
+            "sun_radius_m" => cfg.sun_radius_m = v,
+            _ => println!("[config] {}:{}: unknown solar key '{}'", path, line_no, key),
+        }
+        0
+    });
+    drop(cfg);
+    finish(path, parse_errors)
+}
+
+/* ------------------------------------------------------------------------ */
 
 #[cfg(test)]
 mod tests {

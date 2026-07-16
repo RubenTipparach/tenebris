@@ -1,0 +1,24 @@
+# Solar-system scale + the sun's rendered disc. Parsed by
+# core/config.rs parse_solar (tiny key: value subset).
+#
+# A field set to 0 / omitted keeps the compiled-in default.
+#
+#   sun_distance_m     distance from the home world (Tenebris) to the
+#                      star, metres. The WHOLE system scales with it:
+#                      every star-orbiting body's structural orbit radius
+#                      (orbit.rs elements) is multiplied by
+#                      sun_distance_m / Tenebris's structural radius, so
+#                      the system keeps its shape while the star recedes.
+#                      Moon orbits are untouched.
+#   sun_visual_dist_m  where the sun's DISC is drawn, metres from the
+#                      active body's centre along the sun direction. Must
+#                      stay inside the camera zfar (20 km). The disc is
+#                      angular-size-correct for sun_distance_m, so this
+#                      knob moves the billboard, not the look.
+#   sun_radius_m       the star's "physical" radius, metres. Sets the
+#                      sun's angular size in the sky: drawn radius =
+#                      sun_radius_m * (sun_visual_dist_m / sun_distance_m).
+solar:
+  sun_distance_m: 150000
+  sun_visual_dist_m: 18000
+  sun_radius_m: 2250

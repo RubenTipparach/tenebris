@@ -197,6 +197,21 @@ pub fn elements(id: BodyId) -> OrbitElements {
     }
 }
 
+/// System-wide orbit scale: solar.yaml's `sun_distance_m` over Tenebris's
+/// STRUCTURAL orbit radius (the elements table above). Applied to every
+/// star-orbiting body so "push the sun to 150 km" scales the whole system
+/// proportionally - planets keep their relative spacing, moons keep their
+/// tight parent orbits (they're parent-relative, not star-relative).
+fn star_orbit_scale() -> f64 {
+    let base = elements(BodyId::Tenebris).orbit_radius_m;
+    let d = config::solar().sun_distance_m as f64;
+    if d > 0.0 && base > 0.0 {
+        d / base
+    } else {
+        1.0
+    }
+}
+
 /// Rodrigues rotation of `v` about unit axis `k` by `angle` radians.
 fn rotate_about(v: DVec3, k: DVec3, angle: f64) -> DVec3 {
     let (s, c) = angle.sin_cos();
@@ -224,8 +239,9 @@ pub fn heliocentric_pos(id: BodyId, t: f64) -> DVec3 {
     } else {
         e.orbit_phase0
     };
-    /* In-plane circular orbit, then tilt the plane about X. */
-    let r = e.orbit_radius_m;
+    /* In-plane circular orbit, then tilt the plane about X. Star orbits
+     * carry the system-wide solar.yaml scale; moon orbits stay structural. */
+    let r = e.orbit_radius_m * if e.parent.is_none() { star_orbit_scale() } else { 1.0 };
     let (sa, ca) = a.sin_cos();
     let local = dvec3_make(r * ca, 0.0, r * sa);
     let (si, ci) = e.inclination.sin_cos();
@@ -285,12 +301,13 @@ mod tests {
     use super::*;
 
     fn setup() {
-        // Pin the periods so the math is deterministic regardless of any
-        // time.yaml an earlier test loaded.
+        // Pin the periods + system scale so the math is deterministic
+        // regardless of any yaml an earlier test loaded.
         config::parse_time(
             "time:\n  day_length_s: 100.0\n  year_length_s: 1000.0\n",
             "orbit-test",
         );
+        config::parse_solar("solar:\n  sun_distance_m: 150000\n", "orbit-test");
     }
 
     #[test]
@@ -321,6 +338,27 @@ mod tests {
         // component should roughly invert.
         let dh = sun_direction(BodyId::Tenebris, 50.0);
         assert!(d0.x * dh.x + d0.z * dh.z < 0.0, "sun did not cross the sky");
+    }
+
+    #[test]
+    fn sun_distance_scales_planets_not_moons() {
+        setup();
+        // The home world's heliocentric distance IS solar.yaml's
+        // sun_distance_m (the whole point of the knob)...
+        let d = dvec3_length(heliocentric_pos(BodyId::Tenebris, 0.0));
+        assert!((d - 150_000.0).abs() < 1.0, "tenebris-star dist {d} != 150000");
+        // ...other planets scale by the same factor (5x here), keeping the
+        // system's shape...
+        let ds = dvec3_length(heliocentric_pos(BodyId::Sequoia, 0.0));
+        let expect = elements(BodyId::Sequoia).orbit_radius_m * 5.0;
+        assert!((ds - expect).abs() < 1.0, "sequoia dist {ds} != {expect}");
+        // ...while moons keep their tight structural parent orbits.
+        let r = elements(BodyId::Luna).orbit_radius_m;
+        let dl = dvec3_length(dvec3_sub(
+            heliocentric_pos(BodyId::Luna, 0.0),
+            heliocentric_pos(BodyId::Tenebris, 0.0),
+        ));
+        assert!((dl - r).abs() < 1.0, "luna orbit {dl} != structural {r}");
     }
 
     #[test]

@@ -65,6 +65,7 @@ use crate::power_ui;
 use crate::ui_icons;
 use crate::inventory::{self, INV_HOTBAR_SLOTS};
 use crate::inventory_screen;
+use crate::solar_map;
 use crate::tech_tree;
 use crate::menu::{self, GameState};
 use crate::mobile_ui;
@@ -2254,6 +2255,7 @@ extern "C" fn init() {
     config::load_bonfire("assets/config/bonfire.yaml");
     tenebris_core::weather::load_config("assets/config/weather.yaml");
     config::load_time("assets/config/time.yaml");
+    config::load_solar("assets/config/solar.yaml");
     /* Keyboard bindings (remappable): raw keys -> named actions. */
     crate::controls::load("assets/config/controls.yaml");
     /* Space-era economy tunables (credits, prices, spreads) + the station
@@ -5116,6 +5118,8 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     inventory_screen::egui_ui(ctx);
     tech_tree::set_player(Some(app.player.clone()));
     tech_tree::egui_ui(ctx);
+    solar_map::set_active(app.player.borrow().body.unwrap_or(app.body).id);
+    solar_map::egui_ui(ctx);
     chest_screen::egui_ui(ctx);
     station_screen::egui_ui(ctx);
     furnace_screen::egui_ui(ctx);
@@ -6074,8 +6078,10 @@ fn frame_inner(app: &mut App) {
             )
         }
     };
-    /* zfar = 20 km - covers the sun (8 km) + far asteroids with
-     * margin. */
+    /* zfar = 20 km - covers the sun's DISC (drawn at solar.yaml's
+     * sun_visual_dist_m, 18 km) + far asteroids with margin. The star
+     * itself sits sun_distance_m away (150 km); only its angular-correct
+     * billboard needs to fit inside zfar. */
     let zfar = 20000.0f32;
     let proj = mat4_perspective(60.0 * (std::f32::consts::PI / 180.0), aspect, 0.3, zfar);
 
@@ -6085,16 +6091,21 @@ fn frame_inner(app: &mut App) {
     let active_body = app.player.borrow().body.unwrap_or(app.body);
 
     /* Sun direction comes from the on-rails sky sim: it circles the sky as
-     * the active body spins (day/night) and drifts with its orbit. The disc
-     * sits far along that direction from the body's render centre. */
-    const SUN_DIST: f32 = 8000.0;
-    const SUN_RADIUS: f32 = 240.0;
+     * the active body spins (day/night) and drifts with its orbit. The star
+     * itself sits solar.yaml's sun_distance_m away (150 km by default) -
+     * far past zfar - so its DISC is drawn as an angular-size-correct
+     * billboard at sun_visual_dist_m along the sun direction: same look,
+     * safe depth. */
+    let solar = tenebris_core::config::solar();
+    let sun_disc_dist = solar.sun_visual_dist_m;
+    let sun_disc_radius =
+        solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0));
     let sim_t = tenebris_core::world_time::seconds();
     let sun_dir = vec3_normalize(dvec3_to_vec3(orbit::sun_direction(active_body.id, sim_t)));
     let sun_pos = Vec3 {
-        x: active_body.pos_x as f32 + sun_dir.x * SUN_DIST,
-        y: active_body.pos_y as f32 + sun_dir.y * SUN_DIST,
-        z: active_body.pos_z as f32 + sun_dir.z * SUN_DIST,
+        x: active_body.pos_x as f32 + sun_dir.x * sun_disc_dist,
+        y: active_body.pos_y as f32 + sun_dir.y * sun_disc_dist,
+        z: active_body.pos_z as f32 + sun_dir.z * sun_disc_dist,
     };
     let has_atmo = active_body.has_water;
     let planet_r = active_body.radius_m as f32;
@@ -6122,7 +6133,7 @@ fn frame_inner(app: &mut App) {
     let mut env = RenderEnv {
         sun_dir,
         sun_pos,
-        sun_radius: SUN_RADIUS,
+        sun_radius: sun_disc_radius,
         sky_top: Vec3 { x: 0.02, y: 0.04, z: 0.10 },
         sky_bottom: Vec3 { x: 0.05, y: 0.08, z: 0.15 },
         ambient: Vec3 { x: 0.35, y: 0.35, z: 0.40 },
@@ -7131,6 +7142,22 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             crafting_screen::close();
             rocket_screen::close();
         }
+        return;
+    }
+    /* O: toggle the solar-system map overlay. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenSolarMap)
+    {
+        solar_map::toggle();
+        if solar_map::is_open() {
+            inventory_screen::close();
+            crafting_screen::close();
+            rocket_screen::close();
+        }
+        return;
+    }
+    if solar_map::event(e) {
+        pixel_ui::event(e);
         return;
     }
     if tech_tree::event(e) {

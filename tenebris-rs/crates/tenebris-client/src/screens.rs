@@ -69,6 +69,7 @@ roster! {
     Inventory => inventory_screen,
     Crafting  => crafting_screen,
     TechTree  => tech_tree,
+    SolarMap  => solar_map,
     Chest     => chest_screen,
     Furnace   => furnace_screen,
     Bonfire   => bonfire_screen,

@@ -50,6 +50,8 @@ pub enum Action {
     OpenTechTree,
     /// Open / close the crafting screen.
     OpenCrafting,
+    /// Open / close the solar-system map.
+    OpenSolarMap,
     /// Debug: toggle terrain / water / skybox visibility.
     ToggleTerrain,
     ToggleWater,
@@ -97,6 +99,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
     ("Menus", "Crafting", Action::OpenCrafting),
+    ("Menus", "Solar system map", Action::OpenSolarMap),
     ("Toggles", "Survival / creative", Action::SurvivalToggle),
     ("Debug", "Debug UI", Action::ToggleDebugUi),
     ("Debug", "Players panel", Action::PlayersPanel),
@@ -141,6 +144,7 @@ fn action_from_name(name: &str) -> Option<Action> {
         "pause" => Action::Pause,
         "tech_tree" => Action::OpenTechTree,
         "crafting" => Action::OpenCrafting,
+        "solar_map" => Action::OpenSolarMap,
         "hide_terrain" => Action::ToggleTerrain,
         "hide_water" => Action::ToggleWater,
         "hide_skybox" => Action::ToggleSkybox,
@@ -243,6 +247,8 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),
         (B, Action::OpenCrafting),
+        /* O = orbit chart. Free key (V is Eat, M is Teleport). */
+        (O, Action::OpenSolarMap),
         (F2, Action::ToggleDebugUi),
         (F1, Action::PlayersPanel),
         (F3, Action::ToggleProfiler),
