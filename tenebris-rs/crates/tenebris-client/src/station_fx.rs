@@ -95,6 +95,17 @@ struct ShellCache {
     groups: [Vec<Prism>; TEX_COUNT],
     steps: Vec<StairStep>,
     occupied: HashSet<(i32, i32, i32)>,
+    /// Baked torch-style block-light field (core::station::light_field):
+    /// cell -> 0..15, sampled per face like the world mesher samples the
+    /// voxel grid, so the lamps / neon / marquees light the casino.
+    light: std::collections::HashMap<(i32, i32, i32), u8>,
+}
+
+impl ShellCache {
+    /// Block light at a cell as a 0..1 brightness fraction.
+    fn light01(&self, q: i32, r: i32, layer: i32) -> f32 {
+        self.light.get(&(q, r, layer)).copied().unwrap_or(0) as f32 / 15.0
+    }
 }
 
 thread_local! {
@@ -110,7 +121,12 @@ fn build_cache() -> ShellCache {
         occupied.insert((p.q, p.r, p.layer));
         groups[tex_for(p.mat)].push(p);
     }
-    ShellCache { groups, steps: station::stairs(&cfg), occupied }
+    ShellCache {
+        groups,
+        steps: station::stairs(&cfg),
+        occupied,
+        light: station::light_field(&cfg),
+    }
 }
 
 /// Hex corner k (pointy-top) at circumradius `a`, in the local xz plane.
@@ -324,40 +340,51 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
             sgl::begin_triangles();
             for p in prisms {
                 /* The casino games + trading/research stations draw as
-                 * real furniture built from boxes, not hex prisms. */
+                 * real furniture built from boxes, not hex prisms. Lit
+                 * by the block light in their own cell. */
                 if is_furniture(tex) {
-                    emit_furniture(tex, p.x, p.z, p.y, lit);
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer));
+                    emit_furniture(tex, p.x, p.z, p.y, l);
                     continue;
                 }
                 let (y0, y1) = (p.y, p.y + lh);
                 /* Glass never culls against neighbours (a pane next to a
-                 * wall still shows); solids cull occupied neighbours. */
+                 * wall still shows); solids cull occupied neighbours.
+                 * Every face samples the propagated block light of the
+                 * air cell it faces - max(sun, light), exactly how the
+                 * world mesher lights faces from torches - so lamps /
+                 * neon / marquees light the casino rooms. */
                 let solid = tex != TEX_GLASS;
                 if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer + 1)) {
-                    emit_cap(p.x, p.z, a, y1, SHADE_TOP * lit);
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer + 1));
+                    emit_cap(p.x, p.z, a, y1, SHADE_TOP * l);
                 }
                 if !solid || !cache.occupied.contains(&(p.q, p.r, p.layer - 1)) {
-                    emit_cap(p.x, p.z, a, y0, SHADE_BOTTOM * lit);
+                    let l = lit.max(cache.light01(p.q, p.r, p.layer - 1));
+                    emit_cap(p.x, p.z, a, y0, SHADE_BOTTOM * l);
                 }
                 for k in 0..6 {
                     /* Side k's outward normal points at 60(k+1) degrees,
                      * which is axial direction HEX_DIRS[(k+1) % 6]. */
                     let (dq, dr) = HEX_DIRS[(k + 1) % 6];
                     if !solid || !cache.occupied.contains(&(p.q + dq, p.r + dr, p.layer)) {
-                        emit_side(p.x, p.z, a, k, y0, y1, lit);
+                        let l = lit.max(cache.light01(p.q + dq, p.r + dr, p.layer));
+                        emit_side(p.x, p.z, a, k, y0, y1, l);
                     }
                 }
             }
             /* The spiral stair treads ride the hull group: thin steel
              * pads at FULL cell size, so each tread snaps to the hex
-             * grid and neighbouring pads touch edge to edge. */
+             * grid and neighbouring pads touch edge to edge. Sampled at
+             * the cell holding the tread's top surface. */
             if tex == TEX_HULL {
                 for s in &cache.steps {
                     let (y0, y1) = (s.bot_m, s.top_m);
-                    emit_cap(s.x, s.z, a, y1, SHADE_TOP * lit);
-                    emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * lit);
+                    let l = lit.max(cache.light01(s.q, s.r, (y1 / lh).floor() as i32));
+                    emit_cap(s.x, s.z, a, y1, SHADE_TOP * l);
+                    emit_cap(s.x, s.z, a, y0, SHADE_BOTTOM * l);
                     for k in 0..6 {
-                        emit_side(s.x, s.z, a, k, y0, y1, lit);
+                        emit_side(s.x, s.z, a, k, y0, y1, l);
                     }
                 }
             }

@@ -37,6 +37,15 @@
 #   step_up_m         - ledge height auto-stepped while walking (also
 #                       what makes the stair treads climbable)
 #   head_clearance_m  - headroom used for ceiling collision indoors
+#
+# Block lighting (torch-style, 0..15 like world torch intensity): the
+# station's emissive materials seed a propagated light field (-1 per
+# step through air / glass, blocked by structure) and every face is
+# shaded by max(sunlight, block light) - the casino lights itself the
+# way torches light a mine.
+#   lamp_emission - courtyard light fixtures + gold room-light tiles
+#   neon_emission - cyan / pink neon trim (parapet, storey bands)
+#   sign_emission - lucky-7 marquees + the sign spire
 
 station:
   radius_hexes: 10
@@ -66,3 +75,8 @@ station:
   # Start phase (degrees from +x) - keeps the station off the prime
   # meridian so it never spawns parked over the launch complex.
   orbit_phase0_deg: 120.0
+  # Block-light emissions, 0..15 (world torches seed at 14): lamps
+  # carry the rooms, neon is trim, marquees sit between.
+  lamp_emission: 15
+  neon_emission: 8
+  sign_emission: 12

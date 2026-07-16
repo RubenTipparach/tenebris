@@ -71,6 +71,13 @@ pub struct StationConfig {
     /// over the spawn/launch complex - an ascending rocket should meet
     /// the artificial-gravity field by rendezvous, not by accident.
     pub orbit_phase0_deg: f32,
+    /// Block-light emission (0..15, torch-style) of the lamp materials:
+    /// the courtyard light fixtures and the gold room-light tiles.
+    pub lamp_emission: u32,
+    /// Block-light emission of the neon trim (cyan/pink bands, parapet).
+    pub neon_emission: u32,
+    /// Block-light emission of the lucky-7 marquees / sign spire.
+    pub sign_emission: u32,
 }
 
 impl StationConfig {
@@ -103,6 +110,11 @@ impl StationConfig {
         artificial_gravity_mps2: 15.0,
         deck_friction: 6.0,
         orbit_phase0_deg: 120.0,
+        /* Torch-scale emissions (world torches seed at 14): the lamps
+         * carry the room, neon is trim, marquees sit between. */
+        lamp_emission: 15,
+        neon_emission: 8,
+        sign_emission: 12,
     };
 }
 
@@ -160,6 +172,9 @@ pub fn parse_config(src: &str, path: &str) -> StationConfig {
             "orbit_phase0_deg" => {
                 c.orbit_phase0_deg = if f > 0.0 { f } else { c.orbit_phase0_deg }
             }
+            "lamp_emission" => c.lamp_emission = if f > 0.0 { f as u32 } else { c.lamp_emission },
+            "neon_emission" => c.neon_emission = if f > 0.0 { f as u32 } else { c.neon_emission },
+            "sign_emission" => c.sign_emission = if f > 0.0 { f as u32 } else { c.sign_emission },
             _ => println!("[station] {}: unknown key '{}'", path, key),
         }
     }
@@ -611,6 +626,97 @@ pub fn is_fixture(m: StationMat) -> bool {
             | StationMat::Slots
             | StationMat::CardTable
     )
+}
+
+/* ------------------------------------------------------------------ */
+/* Torch-style propagated block lighting over the station grid.        */
+
+/// Block-light emission (0..15) of a station material - the same scale
+/// the world's torch lighting uses (`world_light::Torch::intensity`).
+/// Zero = not a light source.
+pub fn mat_emission(cfg: &StationConfig, m: StationMat) -> u8 {
+    let e = match m {
+        /* The lamps carry the rooms: courtyard fixtures + the gold
+         * room-light tiles (and their pad-marker siblings). */
+        StationMat::LightFixture | StationMat::NeonGold => cfg.lamp_emission,
+        StationMat::Neon | StationMat::NeonPink => cfg.neon_emission,
+        StationMat::Sign => cfg.sign_emission,
+        _ => 0,
+    };
+    e.min(15) as u8
+}
+
+/// True when a station cell BLOCKS light propagation. Mirrors the
+/// world's `covers_face` rule: structural solids block; glass panes
+/// transmit (a glazed courtyard still reads its lamps at night) and the
+/// furniture fixtures are thin pieces light flows around.
+fn mat_blocks_light(m: StationMat) -> bool {
+    m != StationMat::Glass && !is_fixture(m)
+}
+
+/// The station's baked block-light field: cell (q, r, layer) -> light
+/// 0..15, the exact algorithm the world's torch lighting uses (seed
+/// each source at its emission, BFS -1 per step through non-blocking
+/// cells) run over the station's own hex-prism grid. The structure is
+/// static, so this bakes once per config; the client shades every face
+/// by `max(sun, light/15)` - the casino lights itself the way torches
+/// light a mine.
+pub fn light_field(cfg: &StationConfig) -> std::collections::HashMap<(i32, i32, i32), u8> {
+    use std::collections::{HashMap, VecDeque};
+    let shell = shell(cfg);
+    let mut solid: std::collections::HashSet<(i32, i32, i32)> =
+        std::collections::HashSet::new();
+    for p in &shell {
+        if mat_blocks_light(p.mat) {
+            solid.insert((p.q, p.r, p.layer));
+        }
+    }
+    /* Domain bounds keep the BFS on the premises: the pads reach ring
+     * n_out+3, the sign spire tops out at roof+3. One ring / layer of
+     * slack lets light wrap the outer rim and the roof edge. */
+    let max_ring = cfg.radius_hexes as i32 + 4;
+    let max_layer = roof_layer(cfg) + 4;
+    let mut light: HashMap<(i32, i32, i32), u8> = HashMap::new();
+    let mut q: VecDeque<(i32, i32, i32)> = VecDeque::new();
+    /* Seed: every emissive prism radiates at its emission value. The
+     * source cell itself is solid; the BFS steps out of it into air
+     * (matching the world seed, where the torch anchors the cell). */
+    for p in &shell {
+        let e = mat_emission(cfg, p.mat);
+        if e > 0 && light.get(&(p.q, p.r, p.layer)).copied().unwrap_or(0) < e {
+            light.insert((p.q, p.r, p.layer), e);
+            q.push_back((p.q, p.r, p.layer));
+        }
+    }
+    while let Some((cq, cr, cl)) = q.pop_front() {
+        let cur = light.get(&(cq, cr, cl)).copied().unwrap_or(0);
+        if cur <= 1 {
+            continue;
+        }
+        let next = cur - 1;
+        let mut nbrs: [(i32, i32, i32); 8] = [(0, 0, 0); 8];
+        let mut n = 0;
+        for (dq, dr) in HEX_DIRS {
+            nbrs[n] = (cq + dq, cr + dr, cl);
+            n += 1;
+        }
+        nbrs[n] = (cq, cr, cl + 1);
+        nbrs[n + 1] = (cq, cr, cl - 1);
+        for &(nq, nr, nl) in nbrs.iter().take(n + 2) {
+            if hex_dist(nq, nr) > max_ring || nl < -2 || nl > max_layer {
+                continue;
+            }
+            if solid.contains(&(nq, nr, nl)) {
+                continue;
+            }
+            if light.get(&(nq, nr, nl)).copied().unwrap_or(0) >= next {
+                continue;
+            }
+            light.insert((nq, nr, nl), next);
+            q.push_back((nq, nr, nl));
+        }
+    }
+    light
 }
 
 /// Solid vertical spans per occupied column, in station-local metres:
@@ -1157,6 +1263,16 @@ impl StationState {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that WRITE the global station config: the
+    /// orbit helpers read `config()`, so two set_config-tests running
+    /// on parallel test threads race each other's altitudes. A poisoned
+    /// lock (a prior holder's assert fired) is fine to reuse - the
+    /// guard exists for exclusion, not state.
+    static CFG_LOCK: Mutex<()> = Mutex::new(());
+    fn cfg_guard() -> std::sync::MutexGuard<'static, ()> {
+        CFG_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn setup() -> StationState {
         economy::set_config(economy::EconomyConfig::default());
         set_prices(vec![(items::FLINT, 10.0), (items::STICK, 4.0)]);
@@ -1391,6 +1507,36 @@ mod tests {
     }
 
     #[test]
+    fn station_light_field_glows_from_lamps_and_decays() {
+        let cfg = StationConfig::DEFAULT;
+        let slab = cfg.slab_layers as i32;
+        let field = light_field(&cfg);
+        let at = |q: i32, r: i32, l: i32| field.get(&(q, r, l)).copied().unwrap_or(0);
+        /* A courtyard lamp seeds its cell at lamp_emission and the air
+         * above it one step dimmer - identical semantics to a world
+         * torch (seed at intensity, -1 per BFS step). */
+        let (dq, dr) = HEX_DIRS[0];
+        let (eq, er) = HEX_DIRS[1];
+        let (mq, mr) = ((dq + eq) * 3, (dr + er) * 3);
+        let lamp = cfg.lamp_emission as u8;
+        assert_eq!(at(mq, mr, slab + 2), lamp, "lamp cell seeds at its emission");
+        assert_eq!(at(mq, mr, slab + 3), lamp - 1, "one step up = one dimmer");
+        assert_eq!(at(mq + dq, mr + dr, slab + 2), lamp - 1, "one lateral step");
+        /* The hotel interior is lit: the air over the lobby's gold
+         * room-light tile reads the lamp one step dimmer. */
+        let lobby_gold = slab - 1;
+        assert_eq!(at(0, 0, lobby_gold + 1), lamp - 1, "lobby air above room light");
+        /* Light decays with distance - three steps out is dimmer than
+         * one - and far-off empty space is dark. */
+        assert!(at(mq, mr, slab + 5) < at(mq, mr, slab + 3));
+        assert_eq!(at(cfg.radius_hexes as i32 + 4, 0, 40), 0, "space stays dark");
+        /* The field inherits the structure's 6-fold symmetry. */
+        let rot = |q: i32, r: i32| (-r, q + r);
+        let (rq, rr) = rot(mq, mr);
+        assert_eq!(at(mq, mr, slab + 3), at(rq, rr, slab + 3));
+    }
+
+    #[test]
     fn hotel_floors_are_walkable_and_stairs_climb() {
         let cfg = StationConfig::DEFAULT;
         let lh = layer_h(&cfg);
@@ -1498,6 +1644,7 @@ mod tests {
 
     #[test]
     fn frame_sample_supports_interior_floors() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let cfg = config();
         let lh = layer_h(&cfg);
@@ -1551,6 +1698,7 @@ mod tests {
 
     #[test]
     fn orbit_speed_and_period_derive_from_gravity() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let b = crate::planet::get(BodyId::Tenebris);
         let r = orbit_radius_m();
@@ -1581,6 +1729,7 @@ mod tests {
     /// of the whole thing against a future altitude tweak.
     #[test]
     fn the_station_orbits_slowly_enough_to_rendezvous_with() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let v = orbit_speed_mps();
         assert!(v < 20.0, "orbit speed {v} m/s is too fast to fly alongside");
@@ -1601,6 +1750,7 @@ mod tests {
     /// because anything was hand-tuned.
     #[test]
     fn orbit_obeys_keplers_third_law() {
+        let _cfg = cfg_guard();
         let b = crate::planet::get(BodyId::Tenebris);
         let gm = (crate::planet::SURFACE_GRAVITY_MPS2_PER_G * b.gravity_g) as f64
             * b.radius_m
@@ -1623,6 +1773,7 @@ mod tests {
     /// serve both "further out" and "easier to catch".
     #[test]
     fn a_higher_orbit_is_a_slower_orbit() {
+        let _cfg = cfg_guard();
         let mut low = StationConfig::DEFAULT;
         low.altitude_m = 120.0;
         set_config(low);
@@ -1637,6 +1788,7 @@ mod tests {
 
     #[test]
     fn orbit_track_is_circular_and_velocity_is_tangent() {
+        let _cfg = cfg_guard();
         set_config(StationConfig::DEFAULT);
         let b = crate::planet::get(BodyId::Tenebris);
         let r = orbit_radius_m();
