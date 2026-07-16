@@ -39,7 +39,6 @@ struct Layer {
     events: Vec<egui::Event>,
     modifiers: egui::Modifiers,
     pointer: egui::Pos2,
-    start: f64,
     /// Premultiplied-alpha 2D pipeline (lazily made once the gfx pool is up).
     pip: sgl::Pipeline,
     /// Font/texture atlas mirror + GPU handles. Rebuilt when egui resizes it.
@@ -52,9 +51,11 @@ struct Layer {
     /// Stashed paint output from the last `run`, consumed by `draw`.
     prims: Vec<egui::ClippedPrimitive>,
     ppp: f32,
-    /// Last time value handed to egui - the monotonic floor (see
-    /// [`monotonize`]).
-    last_time: f64,
+    /// Previous raw clock read; per-frame deltas between consecutive reads
+    /// drive egui's clock (see [`advance_egui_clock`]).
+    prev_raw: f64,
+    /// Accumulated, strictly-increasing egui clock (sum of clamped deltas).
+    acc_time: f64,
 }
 
 thread_local! {
@@ -65,25 +66,42 @@ fn now_s() -> f64 {
     sokol::time::sec(sokol::time::now())
 }
 
-/// Clamp `t` to be strictly monotonic against `last`, updating `last`.
+/// Advance egui's clock by the clamped delta since the last raw read.
 ///
 /// egui's pointer-velocity history HARD-ASSERTS that the time it is fed
 /// never decreases - and because our frame callback is `extern "C"`, that
-/// panic cannot unwind and aborts the whole game. The wall clock is
-/// sokol_time's QueryPerformanceCounter, which on some Windows systems
-/// steps slightly BACKWARDS when a thread migrates cores (desynced TSCs) -
-/// exactly what a multi-second world-load stall invites. Crash report:
-/// "Time shouldn't move backwards" (emath history.rs) on the first
-/// gameplay frame after a 4.6 s loader stall.
+/// panic cannot unwind and aborts the whole game. We feed it sokol_time
+/// (QueryPerformanceCounter on Windows), whose reads can step BACKWARDS -
+/// or, worse, sit permanently BEHIND - when a thread migrates to a core
+/// with a desynced TSC. Crash report: "Time shouldn't move backwards"
+/// (emath history.rs) on the first gameplay frame after a 4.6 s loader stall.
 ///
-/// The clamp holds egui's contract on any hardware: a backwards or equal
-/// read becomes "a hair after the last one".
-fn monotonize(last: &mut f64, t: f64) -> f64 {
-    /* NaN also fails egui's assert (all comparisons false), so it must not
-     * pass through either - treat it as a backwards step. */
-    let t = if t.is_finite() && t > *last { t } else { *last + 1e-6 };
-    *last = t;
-    t
+/// The earlier fix fed egui a monotonic FLOOR of the absolute `now - start`.
+/// That held the assert but had a nasty failure of its own: once the render
+/// thread settled on a core whose TSC ran ~1 s behind the init core, EVERY
+/// read fell under the floor, so egui's clock crawled forward at 1 us/frame
+/// and its window fade-in animations never completed - leaving every panel
+/// stuck near-transparent, with a fresh game unable to clear it (the floor
+/// persists for the whole process). See `diag`-style regression below.
+///
+/// Driving the clock from per-frame DELTAS cancels any constant per-core
+/// offset: consecutive reads on the behind core still differ by a real
+/// +16 ms. Each delta is clamped to a sane, strictly-positive window, so a
+/// backwards / equal / non-finite read costs one hair-width step (and
+/// recovers on the very next frame, since `prev` tracks the new position),
+/// while a forward overshoot advances at most `MAX_STEP_S`.
+fn advance_egui_clock(prev_raw: &mut f64, acc: &mut f64, raw: f64) -> f64 {
+    const MIN_STEP_S: f64 = 1e-6;
+    const MAX_STEP_S: f64 = 0.25;
+    let dt = raw - *prev_raw;
+    let dt = if dt.is_finite() { dt.clamp(0.0, MAX_STEP_S) } else { 0.0 };
+    /* Track the newest raw read even when it stepped back, so a thread that
+     * MOVED to a slower core stalls for exactly one frame, not forever. */
+    *prev_raw = raw;
+    /* Floor at a hair so the result is STRICTLY increasing across a
+     * backwards / equal / NaN read (egui's assert rejects equal too). */
+    *acc += dt.max(MIN_STEP_S);
+    *acc
 }
 
 pub fn init() {
@@ -95,7 +113,6 @@ pub fn init() {
             events: Vec::new(),
             modifiers: egui::Modifiers::default(),
             pointer: egui::Pos2::ZERO,
-            start: now_s(),
             pip: sgl::Pipeline { id: 0 },
             tex_w: 0,
             tex_h: 0,
@@ -105,7 +122,8 @@ pub fn init() {
             smp: sg::Sampler { id: 0 },
             prims: Vec::new(),
             ppp: 1.0,
-            last_time: 0.0,
+            prev_raw: now_s(),
+            acc_time: 0.0,
         });
     });
 }
@@ -201,10 +219,7 @@ pub fn run(screen_w: f32, screen_h: f32, mut ui: impl FnMut(&egui::Context)) {
                 egui::Pos2::ZERO,
                 egui::vec2(screen_w, screen_h),
             )),
-            time: {
-                let t = now_s() - l.start;
-                Some(monotonize(&mut l.last_time, t))
-            },
+            time: Some(advance_egui_clock(&mut l.prev_raw, &mut l.acc_time, now_s())),
             modifiers: l.modifiers,
             events: std::mem::take(&mut l.events),
             ..Default::default()
@@ -362,39 +377,125 @@ pub fn draw() {
 
 #[cfg(test)]
 mod tests {
-    use super::monotonize;
+    use super::advance_egui_clock;
 
-    /// The crash scenario: a QPC read that steps backwards after a long
-    /// stall. egui aborts the process on a non-increasing time (the panic
-    /// can't unwind out of the extern "C" frame callback), so the clamp
-    /// must turn a backwards read into a forward step.
-    #[test]
-    fn a_backwards_clock_read_still_moves_time_forward() {
-        let mut last = 0.0;
-        assert_eq!(monotonize(&mut last, 10.0), 10.0);
-        let t = monotonize(&mut last, 9.4); /* QPC stepped back 0.6 s */
-        assert!(t > 10.0, "must move forward, got {t}");
-        let t2 = monotonize(&mut last, 9.5); /* still behind the floor */
-        assert!(t2 > t, "and keep moving forward, got {t2}");
-        /* Once the clock catches back up, real time resumes. */
-        assert_eq!(monotonize(&mut last, 11.0), 11.0);
+    /// Drive a real egui window through `advance_egui_clock` and return the
+    /// gold label's alpha on the last frame. egui premultiplies, so a faded
+    /// label reads back with a scaled-down alpha; a settled one reads 255.
+    fn last_frame_label_alpha(raw_reads: &[f64]) -> u8 {
+        let ctx = egui::Context::default();
+        ctx.set_pixels_per_point(1.0);
+        let mut prev = raw_reads[0];
+        let mut acc = 0.0f64;
+        let mut gold_a = 0u8;
+        for &raw in raw_reads {
+            let t = advance_egui_clock(&mut prev, &mut acc, raw);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 600.0),
+                )),
+                time: Some(t),
+                ..Default::default()
+            };
+            ctx.begin_pass(input);
+            egui::Window::new("diag")
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new("TENEBRIS")
+                            .size(64.0)
+                            .color(egui::Color32::from_rgb(0xe6, 0xcf, 0x73)),
+                    );
+                });
+            let out = ctx.end_pass();
+            let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            gold_a = 0;
+            for p in &prims {
+                if let egui::epaint::Primitive::Mesh(m) = &p.primitive {
+                    for v in &m.vertices {
+                        let [r, _g, b, a] = v.color.to_array();
+                        if r > b && a > gold_a {
+                            gold_a = a;
+                        }
+                    }
+                }
+            }
+        }
+        gold_a
     }
 
-    /// Equal timestamps also violate strict progress for velocity math;
-    /// nudge them forward.
+    /// THE REGRESSION (user report: "everything is stuck being faded with
+    /// opacity"): the render thread settled on a core whose TSC ran ~1 s
+    /// behind the init core, so every raw read is below the init value yet
+    /// still advances 16 ms/frame. The old absolute-floor scheme pinned
+    /// egui's clock at ~0 and the window fade-in never finished (alpha ~41).
+    /// Delta-driven, the constant offset cancels and the fade settles to 255.
+    #[test]
+    fn behind_core_clock_still_settles_window_opacity() {
+        let start = 100.0f64;
+        let behind = 1.0f64;
+        let reads: Vec<f64> =
+            (0..16).map(|f| start - behind + f as f64 * 0.016).collect();
+        assert_eq!(
+            last_frame_label_alpha(&reads),
+            255,
+            "a constant per-core clock offset must not freeze the fade-in"
+        );
+    }
+
+    /// A normal, in-phase clock also settles (sanity: the fix didn't break
+    /// the happy path).
+    #[test]
+    fn normal_clock_settles_window_opacity() {
+        let reads: Vec<f64> = (0..16).map(|f| 50.0 + f as f64 * 0.016).collect();
+        assert_eq!(last_frame_label_alpha(&reads), 255);
+    }
+
+    /// egui aborts the process on a non-increasing time (the panic can't
+    /// unwind out of the extern "C" frame callback), so the clock must be
+    /// STRICTLY increasing across a backwards read - and recover the very
+    /// next frame instead of crawling.
+    #[test]
+    fn a_backwards_clock_read_recovers_next_frame() {
+        let mut prev = 100.0;
+        let mut acc = 0.0;
+        let t0 = advance_egui_clock(&mut prev, &mut acc, 100.016);
+        let t1 = advance_egui_clock(&mut prev, &mut acc, 99.4); /* stepped back */
+        assert!(t1 > t0, "must still move forward, got {t1} <= {t0}");
+        /* The next real frame from the new (lower) position advances a full
+         * dt - NOT another hair-width crawl step. */
+        let t2 = advance_egui_clock(&mut prev, &mut acc, 99.416);
+        assert!(t2 - t1 > 0.01, "recovers a real dt after the glitch, got {}", t2 - t1);
+    }
+
+    /// Equal reads still advance (egui rejects equal too).
     #[test]
     fn equal_reads_advance_by_a_hair() {
-        let mut last = 5.0;
-        let t = monotonize(&mut last, 5.0);
-        assert!(t > 5.0);
+        let mut prev = 5.0;
+        let mut acc = 2.0;
+        let a = advance_egui_clock(&mut prev, &mut acc, 5.0);
+        let b = advance_egui_clock(&mut prev, &mut acc, 5.0);
+        assert!(b > a && a > 2.0);
     }
 
-    /// NaN fails egui's assert too (all comparisons are false), so it must
-    /// never pass through.
+    /// A forward overshoot advances by at most MAX_STEP_S, so a glitched
+    /// jump can't fast-forward animations by minutes.
+    #[test]
+    fn forward_overshoot_is_capped() {
+        let mut prev = 10.0;
+        let mut acc = 0.0;
+        let t = advance_egui_clock(&mut prev, &mut acc, 10.0 + 60.0); /* +60 s */
+        assert!(t <= 0.25 + 1e-9, "capped at MAX_STEP_S, got {t}");
+    }
+
+    /// NaN fails egui's assert too (all comparisons false), so it must never
+    /// pass through - it costs one hair-width step.
     #[test]
     fn nan_reads_do_not_pass_through() {
-        let mut last = 3.0;
-        let t = monotonize(&mut last, f64::NAN);
-        assert!(t.is_finite() && t > 3.0, "NaN must become a forward step, got {t}");
+        let mut prev = 3.0;
+        let mut acc = 1.0;
+        let t = advance_egui_clock(&mut prev, &mut acc, f64::NAN);
+        assert!(t.is_finite() && t > 1.0, "NaN must become a forward step, got {t}");
     }
 }
