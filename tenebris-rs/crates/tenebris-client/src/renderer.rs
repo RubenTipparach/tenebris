@@ -4965,9 +4965,22 @@ pub fn draw_world(
 
         /* Periodic diagnostic - every ~2 s flag chunks on the active
          * body with last_uploaded_index_count == 0 and their distance
-         * from the player. */
+         * from the player.
+         *
+         * Gated on the body actually being CHUNKED right now. This
+         * diagnostic predates detail eviction: once the LOD unload landed
+         * (player past 7.5 km -> chunks freed, the distant icosphere draws
+         * instead), every evicted chunk legitimately has idx_count == 0 and
+         * the log spammed all 128 as MISSING from orbit - they aren't
+         * missing, the planet is deliberately a sphere out there. Guarded,
+         * it goes back to meaning what it says: a chunk the CURRENT LOD
+         * says should be drawn, with nothing uploaded - a real hole. */
         r.log_accum_s += dt_seconds as f64;
-        if r.log_accum_s > 2.0 && r.active_body_idx >= 0 {
+        if r.log_accum_s > 2.0
+            && r.active_body_idx >= 0
+            && r.bodies[r.active_body_idx as usize].meshed
+            && r.bodies[r.active_body_idx as usize].chunked_now
+        {
             r.log_accum_s = 0.0;
             let active = &r.bodies[r.active_body_idx as usize];
             let w = active.world.borrow();
