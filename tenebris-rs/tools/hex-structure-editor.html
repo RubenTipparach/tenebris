@@ -47,7 +47,7 @@
   button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   button.primary { border-color: var(--gold); color: var(--gold); }
   button.primary:hover { background: var(--gold); color: #1a1405; }
-  button.tool.active { background: var(--cyan); border-color: var(--cyan); color: #06222b; }
+  button.tool.active, button.view.active { background: var(--cyan); border-color: var(--cyan); color: #06222b; }
   .layerbox { display: flex; align-items: center; gap: 4px; }
   .layerbox .num {
     min-width: 44px; text-align: center; background: var(--space);
@@ -121,6 +121,11 @@
     <button class="tool" id="toolErase" title="E — or right-drag anytime">Erase</button>
     <button id="undoBtn" title="Ctrl+Z">Undo</button>
   </div>
+  <div class="group">
+    <span class="lbl">View</span>
+    <button class="view active" id="view2d" title="2 — top-down grid">2D</button>
+    <button class="view" id="view3d" title="3 — orbit preview, click faces to build">3D</button>
+  </div>
   <div class="spacer"></div>
   <div class="group">
     <button id="importBtn">Import</button>
@@ -142,7 +147,7 @@
   <span>cells placed <b id="countOut">0</b></span>
   <span>zoom <b id="zoomOut">100%</b></span>
   <span id="saveState">saved</span>
-  <span class="hint"><a href="/admin" style="color:var(--cyan);text-decoration:none">&larr; portal</a> &middot; wheel: zoom &middot; middle/space-drag: pan &middot; right-drag: erase &middot; alt-click: pick &middot; [ ]: layer &middot; exports belong in tenebris-rs/assets/templates/</span>
+  <span class="hint"><a href="/admin" style="color:var(--cyan);text-decoration:none">&larr; portal</a> &middot; <b>V</b> 2D/3D &middot; 2D: drag paints &middot; 3D: drag orbits, click a face to build, right-click erases &middot; wheel zoom &middot; space-drag pan &middot; alt-click pick &middot; [ ] layer &middot; exports belong in tenebris-rs/assets/templates/</span>
 </footer>
 <div id="toast" role="status"></div>
 
@@ -170,12 +175,27 @@ TILES.neon_gold.b64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAbklEQVR42
 
 const MATS = Object.keys(TILES);
 const IMG = {};
+/* Average colour per tile, for the flat-shaded 3D faces. Computed once
+ * each tile image loads (transparent pixels ignored). */
+const COL = {};
+function avgColor(img) {
+  const c = document.createElement("canvas"); c.width = c.height = 4;
+  const g = c.getContext("2d"); g.drawImage(img, 0, 0, 4, 4);
+  const d = g.getImageData(0, 0, 4, 4).data;
+  let r = 0, gg = 0, b = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) { if (d[i + 3] < 8) continue; r += d[i]; gg += d[i + 1]; b += d[i + 2]; n++; }
+  return n ? [r / n, gg / n, b / n] : [120, 120, 130];
+}
 for (const m of MATS) {
   const img = new Image();
   img.src = "data:image/png;base64," + TILES[m].b64;
-  img.onload = () => draw();
+  img.onload = () => { try { COL[m] = avgColor(img); } catch (e) {} draw(); };
   IMG[m] = img;
 }
+/* The six axial hex directions (pointy-top), matching core/station.rs. */
+const HEX_DIRS = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
+/* Emissive materials glow in 3D (station's own lights). */
+const EMISSIVE = new Set(["neon", "neon_pink", "neon_gold", "sign"]);
 
 /* ------------------------------------------------------------------ *
  * Model. Cells keyed "q,r,layer" -> mat. Same axial layout as
@@ -192,6 +212,14 @@ let cam = { x: 0, y: 0, z: 1 };
 let hover = null;
 let undoStack = [];        /* [{key, prev, next}, ...] batches per stroke */
 let strokeBatch = null;
+/* 3D view state. LH3 = layer height / hex circumradius (1.25 / 2 in
+ * game metres), so the isometric view matches the station's real
+ * proportions. */
+const LH3 = HEX * 0.625;
+let view = "2d";
+let cam3 = { yaw: 0.85, pitch: 0.62, scale: 1.0, panX: 0, panY: 0 };
+let faces3 = [];   /* last-rendered faces, for picking */
+let hover3 = null; /* {q,r,layer,dir} face under the cursor */
 
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d");
@@ -219,7 +247,123 @@ function hexPath(c, x, y, rad) {
 /* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
-function draw() {
+function draw() { if (view === "3d") draw3d(); else draw2d(); }
+
+/* ----- 3D isometric view (orthographic orbit, Canvas 2D) ----- */
+function rotY(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0] * c + p[2] * s, p[1], -p[0] * s + p[2] * c]; }
+function rotX(p, a) { const c = Math.cos(a), s = Math.sin(a); return [p[0], p[1] * c - p[2] * s, p[1] * s + p[2] * c]; }
+function fwd3(p) { return rotX(rotY(p, cam3.yaw), cam3.pitch); }   /* world -> camera */
+function inv3(p) { return rotY(rotX(p, -cam3.pitch), -cam3.yaw); } /* camera -> world */
+function screenOf(P, w, h) {
+  const c = fwd3(P);
+  return { x: w / 2 + cam3.panX + c[0] * cam3.scale, y: h / 2 + cam3.panY - c[1] * cam3.scale, d: c[2] };
+}
+/* corner k of cell (q,r) in the deck plane -> [X, Z] (world). */
+function cornerXZ(q, r, k) {
+  const p = axialToPx(q, r);
+  const th = Math.PI / 6 + k * Math.PI / 3;
+  return [p.x + HEX * Math.cos(th), p.y + HEX * Math.sin(th)];
+}
+/* outward neighbour cell for side face k. */
+function sideDir(k) { return HEX_DIRS[(k + 1) % 6]; }
+
+function pushFace(q, r, l, dir, poly3, m, shade, w, h) {
+  let d = 0;
+  const p = poly3.map(P => { const s = screenOf(P, w, h); d += s.d; return s; });
+  d /= p.length;
+  const col = COL[m] || [120, 120, 130];
+  const sh = EMISSIVE.has(m) ? Math.max(shade, 1.2) : shade;
+  const rr = Math.min(255, col[0] * sh) | 0, gg = Math.min(255, col[1] * sh) | 0, bb = Math.min(255, col[2] * sh) | 0;
+  const fill = m === "glass" ? `rgba(${rr},${gg},${bb},.6)` : `rgb(${rr},${gg},${bb})`;
+  faces3.push({ q, r, layer: l, dir, p, d, fill });
+}
+
+function draw3d() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#0b0c12"; ctx.fillRect(0, 0, w, h);
+
+  /* Ground guide: faint hex lattice at y = 0 so the scene is oriented. */
+  ctx.strokeStyle = "rgba(44,48,66,.5)"; ctx.lineWidth = 1;
+  for (let q = -5; q <= 5; q++) {
+    for (let r = Math.max(-5, -q - 5); r <= Math.min(5, -q + 5); r++) {
+      ctx.beginPath();
+      for (let k = 0; k < 6; k++) { const c = cornerXZ(q, r, k); const s = screenOf([c[0], 0, c[1]], w, h); if (k === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y); }
+      ctx.closePath(); ctx.stroke();
+    }
+  }
+
+  faces3 = [];
+  const occ = (q, r, l) => cells.has(key(q, r, l));
+  for (const [ck, m] of cells) {
+    const [q, r, l] = ck.split(",").map(Number);
+    const y0 = l * LH3, y1 = (l + 1) * LH3;
+    if (!occ(q, r, l + 1)) { const top = []; for (let k = 0; k < 6; k++) { const c = cornerXZ(q, r, k); top.push([c[0], y1, c[1]]); } pushFace(q, r, l, [0, 0, 1], top, m, 1.0, w, h); }
+    if (!occ(q, r, l - 1)) { const bot = []; for (let k = 0; k < 6; k++) { const c = cornerXZ(q, r, k); bot.push([c[0], y0, c[1]]); } pushFace(q, r, l, [0, 0, -1], bot, m, 0.42, w, h); }
+    for (let sK = 0; sK < 6; sK++) {
+      const dr = sideDir(sK);
+      if (occ(q + dr[0], r + dr[1], l)) continue;
+      const c0 = cornerXZ(q, r, sK), c1 = cornerXZ(q, r, (sK + 1) % 6);
+      const poly = [[c0[0], y0, c0[1]], [c1[0], y0, c1[1]], [c1[0], y1, c1[1]], [c0[0], y1, c0[1]]];
+      pushFace(q, r, l, [dr[0], dr[1], 0], poly, m, sK % 2 ? 0.6 : 0.78, w, h);
+    }
+  }
+  faces3.sort((a, b) => b.d - a.d); /* painter's: far first */
+  for (const f of faces3) {
+    ctx.beginPath();
+    f.p.forEach((P, i) => i ? ctx.lineTo(P.x, P.y) : ctx.moveTo(P.x, P.y));
+    ctx.closePath();
+    ctx.fillStyle = f.fill; ctx.fill();
+    ctx.strokeStyle = "rgba(11,12,18,.5)"; ctx.lineWidth = 1; ctx.stroke();
+    if (hover3 && f.q === hover3.q && f.r === hover3.r && f.layer === hover3.layer
+      && f.dir[0] === hover3.dir[0] && f.dir[1] === hover3.dir[1] && f.dir[2] === hover3.dir[2]) {
+      ctx.strokeStyle = tool === "erase" ? "#ff5e5e" : "#52e2ff"; ctx.lineWidth = 2.5; ctx.stroke();
+    }
+  }
+}
+
+function pointInPoly(x, y, p) {
+  let inside = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    const xi = p[i].x, yi = p[i].y, xj = p[j].x, yj = p[j].y;
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+/* Nearest face under the cursor (faces3 must be current). */
+function pick3(sx, sy) {
+  const order = [...faces3].sort((a, b) => a.d - b.d);
+  for (const f of order) if (pointInPoly(sx, sy, f.p)) return f;
+  return null;
+}
+/* Cell on the y = planeY ground plane under the cursor. */
+function groundPick(sx, sy, w, h, planeY) {
+  const Cx = (sx - w / 2 - cam3.panX) / cam3.scale, Cy = -(sy - h / 2 - cam3.panY) / cam3.scale;
+  const P0 = inv3([Cx, Cy, 0]), F = inv3([0, 0, 1]);
+  if (Math.abs(F[1]) < 1e-6) return null;
+  const t = (planeY - P0[1]) / F[1];
+  return pxToAxial(P0[0] + t * F[0], P0[2] + t * F[2]);
+}
+/* One edit in 3D: click a face to place its outward neighbour, erase
+ * the clicked cell, or (empty space) place on the current layer plane. */
+function edit3(sx, sy, w, h, erase) {
+  const f = pick3(sx, sy);
+  strokeBatch = [];
+  if (f) {
+    if (erase) setCell(f.q, f.r, f.layer, null);
+    else setCell(f.q + f.dir[0], f.r + f.dir[1], f.layer + f.dir[2], mat);
+  } else if (!erase) {
+    const a = groundPick(sx, sy, w, h, layer * LH3);
+    if (a) setCell(a.q, a.r, layer, mat);
+  }
+  if (strokeBatch.length) { undoStack.push(strokeBatch); if (undoStack.length > 200) undoStack.shift(); }
+  strokeBatch = null; saveLocal();
+}
+
+/* ----- 2D top-down grid view ----- */
+function draw2d() {
   const dpr = window.devicePixelRatio || 1;
   const w = wrap.clientWidth, h = wrap.clientHeight;
   if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
@@ -322,7 +466,7 @@ function saveLocal() {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
       name: document.getElementById("tplName").value,
-      layer, cam, cells: [...cells.entries()],
+      layer, cam, cam3, view, cells: [...cells.entries()],
     }));
     document.getElementById("saveState").textContent = "saved to localStorage";
   } catch (e) {
@@ -335,6 +479,8 @@ function loadLocal() {
     if (!d) return;
     document.getElementById("tplName").value = d.name || "my-structure";
     layer = d.layer | 0; cam = d.cam || cam;
+    if (d.cam3) cam3 = d.cam3;
+    if (d.view) view = d.view;
     cells = new Map(d.cells || []);
   } catch (e) { /* fresh start */ }
 }
@@ -381,6 +527,20 @@ function setTool(t) {
   document.getElementById("toolErase").classList.toggle("active", t === "erase");
   draw();
 }
+function setView(v) {
+  view = v;
+  document.getElementById("view2d").classList.toggle("active", v === "2d");
+  document.getElementById("view3d").classList.toggle("active", v === "3d");
+  document.getElementById("zoomOut").textContent =
+    v === "3d" ? Math.round(cam3.scale * 100) + "%" : Math.round(cam.z * 100) + "%";
+  hover3 = null; draw();
+}
+/* Select a palette material (from a swatch click or an eyedrop). */
+function setMat(m) {
+  if (!m) return;
+  mat = m; setTool("paint");
+  pal.querySelectorAll(".swatch").forEach(x => x.classList.toggle("sel", x.dataset.mat === m));
+}
 
 /* palette */
 const pal = document.getElementById("palette");
@@ -389,10 +549,7 @@ for (const m of MATS) {
   el.className = "swatch" + (m === mat ? " sel" : "");
   el.dataset.mat = m;
   el.innerHTML = `<img alt="" src="data:image/png;base64,${TILES[m].b64}"><span>${TILES[m].name}<small>${m}</small></span>`;
-  el.onclick = () => {
-    mat = m; setTool("paint");
-    pal.querySelectorAll(".swatch").forEach(x => x.classList.toggle("sel", x.dataset.mat === m));
-  };
+  el.onclick = () => setMat(m);
   pal.appendChild(el);
 }
 
@@ -400,6 +557,8 @@ document.getElementById("layerUp").onclick = () => setLayer(layer + 1);
 document.getElementById("layerDn").onclick = () => setLayer(layer - 1);
 document.getElementById("toolPaint").onclick = () => setTool("paint");
 document.getElementById("toolErase").onclick = () => setTool("erase");
+document.getElementById("view2d").onclick = () => setView("2d");
+document.getElementById("view3d").onclick = () => setView("3d");
 document.getElementById("undoBtn").onclick = undo;
 document.getElementById("tplName").oninput = dirty;
 
@@ -426,8 +585,13 @@ document.getElementById("fileIn").onchange = (e) => {
   e.target.value = "";
 };
 
-/* pointer input */
-let panning = false, painting = false, erasing = false, spaceHeld = false, last = null;
+/* pointer input. `mode` is the active gesture:
+ *   2D: 2dpaint / 2derase / pan
+ *   3D: orbit? (left; becomes orbit on drag, edit on click) / erase3
+ *       (right; erase on click) / pan
+ */
+let mode = null, spaceHeld = false, last = null, downX = 0, downY = 0, downBtn = 0, moved = false;
+function relXY(e) { const rect = cv.getBoundingClientRect(); return { x: e.clientX - rect.left, y: e.clientY - rect.top }; }
 function evAxial(e) {
   const rect = cv.getBoundingClientRect();
   const x = (e.clientX - rect.left - rect.width / 2 - cam.x) / cam.z;
@@ -437,44 +601,75 @@ function evAxial(e) {
 cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("pointerdown", e => {
   cv.setPointerCapture(e.pointerId);
-  if (e.button === 1 || spaceHeld) { panning = true; last = { x: e.clientX, y: e.clientY }; return; }
-  const { q, r } = evAxial(e);
-  if (e.altKey) {
-    const m = cells.get(key(q, r, layer));
-    if (m) {
-      mat = m; setTool("paint");
-      pal.querySelectorAll(".swatch").forEach(x => x.classList.toggle("sel", x.dataset.mat === m));
-      toast("picked " + TILES[m].name);
+  const r = relXY(e);
+  downX = r.x; downY = r.y; downBtn = e.button; moved = false;
+  last = { x: e.clientX, y: e.clientY };
+  if (e.button === 1 || spaceHeld) { mode = "pan"; return; }
+
+  if (view === "3d") {
+    if (e.altKey) { const f = pick3(r.x, r.y); if (f) { setMat(cells.get(key(f.q, f.r, f.layer))); toast("picked " + TILES[cells.get(key(f.q, f.r, f.layer))].name); } return; }
+    mode = e.button === 2 ? "erase3" : "orbit";   /* left may become orbit on drag */
+    return;
+  }
+  /* 2D */
+  const a = evAxial(e);
+  if (e.altKey) { const m = cells.get(key(a.q, a.r, layer)); if (m) { setMat(m); toast("picked " + TILES[m].name); } return; }
+  strokeBatch = [];
+  if (e.button === 2 || tool === "erase") { mode = "2derase"; setCell(a.q, a.r, layer, null); }
+  else { mode = "2dpaint"; setCell(a.q, a.r, layer, mat); }
+});
+cv.addEventListener("pointermove", e => {
+  const r = relXY(e);
+  if (Math.abs(r.x - downX) > 3 || Math.abs(r.y - downY) > 3) moved = true;
+  if (mode === "pan" && last) {
+    if (view === "3d") { cam3.panX += e.clientX - last.x; cam3.panY += e.clientY - last.y; }
+    else { cam.x += e.clientX - last.x; cam.y += e.clientY - last.y; }
+    last = { x: e.clientX, y: e.clientY }; draw(); return;
+  }
+  if (view === "3d") {
+    if (mode === "orbit" && moved) {
+      cam3.yaw += (e.clientX - last.x) * 0.01;
+      cam3.pitch = Math.max(-1.45, Math.min(1.45, cam3.pitch + (e.clientY - last.y) * 0.01));
+      last = { x: e.clientX, y: e.clientY }; draw(); return;
+    }
+    if (mode === null) { /* hover-highlight the face under the cursor */
+      const f = pick3(r.x, r.y);
+      const nh = f ? { q: f.q, r: f.r, layer: f.layer, dir: f.dir } : null;
+      if (JSON.stringify(nh) !== JSON.stringify(hover3)) {
+        hover3 = nh;
+        if (f) document.getElementById("posOut").textContent = `q ${f.q}  r ${f.r}  L${f.layer}`;
+        draw();
+      }
     }
     return;
   }
-  strokeBatch = [];
-  if (e.button === 2 || tool === "erase") { erasing = true; setCell(q, r, layer, null); }
-  else { painting = true; setCell(q, r, layer, mat); }
-});
-cv.addEventListener("pointermove", e => {
-  if (panning && last) {
-    cam.x += e.clientX - last.x; cam.y += e.clientY - last.y;
-    last = { x: e.clientX, y: e.clientY };
-    draw(); return;
-  }
+  /* 2D paint/erase drag */
   const a = evAxial(e);
   if (!hover || hover.q !== a.q || hover.r !== a.r) {
     hover = a;
     document.getElementById("posOut").textContent = `q ${a.q}  r ${a.r}  L${layer}`;
-    if (painting) setCell(a.q, a.r, layer, mat);
-    else if (erasing) setCell(a.q, a.r, layer, null);
+    if (mode === "2dpaint") setCell(a.q, a.r, layer, mat);
+    else if (mode === "2derase") setCell(a.q, a.r, layer, null);
     else draw();
   }
 });
 window.addEventListener("pointerup", () => {
-  if (strokeBatch && strokeBatch.length) { undoStack.push(strokeBatch); if (undoStack.length > 200) undoStack.shift(); }
-  strokeBatch = null;
-  panning = painting = erasing = false; last = null;
-  saveLocal();
+  if (view === "3d" && !moved && (mode === "orbit" || mode === "erase3")) {
+    edit3(downX, downY, wrap.clientWidth, wrap.clientHeight, mode === "erase3" || tool === "erase");
+  }
+  if (mode === "2dpaint" || mode === "2derase") {
+    if (strokeBatch && strokeBatch.length) { undoStack.push(strokeBatch); if (undoStack.length > 200) undoStack.shift(); }
+    strokeBatch = null; saveLocal();
+  }
+  mode = null; last = null;
 });
 cv.addEventListener("wheel", e => {
   e.preventDefault();
+  if (view === "3d") {
+    cam3.scale = Math.max(0.15, Math.min(8, cam3.scale * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    document.getElementById("zoomOut").textContent = Math.round(cam3.scale * 100) + "%";
+    draw(); return;
+  }
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left - rect.width / 2, my = e.clientY - rect.top - rect.height / 2;
   const z0 = cam.z;
@@ -492,6 +687,9 @@ window.addEventListener("keydown", e => {
   else if (e.key === "]") setLayer(layer + 1);
   else if (e.key === "p" || e.key === "P") setTool("paint");
   else if (e.key === "e" || e.key === "E") setTool("erase");
+  else if (e.key === "2") setView("2d");
+  else if (e.key === "3") setView("3d");
+  else if (e.key === "v" || e.key === "V") setView(view === "2d" ? "3d" : "2d");
   else if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undo(); }
 });
 window.addEventListener("keyup", e => { if (e.code === "Space") spaceHeld = false; });
@@ -501,6 +699,7 @@ new ResizeObserver(draw).observe(wrap);
 loadLocal();
 setLayer(layer);
 setTool("paint");
+setView(view);
 document.getElementById("countOut").textContent = cells.size;
 draw();
 </script>
