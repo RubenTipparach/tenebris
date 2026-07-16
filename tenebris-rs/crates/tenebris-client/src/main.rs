@@ -45,6 +45,7 @@ mod profile;
 mod profiler;
 mod remote_players;
 mod renderer;
+mod nav_ui;
 mod screens;
 mod settings;
 mod slot_dnd;

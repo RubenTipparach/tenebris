@@ -38,6 +38,9 @@ pub enum Action {
     ExitRocket,
     /// Reset the rocket to a full tank back on its launch pad.
     RespawnRocket,
+    /// Toggle the rocket chase camera between rocket-frame and
+    /// planet-equatorial alignment.
+    CamAlign,
     Eat,
     Plant,
     SurvivalToggle,
@@ -90,6 +93,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Rocket", "Stage / jettison", Action::Stage),
     ("Rocket", "Exit rocket", Action::ExitRocket),
     ("Rocket", "Respawn rocket", Action::RespawnRocket),
+    ("Rocket", "Camera alignment", Action::CamAlign),
     ("Menus", "Pause menu", Action::Pause),
     ("Menus", "Tech tree", Action::OpenTechTree),
     ("Menus", "Crafting", Action::OpenCrafting),
@@ -128,6 +132,9 @@ fn action_from_name(name: &str) -> Option<Action> {
         "roll_right" => Action::RollRight,
         "interact" => Action::Interact,
         "stage" => Action::Stage,
+        "exit_rocket" => Action::ExitRocket,
+        "respawn_rocket" => Action::RespawnRocket,
+        "cam_align" => Action::CamAlign,
         "eat" => Action::Eat,
         "plant" => Action::Plant,
         "survival_toggle" => Action::SurvivalToggle,
@@ -231,6 +238,7 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
          * not the reference implementation's. */
         (Z, Action::ExitRocket),
         (P, Action::RespawnRocket),
+        (L, Action::CamAlign),
         /* Menus + debug. */
         (Escape, Action::Pause),
         (K, Action::OpenTechTree),

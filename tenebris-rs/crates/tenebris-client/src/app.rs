@@ -71,6 +71,7 @@ use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
 use crate::pixel_ui;
 use crate::player_ctrl::{self, PlayerCtrl};
+use crate::nav_ui;
 use crate::rocket_cam;
 use crate::rocket_ride;
 use crate::rocket_screen;
@@ -3447,16 +3448,29 @@ fn draw_rocket_hud(app: &App, screen_w: f32, screen_h: f32) {
     let stage_key = crate::controls::action_label(crate::controls::Action::Stage);
     let exit_key = crate::controls::action_label(crate::controls::Action::ExitRocket);
     let respawn_key = crate::controls::action_label(crate::controls::Action::RespawnRocket);
-    let lines = [
+    let cam_key = crate::controls::action_label(crate::controls::Action::CamAlign);
+    let mut lines = vec![
         format!("ROCKET  stage {}  {} engine", stages, eng),
         format!("fuel {}%   dv {:.0} m/s   TWR {:.2}", pct, dv, twr),
         format!("alt {:.0} m   speed {:.0} m/s   climb {:+.0} m/s", alt_m, speed, vspeed),
         format!("attitude {:.0} deg from up ({})", pitch_deg, att),
-        format!(
-            "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit  [{}] respawn",
-            throttle_key, stage_key, exit_key, respawn_key
-        ),
     ];
+    /* Orbit + target readouts (Ap/Pe/period, target range + rel speed). */
+    {
+        let p = app.player.borrow();
+        let sim_t = tenebris_core::world_time::seconds();
+        lines.extend(nav_ui::readout_lines(p.position, p.velocity, sim_t));
+    }
+    lines.push(format!(
+        "cam {} [{}]   target {} [T]",
+        rocket_cam::frame_label(),
+        cam_key,
+        nav_ui::target_name()
+    ));
+    lines.push(format!(
+        "[hold {}] throttle  [WASD] steer  [{}] stage  [{}] exit  [{}] respawn",
+        throttle_key, stage_key, exit_key, respawn_key
+    ));
     sdtx::canvas(screen_w, screen_h);
     sdtx::font(1);
     let cell = 8.0f32;
@@ -6173,8 +6187,30 @@ fn frame_inner(app: &mut App) {
     profiler::begin("draw-entities");
     animals::draw(view, proj, renderer::time_seconds());
     crate::rocket_fx::draw(view, proj, &app.world.borrow());
-    /* Orbital trading station drum, sweeping its on-rails track. */
-    crate::station_fx::draw(view, proj, sim_t);
+    /* Orbital trading station drum, sweeping its on-rails track (full drum
+     * near, a glint quad from afar - station.yaml lod_full_range_m). */
+    profiler::begin("draw-station");
+    crate::station_fx::draw(
+        view,
+        proj,
+        dvec3_make(cam_world.x as f64, cam_world.y as f64, cam_world.z as f64),
+        sim_t,
+    );
+    profiler::end("draw-station");
+    /* Orbital nav layer: the rocket's conic, the station's track, and the
+     * target halo. Self-gates on riding + in-space. */
+    {
+        let p = app.player.borrow();
+        crate::nav_ui::draw_world(
+            view,
+            proj,
+            p.position,
+            p.velocity,
+            rocket_ride::is_riding(),
+            p.is_in_space,
+            sim_t,
+        );
+    }
     /* The rocket the player is FLYING. A ridden rocket is the same thing as
      * a jettisoned one - a part stack posed in the world - so it draws
      * through the same renderer rather than a second copy of it, just posed
@@ -6407,6 +6443,22 @@ fn frame_inner(app: &mut App) {
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
         /* Rocket flight instruments (top-centre) while riding a rocket. */
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
+        /* Navball (bottom-centre, where the hotbar sits on foot) - the
+         * attitude/steering readout while flying. */
+        if flying {
+            let p = app.player.borrow();
+            let sim_t = tenebris_core::world_time::seconds();
+            nav_ui::draw_hud(
+                sapp::widthf(),
+                sapp::heightf(),
+                p.position,
+                p.velocity,
+                p.basis.right,
+                p.basis.fwd,
+                p.basis.up,
+                sim_t,
+            );
+        }
         /* Credits wallet (top-right). */
         draw_credits_hud(app, sapp::widthf(), sapp::heightf());
         /* Station dock prompt (in space, within range) - the whole point of
@@ -6647,6 +6699,25 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         && crate::rocket_ride::is_riding()
     {
         crate::rocket_ride::clear();
+        return;
+    }
+    /* Cycle nav target (T while flying). T is Plant on foot; farming is
+     * surface-only, so in a rocket the key is free and this takes it before
+     * the input layer ever sees a plant edge. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Plant)
+        && crate::rocket_ride::is_riding()
+    {
+        crate::nav_ui::cycle_target();
+        return;
+    }
+    /* Toggle chase-camera alignment (default L): rocket-frame <-> planet
+     * equatorial. Only meaningful while flying. */
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::CamAlign)
+        && crate::rocket_ride::is_riding()
+    {
+        rocket_cam::toggle_frame();
         return;
     }
     /* Respawn rocket (default P): reset to a full-fuelled rocket back on the
