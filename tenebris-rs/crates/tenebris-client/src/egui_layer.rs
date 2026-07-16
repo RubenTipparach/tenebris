@@ -194,6 +194,20 @@ pub fn handle_event(e: &sapp::Event) -> bool {
                     });
                 }
             }
+            sapp::EventType::MouseScroll => {
+                /* Forward the wheel so egui panels (the solar-map zoom,
+                 * trade/craft/inventory scroll lists) actually receive it -
+                 * without this case egui's scroll delta was always zero and
+                 * the map's wheel-zoom code got no input. Line unit: egui
+                 * scales it by its line-scroll speed. Positive scroll_y =
+                 * wheel away = content up / zoom in, egui's own convention. */
+                l.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(e.scroll_x, e.scroll_y),
+                    modifiers: l.modifiers,
+                    phase: egui::TouchPhase::Move,
+                });
+            }
             sapp::EventType::Char => {
                 if let Some(ch) = char::from_u32(e.char_code) {
                     if !ch.is_control() {

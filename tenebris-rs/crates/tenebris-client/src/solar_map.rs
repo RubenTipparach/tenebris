@@ -444,7 +444,21 @@ pub fn egui_ui(ctx: &egui::Context) {
     if !pointer_over_ui {
         let (drag, scroll) = ctx.input(|i| {
             let drag = if i.pointer.primary_down() { i.pointer.delta() } else { egui::Vec2::ZERO };
-            (drag, i.smooth_scroll_delta.y)
+            /* Sum this frame's RAW wheel events, not smooth_scroll_delta:
+             * the zoom is a discrete multiplicative step per notch, and
+             * egui spreads a smoothed delta across several frames - which
+             * would fire the step several times for one notch. Raw is
+             * nonzero only on the frame the notch arrives. */
+            let scroll: f32 = i
+                .raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                    _ => None,
+                })
+                .sum();
+            (drag, scroll)
         });
         let sc = tenebris_core::config::solar();
         if drag != egui::Vec2::ZERO || scroll.abs() > 0.0 {
