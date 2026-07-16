@@ -51,7 +51,8 @@
 mod backend {
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{mpsc, Mutex, OnceLock};
 
     /* The C port's 256 assumed "profiles + a few world poses". Per-edit
      * tile persistence stores one key per edited column, so a single
@@ -273,10 +274,13 @@ mod backend {
     /// the first there); Rust's fs::rename replaces the target on
     /// every platform, which is the atomic-replace the C code intends.
     pub(super) fn save_file(store: &KvStore) {
-        let Some(path) = store.path.as_ref() else { return };
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
+        let Some((path, out)) = serialize(store) else { return };
+        write_out(&path, &out);
+    }
+
+    /// The file image of a store snapshot: (path, "k=v\n" lines).
+    fn serialize(store: &KvStore) -> Option<(PathBuf, String)> {
+        let path = store.path.as_ref()?.clone();
         let mut out = String::new();
         for e in &store.entries {
             out.push_str(&e.k);
@@ -284,11 +288,99 @@ mod backend {
             out.push_str(&e.v);
             out.push('\n');
         }
+        Some((path, out))
+    }
+
+    /// tmp + rename atomic replace, serialized across threads so the
+    /// background writer and the shutdown flush never interleave renames.
+    fn write_out(path: &PathBuf, out: &str) {
+        static FILE_LOCK: Mutex<()> = Mutex::new(());
+        let _io = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
         if fs::write(&tmp, out.as_bytes()).is_err() {
             return;
         }
         if fs::rename(&tmp, path).is_err() {
             let _ = fs::remove_file(&tmp);
+        }
+    }
+
+    /* -------------------------------------------------------------- */
+    /* Async writer. Every mutation rewrites the WHOLE kv file - fine
+     * for a handful of profile keys, but a played world stores a
+     * 256-hex-char column per edited tile, so the file grows toward
+     * megabytes and the synchronous rewrite per key write became a
+     * main-thread lag spike (every block edit, plus a multi-write
+     * burst on each 5 s autosave). Mutations now update the in-memory
+     * map synchronously (reads stay exact) and hand the DISK write to
+     * one background thread that always serializes the LATEST
+     * snapshot: writes coalesce under load, order is preserved by the
+     * single writer, and the main thread pays microseconds. The
+     * same-frame persistence rule keeps its intent - the edit is in
+     * the persistence layer that frame and flushed within
+     * milliseconds, no batching, no timers - and flush_blocking() at
+     * app cleanup lands the final writes before exit. */
+    /* -------------------------------------------------------------- */
+
+    /// Write generation requested / completed. DONE >= REQ means the
+    /// on-disk file reflects every mutation made so far.
+    static WRITE_REQ: AtomicU64 = AtomicU64::new(0);
+    static WRITE_DONE: AtomicU64 = AtomicU64::new(0);
+    static WRITER: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+    /// Queue an async rewrite of the kv file (spawns the writer thread
+    /// on first use). Tests keep the synchronous write so their on-disk
+    /// asserts need no flush choreography.
+    pub(super) fn schedule_save(store: &KvStore) {
+        #[cfg(test)]
+        {
+            save_file(store);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = store; /* the writer serializes from the live map */
+            WRITE_REQ.fetch_add(1, Ordering::AcqRel);
+            let tx = WRITER.get_or_init(|| {
+                let (tx, rx) = mpsc::channel::<()>();
+                std::thread::Builder::new()
+                    .name("kv-writer".into())
+                    .spawn(move || {
+                        while rx.recv().is_ok() {
+                            /* Coalesce every signal queued while the last
+                             * write ran - one write covers them all. */
+                            while rx.try_recv().is_ok() {}
+                            let target = WRITE_REQ.load(Ordering::Acquire);
+                            let snap = {
+                                let store = lock();
+                                serialize(&store)
+                            };
+                            if let Some((path, out)) = snap {
+                                write_out(&path, &out);
+                            }
+                            WRITE_DONE.store(target, Ordering::Release);
+                        }
+                    })
+                    .expect("spawn kv-writer");
+                tx
+            });
+            let _ = tx.send(());
+        }
+    }
+
+    /// Block until the on-disk file reflects every mutation so far (app
+    /// cleanup - the last autosave must land before the process exits).
+    /// Capped so a wedged filesystem can't hang shutdown.
+    pub fn flush_blocking() {
+        let target = WRITE_REQ.load(Ordering::Acquire);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while WRITE_DONE.load(Ordering::Acquire) < target {
+            if std::time::Instant::now() > deadline {
+                println!("[kv] WARN flush timed out - last write may be stale");
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
@@ -321,7 +413,7 @@ mod backend {
             }
         };
         store.entries[idx].v = escape_value(truncate_bytes(val, KV_VAL_MAX));
-        save_file(&store);
+        schedule_save(&store);
     }
 
     pub fn get(key: &str) -> Option<String> {
@@ -343,7 +435,7 @@ mod backend {
         let Some(idx) = find(&store, key) else { return };
         // C: G_kv[idx] = G_kv[--G_kv_n] - a swap-remove.
         store.entries.swap_remove(idx);
-        save_file(&store);
+        schedule_save(&store);
     }
 
     pub fn list_with_prefix(prefix: &str) -> Option<String> {
@@ -369,7 +461,7 @@ mod backend {
     }
 }
 
-pub use backend::{get, list_with_prefix, remove, set};
+pub use backend::{flush_blocking, get, list_with_prefix, remove, set};
 
 /* ====================================================================
  * Test support - the kv map is process-global, so every test touching

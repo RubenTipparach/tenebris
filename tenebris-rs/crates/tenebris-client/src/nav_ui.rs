@@ -165,9 +165,14 @@ fn hud_pip() -> sgl::Pipeline {
     pip
 }
 
-/// Depth-tested alpha-blended line pipeline for the world sgl context
-/// (same recipe as the renderer's outline pipeline; created lazily inside
-/// the world context so it belongs to it).
+/// Always-on-top alpha-blended line pipeline for the world sgl context
+/// (created lazily inside the world context so it belongs to it).
+///
+/// Depth compare is ALWAYS, not LessEqual: these are navigation overlays
+/// (orbit tracks, velocity/attitude arrows, Ap/Pe ticks), and letting the
+/// planet occlude them hid exactly the part of the orbit you steer by -
+/// the arc behind the body - and clipped the arrows into the terrain.
+/// Nav data must stay readable in front of everything, like a HUD.
 fn line_pip() -> sgl::Pipeline {
     let existing = LINE_PIP.with(|c| c.get());
     if existing.id != 0 {
@@ -176,7 +181,7 @@ fn line_pip() -> sgl::Pipeline {
     let mut desc = sg::PipelineDesc {
         primitive_type: sg::PrimitiveType::Lines,
         depth: sg::DepthState {
-            compare: sg::CompareFunc::LessEqual,
+            compare: sg::CompareFunc::Always,
             write_enabled: false,
             ..Default::default()
         },
@@ -195,6 +200,35 @@ fn line_pip() -> sgl::Pipeline {
     pip
 }
 
+/* Eye-shell remap: every nav-line vertex is moved along its own eye ray
+ * onto a fixed-radius shell around the camera. A pinhole projection keeps
+ * a point's SCREEN position exactly unchanged when it slides along its
+ * eye ray, and the line pipeline's depth compare is ALWAYS - so the true
+ * distance is irrelevant, and an orbit track 30 km out (well past the
+ * 20 km zfar, which was clipping it) renders complete from any zoom.
+ * This is the poor man's log-z for overlay lines: no depth-buffer or
+ * shader changes, just geometry that can never reach the far plane. */
+thread_local! {
+    static REMAP_EYE: std::cell::Cell<DVec3> =
+        const { std::cell::Cell::new(DVec3 { x: 0.0, y: 0.0, z: 0.0 }) };
+}
+/// Shell radius: far enough that near geometry keeps sub-pixel accuracy,
+/// well inside the near..far range (0.3 .. 20 000).
+const SHELL_DIST_M: f64 = 500.0;
+
+/// Emit a world-space nav vertex via the eye-shell remap.
+fn vtx(p: DVec3) {
+    let eye = REMAP_EYE.with(|c| c.get());
+    let d = dvec3_sub(p, eye);
+    let len = dvec3_length(d);
+    let q = if len > 1e-6 {
+        dvec3_add(eye, dvec3_scale(d, SHELL_DIST_M / len))
+    } else {
+        p
+    };
+    sgl::v3f(q.x as f32, q.y as f32, q.z as f32);
+}
+
 fn line_strip(pts: &[DVec3], col: [f32; 4]) {
     if pts.len() < 2 {
         return;
@@ -202,8 +236,8 @@ fn line_strip(pts: &[DVec3], col: [f32; 4]) {
     sgl::begin_lines();
     sgl::c4f(col[0], col[1], col[2], col[3]);
     for w in pts.windows(2) {
-        sgl::v3f(w[0].x as f32, w[0].y as f32, w[0].z as f32);
-        sgl::v3f(w[1].x as f32, w[1].y as f32, w[1].z as f32);
+        vtx(w[0]);
+        vtx(w[1]);
     }
     sgl::end();
 }
@@ -219,8 +253,8 @@ fn cross_marker(p: DVec3, half_m: f64, col: [f32; 4]) {
     sgl::begin_lines();
     sgl::c4f(col[0], col[1], col[2], col[3]);
     for (a, b) in pts {
-        sgl::v3f(a.x as f32, a.y as f32, a.z as f32);
-        sgl::v3f(b.x as f32, b.y as f32, b.z as f32);
+        vtx(a);
+        vtx(b);
     }
     sgl::end();
 }
@@ -250,12 +284,12 @@ fn arrow(from: DVec3, dir: DVec3, len: f64, col: [f32; 4]) {
     let w = len * 0.08;
     sgl::begin_lines();
     sgl::c4f(col[0], col[1], col[2], col[3]);
-    sgl::v3f(from.x as f32, from.y as f32, from.z as f32);
-    sgl::v3f(tip.x as f32, tip.y as f32, tip.z as f32);
+    vtx(from);
+    vtx(tip);
     for s in [s1, s2, dvec3_scale(s1, -1.0), dvec3_scale(s2, -1.0)] {
         let fin = dvec3_add(back, dvec3_scale(s, w));
-        sgl::v3f(tip.x as f32, tip.y as f32, tip.z as f32);
-        sgl::v3f(fin.x as f32, fin.y as f32, fin.z as f32);
+        vtx(tip);
+        vtx(fin);
     }
     sgl::end();
 }
@@ -267,6 +301,7 @@ fn arrow(from: DVec3, dir: DVec3, len: f64, col: [f32; 4]) {
 pub fn draw_world(
     view: Mat4,
     proj: Mat4,
+    eye: DVec3,
     pos: DVec3,
     vel: DVec3,
     right: DVec3,
@@ -279,6 +314,10 @@ pub fn draw_world(
     if !riding || !in_space {
         return;
     }
+    /* Seed the eye-shell remap (see vtx): all line geometry this frame
+     * collapses onto a shell around the CAMERA, so the far plane can
+     * never clip the orbit tracks however far out the camera zooms. */
+    REMAP_EYE.with(|c| c.set(eye));
 
     renderer::sgl_world_begin();
     sgl::defaults();

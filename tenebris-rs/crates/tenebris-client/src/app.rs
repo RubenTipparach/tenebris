@@ -41,6 +41,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::animals;
+use crate::client_kv;
 use crate::clouds;
 use crate::weather_fx;
 use crate::chat;
@@ -6235,6 +6236,9 @@ fn frame_inner(app: &mut App) {
         crate::nav_ui::draw_world(
             view,
             proj,
+            /* The CHASE camera's eye (not the player) - it seeds the
+             * eye-shell remap that keeps orbit lines inside the far plane. */
+            cam_eye,
             p.position,
             p.velocity,
             p.basis.right,
@@ -7269,6 +7273,9 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
 /* --------------------------------------------------------------------- */
 
 extern "C" fn cleanup() {
+    /* Land the async kv writer's final saves before teardown - the last
+     * autosave / world edit must be on disk when the process exits. */
+    client_kv::flush_blocking();
     net_client::disconnect();
     chat::shutdown();
     remote_players::shutdown();
