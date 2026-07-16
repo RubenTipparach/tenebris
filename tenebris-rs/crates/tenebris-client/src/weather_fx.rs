@@ -513,8 +513,17 @@ fn draw_distant_shafts(
              * at ~2% of the vertex + CPU cost. The sheet spans the cell's
              * width and the full cloud-to-ground column, tinted rain / snow,
              * with its opacity on the same distance fade as the streaks
-             * (times rain_impostor_alpha so a sheet never reads as a wall). */
-            if d > wcfg.rain_detail_range_m as f64 {
+             * (times rain_impostor_alpha so a sheet never reads as a wall).
+             *
+             * SMOOTH HANDOVER: t_imp ramps 0 -> 1 across the blend band
+             * (rain_lod_blend_m) ending at the detail range. The sheet fades
+             * IN with t_imp while the streaks fade OUT (opacity AND count)
+             * with 1 - t_imp below, so the transition is a cross-fade, never
+             * a pop. At t_imp = 1 the cell is impostor-only. */
+            let detail_m = wcfg.rain_detail_range_m as f64;
+            let blend_m = (wcfg.rain_lod_blend_m as f64).max(1.0);
+            let t_imp = (((d - (detail_m - blend_m)) / blend_m).clamp(0.0, 1.0)) as f32;
+            if t_imp > 0.0 {
                 /* Rain sheets take their own tint (grey stock - distant rain
                  * reads as haze, not saturated streak blue); snow sheets keep
                  * the snow colour. */
@@ -523,7 +532,7 @@ fn draw_distant_shafts(
                 } else {
                     [wcfg.rain_impostor_r, wcfg.rain_impostor_g, wcfg.rain_impostor_b]
                 };
-                let a = alpha * wcfg.rain_impostor_alpha;
+                let a = alpha * wcfg.rain_impostor_alpha * t_imp;
                 let half_w = ccfg.cell_m as f64 * 0.5;
                 let b0 = dvec3_add(base_pt, dvec3_scale(right, -half_w));
                 let b1 = dvec3_add(base_pt, dvec3_scale(right, half_w));
@@ -537,8 +546,14 @@ fn draw_distant_shafts(
                 sgl::v3f(u1.x as f32, u1.y as f32, u1.z as f32);
                 sgl::v3f(u0.x as f32, u0.y as f32, u0.z as f32);
                 drawn += 1;
-                continue;
+                if t_imp >= 1.0 {
+                    continue; /* fully handed over - no streaks out here */
+                }
             }
+            /* Streak side of the cross-fade: opacity thins with 1 - t_imp
+             * (count follows below via the lod factor). */
+            let streak_fade = 1.0 - t_imp;
+            let alpha = alpha * streak_fade;
 
             /* Distance LOD on the COUNT, not just the alpha: far shafts fade
              * toward rain_alpha_far (0.1 stock) so they barely read, yet each
@@ -548,7 +563,8 @@ fn draw_distant_shafts(
              * SAME fade, floored at rain_lod_far_frac (weather.yaml; 1.0
              * restores the old constant density), so nearby curtains stay
              * dense while the far haze thins to a sketch. */
-            let lod = wcfg.rain_lod_far_frac + (1.0 - wcfg.rain_lod_far_frac) * fade;
+            let lod =
+                (wcfg.rain_lod_far_frac + (1.0 - wcfg.rain_lod_far_frac) * fade) * streak_fade;
             let n_streaks =
                 ((SHAFT_STREAKS as f32) * density_mult * lod.clamp(0.0, 1.0)).round() as i32;
             /* Per-cell invariants, hoisted: these were recomputed per STREAK

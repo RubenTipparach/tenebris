@@ -228,6 +228,11 @@ pub struct WeatherConfig {
     /// far-precipitation impostor - so storms stay visible to the full
     /// shaft range at a fraction of the cost.
     pub rain_detail_range_m: f32,
+    /// Width (m) of the streak->impostor cross-fade band ENDING at
+    /// rain_detail_range_m: across it the streaks fade out (opacity and
+    /// count) while the curtain sheet fades in, so the handover never
+    /// pops. Small values approach a hard cut.
+    pub rain_lod_blend_m: f32,
     /// Opacity multiplier on the far-curtain impostor sheets (applied on
     /// top of the distance-faded streak alpha) so a sheet reads as haze,
     /// never a solid wall.
@@ -349,6 +354,7 @@ impl WeatherConfig {
         rain_lod_alt_m: 200.0,
         rain_lod_far_frac: 0.25,
         rain_detail_range_m: 250.0,
+        rain_lod_blend_m: 60.0,
         rain_impostor_alpha: 0.5,
         rain_impostor_r: 0.55,
         rain_impostor_g: 0.58,
@@ -440,6 +446,7 @@ pub fn parse_config(src: &str, _path: &str) -> WeatherConfig {
             "rain_lod_alt_m" => cfg.rain_lod_alt_m = v,
             "rain_lod_far_frac" => cfg.rain_lod_far_frac = v,
             "rain_detail_range_m" => cfg.rain_detail_range_m = v,
+            "rain_lod_blend_m" => cfg.rain_lod_blend_m = v,
             "rain_impostor_alpha" => cfg.rain_impostor_alpha = v,
             "rain_impostor_r" => cfg.rain_impostor_r = v,
             "rain_impostor_g" => cfg.rain_impostor_g = v,

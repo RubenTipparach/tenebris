@@ -132,6 +132,10 @@ default_moisture: 0.66
 #                      streaks; beyond it each cell draws ONE translucent
 #                      curtain sheet (the far-precip impostor), so distant
 #                      storms stay visible at a fraction of the cost.
+#   rain_lod_blend_m   width (m) of the streak->impostor cross-fade band
+#                      ending at rain_detail_range_m: streaks fade out
+#                      (opacity + count) while the sheet fades in, so the
+#                      handover never pops. Small = near-hard cut.
 #   rain_impostor_alpha  opacity multiplier for those far curtain sheets
 #                      (on top of the distance fade) - haze, not a wall.
 #   rain_impostor_r/g/b  tint of the far RAIN curtain sheets (0..1). Grey
@@ -178,15 +182,18 @@ rain_streak_m: 1.5
 snow_fall_mps: 3.0
 snow_streak_m: 0.4
 snow_density_mult: 2.0
-rain_color_r: 0.40
-rain_color_g: 0.58
-rain_color_b: 1.0
+# Slightly grey-shifted from the old 0.40/0.58/1.0 so the streaks sit
+# closer to the grey impostor sheets they cross-fade into.
+rain_color_r: 0.52
+rain_color_g: 0.62
+rain_color_b: 0.90
 rain_alpha_near: 0.78
 rain_alpha_far: 0.10
 wet_fade_tau_s: 1.6
 rain_lod_alt_m: 200.0
 rain_lod_far_frac: 0.25
-rain_detail_range_m: 250.0
+rain_detail_range_m: 150.0
+rain_lod_blend_m: 60.0
 rain_impostor_alpha: 0.5
 rain_impostor_r: 0.55
 rain_impostor_g: 0.58
