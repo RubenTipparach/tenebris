@@ -13,8 +13,8 @@ technology, not natural terrain:
   casino_sign        - bulb-bordered marquee with a neon lucky 7
   slot_machine_face  - slot cabinet face (marquee, 3 reels, coin slit)
   card_table_face    - green felt, dealt cards, chips, gold rim
-  station_glass      - semi-transparent courtyard glass (alpha < 255)
-  hedge              - leafy decorative shrub in a planter
+  station_glass      - courtyard / window glazing: clearly visible
+                       framed panes (semi-transparent, alpha < 255)
 
 Baked-asset path: deterministic 16x16 RGBA PNGs, stdlib+zlib only.
 Run from tenebris-rs/:  python tools/gen-casino-textures.py
@@ -70,17 +70,13 @@ PAL = {
     "f": (32, 92, 54, 255),     # felt green dark
     "U": (58, 92, 198, 255),    # chip blue
     "x": (30, 30, 34, 255),     # black pip
-    # glass (semi-transparent - drawn through the blend pipeline)
-    "1": (150, 200, 255, 90),   # pane
-    "2": (210, 235, 255, 130),  # sparkle streak
-    "3": (110, 150, 200, 150),  # pane edge shade
-    "T": (120, 128, 140, 255),  # glazing frame
-    # hedge
-    "e": (46, 110, 52, 255),    # leaf dark
-    "l": (74, 152, 66, 255),    # leaf mid
-    "j": (108, 190, 84, 255),   # leaf light
-    "u": (94, 66, 42, 255),     # planter wood
-    "V": (120, 88, 56, 255),    # planter wood light
+    # glass (semi-transparent - drawn through the blend pipeline). Alpha
+    # is deliberately high and the frame heavy so glazed deck openings
+    # read as SOLID glass panes, never as holes.
+    "1": (150, 205, 255, 165),  # pane
+    "2": (225, 245, 255, 200),  # glint streak
+    "3": (105, 150, 210, 190),  # pane edge shade
+    "T": (150, 158, 172, 255),  # glazing frame
 }
 
 STATION_HULL = [
@@ -200,40 +196,21 @@ CARD_TABLE_FACE = [
 
 STATION_GLASS = [
     "TTTTTTTTTTTTTTTT",
-    "T11111111111113T",
-    "T12111111111113T",
-    "T11211111111113T",
-    "T11121111111113T",
-    "T11112111111113T",
-    "T11111111111113T",
-    "T11111121111113T",
-    "T11111112111113T",
-    "T11111111211113T",
-    "T11111111111113T",
-    "T11111111112113T",
-    "T11111111111213T",
-    "T11111111111113T",
-    "T33333333333333T",
+    "T211111TT111113T",
+    "T121111TT111113T",
+    "T112111TT111113T",
+    "T111211TT111113T",
+    "T111121TT111113T",
+    "T111112TT111113T",
     "TTTTTTTTTTTTTTTT",
-]
-
-HEDGE = [
-    "................",
-    "....jl..jj......",
-    "..jllelljlljj...",
-    ".jlelleljellelj.",
-    ".lejlleljllejll.",
-    "jllejjlelljlllej",
-    "lejlleljellejlle",
-    "elljelljlleljjel",
-    "lejllejlelljelle",
-    "jelljlleljellejl",
-    ".ellejlelljlle..",
-    "uVuVuVuVuVuVuVuV",
-    "uuVuuVuuVuuVuuVu",
-    "uVuVuVuVuVuVuVuV",
-    "uuuuuuuuuuuuuuuu",
-    "uVuVuVuVuVuVuVuV",
+    "TTTTTTTTTTTTTTTT",
+    "T211111TT111113T",
+    "T121111TT111113T",
+    "T112111TT112113T",
+    "T111211TT111213T",
+    "T111121TT111123T",
+    "T333333TT333333T",
+    "TTTTTTTTTTTTTTTT",
 ]
 
 
@@ -282,7 +259,6 @@ TILES = {
     "slot_machine_face": SLOT_MACHINE_FACE,
     "card_table_face": CARD_TABLE_FACE,
     "station_glass": STATION_GLASS,
-    "hedge": HEDGE,
 }
 
 

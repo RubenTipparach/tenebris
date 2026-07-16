@@ -190,8 +190,6 @@ pub enum StationMat {
     Sign,
     /// Semi-transparent glazing (courtyard floor, hotel windows).
     Glass,
-    /// Decorative hedge planter.
-    Plant,
 }
 
 /// One hex prism of the station structure. `q`/`r`/`layer` are the
@@ -414,10 +412,10 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
         }
     }
 
-    /* 3. Courtyard: the openings between the spokes are GLAZED - a
-     * single glass layer at deck level, open space below, so the planet
-     * scrolls past under your feet. Decorative hedges scatter over the
-     * glass on a deterministic hash. */
+    /* 3. Courtyard: every opening between the spokes is GLAZED - a
+     * single glass layer flush with deck level, open space below, so
+     * the planet scrolls past under your feet with no hole anywhere in
+     * the wheel to fall through (pinned by the no-holes test). */
     for q in -(n_in - 1)..=(n_in - 1) {
         for r in (-(n_in - 1)).max(-q - (n_in - 1))..=(n_in - 1).min(-q + (n_in - 1)) {
             let d = hex_dist(q, r);
@@ -430,9 +428,6 @@ pub fn shell(cfg: &StationConfig) -> Vec<Prism> {
                 continue;
             }
             push(q, r, slab - 1, StationMat::Glass);
-            if crate::rng::hash2(q * 7 + 3, r * 5 - 1) < 0.16 {
-                push(q, r, slab, StationMat::Plant);
-            }
         }
     }
 
@@ -1163,16 +1158,6 @@ mod tests {
             glass_windows >= 5 * 8,
             "every storey carries a glazed window band (got {glass_windows} panes)"
         );
-        /* Plants: deterministic hash scatter over the courtyard glass. */
-        let plants: Vec<_> = prisms.iter().filter(|p| p.mat == StationMat::Plant).collect();
-        assert!(plants.len() >= 8, "courtyard has decorative planting");
-        for p in &plants {
-            assert!(
-                seen.contains(&(p.q, p.r, p.layer - 1)),
-                "hedge at {:?} sits on the glass deck",
-                (p.q, p.r)
-            );
-        }
         /* Interior slabs: 37 interior cells x (5 storeys + roof) minus
          * 4 stairwell-opening cells per slab above the ground floor. */
         let interior = prisms
@@ -1184,6 +1169,43 @@ mod tests {
         /* Room lights: the (0,0) light tile on every storey slab. */
         assert!(count(StationMat::Neon) > 60, "parapet + storey bands + room lights");
         assert_eq!(count(StationMat::Sign), 24 + 2, "marquee crown ring + spire");
+    }
+
+    #[test]
+    fn station_has_no_fall_through_holes() {
+        /* Every column inside the wheel footprint - AND every pad /
+         * bridge column outside it - carries solid support at (or above)
+         * deck level, so nowhere on the premises can a player fall
+         * through to space. Stairwell shafts inside the hotel are
+         * bounded below by the full lobby slab, so the worst interior
+         * fall lands on the lobby carpet. */
+        let cfg = StationConfig::DEFAULT;
+        let spans = column_spans(&cfg);
+        let deck = cfg.slab_layers as f32 * layer_h(&cfg);
+        let n_out = cfg.radius_hexes as i32;
+        for q in -n_out..=n_out {
+            for r in (-n_out).max(-q - n_out)..=n_out.min(-q + n_out) {
+                let col = spans
+                    .get(&(q, r))
+                    .unwrap_or_else(|| panic!("hole: column {:?} is empty", (q, r)));
+                let supported = col.iter().any(|&(bot, top)| bot <= deck + 1e-4 && top >= deck - 1e-4);
+                assert!(supported, "hole: column {:?} lacks deck-level support", (q, r));
+            }
+        }
+        /* Pads + bridges. */
+        for (dq, dr) in HEX_DIRS {
+            let mut pad_cells = vec![
+                (dq * (n_out + 1), dr * (n_out + 1)),
+                (dq * (n_out + 2), dr * (n_out + 2)),
+            ];
+            for (nq, nr) in HEX_DIRS {
+                pad_cells.push((dq * (n_out + 2) + nq, dr * (n_out + 2) + nr));
+            }
+            for (q, r) in pad_cells {
+                let col = spans.get(&(q, r)).expect("pad column occupied");
+                assert!(col.iter().any(|&(_, top)| (top - deck).abs() < 1e-4));
+            }
+        }
     }
 
     #[test]
@@ -1264,14 +1286,10 @@ mod tests {
                 let over = f0.local_to_world(dvec3_make(gx as f64, 4.0, gz as f64));
                 let fg = frame_sample(over, t);
                 if let Some(s) = fg.support_m {
-                    /* Bare glass supports at deck level; a scattered
-                     * hedge cell supports one layer higher. */
                     let glass_top = cfg.slab_layers as f32 * lh;
-                    let hedge_top = glass_top + lh;
-                    let s = s as f32;
                     assert!(
-                        (s - glass_top).abs() < 1e-4 || (s - hedge_top).abs() < 1e-4,
-                        "courtyard support {s} is neither glass nor hedge top"
+                        (s as f32 - glass_top).abs() < 1e-4,
+                        "courtyard glass supports at deck level"
                     );
                     glass_checked = true;
                 }

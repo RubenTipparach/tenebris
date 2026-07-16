@@ -42,8 +42,7 @@ const TEX_NEON: usize = 3;
 const TEX_SIGN: usize = 4;
 const TEX_WALL: usize = 5;
 const TEX_GLASS: usize = 6;
-const TEX_PLANT: usize = 7;
-const TEX_COUNT: usize = 8;
+const TEX_COUNT: usize = 7;
 
 /// Face shading (multiplied by the sun term): caps bright, keels dark,
 /// sides alternating so the hex facets read in silhouette.
@@ -54,6 +53,9 @@ const SHADE_SIDE_B: f32 = 0.62;
 /// Emissive materials (neon, signs) never drop below this sun term -
 /// they are the station's own lights, indoors and at night.
 const EMISSIVE_MIN_LIT: f32 = 1.0;
+/// Glazing keeps a modest glow floor: deck-lit panes must stay visibly
+/// SOLID at night rather than reading as open holes.
+const GLASS_MIN_LIT: f32 = 0.55;
 
 fn tex_for(m: StationMat) -> usize {
     match m {
@@ -64,7 +66,6 @@ fn tex_for(m: StationMat) -> usize {
         StationMat::Sign => TEX_SIGN,
         StationMat::Wall => TEX_WALL,
         StationMat::Glass => TEX_GLASS,
-        StationMat::Plant => TEX_PLANT,
     }
 }
 
@@ -206,18 +207,20 @@ pub fn draw(view: Mat4, proj: Mat4, sim_t: f64) {
         let mut cache = cell.borrow_mut();
         let cache = cache.get_or_insert_with(build_cache);
         /* Opaque materials first, glass last so blending sees the scene. */
-        let order = [
-            TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_PLANT, TEX_NEON, TEX_SIGN, TEX_GLASS,
-        ];
+        let order = [TEX_HULL, TEX_FLOOR, TEX_CARPET, TEX_WALL, TEX_NEON, TEX_SIGN, TEX_GLASS];
         for tex in order {
             let prisms = &cache.groups[tex];
             if prisms.is_empty() && tex != TEX_HULL {
                 continue;
             }
             /* Neon + signs are the station's own lighting: they stay
-             * bright indoors and at night. */
+             * bright indoors and at night. Glass keeps a softer floor so
+             * the glazed deck openings always read as solid panes (a
+             * night-black pane looks like a hole to fall through). */
             let lit = if tex == TEX_NEON || tex == TEX_SIGN {
                 lit.max(EMISSIVE_MIN_LIT)
+            } else if tex == TEX_GLASS {
+                lit.max(GLASS_MIN_LIT)
             } else {
                 lit
             };

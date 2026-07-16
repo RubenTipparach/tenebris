@@ -19,10 +19,11 @@
 #                     (12 over 15 m = person-scale 1.25 m prisms)
 #   hex_size_m    - hex circumradius (centre -> corner) of one prism
 #   altitude_m    - orbit altitude above the Tenebris surface
-# The courtyard openings between the spokes are glazed (glass floor)
-# with hash-scattered hedge planters; the hotel gets a window band and
-# a neon storey ring per floor, a lobby door facing +x, a spiral
-# staircase (half-layer treads), ceiling light tiles, marquee crown.
+# Every courtyard opening between the spokes is glazed (glass floor -
+# no hole in the wheel to fall through, pinned by the no-holes test);
+# the hotel gets a window band and a neon storey ring per floor, a
+# lobby door facing +x, a spiral staircase (half-layer treads),
+# ceiling light tiles, and the marquee crown.
 #
 # Docking + artificial gravity:
 #   dock_radius_m     - how close the player must fly to interact
