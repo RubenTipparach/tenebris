@@ -4268,7 +4268,14 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             bind.views[shaders::distant::VIEW_TEX_NORMAL] = body.distant_view_normal;
             bind.samplers[shaders::distant::SMP_SMP_CLAMP] = r.distant_lod_smp;
             sg::apply_bindings(&bind);
-            let dvp = shaders::distant::DistantVsParams { u_mvp: mvp.m };
+            /* fs_pos / fs_radius so the VS can build v_world_pos = fs_pos +
+             * a_pos*fs_radius - the world position the FS rim fresnel needs
+             * (was model-space a_pos, which made the rim a camera-directional
+             * hemisphere instead of a limb halo). */
+            let dvp = shaders::distant::DistantVsParams {
+                u_mvp: mvp.m,
+                u_fs_pos: [fs_pos.x, fs_pos.y, fs_pos.z, fs_radius],
+            };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
             let wc = config::water();
             let lc = config::lod();
@@ -7346,7 +7353,7 @@ mod tests {
          * splits compose (droplets off) from the post-water lens pass. */
         assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 128);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
-        assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
+        assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 80); /* +fs_pos (world-pos for rim) */
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 112); /* +rim fresnel (2 vec4s) */
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
         /* 6 vec4s: procedural surface (colors / churn / cam / limb / spot /
