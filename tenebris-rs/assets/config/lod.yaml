@@ -42,6 +42,12 @@
 #   distant_rim_intensity   float  overall rim brightness.
 #   distant_rim_floor       float  night-side rim strength 0..1 (0 = the halo
 #                                  only lights the sunlit crescent).
+#   distant_ambient         float  ambient fill on the distant globe seen
+#                                  from space. LOW on purpose (the ~0.35
+#                                  terrain ambient lit the night side to a
+#                                  muddy 35% of the texture); ~0.06 gives a
+#                                  clean dark night + crisp terminator, 0 =
+#                                  black night side.
 #   gravity_full_mult       float  body radius multiplier inside which
 #                                  gravity is at 100%. Default 1.4 =
 #                                  full pull from the surface up to
@@ -92,6 +98,7 @@ lod:
   distant_rim_power:      3.0
   distant_rim_intensity:  0.9
   distant_rim_floor:      0.25
+  distant_ambient:        0.06
   gravity_full_mult:      1.4
   gravity_falloff_mult:   1.8
   roll_slerp_duration_s:  3.0

@@ -4247,10 +4247,14 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 }
                 None => r.env.sun_dir,
             };
+            /* Distant globe ambient is a low neutral fill (lod.yaml
+             * distant_ambient), NOT the terrain ambient - see the config
+             * doc: the terrain fill lit the night side to a muddy 35%. */
+            let da = lc.distant_ambient.max(0.0);
             let dfp = shaders::distant::DistantFsParams {
                 u_sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z],
                 u_pad0: 0.0,
-                u_ambient: overcast_ambient(r.env.ambient),
+                u_ambient: [da, da, da],
                 u_pad1: 0.0,
                 u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
                 u_normal_strength: 0.6,
