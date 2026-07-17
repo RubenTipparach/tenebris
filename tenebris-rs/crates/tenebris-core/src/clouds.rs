@@ -86,21 +86,38 @@ impl CloudsConfig {
 }
 
 static S_CLOUDS: Mutex<CloudsConfig> = Mutex::new(CloudsConfig::DEFAULT);
-/// Per-tileset cloud-albedo override (yaml section named after the
-/// tileset, e.g. `sequoia:` with a `color:` field). None = use the
-/// global color. Only Sequoia needs one today - generalize when a
-/// second body wants its own sky.
-static S_SEQUOIA_COLOR: Mutex<Option<[f32; 3]>> = Mutex::new(None);
+
+/// Per-tileset cloud overrides (yaml section named after the tileset,
+/// e.g. `sequoia:`). Each field is None = use the global value. Only
+/// Sequoia has one today - generalize when a second body wants its
+/// own sky.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CloudsOverride {
+    /// Cloud albedo (Sequoia's brown skies).
+    pub color: Option<[f32; 3]>,
+    /// Puff probability per cell - the "how cloudy is this world" knob.
+    pub density: Option<f32>,
+    /// Cloud-free fraction of the coverage field - the "how big are
+    /// the clear gaps between weather systems" knob.
+    pub patch_clear: Option<f32>,
+}
+
+static S_SEQUOIA: Mutex<CloudsOverride> =
+    Mutex::new(CloudsOverride { color: None, density: None, patch_clear: None });
 
 /// Current cloud tuning (compiled-in defaults until `load_config`).
 pub fn config() -> CloudsConfig {
     *S_CLOUDS.lock().unwrap()
 }
 
-/// Cloud albedo for a Sequoia-tileset body: the `sequoia:` section's
-/// color when set, the global color otherwise.
+/// The `sequoia:` section's overrides (all None when absent).
+pub fn sequoia_override() -> CloudsOverride {
+    *S_SEQUOIA.lock().unwrap()
+}
+
+/// Back-compat helper: the Sequoia cloud albedo override, if any.
 pub fn sequoia_color() -> Option<[f32; 3]> {
-    *S_SEQUOIA_COLOR.lock().unwrap()
+    sequoia_override().color
 }
 
 /// Install a config directly (bypasses the yaml merge). For tests.
@@ -115,7 +132,7 @@ pub fn set_config(cfg: CloudsConfig) {
 /// honoured today (Sequoia's brown skies).
 pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
     let mut cfg = CloudsConfig::DEFAULT;
-    let mut seq_color: Option<[f32; 3]> = None;
+    let mut seq = CloudsOverride::default();
     let mut in_sequoia = false;
     for raw in src.split('\n') {
         let line = match raw.find('#') {
@@ -138,7 +155,7 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
                 inner.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             if parts.len() == 3 && parts.iter().any(|v| *v > 0.0) {
                 if in_sequoia {
-                    seq_color = Some([parts[0], parts[1], parts[2]]);
+                    seq.color = Some([parts[0], parts[1], parts[2]]);
                 } else {
                     cfg.color = [parts[0], parts[1], parts[2]];
                 }
@@ -146,7 +163,15 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
             continue;
         }
         if in_sequoia {
-            continue; /* only color is per-tileset today */
+            /* Per-tileset scalar overrides: the "how cloudy is this
+             * world" knobs. Anything else stays global-only. */
+            let Ok(v) = val.parse::<f32>() else { continue };
+            match key {
+                "density" => seq.density = Some(v.max(0.0)),
+                "patch_clear" => seq.patch_clear = Some(v.max(0.0)),
+                _ => {}
+            }
+            continue;
         }
         let Ok(v) = val.parse::<f32>() else { continue };
         if v == 0.0 {
@@ -172,7 +197,7 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
         }
     }
     *S_CLOUDS.lock().unwrap() = cfg;
-    *S_SEQUOIA_COLOR.lock().unwrap() = seq_color;
+    *S_SEQUOIA.lock().unwrap() = seq;
     cfg
 }
 
@@ -207,17 +232,21 @@ mod tests {
     }
 
     #[test]
-    fn sequoia_section_overrides_color_only() {
+    fn sequoia_section_overrides() {
         let c = parse_config(
-            "clouds:\n  color: [0.9, 0.9, 1.0]\n  density: 0.5\nsequoia:\n  color: [0.8, 0.6, 0.4]\n  density: 0.9\n",
+            "clouds:\n  color: [0.9, 0.9, 1.0]\n  density: 0.5\nsequoia:\n  color: [0.8, 0.6, 0.4]\n  density: 0.2\n  patch_clear: 0.7\n  puff_w_m: 99\n",
             "t",
         );
         assert_eq!(c.color, [0.9, 0.9, 1.0], "global color untouched");
-        assert_eq!(c.density, 0.5, "sequoia section must not leak scalars");
-        assert_eq!(sequoia_color(), Some([0.8, 0.6, 0.4]));
+        assert_eq!(c.density, 0.5, "sequoia density must not leak into global");
+        assert_eq!(c.puff_w_m, CloudsConfig::DEFAULT.puff_w_m, "unknown seq keys ignored");
+        let s = sequoia_override();
+        assert_eq!(s.color, Some([0.8, 0.6, 0.4]));
+        assert_eq!(s.density, Some(0.2));
+        assert_eq!(s.patch_clear, Some(0.7));
         /* No section -> no override. */
         parse_config("color: [1.0, 1.0, 1.0]\n", "t");
-        assert_eq!(sequoia_color(), None);
+        assert_eq!(sequoia_override(), CloudsOverride::default());
         set_config(CloudsConfig::DEFAULT);
     }
 

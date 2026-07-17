@@ -734,11 +734,28 @@ pub fn spawn_near(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<
     spawn_near_kind(w, anchor_world, id, salt, AnimalKind::Critter)
 }
 
+/// True when `body` hosts wildlife at all. Life is an EARTHLIKE thing:
+/// Tenebris and Sequoia have ecosystems; icy Frostbite, barren Crag,
+/// the moons and the asteroids are lifeless - a sheep on a glacier
+/// world is a bug, not a feature (user direction).
+pub fn body_has_fauna(body: &crate::planet::BodyConfig) -> bool {
+    !body.barren
+        && !body.icy
+        && matches!(
+            body.tileset,
+            crate::planet::Tileset::Earth | crate::planet::Tileset::Sequoia
+        )
+}
+
 /// Ring-spawn with an AUTO kind: the ring point decides - water tiles
 /// spawn fish (lifted into the water column), dry land rolls the
 /// grazer table with an occasional bird. Client + server both spawn
 /// through this so SP and MP fauna mixes match.
 pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<Animal> {
+    /* Per-body gate: lifeless worlds spawn nothing. */
+    if !body_has_fauna(&w.body) {
+        return None;
+    }
     let mut a = spawn_near(w, anchor_world, id, salt)?;
     let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
     let rel = dvec3_sub(a.pos, center);
@@ -818,25 +835,28 @@ pub fn land_spawn_kind(
         arr[(table_roll * arr.len() as f32) as usize % arr.len()]
     };
     if sequoia {
-        /* The two-footed world: mascot bipeds everywhere temperate,
-         * cranes wading the wet biomes, raptors owning the high ground.
-         * No barnyard here - cows and chickens stay on Tenebris. */
+        /* The two-footed world - a roster with NO overlap onto Tenebris
+         * (CLAUDE.md: animal rosters must be UNIQUE per planet). Only
+         * Sequoia-native species appear: mascot bipeds everywhere
+         * temperate, cranes wading the wet biomes, raptors owning the
+         * high ground. No barnyard, and none of Tenebris's generic
+         * frog / bird / lizard fill either. */
         return match biome {
             Biome::Swamp => {
-                if roll < 0.40 {
+                if roll < 0.45 {
                     AnimalKind::Crane
                 } else {
-                    pick(&[AnimalKind::Frog, AnimalKind::Shellkin, AnimalKind::Crane])
+                    pick(&[AnimalKind::Shellkin, AnimalKind::Crane])
                 }
             }
             Biome::Jungle => {
-                if roll < 0.30 {
+                if roll < 0.35 {
                     AnimalKind::Sparkit
                 } else {
                     pick(&[
                         AnimalKind::Sparkit,
                         AnimalKind::Shellkin,
-                        AnimalKind::Bird,
+                        AnimalKind::Raptor,
                         AnimalKind::Crane,
                     ])
                 }
@@ -845,7 +865,7 @@ pub fn land_spawn_kind(
                 if roll < 0.55 {
                     AnimalKind::Sparkit
                 } else {
-                    pick(&[AnimalKind::Lizard, AnimalKind::Shellkin])
+                    pick(&[AnimalKind::Shellkin, AnimalKind::Raptor])
                 }
             }
             Biome::Tundra => {
@@ -1339,6 +1359,38 @@ mod tests {
         for k in [AnimalKind::Cow, AnimalKind::Chicken, AnimalKind::Sheep, AnimalKind::Cat] {
             assert!(ten_kinds.contains(&k.to_u8()), "{k:?} must spawn on Tenebris");
             assert!(!seq_kinds.contains(&k.to_u8()), "{k:?} must NOT spawn on Sequoia");
+        }
+        /* CLAUDE.md standing rule: the land rosters must be FULLY
+         * disjoint - not one shared species between two planets. */
+        let shared: Vec<u8> = seq_kinds.intersection(&ten_kinds).copied().collect();
+        assert!(
+            shared.is_empty(),
+            "planet land rosters must be unique per planet; shared kinds: {shared:?}"
+        );
+    }
+
+    #[test]
+    fn only_earthlike_bodies_have_fauna() {
+        use crate::planet::{self, BodyId};
+        /* Earthlikes host wildlife... */
+        for id in [BodyId::Tenebris, BodyId::Sequoia] {
+            assert!(
+                body_has_fauna(&planet::get(id)),
+                "{id:?} must have fauna"
+            );
+        }
+        /* ...icy / barren / moon / asteroid worlds are lifeless (the
+         * "sheep on Frostbite" bug). */
+        for id in [
+            BodyId::Frostbite,
+            BodyId::Crag,
+            BodyId::Luna,
+            BodyId::Asteroid0,
+        ] {
+            assert!(
+                !body_has_fauna(&planet::get(id)),
+                "{id:?} must be lifeless"
+            );
         }
     }
 

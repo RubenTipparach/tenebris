@@ -524,9 +524,11 @@ pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
         }
 
         /* Night: stalkers prowl in on their own cadence (unless the
-         * player switched enemy mobs off in Settings). */
+         * player switched enemy mobs off in Settings). Lifeless worlds
+         * (icy / barren / non-earthlike) get no stalkers either. */
         s.stalker_cd -= dt;
         if night
+            && fauna::body_has_fauna(&w.body)
             && crate::settings::enemy_mobs()
             && s.list.iter().filter(|a| a.kind == AnimalKind::Stalker).count() < STALKER_COUNT
             && s.stalker_cd <= 0.0

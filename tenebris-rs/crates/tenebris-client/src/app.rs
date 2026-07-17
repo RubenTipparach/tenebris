@@ -2431,6 +2431,17 @@ extern "C" fn init() {
      *   TENEBRIS_DEV_SP[=name] -> boot straight into an SP world
      *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
      */
+    /* Water-rendering diagnostic (TENEBRIS_DEV_SEA_RAISE=<m>): raise
+     * every seeded world's sea by this much before any gen runs - e.g.
+     * 60 floods the whole planet, so an orbital capture of a 100% ocean
+     * proves whether the sea itself renders. Use a throwaway world name:
+     * flooded columns persist like any other terrain. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_SEA_RAISE") {
+        if let Ok(m) = v.parse::<f32>() {
+            tenebris_core::planet_gen::set_dev_sea_raise(m);
+            println!("[dev] sea raised +{m} m (flood diagnostic)");
+        }
+    }
     /* Deferred to a few in-game frames in (see dev_maybe_place); placing
      * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
      * both are set. */
@@ -5577,6 +5588,26 @@ fn frame_inner(app: &mut App) {
          * front of the planet. Aim stays radial (pitch below), so any camera
          * placement still points dead at the centre. */
         let sun_perp = dvec3_normalize(tenebris_core::math::dvec3_cross(sun_dir, reference));
+        /* Optional azimuth sweep (TENEBRIS_DEV_LODCAM_YAW=<degrees>):
+         * rotate the parking spot around the spin axis so captures can
+         * walk the longitudes until the feature of interest (an ocean,
+         * a specific biome) faces the camera. 0 = the classic
+         * sun-perpendicular terminator view. */
+        let yaw_deg = std::env::var("TENEBRIS_DEV_LODCAM_YAW")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let sun_perp = if yaw_deg != 0.0 {
+            let a = yaw_deg.to_radians();
+            let (s, c) = a.sin_cos();
+            dvec3_normalize(dvec3_make(
+                sun_perp.x * c + sun_perp.z * s,
+                sun_perp.y,
+                -sun_perp.x * s + sun_perp.z * c,
+            ))
+        } else {
+            sun_perp
+        };
         let view_dir = dvec3_normalize(dvec3_add(sun_perp, dvec3_make(0.0, 0.85, 0.0)));
         let cam = dvec3_add(center, dvec3_scale(view_dir, radius + dist));
         {

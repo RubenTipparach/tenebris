@@ -1786,6 +1786,7 @@ impl Server {
                             }
                         }
                         if night
+                            && fauna::body_has_fauna(&w.body)
                             && tenebris_core::gameplay::config().enemy_mobs
                             && stalkers < STALKERS_PER_BODY
                         {

@@ -151,13 +151,18 @@ earth:
   water_full_depth_m: 4.0
 
 sequoia:
-  water_color:        [0.16, 0.42, 0.34]
+  # Vivid green sea so the impostor + preview thumbnails read as OCEAN
+  # from orbit (the darker 0.16/0.42/0.34 sank into the shaded disk).
+  water_color:        [0.20, 0.62, 0.42]
   # Warm tan-red lowlands so the distant impostor matches the near-tier
   # ground (tan sequoia grass + rust-red redwood crowns), not the old
   # green that no longer exists on the surface.
   lowland_tint:       [0.85, 0.68, 0.48]
   peak_tint:          [1.00, 0.95, 0.80]
-  water_full_depth_m: 4.0
+  # Shallow saturation (was 4.0): the archipelago sea is only a couple
+  # of metres deep near its many shores, so it must read full-green by
+  # ~1.5 m or the coasts wash back to land colour and the seas vanish.
+  water_full_depth_m: 1.5
   # Close-up water gets a saturated alien-green tint via Beer-Lambert.
   # absorption tuned so red AND blue die fast with thickness, leaving
   # green to dominate; deep_color is the saturation tint at infinite
@@ -169,6 +174,10 @@ sequoia:
   # global blue-white sky mirror and the green never shows. Green sea.
   water_sky_horizon:  [0.55, 0.85, 0.60]
   water_sky_zenith:   [0.12, 0.40, 0.25]
+  # Limb-rim light the terrain wears from orbit (hex shader + distant
+  # impostor). The global distant_rim_color is Tenebris BLUE - without
+  # this override Sequoia's whole disk reads blue-tinted from space.
+  rim_color:          [0.80, 0.55, 0.30]
 
 crag:
   water_color:        [0.55, 0.30, 0.18]

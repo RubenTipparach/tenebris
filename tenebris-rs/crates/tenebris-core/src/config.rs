@@ -550,6 +550,12 @@ pub struct LodConfig {
      * back to the global water_config values. */
     pub tileset_water_sky_horizon: [Vec3; 5],
     pub tileset_water_sky_zenith: [Vec3; 5],
+    /* Atmospheric limb-rim light painted over TERRAIN near the limb
+     * when seen from orbit (hex shader + distant impostor). {0,0,0}
+     * falls back to the global distant_rim_color - which is Tenebris
+     * blue, so any body with a non-blue atmosphere needs its own or
+     * its whole disk reads blue-tinted from space. */
+    pub tileset_rim_color: [Vec3; 5],
 
     /* Gravity field - full gravity below radius * gravity_full_mult,
      * linear taper to zero at radius * gravity_falloff_mult. */
@@ -680,6 +686,13 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
     ],
+    tileset_rim_color: [
+        VEC3_ZERO,            /* EARTH    - use global blue rim           */
+        v3(0.80, 0.55, 0.30), /* SEQUOIA  - hazy brown limb light         */
+        VEC3_ZERO,            /* CRAG     - use global                    */
+        VEC3_ZERO,            /* FROST    - use global                    */
+        VEC3_ZERO,            /* ASTEROID - use global                    */
+    ],
     gravity_full_mult: 1.4,
     gravity_falloff_mult: 1.8,
     roll_slerp_duration_s: 3.0,
@@ -776,6 +789,7 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                 "water_absorption" => vec3_or_err(val, &mut cfg.tileset_water_absorption[ts]),
                 "water_sky_horizon" => vec3_or_err(val, &mut cfg.tileset_water_sky_horizon[ts]),
                 "water_sky_zenith" => vec3_or_err(val, &mut cfg.tileset_water_sky_zenith[ts]),
+                "rim_color" => vec3_or_err(val, &mut cfg.tileset_rim_color[ts]),
                 _ => {
                     println!("[config] {}:{}: unknown palette key '{}'", path, line_no, key);
                     0
