@@ -5190,9 +5190,18 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
          * the composite rain-on-glass lens uses). */
         u_rain: FRAME_WET.with(|c| c.get()),
         _pad_232: [0; 8],
-        /* Same sky-matched fog the composite used this frame - the
-         * water pass draws after the post-process, so it fogs itself. */
-        u_fog: FRAME_FOG.with(|f| f.get()),
+        /* Same sky-matched fog the composite used this frame - the water
+         * pass draws after the post-process, so it fogs itself. The
+         * per-tileset fog scale on the DENSITY (.w) decouples the WATER
+         * from the sky colour on strongly-tinted-sky bodies (Sequoia):
+         * without it the sea inherits the orange/red sky and loses its
+         * green in-atmosphere (goes green again out of atmosphere). */
+        u_fog: {
+            let mut f = FRAME_FOG.with(|c| c.get());
+            let s = lp.tileset_water_fog_scale[ts_idx];
+            f[3] *= if s > 0.0 { s } else { 1.0 };
+            f
+        },
     };
     sg::apply_uniforms(shaders::water::UB_FS_PARAMS, &sg::value_as_range(&fs_params));
 

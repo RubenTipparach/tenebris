@@ -176,6 +176,12 @@ sequoia:
   # global default like Tenebris - the flat look was the absorption, not
   # the reflection, and green sky_horizon already keeps the mirror green.
   water_sky_strength: 0.0
+  # How much the WATER surface fogs toward the live sky colour (1.0 =
+  # full, like the terrain). The water pass fogs itself with the sky's
+  # colour, so Sequoia's sea inherited the ORANGE dusk sky and went
+  # green again only out of atmosphere. 0.15 keeps the water its own
+  # green in-atmosphere; the terrain still gets full brown haze.
+  water_fog_scale: 0.15
   # Sky-reflection tones the cap mirrors at grazing angles - from orbit
   # every view ray grazes, so WITHOUT these the sea renders as the
   # global blue-white sky mirror and the green never shows. Green sea.

@@ -558,6 +558,16 @@ pub struct LodConfig {
      * value here lets the green deep_color dominate at every angle.
      * <= 0 falls back to the global water_config sky_horizon_strength. */
     pub tileset_water_sky_strength: [f32; 5],
+    /* Per-tileset scale on how much the WATER pass fogs toward the live
+     * atmosphere sky colour (FRAME_FOG). The water cap fogs itself with
+     * the same haze the terrain uses, so on a body with a strongly
+     * coloured sky (Sequoia's orange/red dusk) the sea inherits the SKY
+     * colour and loses its green - proven by the sea going green again
+     * once the camera leaves the atmosphere. A low value keeps the water
+     * its own colour in-atmosphere; 1.0 (or <= 0 -> 1.0) = full terrain
+     * fog. Terrain still gets the full atmospheric haze - this only
+     * decouples the WATER surface. */
+    pub tileset_water_fog_scale: [f32; 5],
     /* Atmospheric limb-rim light painted over TERRAIN near the limb
      * when seen from orbit (hex shader + distant impostor). {0,0,0}
      * falls back to the global distant_rim_color - which is Tenebris
@@ -701,6 +711,14 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         0.0, /* FROST    - use global                                  */
         0.0, /* ASTEROID - use global                                  */
     ],
+    tileset_water_fog_scale: [
+        1.0,  /* EARTH    - full fog: blue water fogging to blue sky is fine */
+        0.15, /* SEQUOIA  - barely fog the water: keep its green vs the
+               * orange/red sky (the sea inherits sky colour otherwise) */
+        1.0,  /* CRAG     - no water                                    */
+        1.0,  /* FROST    - full fog                                    */
+        1.0,  /* ASTEROID - full fog                                    */
+    ],
     tileset_rim_color: [
         VEC3_ZERO,            /* EARTH    - use global blue rim           */
         v3(0.80, 0.55, 0.30), /* SEQUOIA  - hazy brown limb light         */
@@ -806,6 +824,10 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                 "water_sky_zenith" => vec3_or_err(val, &mut cfg.tileset_water_sky_zenith[ts]),
                 "water_sky_strength" => {
                     cfg.tileset_water_sky_strength[ts] = fval(val);
+                    0
+                }
+                "water_fog_scale" => {
+                    cfg.tileset_water_fog_scale[ts] = fval(val);
                     0
                 }
                 "rim_color" => vec3_or_err(val, &mut cfg.tileset_rim_color[ts]),
