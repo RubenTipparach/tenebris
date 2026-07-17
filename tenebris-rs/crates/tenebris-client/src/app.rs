@@ -5275,6 +5275,24 @@ fn egui_ui(app: &mut App, ctx: &egui::Context) {
     menu::inputs_egui_ui(ctx);
 }
 
+/// World the dev capture cameras (LODCAM / SUNCAM) should anchor to: the
+/// body the PLAYER is currently on, falling back to app.world. After a
+/// TENEBRIS_DEV_BODY teleport the player + renderer active body move to
+/// the destination while app.world stays the spawn planet, so anchoring
+/// the capture to app.world framed a body whose detail mesh was just
+/// unloaded (empty stars).
+fn dev_capture_world(app: &App) -> Rc<RefCell<World>> {
+    let pid = app.player.borrow().body.map(|b| b.id);
+    if let Some(id) = pid {
+        if id != app.world.borrow().body.id {
+            if let Some(w) = renderer::world_for_body(id as u32) {
+                return w;
+            }
+        }
+    }
+    app.world.clone()
+}
+
 fn frame_inner(app: &mut App) {
     maybe_apply_sp_resume(app);
     dev_maybe_place(app);
@@ -5519,8 +5537,14 @@ fn frame_inner(app: &mut App) {
          * ~400 m; past ~400-500 m the terrain streaming radius culls the disk
          * back to empty stars, so the useful capture range is ~100..400 m. */
         let dist = v.parse::<f64>().unwrap_or(0.0).max(1.0);
+        /* Park relative to the body the PLAYER is on, not app.world: a
+         * TENEBRIS_DEV_BODY teleport swaps the player + the renderer's
+         * active body but app.world stays the spawn planet - whose detail
+         * mesh the switch just unloaded. Anchoring there framed a planet
+         * that no longer draws (the empty-stars-with-a-distant-dot shot). */
+        let cap_world = dev_capture_world(app);
         let (center, radius, sun_dir, body_id) = {
-            let w = app.world.borrow();
+            let w = cap_world.borrow();
             let sim_t = tenebris_core::world_time::seconds();
             let sd = dvec3_normalize(tenebris_core::orbit::sun_direction(w.body.id, sim_t));
             (
@@ -5584,7 +5608,7 @@ fn frame_inner(app: &mut App) {
          * one-shot bool had already burned on the boot body - leaving the
          * teleport destination unmeshed (empty-stars capture). */
         thread_local! { static LODCAM_REMESHED: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) }; }
-        if LODCAM_REMESHED.with(|c| c.get()) != body_id as i64 && app.world.borrow().gen_complete()
+        if LODCAM_REMESHED.with(|c| c.get()) != body_id as i64 && cap_world.borrow().gen_complete()
         {
             LODCAM_REMESHED.with(|c| c.set(body_id as i64));
             renderer::remesh_body_now(body_id);
@@ -5599,8 +5623,10 @@ fn frame_inner(app: &mut App) {
      * frame. Same basis-solve + no-autosave rules as the LOD camera. */
     if let Ok(v) = std::env::var("TENEBRIS_DEV_SUNCAM") {
         let alt = v.parse::<f64>().unwrap_or(0.0).max(50.0);
+        /* Same player-body anchor as the LOD camera (see above). */
+        let cap_world = dev_capture_world(app);
         let (center, radius, body_id) = {
-            let w = app.world.borrow();
+            let w = cap_world.borrow();
             (
                 dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
                 w.body.radius_m,
