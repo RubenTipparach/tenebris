@@ -1404,6 +1404,24 @@ fn build_atmosphere_params(
             0.0,
         ],
         scatter_coeffs: [ray, mie, env.atmo_mie_g, sun_i],
+        /* Per-body scattering hue + dusk warmth, formerly baked GLSL
+         * literals. .w of wavelengths carries sunset_strength (the warm-tint
+         * blend cap, was the hardcoded 0.85). The env-build already merged
+         * per-body YAML with the Tenebris-look defaults. */
+        wavelengths: [
+            env.atmo_wavelengths.x,
+            env.atmo_wavelengths.y,
+            env.atmo_wavelengths.z,
+            env.atmo_sunset_strength,
+        ],
+        sunset_tint: [env.atmo_sunset_tint.x, env.atmo_sunset_tint.y, env.atmo_sunset_tint.z, 0.0],
+        sunset_glow: [env.atmo_sunset_glow.x, env.atmo_sunset_glow.y, env.atmo_sunset_glow.z, 0.0],
+        sunset_horizon: [
+            env.atmo_sunset_horizon.x,
+            env.atmo_sunset_horizon.y,
+            env.atmo_sunset_horizon.z,
+            0.0,
+        ],
     };
     (avp, afp)
 }
@@ -1418,7 +1436,12 @@ fn build_atmosphere_params(
 fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
     const NUM_SAMPLES: usize = 8;
     const NUM_LIGHT_SAMPLES: usize = 4;
-    const WAVELENGTHS_INV4: [f32; 3] = [5.602, 9.473, 19.644];
+    /* Per-body scattering hue - reads the same env.atmo_wavelengths the GPU
+     * sky pass now reads, so fog and sky share one source (was a hardcoded
+     * [5.602, 9.473, 19.644]). The env-build fills the Tenebris-look default
+     * when a body omits it. */
+    let wavelengths_inv4: [f32; 3] =
+        [env.atmo_wavelengths.x, env.atmo_wavelengths.y, env.atmo_wavelengths.z];
 
     type V3 = [f32; 3];
     fn dot(a: V3, b: V3) -> f32 {
@@ -1522,13 +1545,13 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
         let (_, sa1) = hit(sp, sun, a_radius);
         let sun_depth = optical_depth(sp, sun, sa1.max(0.0));
         let att = [
-            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[0] * (opt_r + sun_depth)
+            (-(env.atmo_rayleigh_scale * wavelengths_inv4[0] * (opt_r + sun_depth)
                 + env.atmo_mie_scale * (opt_m + sun_depth)))
                 .exp(),
-            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[1] * (opt_r + sun_depth)
+            (-(env.atmo_rayleigh_scale * wavelengths_inv4[1] * (opt_r + sun_depth)
                 + env.atmo_mie_scale * (opt_m + sun_depth)))
                 .exp(),
-            (-(env.atmo_rayleigh_scale * WAVELENGTHS_INV4[2] * (opt_r + sun_depth)
+            (-(env.atmo_rayleigh_scale * wavelengths_inv4[2] * (opt_r + sun_depth)
                 + env.atmo_mie_scale * (opt_m + sun_depth)))
                 .exp(),
         ];
@@ -1536,9 +1559,9 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
         mie_sum = add(mie_sum, scale(att, local_density * nstep));
     }
     rayleigh_sum = [
-        rayleigh_sum[0] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[0],
-        rayleigh_sum[1] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[1],
-        rayleigh_sum[2] * env.atmo_rayleigh_scale * WAVELENGTHS_INV4[2],
+        rayleigh_sum[0] * env.atmo_rayleigh_scale * wavelengths_inv4[0],
+        rayleigh_sum[1] * env.atmo_rayleigh_scale * wavelengths_inv4[1],
+        rayleigh_sum[2] * env.atmo_rayleigh_scale * wavelengths_inv4[2],
     ];
     mie_sum = scale(mie_sum, env.atmo_mie_scale);
 
@@ -1572,16 +1595,19 @@ fn horizon_sky_color(env: &RenderEnv, cam_fwd: [f32; 3]) -> [f32; 3] {
             t * t * (3.0 - 2.0 * t)
         };
         let view_sun = cos_theta.max(0.0);
-        let tint = [1.3f32, 1.0, 0.6];
+        /* Per-body dusk colours + strength - the same env fields the GPU sky
+         * pass reads, so fog and sky warm together (were hardcoded
+         * [1.3,1.0,0.6] / [1.0,0.65,0.25] / [0.8,0.4,0.15] and a 0.85 blend). */
+        let tint = [env.atmo_sunset_tint.x, env.atmo_sunset_tint.y, env.atmo_sunset_tint.z];
         for k in 0..3 {
-            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * 0.85;
+            color[k] *= 1.0 + (tint[k] - 1.0) * sunset * env.atmo_sunset_strength;
         }
         let glow = view_sun.powi(3) * sunset;
-        let glow_c = [1.0f32, 0.65, 0.25];
-        /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1.
-         * Strengths match the atmosphere shader (0.22 / 0.11 - boosted
-         * so dusk / dawn reads orange-red, not residual blue). */
-        let horizon_c = [0.8f32, 0.4, 0.15];
+        let glow_c = [env.atmo_sunset_glow.x, env.atmo_sunset_glow.y, env.atmo_sunset_glow.z];
+        /* Horizon-band term: rd is tangent, so 1-|dot(rd,up)| = 1. The
+         * 0.22 / 0.11 shape weights match the atmosphere shader. */
+        let horizon_c =
+            [env.atmo_sunset_horizon.x, env.atmo_sunset_horizon.y, env.atmo_sunset_horizon.z];
         for k in 0..3 {
             color[k] += glow_c[k] * glow * env.atmo_sun_intensity * 0.22
                 + horizon_c[k] * sunset * env.atmo_sun_intensity * 0.11;
@@ -7233,7 +7259,7 @@ mod tests {
         assert_eq!(size_of::<shaders::hex::HexFsTorch>(), 16);
         assert_eq!(size_of::<shaders::starfield::StarfieldParams>(), 192);
         assert_eq!(size_of::<shaders::atmosphere::AtmosphereVsParams>(), 64);
-        assert_eq!(size_of::<shaders::atmosphere::AtmosphereFsParams>(), 48);
+        assert_eq!(size_of::<shaders::atmosphere::AtmosphereFsParams>(), 112);
         assert_eq!(size_of::<shaders::composite::CompositeVsParams>(), 64);
         /* 8 vec4s: hand-added fog_params + rain_lens + the lens_mode flag that
          * splits compose (droplets off) from the post-water lens pass. */
