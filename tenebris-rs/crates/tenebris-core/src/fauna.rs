@@ -734,11 +734,28 @@ pub fn spawn_near(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<
     spawn_near_kind(w, anchor_world, id, salt, AnimalKind::Critter)
 }
 
+/// True when `body` hosts wildlife at all. Life is an EARTHLIKE thing:
+/// Tenebris and Sequoia have ecosystems; icy Frostbite, barren Crag,
+/// the moons and the asteroids are lifeless - a sheep on a glacier
+/// world is a bug, not a feature (user direction).
+pub fn body_has_fauna(body: &crate::planet::BodyConfig) -> bool {
+    !body.barren
+        && !body.icy
+        && matches!(
+            body.tileset,
+            crate::planet::Tileset::Earth | crate::planet::Tileset::Sequoia
+        )
+}
+
 /// Ring-spawn with an AUTO kind: the ring point decides - water tiles
 /// spawn fish (lifted into the water column), dry land rolls the
 /// grazer table with an occasional bird. Client + server both spawn
 /// through this so SP and MP fauna mixes match.
 pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Option<Animal> {
+    /* Per-body gate: lifeless worlds spawn nothing. */
+    if !body_has_fauna(&w.body) {
+        return None;
+    }
     let mut a = spawn_near(w, anchor_world, id, salt)?;
     let center = DVec3 { x: w.body.pos_x, y: w.body.pos_y, z: w.body.pos_z };
     let rel = dvec3_sub(a.pos, center);
@@ -1339,6 +1356,31 @@ mod tests {
         for k in [AnimalKind::Cow, AnimalKind::Chicken, AnimalKind::Sheep, AnimalKind::Cat] {
             assert!(ten_kinds.contains(&k.to_u8()), "{k:?} must spawn on Tenebris");
             assert!(!seq_kinds.contains(&k.to_u8()), "{k:?} must NOT spawn on Sequoia");
+        }
+    }
+
+    #[test]
+    fn only_earthlike_bodies_have_fauna() {
+        use crate::planet::{self, BodyId};
+        /* Earthlikes host wildlife... */
+        for id in [BodyId::Tenebris, BodyId::Sequoia] {
+            assert!(
+                body_has_fauna(&planet::get(id)),
+                "{id:?} must have fauna"
+            );
+        }
+        /* ...icy / barren / moon / asteroid worlds are lifeless (the
+         * "sheep on Frostbite" bug). */
+        for id in [
+            BodyId::Frostbite,
+            BodyId::Crag,
+            BodyId::Luna,
+            BodyId::Asteroid0,
+        ] {
+            assert!(
+                !body_has_fauna(&planet::get(id)),
+                "{id:?} must be lifeless"
+            );
         }
     }
 
