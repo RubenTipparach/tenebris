@@ -1827,6 +1827,10 @@ pub fn parse_atmosphere_with(
                     patch.fog_height_m = fval(val);
                     0
                 }
+                "cloud_max_height_m" => {
+                    patch.cloud_max_height_m = fval(val);
+                    0
+                }
                 _ => {
                     println!("[config] {}:{}: unknown key '{}'", path, line_no, key);
                     0

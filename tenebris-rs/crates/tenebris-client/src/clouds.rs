@@ -165,7 +165,15 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
     if r < 1.0 {
         return;
     }
-    let shell_r = w.body.radius_m as f64 + cfg.altitude_m as f64;
+    /* Per-body cloud ceiling: atmosphere.yaml's cloud_max_height_m overrides
+     * the global clouds.yaml altitude_m for this body (0 = use the global).
+     * Read live from the planet store (not the World's body snapshot) so an
+     * atmosphere.yaml edit hot-reloads the cloud height like the rest. */
+    let cloud_alt_m = {
+        let over = tenebris_core::planet::get(w.body.id).atmo_cloud_max_height_m;
+        if over > 0.0 { over } else { cfg.altitude_m }
+    };
+    let shell_r = w.body.radius_m as f64 + cloud_alt_m as f64;
 
     /* LOD swap: below `lod_alt_m` the detailed per-puff shell draws (and
      * never distance-culls until this height); above it a single

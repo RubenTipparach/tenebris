@@ -199,6 +199,12 @@ pub struct BodyConfig {
     /// camera altitude (m above sea level) where fog fades out - climb
     /// above the weather and the vista clears. 0 -> 60.
     pub atmo_fog_height_m: f32,
+    /// Cloud-deck ceiling for THIS body: the altitude (m above the surface)
+    /// the cloud shell sits at, a per-body override of the global
+    /// clouds.yaml `altitude_m`. Lets a thick-atmosphere world fly its
+    /// clouds higher (or a thin one hug the ground). 0 -> use the global
+    /// cloud altitude. Read live so atmosphere.yaml edits hot-reload.
+    pub atmo_cloud_max_height_m: f32,
     /// Atmosphere on/off. `has_water` bodies default to ON; set false
     /// (via atmosphere.yaml `enabled: 0`) to strip the sky + distance
     /// fog entirely - the sea then keeps its own colour with no haze.
@@ -242,6 +248,7 @@ pub struct BodyAtmo {
     pub fog_color: Vec3,
     pub fog_density: f32,
     pub fog_height_m: f32,
+    pub cloud_max_height_m: f32,
 }
 
 impl BodyAtmo {
@@ -263,6 +270,7 @@ impl BodyAtmo {
         fog_color: VEC3_ZERO,
         fog_density: 0.0,
         fog_height_m: 0.0,
+        cloud_max_height_m: 0.0,
     };
 }
 
@@ -301,6 +309,7 @@ const ZERO_BODY: BodyConfig = BodyConfig {
     atmo_fog_color: VEC3_ZERO,
     atmo_fog_density: 0.0,
     atmo_fog_height_m: 0.0,
+    atmo_cloud_max_height_m: 0.0,
     /* has_water bodies get an atmosphere by default; atmosphere.yaml
      * `enabled: 0` flips this off per body. */
     atmo_enabled: true,
@@ -756,6 +765,9 @@ pub fn set_atmosphere(id: BodyId, p: &BodyAtmo) {
     }
     if p.fog_height_m > 0.0 {
         b.atmo_fog_height_m = p.fog_height_m;
+    }
+    if p.cloud_max_height_m > 0.0 {
+        b.atmo_cloud_max_height_m = p.cloud_max_height_m;
     }
 }
 
