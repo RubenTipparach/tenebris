@@ -2077,6 +2077,20 @@ pub fn camera_world() -> Vec3 {
     R.with(|cell| cell.borrow().env.camera_world)
 }
 
+/// Per-tileset close-up water (deep_color, absorption) with global
+/// fallback (zero sentinel). The water cap, the underwater composite,
+/// and the submerged-terrain dim must ALL read the same values or a
+/// green-water body reads blue under the surface / on its seabed while
+/// its cap is green. `ts` is the active body's tileset index.
+fn tileset_water_deep_absorb(w: &config::WaterConfig, lp: &config::LodConfig, ts: usize) -> (Vec3, Vec3) {
+    let ts = if ts < 5 { ts } else { 0 };
+    let dc = lp.tileset_water_deep_color[ts];
+    let ab = lp.tileset_water_absorption[ts];
+    let deep = if dc.x > 0.0 || dc.y > 0.0 || dc.z > 0.0 { dc } else { w.deep_color };
+    let absorb = if ab.x > 0.0 || ab.y > 0.0 || ab.z > 0.0 { ab } else { w.absorption };
+    (deep, absorb)
+}
+
 /// Per-tileset atmospheric limb-rim colour with global fallback (zero
 /// sentinel, same merge rule as the other lod.yaml palette fields). The
 /// global default is Tenebris's blue - bodies with non-blue atmospheres
@@ -5509,13 +5523,21 @@ pub fn draw_world(
             }
             /* Underwater-dim block reuses the cap's absorption +
              * deep_color so submerged terrain tints with the same
-             * curve the cap uses. */
+             * curve the cap uses - PER TILESET, so Sequoia's seabed
+             * tints green like its cap, not the global blue. */
             {
                 let w = config::water();
+                let lp = config::lod();
+                let ts = if r.active_body_idx >= 0 {
+                    r.bodies[r.active_body_idx as usize].world.borrow().body.tileset as usize
+                } else {
+                    0
+                };
+                let (deep_c, absorb) = tileset_water_deep_absorb(&w, &lp, ts);
                 let hex_under = shaders::hex::HexFsWater {
-                    u_absorption: [w.absorption.x, w.absorption.y, w.absorption.z],
+                    u_absorption: [absorb.x, absorb.y, absorb.z],
                     _pad_12: [0; 4],
-                    u_deep_color: [w.deep_color.x, w.deep_color.y, w.deep_color.z],
+                    u_deep_color: [deep_c.x, deep_c.y, deep_c.z],
                     _pad_28: [0; 4],
                 };
                 sg::apply_uniforms(
