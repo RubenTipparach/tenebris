@@ -5792,6 +5792,23 @@ fn frame_inner(app: &mut App) {
         }
     });
 
+    /* Dev screenshot aid (TENEBRIS_DEV_LOOKUP): while perched underwater
+     * (DEV_FISH_CAM active), aim the camera straight up along the local
+     * vertical each frame so a headless still frames Snell's window - the
+     * refracted-sky disc seen looking up through the water surface. The
+     * dive showcase otherwise aims level / at the fish school, never up. */
+    if std::env::var("TENEBRIS_DEV_LOOKUP").is_ok() {
+        if let Some(cam) = DEV_FISH_CAM.with(|c| c.get()) {
+            let center = {
+                let w_rc = dev_capture_world(app);
+                let w = w_rc.borrow();
+                dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z)
+            };
+            let up = dvec3_normalize(dvec3_sub(cam, center));
+            dev_aim_at(app, dvec3_add(cam, dvec3_scale(up, 100.0)));
+        }
+    }
+
     /* Dev screenshot aid (TENEBRIS_DEV_SOLARMAP): pop the solar-system
      * map open once in-game, so headless captures can verify the chart +
      * body picker without a keyboard. */
