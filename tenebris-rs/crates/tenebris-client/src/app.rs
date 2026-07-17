@@ -2431,6 +2431,17 @@ extern "C" fn init() {
      *   TENEBRIS_DEV_SP[=name] -> boot straight into an SP world
      *   TENEBRIS_DEV_ROCKET=1  -> open the rocket-assembly screen
      */
+    /* Water-rendering diagnostic (TENEBRIS_DEV_SEA_RAISE=<m>): raise
+     * every seeded world's sea by this much before any gen runs - e.g.
+     * 60 floods the whole planet, so an orbital capture of a 100% ocean
+     * proves whether the sea itself renders. Use a throwaway world name:
+     * flooded columns persist like any other terrain. */
+    if let Ok(v) = std::env::var("TENEBRIS_DEV_SEA_RAISE") {
+        if let Ok(m) = v.parse::<f32>() {
+            tenebris_core::planet_gen::set_dev_sea_raise(m);
+            println!("[dev] sea raised +{m} m (flood diagnostic)");
+        }
+    }
     /* Deferred to a few in-game frames in (see dev_maybe_place); placing
      * at init double-updates a GPU buffer and aborts. SHOWCASE wins if
      * both are set. */

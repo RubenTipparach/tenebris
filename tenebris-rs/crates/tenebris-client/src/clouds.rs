@@ -122,7 +122,7 @@ fn push_puff_box(
 
 /// Draw the cloud layer for the active body. Called in the offscreen
 /// opaque pass next to the other sgl world entities.
-pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
+pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
     let mut cfg = clouds_cfg::config();
     if cfg.density <= 0.0 {
         return;
@@ -132,15 +132,35 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     if crate::weather_fx::forced_clear() {
         return;
     }
-    /* Sequoia wears brown skies: its yaml section overrides the cloud
-     * albedo for this body only (puffs + far shell both read cfg.color). */
+    /* Sequoia's yaml section overrides the cloud look for this body only:
+     * brown albedo, and a drier sky (lower density / bigger clear gaps -
+     * the "way too many clouds/storms on Sequoia" tune-down). */
     if w.body.tileset == tenebris_core::planet::Tileset::Sequoia {
-        if let Some(c) = clouds_cfg::sequoia_color() {
+        let ov = clouds_cfg::sequoia_override();
+        if let Some(c) = ov.color {
             cfg.color = c;
+        }
+        if let Some(d) = ov.density {
+            cfg.density = d;
+        }
+        if let Some(pc) = ov.patch_clear {
+            cfg.patch_clear = pc;
+        }
+        if cfg.density <= 0.0 {
+            return;
         }
     }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
-    let local = dvec3_sub(p.position, center);
+    /* Anchor the horizon cull + detail LOD to the CAMERA, not the player:
+     * a detached view (solar-map orbit cam, rocket chase-cam zoomed out,
+     * LODCAM) looks at hemispheres the player isn't on, and a player-
+     * anchored cull left those bare - the "clouds only around my player
+     * in solar system view" bug. */
+    let anchor = {
+        let cw = renderer::camera_world();
+        dvec3_make(cw.x as f64, cw.y as f64, cw.z as f64)
+    };
+    let local = dvec3_sub(anchor, center);
     let r = dvec3_length(local);
     if r < 1.0 {
         return;
@@ -312,7 +332,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             let dir_w = rotate_y(dir_c, -drift_ang);
             let pos = dvec3_add(center, dvec3_scale(dir_w, shell_r));
             let d2 = {
-                let d = dvec3_sub(pos, p.position);
+                let d = dvec3_sub(pos, anchor);
                 d.x * d.x + d.y * d.y + d.z * d.z
             };
 

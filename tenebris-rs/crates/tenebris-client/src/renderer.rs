@@ -277,11 +277,10 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/wood.png"),                        /* 21 WOOD */
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
-    /* Warm bright base: grass.png has ~no red channel (red tint over it
-     * rendered near-black), and snow.png's blue noise specks survived the
-     * tint as blue dithering on the crowns. Sand is cream with warm noise,
-     * so the rust tint reads clean. */
-    Some("assets/textures/sand.png"),                        /* 24 SEQ_LEAVES */
+    /* Dedicated ORIGINAL rust-red foliage (tools/gen-sequoia-textures.py)
+     * - earlier cuts tinted grass.png (no red channel -> black) then
+     * snow.png (blue specks) then sand.png; Sequoia owns its own now. */
+    Some("assets/textures/planet_seq/planet_seq_leaves.png"), /* 24 SEQ_LEAVES */
     /* Ore-bearing rock: dedicated stone-with-mineral-speck textures
      * (matches the JS rocks_*.png minerals set) rather than a flat tint
      * over plain rock - so each ore reads as specks embedded in stone. */
@@ -382,8 +381,10 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/casino_sign.png"),       /* 103 CASINO_SIGN */
     Some("assets/textures/technology/slot_machine_face.png"), /* 104 SLOT_MACHINE */
     Some("assets/textures/technology/card_table_face.png"),   /* 105 CARD_TABLE */
-    Some("assets/textures/snow.png"),                         /* 106 SEQ_MYCELIUM (lavender tint) */
-    Some("assets/textures/snow.png"),                         /* 107 SEQ_SHROOM_CAP (rose tint) */
+    /* Dedicated ORIGINAL textures (tools/gen-sequoia-textures.py) - the
+     * first cut tinted snow.png, which read as a recycled snow tile. */
+    Some("assets/textures/planet_seq/planet_seq_mycelium.png"), /* 106 SEQ_MYCELIUM */
+    Some("assets/textures/planet_seq/planet_seq_shroom_cap.png"), /* 107 SEQ_SHROOM_CAP */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -413,7 +414,7 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.00, 1.00, 1.00], /* WOOD     - passthrough        */
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
-    [1.00, 0.42, 0.22], /* SEQ_LEAVES - rust-red redwood foliage (on sand base) */
+    [1.0, 1.0, 1.0], /* SEQ_LEAVES - colour baked in the texture */
     /* Ore tints are neutral: the mineral colour lives in the dedicated
      * speck textures now, not a multiplier over plain rock. */
     [1.0, 1.0, 1.0], /* COAL_ORE   */
@@ -501,8 +502,8 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0], /* CASINO_SIGN       */
     [1.0, 1.0, 1.0], /* SLOT_MACHINE      */
     [1.0, 1.0, 1.0], /* CARD_TABLE        */
-    [0.80, 0.72, 0.94], /* 106 SEQ_MYCELIUM  - pale lavender fungus flats */
-    [1.05, 0.48, 0.58], /* 107 SEQ_SHROOM_CAP - dusty rose cap            */
+    [1.0, 1.0, 1.0], /* 106 SEQ_MYCELIUM  - colour baked in the texture */
+    [1.0, 1.0, 1.0], /* 107 SEQ_SHROOM_CAP - colour baked in the texture */
 ];
 
 struct AtlasBake {
@@ -2061,6 +2062,16 @@ thread_local! {
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
+/// The frame's camera position in world space (env.camera_world, set by
+/// begin_frame). This is the CAMERA - the solar-map orbit eye, the rocket
+/// chase-cam, the LODCAM - not the player. Anything that culls "what can
+/// this view see" (cloud horizon cull, billboard LOD) must anchor here:
+/// anchoring to the player leaves the far hemisphere bare when a detached
+/// camera looks at the planet from elsewhere.
+pub fn camera_world() -> Vec3 {
+    R.with(|cell| cell.borrow().env.camera_world)
+}
+
 /// Per-tileset atmospheric limb-rim colour with global fallback (zero
 /// sentinel, same merge rule as the other lod.yaml palette fields). The
 /// global default is Tenebris's blue - bodies with non-blue atmospheres
@@ -6859,11 +6870,14 @@ mod tests {
         /* Paths table spot checks (the C's paths[] order). */
         assert_eq!(ATLAS_PATHS[1], Some("assets/textures/water.png"));
         assert_eq!(ATLAS_PATHS[10], Some("assets/textures/torch.png"));
-        /* SEQ_LEAVES re-based onto warm sand.png so its rust-red tint
-         * reads clean (grass.png has ~no red channel; snow.png's blue
-         * noise specks survived the tint as blue crown dithering). */
-        assert_eq!(ATLAS_PATHS[24], Some("assets/textures/sand.png"));
-        assert_eq!(ATLAS_TINTS[24], [1.00, 0.42, 0.22]);
+        /* SEQ_LEAVES is Sequoia's OWN baked foliage texture (tint
+         * passthrough) - tinting stock tiles kept failing (grass.png
+         * has no red channel; snow.png's blue specks bled through). */
+        assert_eq!(
+            ATLAS_PATHS[24],
+            Some("assets/textures/planet_seq/planet_seq_leaves.png")
+        );
+        assert_eq!(ATLAS_TINTS[24], [1.0, 1.0, 1.0]);
     }
 
     /* --------------------------------------------------------------- */

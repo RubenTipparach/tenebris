@@ -49,9 +49,13 @@ clouds:
   shell_alpha: 0.6
 
 # Per-tileset override section: a top-level section named after a
-# tileset re-colours the cloud layer on those bodies only. Only `color`
-# is honoured here today; every other knob stays global.
+# tileset re-tunes the cloud layer on those bodies only. Honoured keys:
+# color, density, patch_clear; everything else stays global.
 sequoia:
   # Dusty tan-brown - Sequoia's skies match its red forests and hazy
   # brown atmosphere rim.
   color: [0.82, 0.68, 0.50]
+  # Drier sky than the global 0.38 / 0.45: Sequoia's ocean-fed moisture
+  # was blanketing the planet in cloud + near-constant storms.
+  density: 0.20
+  patch_clear: 0.62

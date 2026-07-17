@@ -443,6 +443,29 @@ pub fn biomes_active(body: &BodyConfig) -> bool {
     body.seed != crate::planet::default_seed(body.id)
 }
 
+/// Dev-only extra sea raise (metres), f32 bits in an atomic. Set once
+/// at client boot from TENEBRIS_DEV_SEA_RAISE - floods seeded worlds
+/// for water-rendering diagnostics (e.g. 60 = a 100% ocean planet, no
+/// land to hide behind). 0 in every normal run; never persisted.
+static DEV_SEA_RAISE_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_dev_sea_raise(m: f32) {
+    DEV_SEA_RAISE_BITS.store(m.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn dev_sea_raise() -> f32 {
+    f32::from_bits(DEV_SEA_RAISE_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Seeded-world sea raise from the profile flags - the ONE place the
+/// raise is computed, so classifier, column sampler and the client's
+/// water cap can't disagree.
+fn seeded_sea_raise(sequoia: bool) -> f32 {
+    SEEDED_SEA_RAISE_M
+        + if sequoia { SEQUOIA_EXTRA_SEA_RAISE_M } else { 0.0 }
+        + dev_sea_raise()
+}
+
 /// How far this body's sea sits above the legacy sea level (metres).
 /// 0 on legacy worlds; custom-seed worlds raise it one block. Client
 /// water-cap / fog / fauna surface math must add this to the legacy
@@ -451,11 +474,7 @@ pub fn sea_raise_m(body: &BodyConfig) -> f32 {
     if !biomes_active(body) {
         return 0.0;
     }
-    if body.tileset == crate::planet::Tileset::Sequoia {
-        SEEDED_SEA_RAISE_M + SEQUOIA_EXTRA_SEA_RAISE_M
-    } else {
-        SEEDED_SEA_RAISE_M
-    }
+    seeded_sea_raise(body.tileset == crate::planet::Tileset::Sequoia)
 }
 
 /// Classify a surface point. Elevation + latitude bands take priority
@@ -789,6 +808,40 @@ mod biome_tests {
         assert!(kinds.contains("Mountains"), "no rocky ranges: {kinds:?}");
     }
 
+
+    /// Dev harness: print Sequoia water coverage across seeds. Run with
+    /// `cargo test -- --ignored seq_water_coverage --nocapture`.
+    #[test]
+    #[ignore]
+    fn seq_water_coverage_sweep() {
+        let n = 8000usize;
+        let ga = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        for seed in [
+            0xC0FFEE_D00Du64,
+            0x6338ddf8f86c7456,
+            0xDEADBEEF,
+            0x1234_5678_9ABC,
+            0xA5A5_A5A5,
+            0x0BAD_F00D_CAFE,
+            0x7777_1111,
+            0xFEED_FACE_0DD,
+        ] {
+            let mut seq = planet::get(BodyId::Sequoia);
+            seq.seed = seed;
+            let sea = SEA_LEVEL + sea_raise_m(&seq);
+            let mut water = 0usize;
+            for i in 0..n {
+                let yy = 1.0 - (i as f64 + 0.5) / n as f64 * 2.0;
+                let r = (1.0 - yy * yy).max(0.0).sqrt();
+                let th = ga * i as f64;
+                let dir = crate::math::dvec3_make(th.cos() * r, yy, th.sin() * r);
+                if surface_altitude(&seq, dir) < sea {
+                    water += 1;
+                }
+            }
+            println!("seed {:016x}: water {:.1}%", seed, water as f64 / n as f64 * 100.0);
+        }
+    }
 
     #[test]
     fn sequoia_river_lands_with_sporewood() {
