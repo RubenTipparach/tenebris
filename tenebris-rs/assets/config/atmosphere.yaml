@@ -105,6 +105,15 @@ tenebris:
 # fresnel / limb halo reads as hazy tan-brown from orbit (user
 # direction), matching the red forests and brown cloud decks.
 sequoia:
+  # ATMOSPHERE ON/OFF. 1 = on (normal). Set to 0 to strip the sky +
+  # distance fog entirely - the water then keeps its own green with
+  # nothing to inherit (the direct test for the water-inherits-sky bug).
+  enabled: 1
+  # Atmosphere HEIGHT (x planet radius): outer shell (max) + lower bound
+  # (min). Raise lower_radius_mult above 1.0 to lift the haze off the
+  # ground so the water sits below it.
+  radius_mult: 1.24
+  lower_radius_mult: 1.0
   # Kept low so the limb halo shows COLOUR instead of blowing out to
   # cream-white (the "rim should be hazy brown" note - overexposure
   # saturates any wavelength mix to white).
