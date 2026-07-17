@@ -473,12 +473,12 @@ fn dev_maybe_place(app: &mut App) {
     if center < 0 && dev_mode != 21 {
         return;
     }
-    /* The fish showcase probes real Water blocks (=under marches the
-     * shoreline), so on a freshly teleported-to body (TENEBRIS_DEV_BODY)
-     * it must wait for worldgen - probing half-generated terrain finds no
-     * ocean and the school falls back to a surface float. Re-arm until
-     * the disk is generated. */
-    if (dev_mode == 17 || dev_mode == 14) && !app.world.borrow().gen_complete() {
+    /* Showcases that probe real Water/terrain blocks on the teleported
+     * body (TENEBRIS_DEV_BODY) must wait for ITS worldgen - probing a
+     * half-generated disk finds no ocean and falls back to a surface
+     * float. Re-arm until the body the player is on is fully generated.
+     * (17 fish, 14 lineup, 21 dive - all scan the capture-world.) */
+    if matches!(dev_mode, 17 | 14 | 21) && !dev_capture_world(app).borrow().gen_complete() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(10));
         return;
     }
@@ -811,8 +811,12 @@ fn dev_maybe_place(app: &mut App) {
                 .filter(|d| *d > 0.0)
                 .unwrap_or(4.0);
             let wade = dive_depth < 2.0;
+            /* Dive the body the player is ON (a TENEBRIS_DEV_BODY teleport
+             * swaps it to e.g. Sequoia); app.world is only the spawn planet
+             * - diving it captured Tenebris's blue ocean, not Sequoia's. */
+            let cap_world = dev_capture_world(app);
             let dive = {
-                let w = app.world.borrow();
+                let w = cap_world.borrow();
                 let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
                 let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
                     + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
@@ -864,7 +868,7 @@ fn dev_maybe_place(app: &mut App) {
                     p.velocity = tenebris_core::math::DVec3::default();
                     p.last_tile = tile;
                 }
-                animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), true);
+                animals::dev_spawn_fish(&cap_world.borrow(), &app.player.borrow(), true);
                 /* Aim direction. A tangent target (perpendicular to the planet
                  * normal `dir`) built at EYE height makes the look vector level,
                  * so `dev_aim_at` resolves to pitch ~0 and the waterline sits
