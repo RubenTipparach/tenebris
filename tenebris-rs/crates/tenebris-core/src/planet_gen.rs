@@ -206,7 +206,7 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
      * seas, rivers carve winding lowland channels, and the coastal band is
      * compressed toward the waterline so beaches shelve in gently. */
     if biomes_active(body) {
-        let sea = SEA_LEVEL + SEEDED_SEA_RAISE_M;
+        let sea = SEA_LEVEL + sea_raise_m(body);
 
         /* Islands: a low-frequency field lifts scattered land out of the
          * shallow seas so open water gets an archipelago, not a bare plain.
@@ -323,6 +323,12 @@ const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 /// their ocean floors run deeper. Both are biomes_active-gated so
 /// default-seed output stays byte-exact for the C-parity pins.
 const SEEDED_SEA_RAISE_M: f32 = 1.0;
+/// Sequoia carries its sea HIGHER still - the sister world is an
+/// archipelago (SEQUOIA_PLAN.md: oceans visibly dominate the disk from
+/// orbit, ~green islands in dark water). Added on top of the seeded
+/// raise for Tileset::Sequoia bodies only, so Tenebris terrain is
+/// untouched byte-for-byte.
+const SEQUOIA_EXTRA_SEA_RAISE_M: f32 = 3.0;
 /* Deep oceans: seeded basins run this multiple of the base ocean depth
  * (up to the ~62 m the 64-layer sub-sea budget allows before the floor
  * clamps onto bedrock), so open water is a real dive, not a shallow pool.
@@ -407,7 +413,14 @@ pub fn biomes_active(body: &BodyConfig) -> bool {
 /// water-cap / fog / fauna surface math must add this to the legacy
 /// sea radius.
 pub fn sea_raise_m(body: &BodyConfig) -> f32 {
-    if biomes_active(body) { SEEDED_SEA_RAISE_M } else { 0.0 }
+    if !biomes_active(body) {
+        return 0.0;
+    }
+    if body.tileset == crate::planet::Tileset::Sequoia {
+        SEEDED_SEA_RAISE_M + SEQUOIA_EXTRA_SEA_RAISE_M
+    } else {
+        SEEDED_SEA_RAISE_M
+    }
 }
 
 /// Classify a surface point. Elevation + latitude bands take priority
@@ -423,8 +436,9 @@ pub fn biome(body: &BodyConfig, unit_dir: DVec3) -> Biome {
         return Biome::Tundra; /* no temperate biomes off-Earthlikes */
     }
     let surface = surface_altitude(body, unit_dir);
-    /* Seeded worlds carry a raised sea - classify against it. */
-    let sea = SEA_LEVEL + SEEDED_SEA_RAISE_M;
+    /* Seeded worlds carry a raised sea - classify against it (Sequoia's
+     * sits higher still: the archipelago world). */
+    let sea = SEA_LEVEL + sea_raise_m(body);
     if surface < sea - 1.0 {
         return Biome::Ocean;
     }
@@ -547,7 +561,14 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
 
     /* Seeded worlds carry their sea one block higher; legacy worlds
      * keep the exact C sea level (pins). */
-    let sea = if prof.biomes_on { SEA_LEVEL + SEEDED_SEA_RAISE_M } else { SEA_LEVEL };
+    let sea = if prof.biomes_on {
+        /* Sequoia's archipelago sea sits higher (see sea_raise_m). */
+        SEA_LEVEL
+            + SEEDED_SEA_RAISE_M
+            + if prof.sequoia { SEQUOIA_EXTRA_SEA_RAISE_M } else { 0.0 }
+    } else {
+        SEA_LEVEL
+    };
 
     /* Air/water above the ground. */
     if altitude_m > surface {
@@ -613,10 +634,19 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
          * glance from orbit, not just underfoot. */
         match prof.biome {
             Biome::Desert => {
+                /* Sequoia has no deserts - its dry band is SPOREWOOD
+                 * (SEQUOIA_PLAN.md): pale mycelium flats broken by dark
+                 * humus patches, giant mushrooms for trees (world.rs). */
+                if prof.sequoia {
+                    if (prof.latitude * 977.0).fract() < DESERT_ROCK_FRAC {
+                        return Block::SeqDirt;
+                    }
+                    return Block::SeqMycelium;
+                }
                 if (prof.latitude * 977.0).fract() < DESERT_ROCK_FRAC {
                     return Block::CragRock;
                 }
-                return if prof.sequoia { Block::SeqSand } else { Block::Sand };
+                return Block::Sand;
             }
             Biome::Mountains => return Block::Stone,
             Biome::Swamp => {
@@ -695,6 +725,58 @@ mod biome_tests {
         assert!(kinds.contains("Desert") || kinds.contains("Swamp") || kinds.contains("Jungle"));
         /* The rocky-uplift field must produce actual mountain country. */
         assert!(kinds.contains("Mountains"), "no rocky ranges: {kinds:?}");
+    }
+
+
+    #[test]
+    fn sequoia_is_an_archipelago_with_sporewood() {
+        /* Sequoia's seeded gen must read as a DIFFERENT world: the sea
+         * sits SEQUOIA_EXTRA_SEA_RAISE_M higher (more ocean coverage),
+         * and its dry band grows mycelium flats - never desert sand. */
+        let mut seq = planet::get(BodyId::Sequoia);
+        seq.seed = 0xC0FFEE_D00D; /* custom seed -> biomes active */
+        let mut ten = planet::get(BodyId::Tenebris);
+        ten.seed = 0xC0FFEE_D00D;
+        assert!(sea_raise_m(&seq) > sea_raise_m(&ten) + 1.0, "higher sea");
+
+        let n = 20000usize;
+        let ga = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        let mut seq_ocean = 0usize;
+        let mut ten_ocean = 0usize;
+        let mut mycelium = 0usize;
+        let mut seq_sand_desert = 0usize;
+        for i in 0..n {
+            let yy = 1.0 - (i as f64 + 0.5) / n as f64 * 2.0;
+            let r = (1.0 - yy * yy).max(0.0).sqrt();
+            let th = ga * i as f64;
+            let dir = crate::math::dvec3_normalize(crate::math::dvec3_make(
+                r * th.cos(),
+                yy,
+                r * th.sin(),
+            ));
+            if biome(&seq, dir) == Biome::Ocean {
+                seq_ocean += 1;
+            }
+            if biome(&ten, dir) == Biome::Ocean {
+                ten_ocean += 1;
+            }
+            /* Sample the actual top block in the Sequoia dry band. */
+            if biome(&seq, dir) == Biome::Desert {
+                let prof = profile(&seq, dir);
+                let top = sample_with_profile(&prof, prof.surface_m - 0.5);
+                match top {
+                    Block::SeqMycelium | Block::SeqDirt => mycelium += 1,
+                    Block::Sand | Block::SeqSand => seq_sand_desert += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            seq_ocean as f64 > ten_ocean as f64 * 1.1,
+            "sequoia oceans ({seq_ocean}) must clearly exceed tenebris's ({ten_ocean})"
+        );
+        assert!(mycelium > 0, "sporewood mycelium tops must exist");
+        assert_eq!(seq_sand_desert, 0, "no sand deserts on sequoia");
     }
 
     #[test]

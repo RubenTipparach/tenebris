@@ -658,13 +658,28 @@ fn dev_maybe_place(app: &mut App) {
                 crops::dev_spawn(&app.world.borrow(), &app.player.borrow(), 4.0);
             } else {
                 /* Lift + pin the eye above the grass line so the lineup
-                 * frames broadside instead of through the scatter. */
+                 * frames broadside instead of through the scatter - and
+                 * keep raising until the eye cell is actually AIR, so a
+                 * teleport landing beside a cliff or under a canopy can't
+                 * pin the camera inside terrain (the reported "camera is
+                 * inside the planet" shot). */
                 let cam = {
                     let p = app.player.borrow();
-                    dvec3_add(
+                    let up = p.basis.up;
+                    let mut cam = dvec3_add(
                         p.position,
-                        dvec3_add(dvec3_scale(p.basis.up, 5.5), dvec3_scale(p.basis.fwd, -3.5)),
-                    )
+                        dvec3_add(dvec3_scale(up, 5.5), dvec3_scale(p.basis.fwd, -3.5)),
+                    );
+                    let w = app.world.borrow();
+                    let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                    for _ in 0..40 {
+                        let pf = tenebris_core::math::dvec3_to_vec3(dvec3_sub(cam, center));
+                        if w.block_at_pos(pf, p.last_tile) == tenebris_core::blocks::Block::Air {
+                            break;
+                        }
+                        cam = dvec3_add(cam, dvec3_scale(up, 1.5));
+                    }
+                    cam
                 };
                 app.player.borrow_mut().position = cam;
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
@@ -4686,6 +4701,8 @@ fn block_name(b: Block) -> &'static str {
         Block::CasinoSign => "CASINO_SIGN",
         Block::SlotMachine => "SLOT_MACHINE",
         Block::CardTable => "CARD_TABLE",
+        Block::SeqMycelium => "SEQ_MYCELIUM",
+        Block::SeqShroomCap => "SEQ_SHROOM_CAP",
     }
 }
 
@@ -4698,6 +4715,8 @@ fn block_glyph(b: Block) -> char {
         Block::Sand | Block::SeqSand => 'S',
         Block::Dirt | Block::SeqDirt => 'd',
         Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass => 'g',
+        Block::SeqMycelium => 'm',
+        Block::SeqShroomCap => 'M',
         Block::Stone | Block::CragRock | Block::AsteroidRock => '#',
         Block::Ice | Block::FrostIce => 'i',
         Block::Snow | Block::SeqSnow => 's',
@@ -5560,10 +5579,14 @@ fn frame_inner(app: &mut App) {
         DEV_FISH_CAM.with(|c| c.set(Some(cam)));
         /* Remesh the full disk ONCE gen has finished, so the whole globe is
          * meshed (remeshing on frame 1 - before streaming completes - leaves a
-         * partial, off-centre-looking disk). */
-        thread_local! { static LODCAM_REMESHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-        if !LODCAM_REMESHED.with(|c| c.get()) && app.world.borrow().gen_complete() {
-            LODCAM_REMESHED.with(|c| c.set(true));
+         * partial, off-centre-looking disk). Tracked PER BODY: composing
+         * with TENEBRIS_DEV_BODY swaps the active world after boot, and a
+         * one-shot bool had already burned on the boot body - leaving the
+         * teleport destination unmeshed (empty-stars capture). */
+        thread_local! { static LODCAM_REMESHED: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) }; }
+        if LODCAM_REMESHED.with(|c| c.get()) != body_id as i64 && app.world.borrow().gen_complete()
+        {
+            LODCAM_REMESHED.with(|c| c.set(body_id as i64));
             renderer::remesh_body_now(body_id);
         }
     }

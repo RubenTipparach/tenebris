@@ -378,8 +378,8 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/technology/casino_sign.png"),       /* 103 CASINO_SIGN */
     Some("assets/textures/technology/slot_machine_face.png"), /* 104 SLOT_MACHINE */
     Some("assets/textures/technology/card_table_face.png"),   /* 105 CARD_TABLE */
-    None,                                                     /* 106 reserved */
-    None,                                                     /* 107 reserved */
+    Some("assets/textures/snow.png"),                         /* 106 SEQ_MYCELIUM (lavender tint) */
+    Some("assets/textures/snow.png"),                         /* 107 SEQ_SHROOM_CAP (rose tint) */
 ];
 
 /// Per-channel multiplier applied to each loaded tile. {1,1,1} =
@@ -482,7 +482,8 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
     [1.0, 1.0, 1.0],
-    /* 93-105 extension tiles: pre-baked PNGs, no tint; 106-107 reserved. */
+    /* 93-105 extension tiles: pre-baked PNGs, no tint; 106-107 tinted
+     * Sequoia Sporewood tiles (mycelium ground / mushroom cap). */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS top  */
     [1.0, 1.0, 1.0], /* JUNGLE_GRASS side */
     [1.0, 1.0, 1.0], /* DRY_GRASS top     */
@@ -496,8 +497,8 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.0, 1.0, 1.0], /* CASINO_SIGN       */
     [1.0, 1.0, 1.0], /* SLOT_MACHINE      */
     [1.0, 1.0, 1.0], /* CARD_TABLE        */
-    [1.0, 1.0, 1.0],
-    [1.0, 1.0, 1.0],
+    [0.80, 0.72, 0.94], /* 106 SEQ_MYCELIUM  - pale lavender fungus flats */
+    [1.05, 0.48, 0.58], /* 107 SEQ_SHROOM_CAP - dusty rose cap            */
 ];
 
 struct AtlasBake {

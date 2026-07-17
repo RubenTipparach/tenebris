@@ -269,6 +269,7 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
     if !prof.barren && !prof.icy && prof.surface_m > 1.0 && prof.surface_m < 22.0 {
         let top = col[surface_idx as usize];
         let is_sequoia_grass = top == Block::SeqGrass.raw();
+        let is_mycelium = top == Block::SeqMycelium.raw();
         let is_grass = top == Block::Grass.raw()
             || top == Block::JungleGrass.raw()
             || top == Block::DryGrass.raw()
@@ -279,51 +280,94 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
          * custom-seeded worlds, so legacy terrain never grows these. */
         let is_pine = prof.biome == Biome::Tundra
             && (top == Block::Snow.raw() || top == Block::SeqSnow.raw());
-        if is_grass || is_pine {
+        if is_grass || is_pine || is_mycelium {
             let h = tile_hash(body.seed, tile_idx, 0xA1B2C3D4);
             /* Per-biome density (of 256): jungles pack in dense tall
              * canopy, swamps grow scattered groves of TALL gnarled
              * trees (long bare trunk, crown way overhead), fields keep
              * the classic ~5%, tundra scatters pines, deserts and
              * mountain rock get none (their tops aren't grass anyway -
-             * this is belt + braces). */
-            let (density, extra_trunk) = match prof.biome {
-                Biome::Jungle => (115u32, 2i32),
-                Biome::Swamp => (34, 3),
-                Biome::Fields | Biome::Beach => (13, 0),
-                /* Pines stand alone on the snow - sparse landmarks,
-                 * not a forest - but tall enough to read as conifers. */
-                Biome::Tundra => (2, 3),
-                Biome::Desert | Biome::Mountains => (0, 0),
-                _ => (13, 0),
+             * this is belt + braces).
+             *
+             * SEQUOIA runs its own table (SEQUOIA_PLAN.md): GIANT
+             * REDWOODS tower over the temperate groves, the Sporewood
+             * mycelium flats grow giant mushrooms, and the alien jungle
+             * packs even denser + taller than Tenebris's. */
+            let (density, extra_trunk) = if prof.sequoia {
+                match prof.biome {
+                    Biome::Jungle => (150u32, 3i32),
+                    Biome::Swamp => (34, 3),
+                    /* Redwood groves: sparser than fields so each giant
+                     * reads as a monument, with a tall varied trunk. */
+                    Biome::Fields | Biome::Beach => (10, 6),
+                    /* Sporewood: giant mushrooms on the mycelium. */
+                    Biome::Desert => (26, 1),
+                    Biome::Tundra => (2, 3),
+                    Biome::Mountains => (0, 0),
+                    _ => (10, 6),
+                }
+            } else {
+                match prof.biome {
+                    Biome::Jungle => (115u32, 2i32),
+                    Biome::Swamp => (34, 3),
+                    Biome::Fields | Biome::Beach => (13, 0),
+                    /* Pines stand alone on the snow - sparse landmarks,
+                     * not a forest - but tall enough to read as conifers. */
+                    Biome::Tundra => (2, 3),
+                    Biome::Desert | Biome::Mountains => (0, 0),
+                    _ => (13, 0),
+                }
             };
             if (h & 0xFF) < density {
+                /* Sequoia shapes: mushrooms grow ONLY on mycelium;
+                 * redwoods own the temperate groves. */
+                let is_mushroom = prof.sequoia && is_mycelium;
+                let is_redwood = prof.sequoia
+                    && !is_mushroom
+                    && !is_pine
+                    && matches!(prof.biome, Biome::Fields | Biome::Beach);
                 /* Vary trunk height by a separate hash bit; jungle
-                 * trunks run taller so the canopy closes overhead. */
-                let trunk = 3 + ((h >> 8) & 1) as i32 + extra_trunk;
+                 * trunks run taller so the canopy closes overhead, and
+                 * redwood giants add up to 3 more storeys of trunk. */
+                let trunk = 3
+                    + ((h >> 8) & 1) as i32
+                    + extra_trunk
+                    + if is_redwood { ((h >> 9) & 3) as i32 } else { 0 };
                 let trunk_top = surface_idx + trunk;
-                /* Pines wear a tall narrow leaf sleeve down most of the
-                 * trunk (conifer silhouette); broadleaf trees keep the
+                /* Crown shapes: pines wear a tall narrow leaf sleeve
+                 * down most of the trunk; REDWOODS bare the lower 2/3 of
+                 * a visible wooden bole and carry a conical crown on the
+                 * top third; MUSHROOMS cap a bare pale stem with two
+                 * layers of rose cap; broadleaf trees keep the classic
                  * crown blob over the top. */
-                let leaf_lo = if is_pine { surface_idx + 2 } else { trunk_top - 1 };
-                let mut leaf_hi = if is_pine { trunk_top + 3 } else { trunk_top + 2 };
+                let (leaf_lo, leaf_hi_raw, trunk_wood_top) = if is_pine {
+                    (surface_idx + 2, trunk_top + 3, surface_idx + 1)
+                } else if is_redwood {
+                    let bole = surface_idx + (trunk * 2) / 3;
+                    (bole + 1, trunk_top + 2, bole)
+                } else if is_mushroom {
+                    (trunk_top + 1, trunk_top + 2, trunk_top)
+                } else {
+                    (trunk_top - 1, trunk_top + 2, trunk_top)
+                };
+                let mut leaf_hi = leaf_hi_raw;
                 if leaf_hi >= WORLD_MAX_DEPTH {
                     leaf_hi = WORLD_MAX_DEPTH - 1;
                 }
-                /* Trunk: stack BLOCK_WOOD above the grass top. Pines
-                 * expose a single trunk block - the rest of the column
-                 * is the leaf sleeve (voxels are single-column, so wood
-                 * and leaves can't share a cell). */
-                let trunk_wood_top = if is_pine { surface_idx + 1 } else { trunk_top };
+                /* Trunk: stack BLOCK_WOOD above the top block (voxels
+                 * are single-column, so wood and leaves can't share a
+                 * cell - the crown fills the AIR cells above the bole). */
                 let mut d = surface_idx + 1;
                 while d <= trunk_wood_top && d < WORLD_MAX_DEPTH {
                     col[d as usize] = Block::Wood.raw();
                     d += 1;
                 }
-                /* Leafy crown spread vertically over the trunk top.
-                 * Sequoia uses its own red-tinted leaf block so the
-                 * biome reads as alien even before you land. */
-                let leaf_block = if is_sequoia_grass {
+                /* Crown block: Sequoia trees wear their red-tinted
+                 * foliage, mushrooms their rose caps, so each biome
+                 * reads as alien even before you land. */
+                let leaf_block = if is_mushroom {
+                    Block::SeqShroomCap.raw()
+                } else if prof.sequoia {
                     Block::SeqLeaves.raw()
                 } else {
                     Block::Leaves.raw()
@@ -1521,7 +1565,10 @@ fn block_is_passable(b: u8) -> bool {
 /// read as "roofed" (by the trunk) and get rejected as a floor, leaving
 /// only the unreachable canopy top, so the player was never grounded.
 fn is_tree_raw(b: u8) -> bool {
-    b == Block::Wood.raw() || b == Block::Leaves.raw() || b == Block::SeqLeaves.raw()
+    b == Block::Wood.raw()
+        || b == Block::Leaves.raw()
+        || b == Block::SeqLeaves.raw()
+        || b == Block::SeqShroomCap.raw()
 }
 
 /* Vertical tolerance for "step me up onto a floor that's slightly

@@ -159,6 +159,15 @@ pub enum Block {
      * Interaction (the actual games) lands with space era Phase 5. */
     SlotMachine = 51,
     CardTable = 52,
+
+    /* Sequoia Sporewood biome (SEQUOIA_PLAN.md): the fungus flats that
+     * replace deserts on the sister world. Mycelium is the pale ground;
+     * the shroom cap crowns the giant mushrooms (stems are Wood). Both
+     * runtime-tinted from existing art - no new source PNGs. */
+    /// pale lavender fungus ground (Sporewood top block)
+    SeqMycelium = 53,
+    /// dusty-rose giant mushroom cap (canopy-like)
+    SeqShroomCap = 54,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
@@ -166,7 +175,7 @@ pub enum Block {
 /// biome sods (JungleGrass / DryGrass), and the station / casino set
 /// (StationHull 45 .. CardTable 52) past the C palette - the native
 /// port is the canonical target now, so the palette can grow here.
-pub const BLOCK_COUNT: u8 = 53;
+pub const BLOCK_COUNT: u8 = 55;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -235,6 +244,7 @@ pub fn is_transparent(b: Block) -> bool {
         || b == Block::Ice
         || b == Block::Leaves
         || b == Block::SeqLeaves
+        || b == Block::SeqShroomCap
 }
 
 /// Port of `block_is_unbreakable()`. Bedrock cannot be broken by
@@ -282,7 +292,11 @@ pub fn covers_face(b: Block) -> bool {
     }
     /* Wood and leaves are partial-width — they don't fully cover the
      * face of an adjacent voxel, so neighbors must still draw. */
-    if b == Block::Wood || b == Block::Leaves || b == Block::SeqLeaves {
+    if b == Block::Wood
+        || b == Block::Leaves
+        || b == Block::SeqLeaves
+        || b == Block::SeqShroomCap
+    {
         return false;
     }
     /* Tech blocks render as a cube (or thin connector) sitting in the
@@ -341,6 +355,17 @@ pub fn face_tile(b: Block, cap: FaceCap) -> u8 {
             FaceCap::Bottom => Block::SeqDirt as u8,
             FaceCap::Side => Block::SeqDirtSnow as u8,
         };
+    }
+    /* Sporewood ground: mycelium wraps top + sides (atlas col 106),
+     * dirt underneath like the other Sequoia sods. */
+    if b == Block::SeqMycelium {
+        return match cap {
+            FaceCap::Top | FaceCap::Side => 106,
+            FaceCap::Bottom => Block::SeqDirt as u8,
+        };
+    }
+    if b == Block::SeqShroomCap {
+        return 107; /* rose cap on every face */
     }
     /* Biome sods: tinted-grass tiles in the atlas columns PAST the 93
      * legacy UV-addressed ones. The mesher still encodes u = tile/93,
@@ -483,7 +508,9 @@ mod tests {
         assert_eq!(Block::CasinoSign as u8, 50);
         assert_eq!(Block::SlotMachine as u8, 51);
         assert_eq!(Block::CardTable as u8, 52);
-        assert_eq!(BLOCK_COUNT, 53);
+        assert_eq!(Block::SeqMycelium as u8, 53);
+        assert_eq!(Block::SeqShroomCap as u8, 54);
+        assert_eq!(BLOCK_COUNT, 55);
     }
 
     #[test]

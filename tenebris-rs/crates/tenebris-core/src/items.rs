@@ -396,6 +396,8 @@ fn block_display(b: Block) -> &'static str {
         Block::AsteroidRock => "Asteroid Rock",
         Block::Wood => "Wood Log",
         Block::Leaves | Block::SeqLeaves => "Leaves",
+        Block::SeqMycelium => "Mycelium",
+        Block::SeqShroomCap => "Shroom Cap",
         Block::Bedrock => "Bedrock",
         Block::CoalOre => "Coal Ore",
         Block::CopperOre => "Copper Ore",
