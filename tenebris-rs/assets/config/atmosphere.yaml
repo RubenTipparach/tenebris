@@ -106,8 +106,11 @@ sequoia:
   sunset_tint: [1.25, 1.00, 0.70]
   sunset_glow: [1.00, 0.75, 0.40]
   sunset_horizon: [0.85, 0.55, 0.25]
-  # Sky-matched haze (the brown comes out of the scattering params).
-  fog_density: 0.006
+  # Lighter haze than Tenebris (0.006): the water pass fogs itself
+  # toward this same horizon-sky colour, and at 0.006 Sequoia's pale
+  # sky bleached the green seas across the whole sheet. 0.0035 keeps a
+  # soft brown haze on distant terrain without washing the water out.
+  fog_density: 0.0035
   fog_height_m: 130.0
 
 # Add other has_water=true bodies here. Bodies without atmosphere

@@ -660,14 +660,14 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
      * absorption. */
     tileset_water_deep_color: [
         VEC3_ZERO,            /* EARTH    - use global default       */
-        v3(0.04, 0.20, 0.10), /* SEQUOIA  - saturated alien green    */
+        v3(0.10, 0.46, 0.28), /* SEQUOIA  - vivid green, saturates fast */
         VEC3_ZERO,            /* CRAG     - no water (use global)    */
         VEC3_ZERO,            /* FROST    - pale ice (use global)    */
         VEC3_ZERO,            /* ASTEROID - use global default       */
     ],
     tileset_water_absorption: [
         VEC3_ZERO,            /* EARTH    - use global (0.60, 0.20, 0.10) */
-        v3(0.50, 0.10, 0.50), /* SEQUOIA  - red+blue die, green survives  */
+        v3(1.60, 0.55, 1.35), /* SEQUOIA  - red+blue die within ~1m, green survives */
         VEC3_ZERO,            /* CRAG     - no water                      */
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
