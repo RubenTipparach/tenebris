@@ -601,6 +601,22 @@ pub fn fixture_world_positions(mat: StationMat, t: f64) -> Vec<DVec3> {
         .collect()
 }
 
+/// Local-frame positions of the six docking-pad tops - the ship's settle
+/// point when docking. Each is the pad's centre hex (HEX_DIRS dir out past
+/// the ring, +2) at deck height, in station-local metres; the client maps
+/// them through the live orbit frame and tractors the ship onto the nearest.
+pub fn pad_top_local(cfg: &StationConfig) -> Vec<DVec3> {
+    let n_out = cfg.radius_hexes as i32;
+    let slab_top = cfg.slab_layers.max(1) as f32 * layer_h(cfg);
+    HEX_DIRS
+        .iter()
+        .map(|&(dq, dr)| {
+            let (x, z) = axial_to_local(dq * (n_out + 2), dr * (n_out + 2), cfg.hex_size_m);
+            dvec3_make(x as f64, slab_top as f64, z as f64)
+        })
+        .collect()
+}
+
 /// True for the station's function-fixture materials (POIs placed on
 /// the deck), as opposed to structural prisms.
 pub fn is_fixture(m: StationMat) -> bool {

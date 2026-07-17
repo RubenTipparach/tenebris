@@ -16,7 +16,9 @@ use std::rc::Rc;
 
 use crate::{client_kv, menu, ui_icons};
 use tenebris_core::items::{self};
-use tenebris_core::math::{dvec3_make, dvec3_length, dvec3_sub, DVec3};
+use tenebris_core::math::{
+    dvec3_add, dvec3_cross, dvec3_dot, dvec3_length, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3,
+};
 use tenebris_core::station::StationState;
 use tenebris_core::{economy, world_time};
 
@@ -30,8 +32,17 @@ enum Tab {
     Fuel,
 }
 
+/// What the docked panel shows. Docking opens the two-button PROMPT first
+/// (Leave Ship / Open Docking Menu); the hub is one click in from there.
+#[derive(Clone, Copy, PartialEq)]
+enum DockView {
+    Prompt,
+    Hub,
+}
+
 struct Screen {
     open: bool,
+    view: DockView,
     tab: Tab,
     state: StationState,
     player: Option<PlayerHandle>,
@@ -39,16 +50,54 @@ struct Screen {
     /// while the hub is open the player is re-posed to anchor + offset
     /// every frame so the station doesn't sail away mid-trade.
     dock_offset: DVec3,
+    /* Tractor beam: while the dock prompt is up the ship is pulled from
+     * where it docked (`tractor_from`) onto the nearest landing pad
+     * (`tractor_to`), both in STATION-LOCAL metres so the station's orbit
+     * cancels out. `tractor_up_from` is the ship's world up at capture; it
+     * settles to the deck up. Done once the glide completes. */
+    tractor_from: DVec3,
+    tractor_to: DVec3,
+    tractor_up_from: DVec3,
+    tractor_start_s: f64,
+    tractor_last_log_s: f64,
+    tractor_done: bool,
 }
+
+const ZERO_V: DVec3 = DVec3 { x: 0.0, y: 0.0, z: 0.0 };
+/// Seconds for the tractor to glide the ship onto the pad.
+const TRACTOR_DURATION_S: f64 = 4.0;
 
 thread_local! {
     static S: RefCell<Screen> = RefCell::new(Screen {
         open: false,
+        view: DockView::Prompt,
         tab: Tab::Trade,
         state: StationState::default(),
         player: None,
         dock_offset: DVec3 { x: 0.0, y: 0.0, z: 0.0 },
+        tractor_from: ZERO_V,
+        tractor_to: ZERO_V,
+        tractor_up_from: DVec3 { x: 0.0, y: 1.0, z: 0.0 },
+        tractor_start_s: 0.0,
+        tractor_last_log_s: 0.0,
+        tractor_done: false,
     });
+    /// Set by the "Leave Ship" button; app.rs drains it and runs the normal
+    /// rocket exit (parks the ship, drops the player out) - reusing the one
+    /// tested exit path instead of duplicating it here.
+    static LEAVE_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Drain the "Leave Ship" request (app.rs calls this each frame and runs
+/// rocket_exit_action when true).
+pub fn take_leave_pending() -> bool {
+    LEAVE_PENDING.with(|c| c.replace(false))
+}
+
+/// Wall-clock seconds, for the tractor animation timing (independent of the
+/// sim clock so a paused sim doesn't stall the glide).
+fn now_s() -> f64 {
+    sokol::time::sec(sokol::time::now())
 }
 
 /// World-space position of the trading station NOW: the on-rails orbital
@@ -78,25 +127,66 @@ pub fn dock_speed_ok(vel: DVec3) -> bool {
     dock_rel_speed_mps(vel) <= tenebris_core::station::config().dock_max_rel_mps as f64
 }
 
-/// Per-frame while the hub is open: carry the docked player along the
-/// orbit (anchor + captured offset, velocity = station velocity) so
-/// closing the hub leaves them flying formation with the station.
+/// Per-frame while docked: run the TRACTOR BEAM - glide the ship from where
+/// it docked onto the nearest landing pad (station-local lerp so the orbit
+/// cancels), settling it upright, then hold it there. Logs `[Tractoring]`
+/// once a second while the beam is pulling. Everything integrates in the
+/// station frame with velocity = station velocity, so undocking leaves the
+/// ship flying formation.
 pub fn carry_docked_player() {
     if !is_open() {
         return;
     }
+    let now = now_s();
     S.with(|c| {
-        let s = c.borrow();
+        let s = &mut *c.borrow_mut();
         let Some(player) = s.player.clone() else { return };
         let t = world_time::seconds();
-        let mut p = player.borrow_mut();
-        let anchor = tenebris_core::station::orbit_pos(t);
-        p.position = dvec3_make(
-            anchor.x + s.dock_offset.x,
-            anchor.y + s.dock_offset.y,
-            anchor.z + s.dock_offset.z,
+        let sf = tenebris_core::station::frame_sample(tenebris_core::station::orbit_pos(t), t);
+
+        /* Smoothstepped progress along the glide (1.0 once landed). */
+        let prog = if s.tractor_done {
+            1.0
+        } else {
+            ((now - s.tractor_start_s) / TRACTOR_DURATION_S).clamp(0.0, 1.0)
+        };
+        let e = prog * prog * (3.0 - 2.0 * prog);
+        let cur_local = dvec3_add(
+            s.tractor_from,
+            dvec3_scale(dvec3_sub(s.tractor_to, s.tractor_from), e),
         );
-        p.velocity = tenebris_core::station::orbit_vel(t);
+        let world = sf.local_to_world(cur_local);
+        /* Settle the nose from its docking orientation to the deck up. */
+        let up = dvec3_normalize(dvec3_add(
+            dvec3_scale(s.tractor_up_from, 1.0 - e),
+            dvec3_scale(sf.up, e),
+        ));
+
+        {
+            let mut p = player.borrow_mut();
+            p.position = world;
+            p.velocity = sf.station_vel;
+            let old_fwd = p.basis.fwd;
+            let mut fwd = dvec3_sub(old_fwd, dvec3_scale(up, dvec3_dot(old_fwd, up)));
+            if dvec3_length(fwd) < 1e-4 {
+                fwd = p.basis.right;
+            }
+            let fwd = dvec3_normalize(fwd);
+            p.basis.up = up;
+            p.basis.fwd = fwd;
+            p.basis.right = dvec3_cross(fwd, up);
+        }
+
+        if !s.tractor_done {
+            if now - s.tractor_last_log_s >= 1.0 {
+                println!("[Tractoring]");
+                s.tractor_last_log_s = now;
+            }
+            if prog >= 1.0 {
+                s.tractor_done = true;
+                println!("[dock] tractor complete - ship landed on pad");
+            }
+        }
     });
 }
 
@@ -119,21 +209,51 @@ pub fn close() {
     S.with(|c| c.borrow_mut().open = false);
 }
 
-/// Dock: load the persisted station state for this world and open the hub.
+/// Dock: load the persisted station state, open the two-button prompt, and
+/// begin tractoring the ship onto the nearest landing pad.
 pub fn open(player: PlayerHandle) {
+    let t = world_time::seconds();
+    let (start_pos, up_from) = {
+        let p = player.borrow();
+        (p.position, p.basis.up)
+    };
+    /* Capture the ship's position IN STATION-LOCAL coords + pick the nearest
+     * pad; the tractor lerps between them each frame (station orbit cancels
+     * out because both are local). */
+    let sf = tenebris_core::station::frame_sample(start_pos, t);
+    let cfg = tenebris_core::station::config();
+    let start_local = sf.local;
+    let pad_local = tenebris_core::station::pad_top_local(&cfg)
+        .into_iter()
+        .min_by(|a, b| {
+            let da = dvec3_length(dvec3_sub(*a, start_local));
+            let db = dvec3_length(dvec3_sub(*b, start_local));
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(start_local);
+    let now = now_s();
     S.with(|c| {
         let s = &mut *c.borrow_mut();
         s.state = client_kv::get(&kv_key())
             .and_then(|b| StationState::parse(&b))
             .unwrap_or_default();
-        /* Capture where the player sits relative to the moving anchor so
-         * carry_docked_player keeps them there for the whole visit. */
-        s.dock_offset = dvec3_sub(player.borrow().position, station_pos());
+        s.dock_offset = dvec3_sub(start_pos, station_pos());
         s.player = Some(player);
         s.tab = Tab::Trade;
+        s.view = DockView::Prompt;
+        s.tractor_from = start_local;
+        s.tractor_to = pad_local;
+        s.tractor_up_from = up_from;
+        s.tractor_start_s = now;
+        s.tractor_last_log_s = now;
+        s.tractor_done = false;
         s.open = true;
     });
     crate::screens::take_focus(crate::screens::Screen::Station);
+    println!(
+        "[dock] docked - tractoring ship onto pad ({:.1} m to travel)",
+        dvec3_length(dvec3_sub(pad_local, start_local))
+    );
 }
 
 /// Swallow input while open; Esc closes.
@@ -152,6 +272,71 @@ pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;
     }
+    match S.with(|c| c.borrow().view) {
+        DockView::Prompt => draw_prompt(ctx),
+        DockView::Hub => draw_hub(ctx),
+    }
+}
+
+/// The two-button dock prompt shown the moment you dock: LEAVE SHIP (climb
+/// out - parks the ship on/at the station) or OPEN DOCKING MENU (the trade /
+/// warehouse / fuel hub). Undock flies you back off.
+fn draw_prompt(ctx: &egui::Context) {
+    let mut open_hub = false;
+    let mut do_leave = false;
+    let mut do_close = false;
+    egui::Window::new("Docked")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_min_width(260.0);
+            ui.label(
+                egui::RichText::new("Docked with the orbital station")
+                    .strong()
+                    .color(egui::Color32::from_rgb(0x8c, 0xd0, 0xf0)),
+            );
+            ui.add_space(10.0);
+            if ui
+                .add_sized([240.0, 38.0], egui::Button::new(
+                    egui::RichText::new("Leave Ship").size(15.0),
+                ))
+                .clicked()
+            {
+                do_leave = true;
+            }
+            ui.add_space(6.0);
+            if ui
+                .add_sized([240.0, 38.0], egui::Button::new(
+                    egui::RichText::new("Open Trade Screen").size(15.0),
+                ))
+                .clicked()
+            {
+                open_hub = true;
+            }
+            ui.add_space(10.0);
+            if ui.add_sized([240.0, 26.0], egui::Button::new("Undock")).clicked() {
+                do_close = true;
+            }
+        });
+
+    if open_hub {
+        S.with(|c| c.borrow_mut().view = DockView::Hub);
+    }
+    if do_leave {
+        /* Hand off to the normal exit path (parks the ship + drops the
+         * player out) via app.rs; close the panel and free the cursor. */
+        LEAVE_PENDING.with(|c| c.set(true));
+        close();
+        crate::screens::grab_pointer();
+    }
+    if do_close {
+        close();
+        crate::screens::grab_pointer();
+    }
+}
+
+fn draw_hub(ctx: &egui::Context) {
     let t = world_time::seconds();
     let mut do_close = false;
 

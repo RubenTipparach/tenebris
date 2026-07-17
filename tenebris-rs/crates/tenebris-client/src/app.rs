@@ -5299,6 +5299,11 @@ fn frame_inner(app: &mut App) {
     /* Docked at the orbital station: ride its orbit while the hub is
      * open so undocking leaves the player flying formation. */
     station_screen::carry_docked_player();
+    /* "Leave Ship" from the dock prompt: run the normal rocket exit
+     * (parks the ship, drops the player out) - reuses the one tested path. */
+    if station_screen::take_leave_pending() {
+        rocket_exit_action(app);
+    }
     space_complex_maybe_build(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
