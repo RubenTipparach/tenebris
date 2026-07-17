@@ -41,6 +41,9 @@ use sokol::time::{diff as stm_diff, ms as stm_ms, now as stm_now};
 use std::sync::Mutex;
 
 const MAX_SLOTS: usize = 32;
+/// Named integer readouts shown under the timing rows (entity counts:
+/// animals, corpses, ...). Set each frame via [`set_count`].
+const MAX_COUNTERS: usize = 8;
 
 /// Rolling frame-time history backing the on-screen frame-time graph.
 /// 1024 samples covers a 10 s window down to ~100 fps; above that the
@@ -97,6 +100,11 @@ struct ProfilerState {
     frame_hist: [f32; FRAME_HIST_CAP],
     frame_hist_head: usize,
     frame_hist_len: usize,
+    /// Named entity counters (name -> value), rendered under the timings.
+    /// Persist across frames; the app overwrites them each frame.
+    counter_names: [Option<&'static str>; MAX_COUNTERS],
+    counter_vals: [i64; MAX_COUNTERS],
+    counter_count: usize,
 }
 
 const INITIAL_STATE: ProfilerState = ProfilerState {
@@ -110,6 +118,9 @@ const INITIAL_STATE: ProfilerState = ProfilerState {
     frame_hist: [0.0; FRAME_HIST_CAP],
     frame_hist_head: 0,
     frame_hist_len: 0,
+    counter_names: [None; MAX_COUNTERS],
+    counter_vals: [0; MAX_COUNTERS],
+    counter_count: 0,
 };
 
 static P: Mutex<ProfilerState> = Mutex::new(INITIAL_STATE);
@@ -193,6 +204,26 @@ pub fn end_frame() {
         s.ms_last = s.ms_curr;
         s.calls_last = s.calls_curr;
         s.ms_avg = ema(s.ms_avg, s.ms_last);
+    }
+}
+
+/// Set a named integer readout shown under the timing rows (e.g. the
+/// count of simulated entities). Overwrite each frame; call it anywhere,
+/// including outside a frame. Silently drops the counter once
+/// [`MAX_COUNTERS`] distinct names have been registered.
+pub fn set_count(name: &'static str, value: i64) {
+    let mut p = P.lock().unwrap();
+    for i in 0..p.counter_count {
+        if p.counter_names[i] == Some(name) {
+            p.counter_vals[i] = value;
+            return;
+        }
+    }
+    if p.counter_count < MAX_COUNTERS {
+        let i = p.counter_count;
+        p.counter_names[i] = Some(name);
+        p.counter_vals[i] = value;
+        p.counter_count += 1;
     }
 }
 
@@ -323,6 +354,19 @@ fn rows_for(p: &ProfilerState) -> Vec<DrawRow> {
             p.frame_ms_last, p.frame_ms_avg, fps
         ),
     });
+    /* Entity counters (animals, corpses, ...) - the "how much is being
+     * simulated" readout, on one line each between the frame total and the
+     * per-slot timings. */
+    for i in 0..p.counter_count {
+        rows.push(DrawRow {
+            color: (0x90, 0xe0, 0x90),
+            text: format!(
+                "  {:<22} {}\n",
+                p.counter_names[i].unwrap_or(""),
+                p.counter_vals[i]
+            ),
+        });
+    }
     /* Sort-on-display by ms_avg desc so the heaviest slot ends up
      * on top - useful when looking for the cause of a spike. Tiny
      * insertion sort, fine for <= 32 slots; ported verbatim so tie

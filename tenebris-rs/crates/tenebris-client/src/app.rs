@@ -6308,6 +6308,12 @@ fn frame_inner(app: &mut App) {
             profiler::begin("animals-sim");
             animals::update(dt, &w, &mut p);
             profiler::end("animals-sim");
+            /* Entity readout in the F3 profiler: how many animals the sim is
+             * actually processing (passive / stalkers / corpses). */
+            let (passive, stalkers, corpses) = animals::sim_counts();
+            profiler::set_count("animals (passive)", passive as i64);
+            profiler::set_count("animals (stalkers)", stalkers as i64);
+            profiler::set_count("animal corpses", corpses as i64);
             let block_limit = if app.interact.has_target && !app.interact.is_torch_target {
                 app.interact.distance as f32
             } else {

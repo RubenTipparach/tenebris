@@ -220,6 +220,17 @@ pub fn count() -> usize {
     S.with(|c| c.borrow().list.len())
 }
 
+/// Live sim populations for the profiler entity readout:
+/// (passive animals, stalkers, corpses). Passive = everything the herd
+/// cap governs (land + water species); stalkers are the night hostiles.
+pub fn sim_counts() -> (usize, usize, usize) {
+    S.with(|c| {
+        let s = c.borrow();
+        let stalkers = s.list.iter().filter(|a| a.kind == fauna::AnimalKind::Stalker).count();
+        (s.list.len() - stalkers, stalkers, s.corpses.len())
+    })
+}
+
 /// Stable id of the animal at raycast index `idx` (for the MP hit
 /// message - `hit` swap-removes on kill, so read the id first).
 pub fn id_at(idx: i32) -> Option<u32> {
@@ -510,11 +521,18 @@ pub fn update(dt: f32, w: &World, p: &mut PlayerCtrl) {
                 && (a.kind != AnimalKind::Stalker || night)
         });
 
-        /* Top the population back up. */
+        /* Top the population back up. The cap counts ALL passive animals
+         * (everything that isn't a Stalker), NOT just AnimalKind::Critter:
+         * spawn_near_auto returns real species (Sheep / Cow / Sparkit / Fish
+         * / ...) and NEVER Critter, so the old `== Critter` filter was
+         * always 0 < TARGET_COUNT and the herd spawned one animal every
+         * SPAWN_INTERVAL_S forever - bounded only by the 70 m despawn, so a
+         * stationary player piled up dozens (the "too many animals / 27 ms
+         * animals-sim" bug). Non-Stalker is the passive population; the
+         * Stalker cap below is separate and already correct. */
         s.spawn_cd -= dt;
-        if s.list.iter().filter(|a| a.kind == AnimalKind::Critter).count() < TARGET_COUNT
-            && s.spawn_cd <= 0.0
-        {
+        let passive_count = s.list.iter().filter(|a| a.kind != AnimalKind::Stalker).count();
+        if passive_count < TARGET_COUNT && s.spawn_cd <= 0.0 {
             s.spawn_cd = SPAWN_INTERVAL_S;
             let id = s.next_id;
             if let Some(a) = fauna::spawn_near_auto(w, p.position, id, salt) {
