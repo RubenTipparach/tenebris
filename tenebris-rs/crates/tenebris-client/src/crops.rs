@@ -185,6 +185,11 @@ pub fn spawn_wild_near(w: &World, p: &PlayerCtrl) {
     if cfg.wild_fruit_chance <= 0.0 {
         return;
     }
+    /* Wild fruit (apple trees, melons, oranges, kiwi) is TENEBRIS-ONLY
+     * flora (user direction) - alien worlds grow their own plants. */
+    if w.body.id != tenebris_core::planet::BodyId::Tenebris {
+        return;
+    }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let local = dvec3_sub(p.position, center);
     let r = dvec3_length(local);

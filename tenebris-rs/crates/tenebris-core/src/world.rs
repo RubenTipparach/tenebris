@@ -296,13 +296,15 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
             let (density, extra_trunk) = if prof.sequoia {
                 match prof.biome {
                     Biome::Jungle => (150u32, 3i32),
-                    Biome::Swamp => (34, 3),
+                    /* FUNGAL FOREST (wet lowland): GIANT mushrooms all
+                     * over the mycelium carpet - tall stems so the caps
+                     * tower like the redwoods do. */
+                    Biome::Swamp => (40, 4),
                     /* Redwood groves: sparser than fields so each giant
                      * reads as a monument, with a tall varied trunk. */
                     Biome::Fields | Biome::Beach => (10, 6),
-                    /* Sporewood: GIANT mushrooms on the mycelium - tall
-                     * stems so the caps tower like the redwoods do. */
-                    Biome::Desert => (26, 4),
+                    /* WASTELAND (dry band): nothing grows. */
+                    Biome::Desert => (0, 0),
                     Biome::Tundra => (2, 3),
                     Biome::Mountains => (0, 0),
                     _ => (10, 6),

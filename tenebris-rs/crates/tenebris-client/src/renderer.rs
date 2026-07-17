@@ -4914,6 +4914,22 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     {
         absorb = lp.tileset_water_absorption[ts_idx];
     }
+    /* Sky-reflection tones: at grazing angles (every ray from orbit)
+     * the cap mirrors these, so Sequoia's green sea needs its own. */
+    let mut sky_h = w.sky_horizon_color;
+    let mut sky_z = w.sky_zenith_color;
+    if lp.tileset_water_sky_horizon[ts_idx].x > 0.0
+        || lp.tileset_water_sky_horizon[ts_idx].y > 0.0
+        || lp.tileset_water_sky_horizon[ts_idx].z > 0.0
+    {
+        sky_h = lp.tileset_water_sky_horizon[ts_idx];
+    }
+    if lp.tileset_water_sky_zenith[ts_idx].x > 0.0
+        || lp.tileset_water_sky_zenith[ts_idx].y > 0.0
+        || lp.tileset_water_sky_zenith[ts_idx].z > 0.0
+    {
+        sky_z = lp.tileset_water_sky_zenith[ts_idx];
+    }
 
     let mut tris = 0usize;
 
@@ -4943,9 +4959,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             _pad_52: [0; 12],
             u_sun_tint: overcast_sun_tint(w.sun_tint),
             _pad_76: [0; 4],
-            u_sky_horizon: [w.sky_horizon_color.x, w.sky_horizon_color.y, w.sky_horizon_color.z],
+            u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
             _pad_92: [0; 4],
-            u_sky_zenith: [w.sky_zenith_color.x, w.sky_zenith_color.y, w.sky_zenith_color.z],
+            u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
             u_sky_horizon_strength: w.sky_horizon_strength,
             u_ripple_scale: w.ripple_scale,
             u_ripple_speed: w.ripple_speed,
@@ -5023,9 +5039,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_foam_slope: [w.foam_slope_lo, w.foam_slope_hi, w.foam_slope_weight, 0.0],
         u_foam_color: [w.foam_color.x, w.foam_color.y, w.foam_color.z],
         _pad_156: [0; 4],
-        u_sky_horizon: [w.sky_horizon_color.x, w.sky_horizon_color.y, w.sky_horizon_color.z],
+        u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
         u_sky_horizon_strength: w.sky_horizon_strength,
-        u_sky_zenith: [w.sky_zenith_color.x, w.sky_zenith_color.y, w.sky_zenith_color.z],
+        u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
         u_ripple_scale: w.ripple_scale,
         u_ripple_speed: w.ripple_speed,
         u_wave_steepness: w.wave_steepness,

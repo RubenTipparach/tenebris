@@ -164,6 +164,11 @@ sequoia:
   # depth. Leave both at [0,0,0] to fall back to the global blue water.
   water_deep_color:   [0.04, 0.20, 0.10]
   water_absorption:   [0.50, 0.10, 0.50]
+  # Sky-reflection tones the cap mirrors at grazing angles - from orbit
+  # every view ray grazes, so WITHOUT these the sea renders as the
+  # global blue-white sky mirror and the green never shows. Green sea.
+  water_sky_horizon:  [0.55, 0.85, 0.60]
+  water_sky_zenith:   [0.12, 0.40, 0.25]
 
 crag:
   water_color:        [0.55, 0.30, 0.18]

@@ -543,6 +543,13 @@ pub struct LodConfig {
      * the global water_config value at runtime. */
     pub tileset_water_deep_color: [Vec3; 5],
     pub tileset_water_absorption: [Vec3; 5],
+    /* Sky-reflection tones the water cap mirrors at grazing angles.
+     * From orbit almost every view ray grazes, so these dominate how a
+     * sea reads from space - Sequoia needs green here or its ocean
+     * renders as the global blue-white sky reflection. {0,0,0} falls
+     * back to the global water_config values. */
+    pub tileset_water_sky_horizon: [Vec3; 5],
+    pub tileset_water_sky_zenith: [Vec3; 5],
 
     /* Gravity field - full gravity below radius * gravity_full_mult,
      * linear taper to zero at radius * gravity_falloff_mult. */
@@ -659,6 +666,20 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
     ],
+    tileset_water_sky_horizon: [
+        VEC3_ZERO,            /* EARTH    - use global (0.85, 0.92, 0.98) */
+        v3(0.55, 0.85, 0.60), /* SEQUOIA  - green sea mirror              */
+        VEC3_ZERO,            /* CRAG     - no water                      */
+        VEC3_ZERO,            /* FROST    - use global                    */
+        VEC3_ZERO,            /* ASTEROID - use global                    */
+    ],
+    tileset_water_sky_zenith: [
+        VEC3_ZERO,            /* EARTH    - use global (0.35, 0.55, 0.85) */
+        v3(0.12, 0.40, 0.25), /* SEQUOIA  - deep green zenith             */
+        VEC3_ZERO,            /* CRAG     - no water                      */
+        VEC3_ZERO,            /* FROST    - use global                    */
+        VEC3_ZERO,            /* ASTEROID - use global                    */
+    ],
     gravity_full_mult: 1.4,
     gravity_falloff_mult: 1.8,
     roll_slerp_duration_s: 3.0,
@@ -753,6 +774,8 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                 }
                 "water_deep_color" => vec3_or_err(val, &mut cfg.tileset_water_deep_color[ts]),
                 "water_absorption" => vec3_or_err(val, &mut cfg.tileset_water_absorption[ts]),
+                "water_sky_horizon" => vec3_or_err(val, &mut cfg.tileset_water_sky_horizon[ts]),
+                "water_sky_zenith" => vec3_or_err(val, &mut cfg.tileset_water_sky_zenith[ts]),
                 _ => {
                     println!("[config] {}:{}: unknown palette key '{}'", path, line_no, key);
                     0

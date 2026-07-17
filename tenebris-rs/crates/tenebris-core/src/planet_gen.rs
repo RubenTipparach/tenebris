@@ -218,8 +218,15 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
          * Only the ocean side is eligible; deep basins stay open water. */
         if base < sea {
             let isl = noise01(body.seed ^ ISLAND_SEED_SALT, unit_dir, ISLAND_SCALE, 3);
-            if isl > ISLAND_THRESHOLD {
-                let t = (isl - ISLAND_THRESHOLD) / (1.0 - ISLAND_THRESHOLD);
+            /* Sequoia's seas are a proper ARCHIPELAGO: a lower gate
+             * lifts many more islands out of its green water. */
+            let gate = if body.tileset == crate::planet::Tileset::Sequoia {
+                SEQUOIA_ISLAND_THRESHOLD
+            } else {
+                ISLAND_THRESHOLD
+            };
+            if isl > gate {
+                let t = (isl - gate) / (1.0 - gate);
                 let t = t * t * (3.0 - 2.0 * t); /* smoothstep island edge */
                 base += t * ISLAND_HEIGHT_M;
             }
@@ -348,6 +355,9 @@ const SEQUOIA_LAND_BIAS_RETURN: f32 = 0.10;
 /// channel threshold cuts wider, more frequent channels than the
 /// default seeded-world rivers.
 const SEQUOIA_RIVER_THRESHOLD: f32 = 0.78;
+/// Sequoia's seas are an archipelago: a lower island gate than the
+/// default seeded worlds lifts many more islands out of the water.
+const SEQUOIA_ISLAND_THRESHOLD: f32 = 0.56;
 /// Sequoia's cold cap is small - the world reads red/brown/green from
 /// orbit, not white. Latitude gates well above the default 0.875 /
 /// 0.95, and snow starts two bands higher up the slopes.
@@ -681,14 +691,15 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
          * glance from orbit, not just underfoot. */
         match prof.biome {
             Biome::Desert => {
-                /* Sequoia has no deserts - its dry band is SPOREWOOD
-                 * (SEQUOIA_PLAN.md): pale mycelium flats broken by dark
-                 * humus patches, giant mushrooms for trees (world.rs). */
+                /* Sequoia has no deserts - its dry band is WASTELAND
+                 * (user direction): barren slate-grey dirt flats broken
+                 * by bare stone rubble. Treeless (world.rs grows nothing
+                 * on these tops). */
                 if prof.sequoia {
                     if (prof.latitude * 977.0).fract() < DESERT_ROCK_FRAC {
-                        return Block::SeqDirt;
+                        return Block::Stone;
                     }
-                    return Block::SeqMycelium;
+                    return Block::SeqDirt;
                 }
                 if (prof.latitude * 977.0).fract() < DESERT_ROCK_FRAC {
                     return Block::CragRock;
@@ -701,7 +712,11 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
                  * stagnant water pools sunk into the sod (the voxel
                  * below stays dirt, so the pool has a muddy bed), the
                  * rest marsh grass. Same cheap latitude dither idiom
-                 * as the desert rocks. */
+                 * as the desert rocks.
+                 *
+                 * On Sequoia the wet lowland is the FUNGAL FOREST:
+                 * pale mycelium carpets (giant mushrooms grow on these
+                 * tops - world.rs) broken by humus and pools. */
                 let f = (prof.latitude * 977.0).fract();
                 if f < 0.35 {
                     return if prof.sequoia { Block::SeqDirt } else { Block::Dirt };
@@ -709,7 +724,7 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
                 if f > 0.80 {
                     return Block::Water;
                 }
-                return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
+                return if prof.sequoia { Block::SeqMycelium } else { Block::Grass };
             }
             Biome::Jungle => return Block::JungleGrass,
             Biome::Tundra => {
@@ -828,14 +843,20 @@ mod biome_tests {
             {
                 ten_snowy += 1;
             }
-            /* Sample the actual top block in the Sequoia dry band. */
+            /* Sequoia's dry band is WASTELAND (bare dirt/stone, never
+             * sand), and its wet lowland is the FUNGAL FOREST whose
+             * tops carpet in mycelium. */
             if sprof.biome == Biome::Desert {
                 let top = sample_with_profile(&sprof, sprof.surface_m - 0.5);
                 match top {
-                    Block::SeqMycelium | Block::SeqDirt => mycelium += 1,
                     Block::Sand | Block::SeqSand => seq_sand_desert += 1,
                     _ => {}
                 }
+            }
+            if sprof.biome == Biome::Swamp
+                && sample_with_profile(&sprof, sprof.surface_m - 0.5) == Block::SeqMycelium
+            {
+                mycelium += 1;
             }
         }
         let water_frac = seq_water as f64 / n as f64;

@@ -5515,8 +5515,11 @@ fn frame_inner(app: &mut App) {
      * body surface (metres above spawn radius) - the "from orbit" shot. */
     if let Ok(v) = std::env::var("TENEBRIS_DEV_HOVER") {
         if let Ok(alt) = v.parse::<f64>() {
+            /* Anchor to the player's current body (dev_capture_world) so
+             * the hover composes with TENEBRIS_DEV_BODY teleports. */
             let (bc, r) = {
-                let w = app.world.borrow();
+                let w_rc = dev_capture_world(app);
+                let w = w_rc.borrow();
                 (
                     dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z),
                     w.body.radius_m + alt,
