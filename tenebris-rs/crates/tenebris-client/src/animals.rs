@@ -1120,6 +1120,9 @@ fn draw_kind(
             sgl::translate(0.0, bounce, 0.0);
             b(Part::Body, 0.0, 0.38, 0.0, 0.13, 0.15, 0.11, 1.0);
             acc_b(0.0, 0.34, -0.10, 0.08, 0.09, 0.02, 0.98, 0.92, 0.72); /* cream belly */
+            /* THICC neck: a wide column bridging body and head, so the big
+             * mascot head doesn't perch on a scrawny stalk. */
+            b(Part::Body, 0.0, 0.555, 0.0, 0.12, 0.08, 0.105, 1.0);
             b(Part::Head, 0.0, 0.72, 0.0, 0.16, 0.14, 0.14, 1.05);
             googly_eye(-0.07, 0.76, -0.13, 0.045);
             googly_eye(0.07, 0.76, -0.13, 0.045);
