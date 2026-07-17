@@ -45,13 +45,28 @@ struct Origin {
 struct Parked {
     parts: Vec<ItemId>,
     fuels: Vec<f32>,
-    /// Ship base (the player's ride point), world space.
+    /// Ship base. WORLD space when free-floating; STATION-LOCAL (the pad)
+    /// when `docked` - see [`parked_view`], which maps it through the live
+    /// station frame so a docked ship rides the pad instead of coasting off
+    /// into space and vanishing.
     pos: DVec3,
-    /// Ship axis / nose, world space.
+    /// Ship axis / nose. World when free, station-local up when docked.
     up: DVec3,
-    /// The orbit it was coasting when the player climbed out.
+    /// The orbit it was coasting when the player climbed out (free only).
     vel: DVec3,
+    /// True when the ship is parked ON A STATION PAD (station-relative), so
+    /// it tracks the station's orbit and never drifts away.
+    docked: bool,
     origin: Option<Origin>,
+}
+
+/// Station-local up (deck normal): a docked ship's nose points along it.
+const LOCAL_UP: DVec3 = DVec3 { x: 0.0, y: 1.0, z: 0.0 };
+
+/// The live station frame right now (for mapping a docked pad to world).
+fn station_frame_now() -> tenebris_core::station::StationFrame {
+    let t = tenebris_core::world_time::seconds();
+    tenebris_core::station::frame_sample(tenebris_core::station::orbit_pos(t), t)
 }
 
 thread_local! {
@@ -72,6 +87,34 @@ thread_local! {
     /// restore (the restore site has no player borrow; the frame loop
     /// drains this once).
     static PENDING_VEL: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
+    /// When Some, the ship is DOCKED to the orbital station at this
+    /// STATION-LOCAL pad position. The docked ship (and the player, while
+    /// riding it) is placed at `station_frame.local_to_world(pad)` every
+    /// frame, so it tracks the station's on-rails orbit exactly - and,
+    /// crucially, it is PERSISTED as this local pad, not a world position,
+    /// so a reload after the station has orbited on doesn't leave the ship
+    /// desynced from the pad. Nose sits along local up (the deck normal).
+    static DOCKED_PAD: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
+}
+
+/// Mark the ridden ship DOCKED to the station at station-local `pad`. Called
+/// when the tractor beam finishes landing it (station_screen). Persists
+/// same-frame so a quit right after docking resumes docked.
+pub fn mark_docked(pad_local: DVec3) {
+    DOCKED_PAD.with(|c| c.set(Some(pad_local)));
+    sp_save_now();
+}
+
+/// Release the dock (Undock): the ship flies free again. Persists so the
+/// undocked state resumes.
+pub fn undock() {
+    DOCKED_PAD.with(|c| c.set(None));
+    sp_save_now();
+}
+
+/// The station-local pad the ship is docked at, or `None` if not docked.
+pub fn docked_pad() -> Option<DVec3> {
+    DOCKED_PAD.with(|c| c.get())
 }
 
 /// Board a rocket assembled on the pad at (`tile`, `depth`). `pos`/`up` are
@@ -106,6 +149,7 @@ pub fn clear() {
     RIDE.with(|c| *c.borrow_mut() = None);
     ORIGIN.with(|o| *o.borrow_mut() = None);
     PARKED.with(|c| *c.borrow_mut() = None);
+    DOCKED_PAD.with(|c| c.set(None));
     /* Same-frame clear of the mid-flight save: a landed / exited save must
      * never re-strap the player on the next load. */
     sp_save_now();
@@ -117,15 +161,26 @@ pub fn clear() {
 /// The origin pad is preserved so a later respawn still works. Persists the
 /// parked ship same-frame so a reload brings it back where it was left.
 pub fn park(pos: DVec3, up: DVec3, vel: DVec3) {
+    /* Leaving a DOCKED ship: it stays ON THE PAD (station-relative), so it
+     * rides the station's orbit instead of coasting off and vanishing.
+     * Leaving a free-flying ship: park it where it floats, coasting `vel`. */
+    let docked_pad = DOCKED_PAD.with(|c| c.get());
     let parked = RIDE.with(|c| {
         let rb = c.borrow();
-        rb.as_ref().map(|r| Parked {
-            parts: r.remaining_parts(),
-            fuels: r.stage_fuels(),
-            pos,
-            up,
-            vel,
-            origin: ORIGIN.with(|o| o.borrow().clone()),
+        rb.as_ref().map(|r| {
+            let (p, u, v, docked) = match docked_pad {
+                Some(pad) => (pad, LOCAL_UP, DVec3 { x: 0.0, y: 0.0, z: 0.0 }, true),
+                None => (pos, up, vel, false),
+            };
+            Parked {
+                parts: r.remaining_parts(),
+                fuels: r.stage_fuels(),
+                pos: p,
+                up: u,
+                vel: v,
+                docked,
+                origin: ORIGIN.with(|o| o.borrow().clone()),
+            }
         })
     });
     /* Only actually park when there was a ride to leave. */
@@ -133,6 +188,8 @@ pub fn park(pos: DVec3, up: DVec3, vel: DVec3) {
         PARKED.with(|c| *c.borrow_mut() = Some(pk));
         RIDE.with(|c| *c.borrow_mut() = None);
         ORIGIN.with(|o| *o.borrow_mut() = None);
+        /* The ship is now PARKED-docked, not RIDING-docked. */
+        DOCKED_PAD.with(|c| c.set(None));
         LAST_VEL.with(|c| c.set(vel));
         sp_save_now();
     }
@@ -157,22 +214,47 @@ pub fn advance_parked(dt: f32) {
     }
     PARKED.with(|c| {
         if let Some(pk) = c.borrow_mut().as_mut() {
-            pk.pos = dvec3_add(pk.pos, dvec3_scale(pk.vel, dt as f64));
+            /* A DOCKED ship doesn't coast - it's pinned to the pad and the
+             * station frame carries it. Only a free-floating parked ship
+             * coasts its orbit. */
+            if !pk.docked {
+                pk.pos = dvec3_add(pk.pos, dvec3_scale(pk.vel, dt as f64));
+            }
         }
     });
 }
 
 /// The parked ship's draw pose + parts: (base pos, axis up, parts). `None`
-/// when nothing is parked. The renderer draws it exactly like the ridden
+/// when nothing is parked. A DOCKED ship's stored pos is station-local, so
+/// map it through the live station frame - that's what keeps it glued to the
+/// pad instead of drifting. The renderer draws it exactly like the ridden
 /// stack (a `StageView` through `draw_falling`).
 pub fn parked_view() -> Option<(DVec3, DVec3, Vec<ItemId>)> {
-    PARKED.with(|c| c.borrow().as_ref().map(|p| (p.pos, p.up, p.parts.clone())))
+    PARKED.with(|c| {
+        c.borrow().as_ref().map(|p| {
+            if p.docked {
+                let sf = station_frame_now();
+                (sf.local_to_world(p.pos), sf.up, p.parts.clone())
+            } else {
+                (p.pos, p.up, p.parts.clone())
+            }
+        })
+    })
 }
 
 /// World position of the parked ship's base, for the "walk up to board"
-/// range test. `None` when nothing is parked.
+/// range test. `None` when nothing is parked. Docked -> mapped through the
+/// station frame.
 pub fn parked_pos() -> Option<DVec3> {
-    PARKED.with(|c| c.borrow().as_ref().map(|p| p.pos))
+    PARKED.with(|c| {
+        c.borrow().as_ref().map(|p| {
+            if p.docked {
+                station_frame_now().local_to_world(p.pos)
+            } else {
+                p.pos
+            }
+        })
+    })
 }
 
 /// Re-board the parked ship: rebuild the ride from its parts + fuels,
@@ -191,11 +273,20 @@ pub fn board_parked() -> Option<(DVec3, DVec3, DVec3)> {
     ride.set_stage_fuels(&pk.fuels);
     RIDE.with(|c| *c.borrow_mut() = Some(ride));
     ORIGIN.with(|o| *o.borrow_mut() = pk.origin.clone());
+    /* Re-boarding a DOCKED ship resumes riding-docked: keep it on the pad. */
+    if pk.docked {
+        DOCKED_PAD.with(|c| c.set(Some(pk.pos)));
+    }
     LAST_VEL.with(|c| c.set(pk.vel));
     crate::rocket_cam::reset();
     release_pointer();
     sp_save_now();
-    Some((pk.pos, pk.up, pk.vel))
+    if pk.docked {
+        let sf = station_frame_now();
+        Some((sf.local_to_world(pk.pos), sf.up, sf.station_vel))
+    } else {
+        Some((pk.pos, pk.up, pk.vel))
+    }
 }
 
 /// Reset the current rocket: rebuild it full-fuelled from the pad it launched
@@ -385,8 +476,14 @@ pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
                 fuels: r.stage_fuels(),
                 pad_stack: org.stack.clone(),
                 parked: false,
-                ship_pos: [0.0; 3],
+                /* Riding-docked: persist the STATION-LOCAL pad so a reload
+                 * places the ship back on it (not a stale world pose). */
+                ship_pos: DOCKED_PAD
+                    .with(|c| c.get())
+                    .map(|p| [p.x, p.y, p.z])
+                    .unwrap_or([0.0; 3]),
                 ship_up: [0.0; 3],
+                docked: DOCKED_PAD.with(|c| c.get()).is_some(),
             })
         })
     });
@@ -422,6 +519,7 @@ pub fn save_snapshot() -> Option<crate::persistence::PersistenceRide> {
             parked: true,
             ship_pos: [pk.pos.x, pk.pos.y, pk.pos.z],
             ship_up: [pk.up.x, pk.up.y, pk.up.z],
+            docked: pk.docked,
         })
     })
 }
@@ -467,14 +565,25 @@ pub fn restore_snapshot(s: &crate::persistence::PersistenceRide) -> bool {
                 pos: dvec3_make(s.ship_pos[0], s.ship_pos[1], s.ship_pos[2]),
                 up: dvec3_make(s.ship_up[0], s.ship_up[1], s.ship_up[2]),
                 vel: dvec3_make(s.vel[0], s.vel[1], s.vel[2]),
+                docked: s.docked,
                 origin,
             })
         });
         RIDE.with(|c| *c.borrow_mut() = None);
+        DOCKED_PAD.with(|c| c.set(None));
         return true;
     }
     RIDE.with(|c| *c.borrow_mut() = Some(ride));
     ORIGIN.with(|o| *o.borrow_mut() = origin);
+    /* Riding-docked: restore the station-local pad so the frame loop pins
+     * the ship back onto it (station-relative - no orbital desync). */
+    DOCKED_PAD.with(|c| {
+        c.set(if s.docked {
+            Some(dvec3_make(s.ship_pos[0], s.ship_pos[1], s.ship_pos[2]))
+        } else {
+            None
+        })
+    });
     /* The orbit: queue the saved velocity for the frame loop to reapply
      * to the player (world enter zeroes it). */
     PENDING_VEL.with(|c| c.set(Some(dvec3_make(s.vel[0], s.vel[1], s.vel[2]))));

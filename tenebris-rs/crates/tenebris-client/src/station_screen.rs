@@ -184,7 +184,12 @@ pub fn carry_docked_player() {
             }
             if prog >= 1.0 {
                 s.tractor_done = true;
-                println!("[dock] tractor complete - ship landed on pad");
+                /* Ship is now DOCKED to the station at this pad (station-
+                 * local). rocket_ride persists it station-relative + pins it
+                 * to the pad every frame, so it never drifts and survives a
+                 * reload without desyncing from the orbiting station. */
+                crate::rocket_ride::mark_docked(s.tractor_to);
+                println!("[dock] tractor complete - ship docked on pad");
             }
         }
     });
@@ -331,6 +336,8 @@ fn draw_prompt(ctx: &egui::Context) {
         crate::screens::grab_pointer();
     }
     if do_close {
+        /* Undock: release the pad and fly free (still riding). */
+        crate::rocket_ride::undock();
         close();
         crate::screens::grab_pointer();
     }
@@ -531,6 +538,8 @@ fn draw_hub(ctx: &egui::Context) {
     });
 
     if do_close {
+        /* Undock from the hub: release the pad and fly free. */
+        crate::rocket_ride::undock();
         close();
         crate::screens::grab_pointer();
     }

@@ -5304,6 +5304,10 @@ fn frame_inner(app: &mut App) {
     if station_screen::take_leave_pending() {
         rocket_exit_action(app);
     }
+    /* A DOCKED ship (still ridden) is pinned to its station pad every frame,
+     * even with no dock UI up - this is what re-seats the ship on the pad
+     * after a load (station-relative, so no orbital desync). */
+    maybe_carry_docked_ship(app);
     space_complex_maybe_build(app);
     apply_sp_saves_lazy(app);
     maybe_apply_mp_spawn(app);
@@ -7195,6 +7199,36 @@ fn rocket_respawn_action(app: &App) {
 
 /// Interact reach for walking up to a casino machine on the station deck.
 const CASINO_REACH_M: f64 = 3.5;
+
+/// Pin a DOCKED (still-ridden) ship onto its station pad this frame. The pad
+/// is stored STATION-LOCAL in rocket_ride, so mapping it through the live
+/// orbit frame keeps the ship glued to the pad as the station orbits - and
+/// re-seats it correctly after a load (no world-space desync). No-op unless
+/// riding a docked ship.
+fn maybe_carry_docked_ship(app: &App) {
+    if !rocket_ride::is_riding() {
+        return;
+    }
+    let Some(pad_local) = rocket_ride::docked_pad() else {
+        return;
+    };
+    let t = tenebris_core::world_time::seconds();
+    let sf = tenebris_core::station::frame_sample(tenebris_core::station::orbit_pos(t), t);
+    let world = sf.local_to_world(pad_local);
+    let up = sf.up;
+    let mut p = app.player.borrow_mut();
+    p.position = world;
+    p.velocity = sf.station_vel;
+    let old_fwd = p.basis.fwd;
+    let mut fwd = dvec3_sub(old_fwd, dvec3_scale(up, dvec3_dot(old_fwd, up)));
+    if dvec3_length(fwd) < 1e-4 {
+        fwd = p.basis.right;
+    }
+    let fwd = dvec3_normalize(fwd);
+    p.basis.up = up;
+    p.basis.fwd = fwd;
+    p.basis.right = tenebris_core::math::dvec3_cross(fwd, up);
+}
 
 /// On foot on the station, within reach of a slot cabinet: open its game.
 /// Returns true when a machine was in reach (the caller consumes the key).
