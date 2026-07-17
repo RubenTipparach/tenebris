@@ -105,34 +105,54 @@ tenebris:
 # fresnel / limb halo reads as hazy tan-brown from orbit (user
 # direction), matching the red forests and brown cloud decks.
 sequoia:
+  # --- toggle ---
   # ATMOSPHERE ON/OFF. 1 = on (normal). Set to 0 to strip the sky +
   # distance fog entirely - the water then keeps its own green with
   # nothing to inherit (the direct test for the water-inherits-sky bug).
   enabled: 1
-  # Atmosphere HEIGHT (x planet radius): outer shell (max) + lower bound
-  # (min). Raise lower_radius_mult above 1.0 to lift the haze off the
-  # ground so the water sits below it.
+
+  # --- height (x planet radius) ---
+  # radius_mult = outer shell (MAX height); lower_radius_mult = lower
+  # bound (MIN height). Raise lower_radius_mult above 1.0 to lift the
+  # haze off the ground so the water sits below it.
   radius_mult: 1.24
   lower_radius_mult: 1.0
-  # Kept low so the limb halo shows COLOUR instead of blowing out to
-  # cream-white (the "rim should be hazy brown" note - overexposure
-  # saturates any wavelength mix to white).
+
+  # --- scattering / brightness ---
+  # sun_intensity kept low so the limb halo shows COLOUR instead of
+  # blowing out to cream-white (overexposure saturates to white).
   sun_intensity: 8.0
+  # Red-dominant scattering: the sky + limb halo scatter warm brown
+  # (rayleigh_scale strong + red-heavy wavelengths, the inverse of
+  # Tenebris's blue-sky 5.6/9.5/19.6).
   rayleigh_scale: 1.2
-  # Red-dominant scattering strengths (the inverse of Tenebris's
-  # blue-sky 5.6/9.5/19.6): the sky + limb halo scatter warm brown.
   wavelengths: [18.0, 10.0, 4.5]
-  # Mie is colourless forward glow - keep it modest or it whitens the
-  # rim; the "haze" reads from the boosted Rayleigh instead.
+  # Mie is colourless forward sun-glow - modest so it doesn't whiten
+  # the rim; the haze reads from the boosted Rayleigh instead.
   mie_scale: 0.010
+  # Mie phase asymmetry (forward-scatter tightness). Global default 0.76.
+  mie_g: 0.85
+  # Vertical density falloff (thin shell like Tenebris). Global 0.25.
+  scale_height: 0.6
+
+  # --- sunset / horizon warmth ---
+  # Overall warm-tint strength near the horizon. Global default 0.3.
+  sunset_strength: 0.30
   sunset_tint: [1.25, 1.00, 0.70]
   sunset_glow: [1.00, 0.75, 0.40]
   sunset_horizon: [0.85, 0.55, 0.25]
+
+  # --- distance fog ---
+  # fog_color TINTS the sky-matched fog base ([1,1,1] = untinted, fog
+  # takes the horizon-sky colour directly).
+  fog_color: [1.0, 1.0, 1.0]
   # Lighter haze than Tenebris (0.006): the water pass fogs itself
-  # toward this same horizon-sky colour, and at 0.006 Sequoia's pale
-  # sky bleached the green seas across the whole sheet. 0.0035 keeps a
-  # soft brown haze on distant terrain without washing the water out.
+  # toward this same horizon-sky colour, and at 0.006 Sequoia's sky
+  # bleached the green seas. 0.0035 keeps a soft brown haze on distant
+  # terrain without washing the water out.
   fog_density: 0.0035
+  # Camera altitude (m above sea) where the fog fully fades - climb
+  # above this and the vista clears.
   fog_height_m: 130.0
 
 # Add other has_water=true bodies here. Bodies without atmosphere

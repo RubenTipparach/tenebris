@@ -568,6 +568,15 @@ pub struct LodConfig {
      * fog. Terrain still gets the full atmospheric haze - this only
      * decouples the WATER surface. */
     pub tileset_water_fog_scale: [f32; 5],
+    /* Per-tileset COLOUR the water pass fogs toward, replacing the live
+     * atmosphere sky colour (FRAME_FOG.xyz) on the WATER surface only.
+     * The fog SCALE above thins the density (.w); this overrides the
+     * fogged-toward hue itself. Sequoia's sea fogs toward the orange/red
+     * dusk sky by default (FRAME_FOG carries the horizon colour), so far
+     * water reads orange in-atmosphere even with the density scaled down;
+     * a green-grey haze here keeps distant water green instead of tan.
+     * {0,0,0} falls back to the live sky-matched FRAME_FOG colour. */
+    pub tileset_water_fog_color: [Vec3; 5],
     /* Atmospheric limb-rim light painted over TERRAIN near the limb
      * when seen from orbit (hex shader + distant impostor). {0,0,0}
      * falls back to the global distant_rim_color - which is Tenebris
@@ -719,6 +728,15 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         1.0,  /* FROST    - full fog                                    */
         1.0,  /* ASTEROID - full fog                                    */
     ],
+    tileset_water_fog_color: [
+        VEC3_ZERO,            /* EARTH    - use live sky-matched fog      */
+        v3(0.12, 0.28, 0.18), /* SEQUOIA  - green-grey haze: far water
+                               * stays green in-atmosphere instead of
+                               * inheriting the orange/red dusk sky       */
+        VEC3_ZERO,            /* CRAG     - no water                      */
+        VEC3_ZERO,            /* FROST    - use live sky-matched fog      */
+        VEC3_ZERO,            /* ASTEROID - use live sky-matched fog      */
+    ],
     tileset_rim_color: [
         VEC3_ZERO,            /* EARTH    - use global blue rim           */
         v3(0.80, 0.55, 0.30), /* SEQUOIA  - hazy brown limb light         */
@@ -830,6 +848,7 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                     cfg.tileset_water_fog_scale[ts] = fval(val);
                     0
                 }
+                "water_fog_color" => vec3_or_err(val, &mut cfg.tileset_water_fog_color[ts]),
                 "rim_color" => vec3_or_err(val, &mut cfg.tileset_rim_color[ts]),
                 _ => {
                     println!("[config] {}:{}: unknown palette key '{}'", path, line_no, key);

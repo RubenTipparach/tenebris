@@ -182,6 +182,11 @@ sequoia:
   # green again only out of atmosphere. 0.15 keeps the water its own
   # green in-atmosphere; the terrain still gets full brown haze.
   water_fog_scale: 0.15
+  # COLOUR the water fogs toward (replaces the live orange/red horizon-sky
+  # colour on the water surface only). Scaling the density above still left
+  # distant water tinted by the sky hue - this fogs the far sea toward its
+  # own green-grey haze so it stays green in-atmosphere. [0,0,0] = sky-match.
+  water_fog_color:    [0.12, 0.28, 0.18]
   # Sky-reflection tones the cap mirrors at grazing angles - from orbit
   # every view ray grazes, so WITHOUT these the sea renders as the
   # global blue-white sky mirror and the green never shows. Green sea.
