@@ -178,7 +178,9 @@ pub fn draw_map_orbits(
     riding: bool,
     sim_t: f64,
 ) {
-    REMAP_EYE.with(|c| c.set(eye));
+    /* Shell scales with the zoom (eye->ship distance) so the rings never
+     * clip against the map's distance-scaled near plane. */
+    set_remap(eye, dvec3_length(dvec3_sub(ship_pos, eye)));
     renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -338,18 +340,35 @@ fn line_pip() -> sgl::Pipeline {
 thread_local! {
     static REMAP_EYE: std::cell::Cell<DVec3> =
         const { std::cell::Cell::new(DVec3 { x: 0.0, y: 0.0, z: 0.0 }) };
+    /// Per-frame shell radius, set by each draw pass from the camera
+    /// distance (see set_remap). Must sit inside (znear, zfar).
+    static REMAP_SHELL: std::cell::Cell<f64> = const { std::cell::Cell::new(SHELL_DIST_M) };
 }
-/// Shell radius: far enough that near geometry keeps sub-pixel accuracy,
-/// well inside the near..far range (0.3 .. 20 000).
+/// Fallback / floor shell radius when no camera distance is set.
 const SHELL_DIST_M: f64 = 500.0;
+
+/// Seed the eye-shell remap for this pass. The shell radius scales with the
+/// camera distance so it always lands between the near and far planes: the
+/// solar-map near plane grows with zoom (znear up to 500 m at ~500 km out),
+/// and a FIXED 500 m shell then got clipped by it - the "orbit lines vanish
+/// past ~400 km" bug. Scaling the shell with the zoom keeps every line
+/// visible at any range (the remap is pinhole-invariant, so shell radius
+/// changes depth only, never screen position - a poor-man's log depth that
+/// works within sokol_gl's fixed pipeline, where a real log-z shader can't
+/// be injected).
+fn set_remap(eye: DVec3, cam_dist: f64) {
+    REMAP_EYE.with(|c| c.set(eye));
+    REMAP_SHELL.with(|c| c.set(cam_dist.max(SHELL_DIST_M * 0.02)));
+}
 
 /// Emit a world-space nav vertex via the eye-shell remap.
 fn vtx(p: DVec3) {
     let eye = REMAP_EYE.with(|c| c.get());
+    let shell = REMAP_SHELL.with(|c| c.get());
     let d = dvec3_sub(p, eye);
     let len = dvec3_length(d);
     let q = if len > 1e-6 {
-        dvec3_add(eye, dvec3_scale(d, SHELL_DIST_M / len))
+        dvec3_add(eye, dvec3_scale(d, shell / len))
     } else {
         p
     };
@@ -457,9 +476,10 @@ pub fn draw_world(
     let far_out =
         dvec3_length(dvec3_sub(pos, active_center)) > active_body.radius_m * SYSTEM_RINGS_MIN_RADII;
     /* Seed the eye-shell remap (see vtx): all line geometry this frame
-     * collapses onto a shell around the CAMERA, so the far plane can
-     * never clip the orbit tracks however far out the camera zooms. */
-    REMAP_EYE.with(|c| c.set(eye));
+     * collapses onto a shell around the CAMERA (radius scaled to the
+     * eye->ship distance) so neither the near nor far plane can clip the
+     * orbit tracks however far the camera zooms. */
+    set_remap(eye, dvec3_length(dvec3_sub(pos, eye)));
 
     /* OVERLAY context, not the world context: the world scene gets the
      * fog / atmosphere composite and then the WATER pass painted over it,

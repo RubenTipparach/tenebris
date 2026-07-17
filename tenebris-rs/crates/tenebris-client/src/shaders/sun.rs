@@ -54,8 +54,8 @@ pub struct SunFsParams {
     pub _pad_92: f32,
 }
 
-pub const SUN_VS_SOURCE_GLSL410: &str = concat!(include_str!("sun.vs.glsl"), "\0");
-pub const SUN_FS_SOURCE_GLSL410: &str = concat!(include_str!("sun.fs.glsl"), "\0");
+pub static SUN_VS_SOURCE_GLSL410: &str = concat!(include_str!("sun.vs.glsl"), "\0");
+pub static SUN_FS_SOURCE_GLSL410: &str = concat!(include_str!("sun.fs.glsl"), "\0");
 
 pub fn sun_shader_desc(_backend: sg::Backend) -> sg::ShaderDesc {
     let mut desc = sg::ShaderDesc::new();

@@ -33,13 +33,30 @@ void main() {
     vec4 alb = texture(tex_albedo_smp_clamp, uv);
     vec4 nrm = texture(tex_normal_smp_clamp, uv);
 
-    // Tangent-space normal perturbation about the geometric sphere normal.
-    vec3 ref = (abs(n_geo.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tang = normalize(cross(ref, n_geo));
-    vec2 dn = (nrm.xy * 2.0 - vec2(1.0)) * distant_fs_params[2].w;
-    vec3 n = normalize(n_geo + tang * dn.x + cross(n_geo, tang) * dn.y);
+    // Flat-albedo debug (renderer sets [6].z when TENEBRIS_DEV_LODFLAT):
+    // draw the raw baked texture with NO lighting/rim, to tell a bad
+    // texture apart from a bad shader.
+    if (distant_fs_params[6].z > 0.5) {
+        frag_color = vec4(alb.xyz, 0.0);
+        return;
+    }
 
     vec3 sun = normalize(distant_fs_params[0].xyz);
+
+    // Tangent-space normal perturbation about the geometric sphere normal.
+    // FADE the perturbation toward the terminator: where the geometric
+    // surface is turning into shadow (n_geo . sun near 0), a full-strength
+    // bump flips dot(n,sun) light/dark texel to texel and speckles the
+    // terminator - the "strange coloring" on the dark edge. Off the sunlit
+    // face the globe uses the smooth geometric normal, so the terminator is
+    // a clean gradient; the day side keeps its relief.
+    float ndl_geo = dot(n_geo, sun);
+    float detail_fade = smoothstep(0.0, 0.25, ndl_geo);
+    vec3 ref = (abs(n_geo.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tang = normalize(cross(ref, n_geo));
+    vec2 dn = (nrm.xy * 2.0 - vec2(1.0)) * (distant_fs_params[2].w * detail_fade);
+    vec3 n = normalize(n_geo + tang * dn.x + cross(n_geo, tang) * dn.y);
+
     vec3 lit = alb.xyz * (distant_fs_params[1].xyz + vec3(max(dot(n, sun), 0.0)));
 
     // Water specular glint (alpha of the albedo tags open water).

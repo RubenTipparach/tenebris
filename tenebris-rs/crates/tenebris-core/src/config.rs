@@ -529,6 +529,14 @@ pub struct LodConfig {
     pub distant_rim_power: f32,
     pub distant_rim_intensity: f32,
     pub distant_rim_floor: f32,
+    /// Ambient fill on the distant-LOD globe (planet-from-space). Kept much
+    /// LOWER than the terrain ambient: the terrain ambient (~0.35) is a
+    /// playability floor so the ground you stand on isn't pitch-black at
+    /// night, but on a planet seen from orbit that same fill lit the whole
+    /// night side to ~35% of the texture (the muddy "strange coloring" on
+    /// the dark side). A small neutral value gives a clean dark night and a
+    /// crisp terminator. 0 = pure black night side.
+    pub distant_ambient: f32,
 
     /* Per-tileset palette for the distant-LOD vertex sampler.
      * Indexed by tileset_t: EARTH=0, SEQUOIA=1, CRAG=2, FROST=3,
@@ -659,6 +667,7 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
     distant_rim_power: 3.0,
     distant_rim_intensity: 0.9,
     distant_rim_floor: 0.25,
+    distant_ambient: 0.06,
     tileset_water_color: [
         v3(0.10, 0.28, 0.55), /* EARTH    - open-ocean blue          */
         v3(0.16, 0.42, 0.34), /* SEQUOIA  - alien greenish water     */
@@ -892,6 +901,10 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
             }
             "distant_rim_floor" => {
                 cfg.distant_rim_floor = fval(val);
+                0
+            }
+            "distant_ambient" => {
+                cfg.distant_ambient = fval(val);
                 0
             }
             "gravity_full_mult" => {

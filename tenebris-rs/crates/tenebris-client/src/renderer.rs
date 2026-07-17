@@ -3271,6 +3271,42 @@ fn build_distant_textures_for_body(body: &mut ChunkedBody, col_avg: &[Vec3; ATLA
     let bcfg = body.world.borrow().body;
     let (albedo, normal) = build_distant_texture_pixels(&bcfg, body.distant_color, col_avg);
 
+    /* LOD-albedo colour diagnostic (TENEBRIS_DEV_LODDIAG): print the raw
+     * baked albedo at a few equirect pixels + the sampling breakdown at the
+     * equator/prime-meridian, so a "why is this body blue" question is
+     * answered from the numbers, not guesswork. */
+    if std::env::var("TENEBRIS_DEV_LODDIAG").is_ok() {
+        let w = DISTANT_TEX_W;
+        let h = DISTANT_TEX_H;
+        let at = |px: i32, py: i32| {
+            let i = ((py * w + px) * 4) as usize;
+            (albedo[i], albedo[i + 1], albedo[i + 2], albedo[i + 3])
+        };
+        let dir = distant_pixel_to_dir(w / 4, h / 2); /* equator, prime meridian */
+        let sm = {
+            let mut s = planet_gen::surface_altitude(&bcfg, dir);
+            if bcfg.barren {
+                s *= 0.3;
+            }
+            s
+        };
+        let prof = planet_gen::profile(&bcfg, dir);
+        let top = planet_gen::sample_with_profile(&prof, sm);
+        let col = blocks::face_tile(top, FaceCap::Top) as i32;
+        let cavg = if (0..ATLAS_TILES as i32).contains(&col) {
+            col_avg[col as usize]
+        } else {
+            body.distant_color
+        };
+        let (r, g, b, a) = at(w / 4, h / 2);
+        println!(
+            "[lod-diag] {:<10} tileset={:?} barren={} icy={} has_water={} | equator: top={:?} col_avg=({:.2},{:.2},{:.2}) -> albedo=({},{},{}) waterA={} | fallback=({:.2},{:.2},{:.2})",
+            bcfg.name, bcfg.tileset, bcfg.barren, bcfg.icy, bcfg.has_water,
+            top, cavg.x, cavg.y, cavg.z, r, g, b, a,
+            body.distant_color.x, body.distant_color.y, body.distant_color.z,
+        );
+    }
+
     let mut desc = sg::ImageDesc {
         width: DISTANT_TEX_W,
         height: DISTANT_TEX_H,
@@ -4169,6 +4205,26 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
         let vp_base = mat4_mul(proj, view);
         let frustum = extract_frustum(vp_base);
 
+        /* Point-light from the central star: every distant body must be lit
+         * from the STAR's render-frame position, not the active body's shared
+         * env.sun_dir. env.sun_dir is one parallel direction (correct only
+         * for the body you're standing on), so in the solar map - where you
+         * see the whole system at once - planets on the far side of the star
+         * were lit from the near side (the "planets aren't getting sunlight
+         * from the central star" bug). Each body's own to-star direction
+         * gives the correct day/night terminator per planet. */
+        let star_light_pos: Option<Vec3> = if r.active_body_idx >= 0 {
+            let active_id = r.bodies[r.active_body_idx as usize].world.borrow().body.id;
+            let t = tenebris_core::world_time::seconds();
+            Some(dvec3_to_vec3(orbit::apparent_star_pos(active_id, t)))
+        } else {
+            None
+        };
+        /* Debug (TENEBRIS_DEV_LODFLAT): draw the raw baked albedo UNLIT - no
+         * diffuse, ambient, water spec, or atmospheric rim - to separate a
+         * "texture is wrong" bug from a "shader is wrong" bug at a glance. */
+        let flat_debug = std::env::var("TENEBRIS_DEV_LODFLAT").is_ok();
+
         sg::apply_pipeline(r.pip_distant);
         let mut tris = 0usize;
         for bi in 0..r.bodies.len() {
@@ -4212,15 +4268,46 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             bind.views[shaders::distant::VIEW_TEX_NORMAL] = body.distant_view_normal;
             bind.samplers[shaders::distant::SMP_SMP_CLAMP] = r.distant_lod_smp;
             sg::apply_bindings(&bind);
-            let dvp = shaders::distant::DistantVsParams { u_mvp: mvp.m };
+            /* fs_pos / fs_radius so the VS can build v_world_pos = fs_pos +
+             * a_pos*fs_radius - the world position the FS rim fresnel needs
+             * (was model-space a_pos, which made the rim a camera-directional
+             * hemisphere instead of a limb halo). */
+            let dvp = shaders::distant::DistantVsParams {
+                u_mvp: mvp.m,
+                u_fs_pos: [fs_pos.x, fs_pos.y, fs_pos.z, fs_radius],
+            };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
             let wc = config::water();
             let lc = config::lod();
-            let rim = rim_color_for(&lc, body.world.borrow().body.tileset as usize);
+            let body_cfg = body.world.borrow().body;
+            let rim = rim_color_for(&lc, body_cfg.tileset as usize);
+            /* Atmospheric rim only on bodies with an ATMOSPHERE. Barren
+             * bodies (moons, asteroids, Crag) are airless - the blue
+             * fresnel halo was painting a whole sunlit hemisphere blue on
+             * airless moons (the "half the moon is blue" bug). */
+            let rim_intensity = if body_cfg.barren { 0.0 } else { lc.distant_rim_intensity };
+            /* Direction from THIS body to the star (fallback: the active
+             * body's shared sun_dir when no star position is available). */
+            let sun_dir = match star_light_pos {
+                Some(sp) => {
+                    let d = vec3_sub(sp, body.world_pos);
+                    let l = vec3_length(d);
+                    if l > 1e-3 {
+                        Vec3 { x: d.x / l, y: d.y / l, z: d.z / l }
+                    } else {
+                        r.env.sun_dir
+                    }
+                }
+                None => r.env.sun_dir,
+            };
+            /* Distant globe ambient is a low neutral fill (lod.yaml
+             * distant_ambient), NOT the terrain ambient - see the config
+             * doc: the terrain fill lit the night side to a muddy 35%. */
+            let da = lc.distant_ambient.max(0.0);
             let dfp = shaders::distant::DistantFsParams {
-                u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
+                u_sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z],
                 u_pad0: 0.0,
-                u_ambient: overcast_ambient(r.env.ambient),
+                u_ambient: [da, da, da],
                 u_pad1: 0.0,
                 u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
                 u_normal_strength: 0.6,
@@ -4232,9 +4319,10 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 u_pad4: 0.0,
                 u_rim_color: [rim.x, rim.y, rim.z],
                 u_rim_power: lc.distant_rim_power,
-                u_rim_intensity: lc.distant_rim_intensity,
+                u_rim_intensity: rim_intensity,
                 u_rim_floor: lc.distant_rim_floor,
-                u_pad5: 0.0,
+                /* .z (pad5) = flat-albedo debug flag read by the shader. */
+                u_pad5: if flat_debug { 1.0 } else { 0.0 },
                 u_pad6: 0.0,
             };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_FS_PARAMS, &sg::value_as_range(&dfp));
@@ -7265,7 +7353,7 @@ mod tests {
          * splits compose (droplets off) from the post-water lens pass. */
         assert_eq!(size_of::<shaders::composite::CompositeFsParams>(), 128);
         assert_eq!(size_of::<shaders::composite_mobile::CompositeMobileFsParams>(), 48);
-        assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 64);
+        assert_eq!(size_of::<shaders::distant::DistantVsParams>(), 80); /* +fs_pos (world-pos for rim) */
         assert_eq!(size_of::<shaders::distant::DistantFsParams>(), 112); /* +rim fresnel (2 vec4s) */
         assert_eq!(size_of::<shaders::sun::SunVsParams>(), 64);
         /* 6 vec4s: procedural surface (colors / churn / cam / limb / spot /
