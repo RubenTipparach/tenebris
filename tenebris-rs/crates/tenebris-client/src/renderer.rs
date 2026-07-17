@@ -686,10 +686,15 @@ fn sample_planet_lod_color(
     let ts = ts as usize;
 
     /* Water column thickness drives both the visual water blend AND
-     * the alpha mask the shader reads for its specular gate. */
+     * the alpha mask the shader reads for its specular gate. The sea
+     * sits at SEA_LEVEL + sea_raise_m, NOT at a hardcoded 0 - Sequoia
+     * raises its sea +2 m, so testing surface_m < 0 read its whole
+     * shallow archipelago as dry land and the planet/preview showed no
+     * water at all. Test + measure depth against the REAL sea. */
     let mut water_alpha = 0.0f32;
-    if body.has_water && surface_m < 0.0 {
-        let depth_m = -surface_m;
+    let sea = planet_gen::sea_raise_m(body); /* SEA_LEVEL is 0.0 */
+    if body.has_water && surface_m < sea {
+        let depth_m = sea - surface_m;
         let mut full_depth = l.tileset_water_full_depth_m[ts];
         if full_depth <= 0.0 {
             full_depth = 4.0;
