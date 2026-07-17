@@ -415,6 +415,12 @@ thread_local! {
     /// (TENEBRIS_DEV_FISH=under). Held each frame so gravity doesn't
     /// drop the camera off its perch above the school.
     static DEV_FISH_CAM: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
+    /// Dev: world-space aim target re-solved EVERY frame while a dive
+    /// perch is active (aerial dive). A one-shot dev_aim_at at placement
+    /// solves pitch/yaw against the parallel-transported basis, which is
+    /// stale right after the dive relocates the player - the same
+    /// stale-basis aim bug the LODCAM hook fixed by solving per frame.
+    static DEV_AIM_TARGET: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
     /// Dev: TENEBRIS_DEV_CRACK holds the survival mine button on the block
     /// under the reticle every frame (camera pitched down) so a screenshot
     /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
@@ -808,13 +814,19 @@ fn dev_maybe_place(app: &mut App) {
              * the player onto the shoal - feet on the block one lower than the
              * sea-level block, so the eye (feet + EYE_HEIGHT) rests ~0.6 m above
              * the surface, inside the 0.8 m partial band with the near plane
-             * dipping into the water. (A non-numeric value keeps the 4 m default.) */
-            let dive_depth = std::env::var("TENEBRIS_DEV_DIVE")
+             * dipping into the water. A NEGATIVE value is the AERIAL variant:
+             * the camera parks |value| m ABOVE the deepest ocean's surface,
+             * aimed down at the sheet ahead - the from-altitude "is the sea
+             * green or sky-coloured" framing the water-vs-atmosphere fight is
+             * judged by. (A non-numeric value keeps the 4 m default.) */
+            let dive_raw = std::env::var("TENEBRIS_DEV_DIVE")
                 .ok()
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .filter(|d| *d > 0.0)
+                .filter(|d| *d != 0.0)
                 .unwrap_or(4.0);
-            let wade = dive_depth < 2.0;
+            let aerial = dive_raw < 0.0;
+            let dive_depth = dive_raw.abs();
+            let wade = !aerial && dive_depth < 2.0;
             /* Dive the body the player is ON (a TENEBRIS_DEV_BODY teleport
              * swaps it to e.g. Sequoia); app.world is only the spawn planet
              * - diving it captured Tenebris's blue ocean, not Sequoia's. */
@@ -863,8 +875,16 @@ fn dev_maybe_place(app: &mut App) {
                  * along `up`. Wading: feet on the shoal seabed (sea_r + surf_m,
                  * ~2 m below sea level) -> eye ~0.4 m BELOW the surface, so the
                  * waterline crosses the near plane. Diving: feet dive_depth below
-                 * the surface -> eye deep enough to stay fully underwater. */
-                let feet_r = if wade { sea_r + surf_m } else { sea_r - dive_depth };
+                 * the surface -> eye deep enough to stay fully underwater.
+                 * Aerial: feet dive_depth ABOVE the surface, looking down at
+                 * the sheet ahead. */
+                let feet_r = if aerial {
+                    sea_r + dive_depth
+                } else if wade {
+                    sea_r + surf_m
+                } else {
+                    sea_r - dive_depth
+                };
                 let cam = dvec3_add(center, dvec3_scale(dir, feet_r));
                 {
                     let mut p = app.player.borrow_mut();
@@ -888,17 +908,37 @@ fn dev_maybe_place(app: &mut App) {
                 /* Wading: look straight forward along the surface so the
                  * above-water / below-waterline split frames level - do NOT chase
                  * the fish school (it sits underwater and tilts the view down).
-                 * Diving fully under: prefer the fish school for the murk shot. */
-                let target = if wade {
+                 * Diving fully under: prefer the fish school for the murk shot.
+                 * Aerial: aim at a point ON the sea sphere ahead, ~1.2x the
+                 * altitude out, so the sheet fills the lower frame at a
+                 * screenshot-friendly ~40 degree down-angle. */
+                let target = if aerial {
+                    dvec3_add(
+                        dvec3_add(center, dvec3_scale(dir, sea_r)),
+                        dvec3_scale(tangent, (dive_depth * 1.2).max(12.0)),
+                    )
+                } else if wade {
                     level_fwd
                 } else {
                     animals::herd_center().unwrap_or(level_fwd)
                 };
                 dev_aim_at(app, target);
+                if aerial {
+                    /* Re-solve the aim per frame: the basis is stale right
+                     * after the relocation (LODCAM lesson) and a one-shot
+                     * solve leaves the camera staring at the sky. */
+                    DEV_AIM_TARGET.with(|c| c.set(Some(target)));
+                }
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
                 println!(
                     "[dev] dive: {} tile {} (seabed {:.1} m below sea, feet_r={:.1})",
-                    if wade { "wade" } else { "deep" },
+                    if aerial {
+                        "aerial"
+                    } else if wade {
+                        "wade"
+                    } else {
+                        "deep"
+                    },
                     tile,
                     -surf_m,
                     feet_r
@@ -5789,6 +5829,16 @@ fn frame_inner(app: &mut App) {
             let mut p = app.player.borrow_mut();
             p.position = cam;
             p.velocity = tenebris_core::math::DVec3::default();
+        }
+    });
+
+    /* Dev screenshot aid: re-solve the dive aim against the LIVE basis
+     * each frame (aerial dive sets this) - a one-shot solve at placement
+     * uses the still-stale parallel-transported basis and stares at the
+     * sky instead of the sea. Sibling of the LOOKUP re-aim below. */
+    DEV_AIM_TARGET.with(|c| {
+        if let Some(target) = c.get() {
+            dev_aim_at(app, target);
         }
     });
 
