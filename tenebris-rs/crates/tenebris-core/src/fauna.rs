@@ -835,25 +835,28 @@ pub fn land_spawn_kind(
         arr[(table_roll * arr.len() as f32) as usize % arr.len()]
     };
     if sequoia {
-        /* The two-footed world: mascot bipeds everywhere temperate,
-         * cranes wading the wet biomes, raptors owning the high ground.
-         * No barnyard here - cows and chickens stay on Tenebris. */
+        /* The two-footed world - a roster with NO overlap onto Tenebris
+         * (CLAUDE.md: animal rosters must be UNIQUE per planet). Only
+         * Sequoia-native species appear: mascot bipeds everywhere
+         * temperate, cranes wading the wet biomes, raptors owning the
+         * high ground. No barnyard, and none of Tenebris's generic
+         * frog / bird / lizard fill either. */
         return match biome {
             Biome::Swamp => {
-                if roll < 0.40 {
+                if roll < 0.45 {
                     AnimalKind::Crane
                 } else {
-                    pick(&[AnimalKind::Frog, AnimalKind::Shellkin, AnimalKind::Crane])
+                    pick(&[AnimalKind::Shellkin, AnimalKind::Crane])
                 }
             }
             Biome::Jungle => {
-                if roll < 0.30 {
+                if roll < 0.35 {
                     AnimalKind::Sparkit
                 } else {
                     pick(&[
                         AnimalKind::Sparkit,
                         AnimalKind::Shellkin,
-                        AnimalKind::Bird,
+                        AnimalKind::Raptor,
                         AnimalKind::Crane,
                     ])
                 }
@@ -862,7 +865,7 @@ pub fn land_spawn_kind(
                 if roll < 0.55 {
                     AnimalKind::Sparkit
                 } else {
-                    pick(&[AnimalKind::Lizard, AnimalKind::Shellkin])
+                    pick(&[AnimalKind::Shellkin, AnimalKind::Raptor])
                 }
             }
             Biome::Tundra => {
@@ -1357,6 +1360,13 @@ mod tests {
             assert!(ten_kinds.contains(&k.to_u8()), "{k:?} must spawn on Tenebris");
             assert!(!seq_kinds.contains(&k.to_u8()), "{k:?} must NOT spawn on Sequoia");
         }
+        /* CLAUDE.md standing rule: the land rosters must be FULLY
+         * disjoint - not one shared species between two planets. */
+        let shared: Vec<u8> = seq_kinds.intersection(&ten_kinds).copied().collect();
+        assert!(
+            shared.is_empty(),
+            "planet land rosters must be unique per planet; shared kinds: {shared:?}"
+        );
     }
 
     #[test]

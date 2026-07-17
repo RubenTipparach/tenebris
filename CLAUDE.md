@@ -1,5 +1,47 @@
 # Repo rules
 
+## Every planet's flora AND fauna roster must be UNIQUE to that planet
+
+**Standing instruction from the user (all-caps, engrained).** No animal
+species and no plant/tree species may appear on two different planets.
+Each world gets its OWN roster - Tenebris's barnyard + frog/bird/lizard
+stay on Tenebris, Sequoia's bipeds (Sparkit, Shellkin, Crane, Raptor) +
+Sporewood/redwood flora stay on Sequoia, and any future planet gets a
+fresh set. There is no shared "generic" filler species that shows up
+everywhere.
+
+- **Lifeless worlds spawn nothing.** Icy (Frostbite), barren (Crag,
+  the moons), and asteroid bodies have NO fauna and NO flora - a sheep
+  on a glacier is a bug. `fauna::body_has_fauna(body)` is the gate
+  (true only for non-barren, non-icy Earth/Sequoia-tileset worlds); it
+  wraps every spawn entry point (`spawn_near_auto`, both stalker paths,
+  SP + MP).
+- **Land fauna** is chosen by the pure `fauna::land_spawn_kind(...)`,
+  which branches per planet. The rosters must be provably disjoint -
+  the `planets_field_disjoint_rosters` test asserts the Tenebris and
+  Sequoia kind-sets have an EMPTY intersection. When you add a planet,
+  extend that branch and that test; never let a species leak across.
+- **Water fauna** (`spawn_near_auto` water path) and the **fishing
+  table** are the current KNOWN GAP: the base fish (Fish/LargeFish/
+  LongFish/FlatFish/Turtle) still spawn on every ocean world; only the
+  SerpentFish is Sequoia-gated. Bringing the water roster fully
+  per-planet (each planet its own fish species) is outstanding work -
+  do it the same way (per-body branch + disjointness test) when the
+  fish art for a second set exists.
+- **Flora** (trees / mushrooms / scatter in `world.rs` + the wild-fruit
+  plants in `crops.rs`) follows the same rule: Sequoia grows redwoods /
+  giant mushrooms / Sporewood, Tenebris grows the classic trees + the
+  wild fruit (apple/melon/orange/kiwi - Tenebris ONLY). A new planet
+  gets new plant species, gated on its tileset, never a reused one.
+
+When you add a planet or a species, the checklist is: (1) give it its
+own roster branch, (2) gate it on the body/tileset so it can't appear
+elsewhere, (3) extend the disjointness test, (4) if it's a new visible
+species, it needs its own icon/model/texture in the same change (see
+the item-visuals + static-asset rules below).
+
+This rule stays in force until the user says otherwise.
+
 ## HIGH PRIORITY BUG: the ship must NEVER despawn when you exit it
 
 **Status: OPEN. Standing instruction from the user (all-caps, engrained).**
