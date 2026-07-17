@@ -2263,6 +2263,25 @@ fn space_complex_maybe_build(app: &mut App) {
     println!("[space] launch complex built around tile {center}");
 }
 
+/// (Re)load the rendering / tuning configs - the "designer knob" YAMLs the
+/// renderer re-reads every frame. Run once at boot and again by the native
+/// hot-reload watcher whenever one of these files changes on disk. The file
+/// set and order must match `hot_reload::WATCHED`. Deliberately excludes
+/// gameplay-state configs (recipes, controls, economy, mining, ...) so a
+/// live edit can't stomp mid-session state.
+fn reload_tunable_configs() {
+    planet::load_atmosphere("assets/config/atmosphere.yaml");
+    config::load_skybox("assets/config/skybox.yaml");
+    config::load_lod("assets/config/lod.yaml");
+    config::load_water("assets/config/water.yaml");
+    config::load_lighting("assets/config/lighting.yaml");
+    tenebris_core::clouds::load_config("assets/config/clouds.yaml");
+    tenebris_core::weather::load_config("assets/config/weather.yaml");
+    config::load_solar("assets/config/solar.yaml");
+    tenebris_core::scatter::load_config("assets/config/scatter.yaml");
+    config::load_bonfire("assets/config/bonfire.yaml");
+}
+
 extern "C" fn init() {
     /* Bump sokol's buffer pool way above the default 128 (see the long
      * rationale in the C file: 4 buffers per chunk x 32 chunks x ~20
@@ -2336,16 +2355,10 @@ extern "C" fn init() {
 
     /* Load atmosphere overrides from YAML before creating any worlds -
      * planet::set_atmosphere mutates BODIES[] and the renderer reads
-     * body atmo fields every frame. */
-    planet::load_atmosphere("assets/config/atmosphere.yaml");
-    config::load_skybox("assets/config/skybox.yaml");
-    config::load_lod("assets/config/lod.yaml");
-    config::load_water("assets/config/water.yaml");
-    config::load_lighting("assets/config/lighting.yaml");
-    config::load_bonfire("assets/config/bonfire.yaml");
-    tenebris_core::weather::load_config("assets/config/weather.yaml");
+     * body atmo fields every frame. The rendering/tuning subset is also
+     * the hot-reload set (reload_tunable_configs); see hot_reload::WATCHED. */
+    reload_tunable_configs();
     config::load_time("assets/config/time.yaml");
-    config::load_solar("assets/config/solar.yaml");
     /* Keyboard bindings (remappable): raw keys -> named actions. */
     crate::controls::load("assets/config/controls.yaml");
     /* Space-era economy tunables (credits, prices, spreads) + the station
@@ -2375,10 +2388,8 @@ extern "C" fn init() {
     tenebris_core::mining::load_config("assets/config/mining.yaml");
     /* Crop growth + yield tuning (farming loop). */
     tenebris_core::farming::load_config("assets/config/farming.yaml");
-    /* Decorative surface scatter densities (grass / rocks / kelp...). */
-    tenebris_core::scatter::load_config("assets/config/scatter.yaml");
-    /* Cloud layer densities / drift (see client clouds.rs). */
-    tenebris_core::clouds::load_config("assets/config/clouds.yaml");
+    /* scatter + clouds are in the hot-reload tuning set - loaded above by
+     * reload_tunable_configs(), before this diagnostic reads clouds. */
     /* Diagnostic: confirm the Sequoia look overrides actually parsed at
      * boot (grep '[seq-diag]' in the log). If these print defaults, the
      * yaml isn't being read - a working-directory / asset-path problem,
@@ -5314,6 +5325,13 @@ fn draw_loading_frame(status: &str, frac: f32) {
 /* --------------------------------------------------------------------- */
 
 extern "C" fn frame() {
+    /* Native dev: pick up live edits to the rendering/tuning YAMLs. Polls
+     * mtimes every ~0.5 s and re-runs reload_tunable_configs() on a change;
+     * the renderer re-reads those configs each frame, so the edit shows up
+     * next frame. No-op on WASM (no filesystem). */
+    #[cfg(not(target_os = "emscripten"))]
+    crate::hot_reload::poll(reload_tunable_configs);
+
     /* Pump the network state machine first so any handshake progress
      * is reflected in this frame's HUD - and so an MP socket stays
      * alive while the terrain loader runs below. */
@@ -6643,7 +6661,11 @@ fn frame_inner(app: &mut App) {
     let rayleigh = if active_body.atmo_rayleigh_scale > 0.0 { active_body.atmo_rayleigh_scale } else { 1.0 };
     let mie = if active_body.atmo_mie_scale > 0.0 { active_body.atmo_mie_scale } else { 0.05 };
     let sun_int = if active_body.atmo_sun_intensity > 0.0 { active_body.atmo_sun_intensity } else { 30.0 };
-    let sunset = if active_body.atmo_sunset_strength > 0.0 { active_body.atmo_sunset_strength } else { 0.3 };
+    /* Default 0.85 = the warm-tint blend cap the shader baked before
+     * sunset_strength was made live; a body that omits it renders exactly
+     * as it always did. (The old 0.3 fallback was dead - the shader ignored
+     * the config value entirely and always used 0.85.) */
+    let sunset = if active_body.atmo_sunset_strength > 0.0 { active_body.atmo_sunset_strength } else { 0.85 };
     let scale_h = if active_body.atmo_scale_height > 0.0 { active_body.atmo_scale_height } else { 0.25 };
     let mie_g = if active_body.atmo_mie_g > 0.0 { active_body.atmo_mie_g } else { 0.76 };
     /* vec3 zero-test: x+y+z > 0 means at least one channel was set. */

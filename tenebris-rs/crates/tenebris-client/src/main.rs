@@ -30,6 +30,8 @@ mod slot_screen;
 mod egui_layer;
 mod gfx_math;
 mod hex_mesher;
+#[cfg(not(target_os = "emscripten"))]
+mod hot_reload;
 mod hotbar_ui;
 mod controls;
 mod input;

@@ -31,14 +31,19 @@
 #                              Also moves the planet-clip sphere used
 #                              by the ray-march, so this is the knob
 #                              for "how prominent is the limb halo".)
-#   rayleigh_scale    float  main blue-sky knob, 1.0 = Earth
+#   rayleigh_scale    float  main sky-scattering knob, 1.0 = Earth. High
+#                            values make the air optically thick and
+#                            red-shift the whole sky (Sequoia's brown).
 #   mie_scale         float  haze / forward sun-glow strength
 #   sun_intensity     float  overall sky brightness multiplier
-#   sunset_strength   float  warm-tint multiplier near horizon (0..1)
+#   sunset_strength   float  warm-tint blend near the horizon at dusk
+#                            (0 = no warm tint, ~0.85 = the classic look).
 #   scale_height      float  density falloff in normalised altitude
 #   mie_g             float  Mie phase asymmetry (-1..1)
-#   wavelengths       vec3   (1/λ⁴) RGB ratios, RGB
-#   sunset_tint       vec3   sky multiplier near horizon
+#   wavelengths       vec3   (1/λ⁴) RGB ratios - the SKY HUE. Blue-heavy
+#                            [5.6, 9.5, 19.6] = Earth blue; flip it
+#                            red-heavy for an orange/brown sky.
+#   sunset_tint       vec3   sky multiplier near horizon at dusk
 #   sunset_glow       vec3   sun-direction glow at sunset
 #   sunset_horizon    vec3   horizon-band tint at sunset
 #   fog_color         vec3   TINT multiplier over the fog's base colour.
@@ -56,6 +61,13 @@
 #   fog_height_m      float  camera altitude (m above sea level) where
 #                            the fog has fully faded out - climb above
 #                            the weather and the vista clears
+#
+# ALL fields above are LIVE and HOT-RELOADABLE: wavelengths + sunset_*
+# drive BOTH the GPU sky dome and the CPU distance-fog colour (they were
+# baked shader literals before and only ever tinted the fog). Edit + save
+# this file while the native game is running and the change applies within
+# ~0.5 s - no restart. See hot_reload::WATCHED for the full live-reload set.
+# (Editing a value hot-reloads; DELETING a key needs a restart.)
 
 tenebris:
   # Thin shell topping out at the OLD cloud deck height (72 m on the
@@ -85,12 +97,13 @@ tenebris:
   rayleigh_scale: 0.024
   mie_scale: 0.012
   mie_g: 0.85
-  sunset_strength: 0.25
+  # Warm-tint blend at dusk. 0.85 is the classic Tenebris look (this used
+  # to be a baked shader constant; it is now this live knob).
+  sunset_strength: 0.85
   scale_height: 0.6
-  # Wavelengths + sunset vec3s are baked as literals in the new
-  # Caelum-style atmosphere.glsl shader and ignored by the renderer
-  # — kept here for back-compat in case we re-introduce per-body
-  # tinting later.
+  # Blue-heavy wavelengths + these sunset vec3s are the Earth-blue-sky
+  # baseline. They are LIVE (GPU sky + CPU fog); the defaults reproduce
+  # the historical look, so Tenebris is unchanged.
   wavelengths: [5.602, 9.473, 19.644]
   sunset_tint: [1.3, 1.0, 0.6]
   sunset_glow: [1.0, 0.65, 0.25]
@@ -122,9 +135,10 @@ sequoia:
   # sun_intensity kept low so the limb halo shows COLOUR instead of
   # blowing out to cream-white (overexposure saturates to white).
   sun_intensity: 8.0
-  # Red-dominant scattering: the sky + limb halo scatter warm brown
-  # (rayleigh_scale strong + red-heavy wavelengths, the inverse of
-  # Tenebris's blue-sky 5.6/9.5/19.6).
+  # Red-dominant scattering: rayleigh_scale strong (thick air) + red-heavy
+  # wavelengths, the inverse of Tenebris's blue-sky 5.6/9.5/19.6. Both are
+  # LIVE now - dial rayleigh_scale for how thick/brown the air reads, and
+  # wavelengths for the exact hue. (Save the file to see it hot-reload.)
   rayleigh_scale: 1.2
   wavelengths: [18.0, 10.0, 4.5]
   # Mie is colourless forward sun-glow - modest so it doesn't whiten
@@ -135,9 +149,10 @@ sequoia:
   # Vertical density falloff (thin shell like Tenebris). Global 0.25.
   scale_height: 0.6
 
-  # --- sunset / horizon warmth ---
-  # Overall warm-tint strength near the horizon. Global default 0.3.
-  sunset_strength: 0.30
+  # --- sunset / horizon warmth (all LIVE) ---
+  # Warm-tint blend at dusk. 0.85 matches the classic look; lower for a
+  # subtler dusk, higher for a stronger warm wash.
+  sunset_strength: 0.85
   sunset_tint: [1.25, 1.00, 0.70]
   sunset_glow: [1.00, 0.75, 0.40]
   sunset_horizon: [0.85, 0.55, 0.25]
