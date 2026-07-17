@@ -199,6 +199,10 @@ pub struct BodyConfig {
     /// camera altitude (m above sea level) where fog fades out - climb
     /// above the weather and the vista clears. 0 -> 60.
     pub atmo_fog_height_m: f32,
+    /// Atmosphere on/off. `has_water` bodies default to ON; set false
+    /// (via atmosphere.yaml `enabled: 0`) to strip the sky + distance
+    /// fog entirely - the sea then keeps its own colour with no haze.
+    pub atmo_enabled: bool,
 
     /* ---- Gravity field. Per-body overrides for the lod.yaml-level
      * defaults (gravity_full_mult / gravity_falloff_mult). Below
@@ -219,6 +223,10 @@ pub struct BodyConfig {
 /// express partial overrides.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BodyAtmo {
+    /// Atmosphere on/off toggle. -1 = unspecified (keep compiled default,
+    /// i.e. on for has_water bodies); 0 = force OFF; >0 = force ON. Lets
+    /// atmosphere.yaml write `enabled: 0` to strip a body's sky + fog.
+    pub enabled: f32,
     pub radius_mult: f32,
     pub lower_radius_mult: f32,
     pub rayleigh_scale: f32,
@@ -239,6 +247,7 @@ pub struct BodyAtmo {
 impl BodyAtmo {
     /// memset(&patch, 0, sizeof(patch)) equivalent.
     pub const ZERO: BodyAtmo = BodyAtmo {
+        enabled: -1.0, /* unspecified: keep the compiled default */
         radius_mult: 0.0,
         lower_radius_mult: 0.0,
         rayleigh_scale: 0.0,
@@ -292,6 +301,9 @@ const ZERO_BODY: BodyConfig = BodyConfig {
     atmo_fog_color: VEC3_ZERO,
     atmo_fog_density: 0.0,
     atmo_fog_height_m: 0.0,
+    /* has_water bodies get an atmosphere by default; atmosphere.yaml
+     * `enabled: 0` flips this off per body. */
+    atmo_enabled: true,
     gravity_full_mult: 0.0,
     gravity_falloff_mult: 0.0,
 };
@@ -653,6 +665,41 @@ pub fn default_seed(id: BodyId) -> u64 {
     BODIES_INIT[id as usize].seed
 }
 
+/// Deterministically derive a per-body worldgen seed from a single SP
+/// world seed, so EVERY planet in the world - not just the spawn body -
+/// runs the biome-active generator (oceans, rivers, biome remap) with a
+/// terrain unique to that world.
+///
+/// - **Identity at the spawn body (Tenebris):** `derive(ws, Tenebris) ==
+///   ws`, so the spawn planet's terrain is byte-identical to today and
+///   the `w.body.seed == target_seed` regen-guard stays valid.
+/// - **Every other body** gets a splitmix64-avalanched, per-id-offset
+///   seed that is *guaranteed* to differ from its compiled default (the
+///   explicit collision guard), so `planet_gen::biomes_active` is always
+///   true for it and its biome layer switches on.
+///
+/// This is a PERMANENT determinism contract: a world persists only its
+/// single seed, and every reload re-derives the sisters from it. Changing
+/// this function re-rolls every existing world's sister planets, so don't.
+pub fn derive_body_seed(world_seed: u64, id: BodyId) -> u64 {
+    if id == BodyId::Tenebris {
+        return world_seed;
+    }
+    /* splitmix64 finalizer, offset per body by the golden-ratio odd
+     * constant so two bodies never share a noise stream even for a
+     * structured world seed. The constants are the algorithm's identity
+     * (the "no magic numbers" hash-constant exception), so they stay
+     * inline. */
+    let mut z = world_seed.wrapping_add(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(id as u64 + 1));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    if z == default_seed(id) {
+        z ^= 0x9E37_79B9_7F4A_7C15; /* hard non-collision -> biomes_active */
+    }
+    z
+}
+
 /// Port of `planet_set_atmosphere()`. Apply a YAML-loaded atmosphere
 /// patch on top of a body's compiled-in defaults. Each field is only
 /// assigned when the patch's value is non-zero, so an empty patch is a
@@ -661,6 +708,10 @@ pub fn default_seed(id: BodyId) -> u64 {
 pub fn set_atmosphere(id: BodyId, p: &BodyAtmo) {
     let mut bodies = BODIES.lock().unwrap();
     let b = &mut bodies[id as usize];
+    /* enabled: -1 unspecified (keep default), 0 = off, >0 = on. */
+    if p.enabled >= 0.0 {
+        b.atmo_enabled = p.enabled > 0.5;
+    }
     if p.radius_mult > 0.0 {
         b.atmo_radius_mult = p.radius_mult;
     }

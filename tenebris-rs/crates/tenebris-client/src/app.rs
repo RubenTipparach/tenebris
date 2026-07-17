@@ -415,6 +415,12 @@ thread_local! {
     /// (TENEBRIS_DEV_FISH=under). Held each frame so gravity doesn't
     /// drop the camera off its perch above the school.
     static DEV_FISH_CAM: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
+    /// Dev: world-space aim target re-solved EVERY frame while a dive
+    /// perch is active (aerial dive). A one-shot dev_aim_at at placement
+    /// solves pitch/yaw against the parallel-transported basis, which is
+    /// stale right after the dive relocates the player - the same
+    /// stale-basis aim bug the LODCAM hook fixed by solving per frame.
+    static DEV_AIM_TARGET: std::cell::Cell<Option<DVec3>> = const { std::cell::Cell::new(None) };
     /// Dev: TENEBRIS_DEV_CRACK holds the survival mine button on the block
     /// under the reticle every frame (camera pitched down) so a screenshot
     /// catches the block-break crack decal mid-mine. -1 unknown, 0 off, 1 on.
@@ -425,6 +431,10 @@ thread_local! {
     /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
     /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
     static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
+    /// Dev: force the atmosphere + distance fog OFF (TENEBRIS_DEV_NO_ATMO) to
+    /// test whether the water surface inherits the sky through the atmosphere
+    /// pipeline. -1 unknown, 0 keep atmosphere, 1 disabled.
+    static DEV_NO_ATMO: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
 }
 
 /// Dev-only: once in-game and a few frames settled, drop the requested dev
@@ -473,12 +483,12 @@ fn dev_maybe_place(app: &mut App) {
     if center < 0 && dev_mode != 21 {
         return;
     }
-    /* The fish showcase probes real Water blocks (=under marches the
-     * shoreline), so on a freshly teleported-to body (TENEBRIS_DEV_BODY)
-     * it must wait for worldgen - probing half-generated terrain finds no
-     * ocean and the school falls back to a surface float. Re-arm until
-     * the disk is generated. */
-    if (dev_mode == 17 || dev_mode == 14) && !app.world.borrow().gen_complete() {
+    /* Showcases that probe real Water/terrain blocks on the teleported
+     * body (TENEBRIS_DEV_BODY) must wait for ITS worldgen - probing a
+     * half-generated disk finds no ocean and falls back to a surface
+     * float. Re-arm until the body the player is on is fully generated.
+     * (17 fish, 14 lineup, 21 dive - all scan the capture-world.) */
+    if matches!(dev_mode, 17 | 14 | 21) && !dev_capture_world(app).borrow().gen_complete() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(10));
         return;
     }
@@ -804,15 +814,25 @@ fn dev_maybe_place(app: &mut App) {
              * the player onto the shoal - feet on the block one lower than the
              * sea-level block, so the eye (feet + EYE_HEIGHT) rests ~0.6 m above
              * the surface, inside the 0.8 m partial band with the near plane
-             * dipping into the water. (A non-numeric value keeps the 4 m default.) */
-            let dive_depth = std::env::var("TENEBRIS_DEV_DIVE")
+             * dipping into the water. A NEGATIVE value is the AERIAL variant:
+             * the camera parks |value| m ABOVE the deepest ocean's surface,
+             * aimed down at the sheet ahead - the from-altitude "is the sea
+             * green or sky-coloured" framing the water-vs-atmosphere fight is
+             * judged by. (A non-numeric value keeps the 4 m default.) */
+            let dive_raw = std::env::var("TENEBRIS_DEV_DIVE")
                 .ok()
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .filter(|d| *d > 0.0)
+                .filter(|d| *d != 0.0)
                 .unwrap_or(4.0);
-            let wade = dive_depth < 2.0;
+            let aerial = dive_raw < 0.0;
+            let dive_depth = dive_raw.abs();
+            let wade = !aerial && dive_depth < 2.0;
+            /* Dive the body the player is ON (a TENEBRIS_DEV_BODY teleport
+             * swaps it to e.g. Sequoia); app.world is only the spawn planet
+             * - diving it captured Tenebris's blue ocean, not Sequoia's. */
+            let cap_world = dev_capture_world(app);
             let dive = {
-                let w = app.world.borrow();
+                let w = cap_world.borrow();
                 let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
                 let sea_r = w.depth_to_radius_m(tenebris_core::world::WORLD_SEA_LEVEL_DEPTH)
                     + tenebris_core::planet_gen::sea_raise_m(&w.body) as f64;
@@ -855,8 +875,16 @@ fn dev_maybe_place(app: &mut App) {
                  * along `up`. Wading: feet on the shoal seabed (sea_r + surf_m,
                  * ~2 m below sea level) -> eye ~0.4 m BELOW the surface, so the
                  * waterline crosses the near plane. Diving: feet dive_depth below
-                 * the surface -> eye deep enough to stay fully underwater. */
-                let feet_r = if wade { sea_r + surf_m } else { sea_r - dive_depth };
+                 * the surface -> eye deep enough to stay fully underwater.
+                 * Aerial: feet dive_depth ABOVE the surface, looking down at
+                 * the sheet ahead. */
+                let feet_r = if aerial {
+                    sea_r + dive_depth
+                } else if wade {
+                    sea_r + surf_m
+                } else {
+                    sea_r - dive_depth
+                };
                 let cam = dvec3_add(center, dvec3_scale(dir, feet_r));
                 {
                     let mut p = app.player.borrow_mut();
@@ -864,7 +892,7 @@ fn dev_maybe_place(app: &mut App) {
                     p.velocity = tenebris_core::math::DVec3::default();
                     p.last_tile = tile;
                 }
-                animals::dev_spawn_fish(&app.world.borrow(), &app.player.borrow(), true);
+                animals::dev_spawn_fish(&cap_world.borrow(), &app.player.borrow(), true);
                 /* Aim direction. A tangent target (perpendicular to the planet
                  * normal `dir`) built at EYE height makes the look vector level,
                  * so `dev_aim_at` resolves to pitch ~0 and the waterline sits
@@ -880,17 +908,37 @@ fn dev_maybe_place(app: &mut App) {
                 /* Wading: look straight forward along the surface so the
                  * above-water / below-waterline split frames level - do NOT chase
                  * the fish school (it sits underwater and tilts the view down).
-                 * Diving fully under: prefer the fish school for the murk shot. */
-                let target = if wade {
+                 * Diving fully under: prefer the fish school for the murk shot.
+                 * Aerial: aim at a point ON the sea sphere ahead, ~1.2x the
+                 * altitude out, so the sheet fills the lower frame at a
+                 * screenshot-friendly ~40 degree down-angle. */
+                let target = if aerial {
+                    dvec3_add(
+                        dvec3_add(center, dvec3_scale(dir, sea_r)),
+                        dvec3_scale(tangent, (dive_depth * 1.2).max(12.0)),
+                    )
+                } else if wade {
                     level_fwd
                 } else {
                     animals::herd_center().unwrap_or(level_fwd)
                 };
                 dev_aim_at(app, target);
+                if aerial {
+                    /* Re-solve the aim per frame: the basis is stale right
+                     * after the relocation (LODCAM lesson) and a one-shot
+                     * solve leaves the camera staring at the sky. */
+                    DEV_AIM_TARGET.with(|c| c.set(Some(target)));
+                }
                 DEV_FISH_CAM.with(|c| c.set(Some(cam)));
                 println!(
                     "[dev] dive: {} tile {} (seabed {:.1} m below sea, feet_r={:.1})",
-                    if wade { "wade" } else { "deep" },
+                    if aerial {
+                        "aerial"
+                    } else if wade {
+                        "wade"
+                    } else {
+                        "deep"
+                    },
                     tile,
                     -surf_m,
                     feet_r
@@ -2331,6 +2379,24 @@ extern "C" fn init() {
     tenebris_core::scatter::load_config("assets/config/scatter.yaml");
     /* Cloud layer densities / drift (see client clouds.rs). */
     tenebris_core::clouds::load_config("assets/config/clouds.yaml");
+    /* Diagnostic: confirm the Sequoia look overrides actually parsed at
+     * boot (grep '[seq-diag]' in the log). If these print defaults, the
+     * yaml isn't being read - a working-directory / asset-path problem,
+     * not a code one. */
+    {
+        let cc = tenebris_core::clouds::config();
+        let ov = tenebris_core::clouds::sequoia_override();
+        println!(
+            "[seq-diag] clouds: global density={:.2} patch_clear={:.2} | sequoia override density={:?} patch_clear={:?} color={:?}",
+            cc.density, cc.patch_clear, ov.density, ov.patch_clear, ov.color
+        );
+        let l = tenebris_core::config::lod();
+        let ts = tenebris_core::planet::Tileset::Sequoia as usize;
+        println!(
+            "[seq-diag] lod sequoia: water_color={:?} full_depth={:.2} rim={:?}",
+            l.tileset_water_color[ts], l.tileset_water_full_depth_m[ts], l.tileset_rim_color[ts]
+        );
+    }
     tenebris_core::fishing::load_config("assets/config/fishing.yaml");
     tenebris_core::gameplay::load_config("assets/config/gameplay.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket
@@ -4141,11 +4207,55 @@ fn claim_terrain_for_session(
     regen
 }
 
-fn start_world_regen(app: &mut App, seed: u64) {
-    planet::set_seed(BodyId::Tenebris, seed);
+thread_local! {
+    /// Sister-planet body ids whose World was just regenerated from a new
+    /// derived seed and need a one-shot GPU remesh once the loader finishes
+    /// re-generating them. Drained in LoadStage::Moons.
+    static MOON_REMESH_PENDING: std::cell::RefCell<std::collections::HashSet<u32>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// `reseed_sisters`: in SP on a seed-carrying world, derive a per-body
+/// seed for EVERY planet so all of them (not just Tenebris) run the
+/// biome-active generator, and rebuild their World objects in place so
+/// they regenerate. false on MP (server pins compiled defaults) and on
+/// pre-seed SP worlds (keep their sister terrain byte-identical so old
+/// edits stay aligned) - there the derivation is identity at Tenebris
+/// and the sisters keep their compiled seeds.
+fn start_world_regen(app: &mut App, seed: u64, reseed_sisters: bool) {
+    if reseed_sisters {
+        /* derive_body_seed is identity at Tenebris, so the spawn planet
+         * still gets exactly `seed` and the seed-match guard is stable. */
+        for id in BodyId::ALL {
+            planet::set_seed(id, planet::derive_body_seed(seed, id));
+        }
+    } else {
+        planet::set_seed(BodyId::Tenebris, seed);
+    }
     let body = planet::get(BodyId::Tenebris);
     app.body = body;
     *app.world.borrow_mut() = World::create(&body, planet::subdivisions_for_radius(body.radius_m));
+    /* Rebuild every sister planet's World IN PLACE (through the shared
+     * RefCell the renderer clones) so it regenerates from its new derived
+     * seed. Emptying it makes the loader's Moons stage re-gen + re-mesh
+     * it; set_seed alone is inert because each World holds a private copy
+     * of its body/seed. Runs once per world entry (start_world_regen is
+     * latched by terrain_tag), never per frame. */
+    if reseed_sisters {
+        for w_rc in &app.moons {
+            let id = w_rc.borrow().body.id;
+            let b = planet::get(id);
+            *w_rc.borrow_mut() = World::create(&b, planet::subdivisions_for_radius(b.radius_m));
+            let idx = id as usize;
+            if idx < SP_SAVES_APPLIED_MAX {
+                app.sp_saves_applied[idx] = false;
+            }
+            /* If this moon was already detail-meshed, its GPU mesh is now
+             * stale; flag it so the Moons loader stage remeshes it once
+             * gen completes (no-op for never-approached moons). */
+            MOON_REMESH_PENDING.with(|s| s.borrow_mut().insert(b.id as u32));
+        }
+    }
     /* World-scoped client state from the previous terrain. The
      * incoming session's torches / crops replay from persistence when
      * the session entry flow resumes (apply_sp_world_saves); the herd
@@ -4213,7 +4323,13 @@ fn maybe_apply_sp_resume(app: &mut App) {
          * and the tag is this session's - so no second pass.
          * `!generated` covers the very first entry: boot no longer loads
          * any terrain, because the menu doesn't need it. */
-        start_world_regen(app, target_seed);
+        /* Reseed the sister planets from the world seed ONLY when this
+         * world carries a real (post-seed-feature) seed. A pre-seed world
+         * resolves to default_seed(Tenebris); keep its sisters on compiled
+         * defaults so their persisted edits stay aligned with byte-
+         * identical legacy terrain. */
+        let reseed_sisters = target_seed != planet::default_seed(BodyId::Tenebris);
+        start_world_regen(app, target_seed, reseed_sisters);
         return;
     }
 
@@ -4436,7 +4552,10 @@ fn maybe_prime_mode_for_state(app: &mut App) {
                 (w.body.seed == mp_seed, w.gen_complete())
             };
             if claim_terrain_for_session(&mut app.terrain_tag, "mp", seed_matches, generated) {
-                start_world_regen(app, mp_seed);
+                /* MP keeps every body on its compiled default seed to stay
+                 * byte-identical with the dedicated server's worldgen -
+                 * never reseed the sisters here. */
+                start_world_regen(app, mp_seed, false);
             }
 
             /* MP defaults to survival: blocks have quantity. Torches
@@ -5074,6 +5193,12 @@ fn loader_step(app: &mut App, mut l: Loader) -> Option<Loader> {
                 let w_rc = app.moons[idx].clone();
                 let body_id = w_rc.borrow().body.id as u32;
                 if w_rc.borrow().gen_complete() && renderer::world_for_body(body_id).is_some() {
+                    /* Regenerated resident moon (world-derived reseed):
+                     * rebuild its mesh once so the new biome terrain shows.
+                     * remesh_body_now no-ops if never detail-meshed. */
+                    if MOON_REMESH_PENDING.with(|s| s.borrow_mut().remove(&body_id)) {
+                        renderer::remesh_body_now(body_id);
+                    }
                     idx += 1;
                     continue;
                 }
@@ -5706,6 +5831,33 @@ fn frame_inner(app: &mut App) {
             p.velocity = tenebris_core::math::DVec3::default();
         }
     });
+
+    /* Dev screenshot aid: re-solve the dive aim against the LIVE basis
+     * each frame (aerial dive sets this) - a one-shot solve at placement
+     * uses the still-stale parallel-transported basis and stares at the
+     * sky instead of the sea. Sibling of the LOOKUP re-aim below. */
+    DEV_AIM_TARGET.with(|c| {
+        if let Some(target) = c.get() {
+            dev_aim_at(app, target);
+        }
+    });
+
+    /* Dev screenshot aid (TENEBRIS_DEV_LOOKUP): while perched underwater
+     * (DEV_FISH_CAM active), aim the camera straight up along the local
+     * vertical each frame so a headless still frames Snell's window - the
+     * refracted-sky disc seen looking up through the water surface. The
+     * dive showcase otherwise aims level / at the fish school, never up. */
+    if std::env::var("TENEBRIS_DEV_LOOKUP").is_ok() {
+        if let Some(cam) = DEV_FISH_CAM.with(|c| c.get()) {
+            let center = {
+                let w_rc = dev_capture_world(app);
+                let w = w_rc.borrow();
+                dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z)
+            };
+            let up = dvec3_normalize(dvec3_sub(cam, center));
+            dev_aim_at(app, dvec3_add(cam, dvec3_scale(up, 100.0)));
+        }
+    }
 
     /* Dev screenshot aid (TENEBRIS_DEV_SOLARMAP): pop the solar-system
      * map open once in-game, so headless captures can verify the chart +
@@ -6474,7 +6626,17 @@ fn frame_inner(app: &mut App) {
             solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0)),
         )
     };
-    let has_atmo = active_body.has_water;
+    /* Dev diagnostic (TENEBRIS_DEV_NO_ATMO=1): force the atmosphere +
+     * its distance fog OFF for the active body, to test whether the
+     * water surface inheriting the sky colour comes from the atmosphere
+     * pipeline (user hypothesis). Parsed once. */
+    let no_atmo = DEV_NO_ATMO.with(|c| {
+        if c.get() < 0 {
+            c.set(std::env::var("TENEBRIS_DEV_NO_ATMO").is_ok() as i8);
+        }
+        c.get() == 1
+    });
+    let has_atmo = active_body.has_water && active_body.atmo_enabled && !no_atmo;
     let planet_r = active_body.radius_m as f32;
     let radius_mult = if active_body.atmo_radius_mult > 0.0 { active_body.atmo_radius_mult } else { 1.3 };
     let lower_mult = if active_body.atmo_lower_radius_mult > 0.0 { active_body.atmo_lower_radius_mult } else { 1.0 };
@@ -7094,6 +7256,10 @@ fn frame_inner(app: &mut App) {
 
     profiler::end_frame();
     renderer::end_frame();
+    /* Dev screenshot hook (TENEBRIS_DEV_SHOT=<path.png>): reads the
+     * completed back buffer - see dev_shot.rs for why external window
+     * capture doesn't work here. */
+    crate::dev_shot::maybe_write(sapp::width(), sapp::height());
 }
 
 /* --------------------------------------------------------------------- */

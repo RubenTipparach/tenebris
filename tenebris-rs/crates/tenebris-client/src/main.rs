@@ -14,6 +14,7 @@ mod client_kv;
 mod clouds;
 mod crafting_screen;
 mod crops;
+mod dev_shot;
 mod drops;
 mod falling_stage;
 mod furnace_screen;

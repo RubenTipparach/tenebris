@@ -2077,6 +2077,20 @@ pub fn camera_world() -> Vec3 {
     R.with(|cell| cell.borrow().env.camera_world)
 }
 
+/// Per-tileset close-up water (deep_color, absorption) with global
+/// fallback (zero sentinel). The water cap, the underwater composite,
+/// and the submerged-terrain dim must ALL read the same values or a
+/// green-water body reads blue under the surface / on its seabed while
+/// its cap is green. `ts` is the active body's tileset index.
+fn tileset_water_deep_absorb(w: &config::WaterConfig, lp: &config::LodConfig, ts: usize) -> (Vec3, Vec3) {
+    let ts = if ts < 5 { ts } else { 0 };
+    let dc = lp.tileset_water_deep_color[ts];
+    let ab = lp.tileset_water_absorption[ts];
+    let deep = if dc.x > 0.0 || dc.y > 0.0 || dc.z > 0.0 { dc } else { w.deep_color };
+    let absorb = if ab.x > 0.0 || ab.y > 0.0 || ab.z > 0.0 { ab } else { w.absorption };
+    (deep, absorb)
+}
+
 /// Per-tileset atmospheric limb-rim colour with global fallback (zero
 /// sentinel, same merge rule as the other lod.yaml palette fields). The
 /// global default is Tenebris's blue - bodies with non-blue atmospheres
@@ -3980,11 +3994,77 @@ fn body_load_detail(r: &mut Renderer, bi: usize) {
         let w = r.bodies[bi].world.borrow();
         (w.body.name, w.tile_count)
     };
+    /* DIAGNOSTIC: how much of THIS body's meshed data is water, and did
+     * the water actually mesh into cap geometry? Answers the "no water"
+     * question directly - if water_cols > 0 but water_idx == 0 the cap
+     * mesher dropped it (render bug); if water_cols == 0 the WORLD has
+     * no ocean (stale save or wrong seed), not a render bug. */
+    let (water_cols, top_hist) = {
+        let w = r.bodies[bi].world.borrow();
+        terrain_water_stats(&w)
+    };
+    let water_idx: i32 = r.bodies[bi].chunks[..chunk_n()]
+        .iter()
+        .map(|c| c.last_uploaded_water_idx_count)
+        .sum();
     println!(
-        "[renderer] loaded detail for {} (body={}, {} tiles) in {:.1} ms - \
-         compare net-client body-totals for this body to /saves output",
+        "[renderer] loaded detail for {} (body={}, {} tiles) in {:.1} ms",
         name, body_id, tile_count, elapsed_ms
     );
+    println!(
+        "[seq-diag] {} terrain: water_columns={:.1}% water_mesh_indices={} | top blocks: {}",
+        name,
+        100.0 * water_cols as f32 / tile_count.max(1) as f32,
+        water_idx,
+        top_hist
+    );
+}
+
+thread_local! {
+    /// Body ids already logged by the water-cap-skip diagnostic (log once each).
+    static WATER_DIAG: RefCell<std::collections::HashSet<i32>> =
+        RefCell::new(std::collections::HashSet::new());
+    /// Tileset indices already logged by the water-colour diagnostic.
+    static WATER_COLOR_DIAG: RefCell<std::collections::HashSet<i32>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Scan a world's surface columns: how many top out in Water, and a
+/// small histogram of the most common top blocks. Diagnostic only.
+fn terrain_water_stats(w: &World) -> (i64, String) {
+    use std::collections::HashMap;
+    let mut water = 0i64;
+    let mut hist: HashMap<u8, i64> = HashMap::new();
+    let depth = tenebris_core::world::WORLD_MAX_DEPTH as usize;
+    for t in 0..w.tile_count as usize {
+        let base = t * depth;
+        let col = &w.blocks[base..base + depth];
+        /* Topmost non-Air cell is the "surface" block. */
+        let mut top = Block::Air.raw();
+        for d in (0..depth).rev() {
+            if col[d] != Block::Air.raw() {
+                top = col[d];
+                break;
+            }
+        }
+        if top == Block::Water.raw() {
+            water += 1;
+        }
+        *hist.entry(top).or_insert(0) += 1;
+    }
+    let mut items: Vec<(u8, i64)> = hist.into_iter().collect();
+    items.sort_by(|a, b| b.1.cmp(&a.1));
+    let total = w.tile_count.max(1) as f32;
+    let s = items
+        .iter()
+        .take(5)
+        .map(|(b, n)| {
+            let blk = Block::from_raw(*b).unwrap_or(Block::Air);
+            format!("{:?} {:.0}%", blk, 100.0 * *n as f32 / total)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    (water, s)
 }
 
 /// Port of `body_unload_detail()`. Releases the per-chunk CPU meshes +
@@ -4614,7 +4694,10 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             FRAME_WET.with(|c| c.set(wet_now));
 
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
-            if bc.atmo_fog_density > 0.0 {
+            /* Atmosphere-off bodies (atmosphere.yaml enabled:0) get NO
+             * distance fog either - a clean crisp airless look, and the
+             * sea keeps its own colour with nothing to inherit. */
+            if bc.atmo_fog_density > 0.0 && bc.atmo_enabled {
                 let cam = vec3_sub(r.env.camera_world, body_center);
                 let cam_r = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
                 /* Fog colour = the ACTUAL Caelum sky at the horizon
@@ -4921,6 +5004,20 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     let model = mat4_translate(body.world_pos);
     let mvp = mat4_mul(vp, model);
 
+    /* The water FS works in PLANET-LOCAL space (v_wpos is the raw chunk
+     * vertex; only the mvp composes the body translation), so the camera
+     * must be handed over PLANET-LOCAL too - same convention hex.fs
+     * documents for its slot [3]. Passing the WORLD camera "worked" only
+     * because Tenebris sits at the origin; on any offset body (Sequoia at
+     * x=20000) every view-dependent term broke: the fog distance read
+     * ~20 km for every fragment (fog saturated -> the whole sheet turned
+     * the sky-average colour, "fixed" by atmosphere enabled:0 because
+     * that zeroes the density), and Fresnel / specular / Snell's window
+     * angles were computed against a garbage near-constant view vector
+     * (the "busted shader, solid colour that changes with view angle"
+     * look). */
+    let cam_local = vec3_sub(camera_world, body.world_pos);
+
     /* All water knobs come from water.yaml; near/far stay hardcoded
      * (renderer-pipeline detail, mirrors main_web's projection). */
     let w = config::water();
@@ -4963,6 +5060,30 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     {
         sky_z = lp.tileset_water_sky_zenith[ts_idx];
     }
+    /* Per-tileset Fresnel sky-reflection strength (how much the surface
+     * mirrors the sky vs shows the water colour). <= 0 keeps the global. */
+    let sky_strength = if lp.tileset_water_sky_strength[ts_idx] > 0.0 {
+        lp.tileset_water_sky_strength[ts_idx]
+    } else {
+        w.sky_horizon_strength
+    };
+
+    /* DIAGNOSTIC (once/body): the exact water colours the near cap sends
+     * to the shader. If Sequoia (ts_idx should be 1) shows the global
+     * blue sky_h/deep_c instead of its green overrides, the per-tileset
+     * merge isn't reaching the near cap. */
+    if WATER_COLOR_DIAG.with(|s| s.borrow_mut().insert(ts_idx as i32)) {
+        let nm = body.world.borrow().body.name;
+        println!(
+            "[seq-diag] water cap DRAW {} ts_idx={} deep={:?} absorb={:?} sky_h={:?} sky_z={:?}",
+            nm,
+            ts_idx,
+            [deep_c.x, deep_c.y, deep_c.z],
+            [absorb.x, absorb.y, absorb.z],
+            [sky_h.x, sky_h.y, sky_h.z],
+            [sky_z.x, sky_z.y, sky_z.z],
+        );
+    }
 
     let mut tris = 0usize;
 
@@ -4982,7 +5103,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         );
 
         let fs_mobile = shaders::water_mobile::FsParamsMobile {
-            u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
+            u_camera_pos: [cam_local.x, cam_local.y, cam_local.z],
             _pad_12: [0; 4],
             u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
             u_time: t_scaled,
@@ -4995,7 +5116,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
             _pad_92: [0; 4],
             u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
-            u_sky_horizon_strength: w.sky_horizon_strength,
+            u_sky_horizon_strength: sky_strength,
             u_ripple_scale: w.ripple_scale,
             u_ripple_speed: w.ripple_speed,
             u_wave_steepness: w.wave_steepness,
@@ -5050,14 +5171,14 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     sg::apply_uniforms(shaders::water::UB_VS_PARAMS, &sg::value_as_range(&vs_params));
 
     let fs_params = shaders::water::FsParams {
-        u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
+        u_camera_pos: [cam_local.x, cam_local.y, cam_local.z],
         _pad_12: [0; 4],
         u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
         u_time: t_scaled,
         u_refract_amount: w.refract_amount,
         u_near: 0.3,
         u_far: 20000.0,
-        _pad_44: [0; 4],
+        u_refract_max_uv: w.refract_max_uv,
         u_absorption: [absorb.x, absorb.y, absorb.z],
         _pad_60: [0; 4],
         u_deep_color: [deep_c.x, deep_c.y, deep_c.z],
@@ -5069,26 +5190,49 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         /* Foam scalars packed into vec4s; crest.w doubles as the mix
          * intensity, slope.w unused (kept aligned). */
         u_foam_crest: [w.foam_crest_lo, w.foam_crest_hi, w.foam_crest_weight, w.foam_intensity],
-        u_foam_slope: [w.foam_slope_lo, w.foam_slope_hi, w.foam_slope_weight, 0.0],
+        /* slope.w = slope_max: normal-perturbation cap (rain spikes). */
+        u_foam_slope: [w.foam_slope_lo, w.foam_slope_hi, w.foam_slope_weight, w.slope_max],
         u_foam_color: [w.foam_color.x, w.foam_color.y, w.foam_color.z],
         _pad_156: [0; 4],
         u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
-        u_sky_horizon_strength: w.sky_horizon_strength,
+        u_sky_horizon_strength: sky_strength,
         u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
         u_ripple_scale: w.ripple_scale,
         u_ripple_speed: w.ripple_speed,
         u_wave_steepness: w.wave_steepness,
         u_night_floor: l.night_ambient_floor,
-        _pad_204: [0; 4],
+        /* Fog ceiling: the sheet hazes toward the sky but never fully
+         * becomes it (kept the sea visible against the limb atmosphere). */
+        u_fog_max: w.fog_max,
         u_torch_color: [l.torch_color.x, l.torch_color.y, l.torch_color.z, l.torch_intensity],
         u_flow_speed_falling: config::water_flow().uv_speed_falling,
         /* Rain intensity for the surface rain ripples (same eased wetness
          * the composite rain-on-glass lens uses). */
         u_rain: FRAME_WET.with(|c| c.get()),
         _pad_232: [0; 8],
-        /* Same sky-matched fog the composite used this frame - the
-         * water pass draws after the post-process, so it fogs itself. */
-        u_fog: FRAME_FOG.with(|f| f.get()),
+        /* Same sky-matched fog the composite used this frame - the water
+         * pass draws after the post-process, so it fogs itself. The
+         * per-tileset fog scale on the DENSITY (.w) decouples the WATER
+         * from the sky colour on strongly-tinted-sky bodies (Sequoia):
+         * without it the sea inherits the orange/red sky and loses its
+         * green in-atmosphere (goes green again out of atmosphere). */
+        u_fog: {
+            let mut f = FRAME_FOG.with(|c| c.get());
+            let s = lp.tileset_water_fog_scale[ts_idx];
+            f[3] *= if s > 0.0 { s } else { 1.0 };
+            /* Per-tileset fog COLOUR override: FRAME_FOG carries the live
+             * horizon-sky colour (orange/red at Sequoia dusk), so scaling
+             * the density alone still leaves distant water tinted by the
+             * sky hue. Replacing the colour fogs the sea toward its own
+             * green-grey haze instead. {0,0,0} keeps the sky-matched fog. */
+            let fc = lp.tileset_water_fog_color[ts_idx];
+            if fc.x > 0.0 || fc.y > 0.0 || fc.z > 0.0 {
+                f[0] = fc.x;
+                f[1] = fc.y;
+                f[2] = fc.z;
+            }
+            f
+        },
     };
     sg::apply_uniforms(shaders::water::UB_FS_PARAMS, &sg::value_as_range(&fs_params));
 
@@ -5426,13 +5570,21 @@ pub fn draw_world(
             }
             /* Underwater-dim block reuses the cap's absorption +
              * deep_color so submerged terrain tints with the same
-             * curve the cap uses. */
+             * curve the cap uses - PER TILESET, so Sequoia's seabed
+             * tints green like its cap, not the global blue. */
             {
                 let w = config::water();
+                let lp = config::lod();
+                let ts = if r.active_body_idx >= 0 {
+                    r.bodies[r.active_body_idx as usize].world.borrow().body.tileset as usize
+                } else {
+                    0
+                };
+                let (deep_c, absorb) = tileset_water_deep_absorb(&w, &lp, ts);
                 let hex_under = shaders::hex::HexFsWater {
-                    u_absorption: [w.absorption.x, w.absorption.y, w.absorption.z],
+                    u_absorption: [absorb.x, absorb.y, absorb.z],
                     _pad_12: [0; 4],
-                    u_deep_color: [w.deep_color.x, w.deep_color.y, w.deep_color.z],
+                    u_deep_color: [deep_c.x, deep_c.y, deep_c.z],
                     _pad_28: [0; 4],
                 };
                 sg::apply_uniforms(
@@ -5604,6 +5756,18 @@ pub fn draw_water(view: Mat4, proj: Mat4, camera_world: Vec3) {
              * (anchor + hysteresis), so the passes agree by construction. */
             let _ = is_active;
             if !r.bodies[bi].chunked_now {
+                /* DIAGNOSTIC (once/body): the cap is gated on the body
+                 * drawing CHUNKS this frame - in the map/orbit view the
+                 * planet is the distant impostor (no chunks), so the cap
+                 * never draws and only the impostor's baked water_color
+                 * shows the sea. Logs why the near cap is skipped. */
+                if WATER_DIAG.with(|s| s.borrow_mut().insert(bi as i32)) {
+                    let nm = r.bodies[bi].world.borrow().body.name;
+                    println!(
+                        "[seq-diag] water cap SKIPPED for {}: body not chunked this frame (impostor LOD) - sea comes from the baked distant water_color only",
+                        nm
+                    );
+                }
                 continue;
             }
             let tris = body_draw_water(r, bi, vp, camera_world);

@@ -154,6 +154,11 @@ void main()
     // water surface underside), so fogging geometry-only conforms to the waves.
     bool _112 = composite_fs_params[4].z > 0.75;
     bool straddle = (composite_fs_params[4].z > 0.25) && !_112;
+    // Eye depth below the mean sea sphere + this ray's rise rate toward the
+    // surface - shared by the analytic sky murk (submerged AND straddling)
+    // and the droplet above-water mask below.
+    float cam_gap = max(0.0, composite_fs_params[3].w - length(v_camera_pos - composite_fs_params[3].xyz));
+    float ray_d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
     float view_dist = 0.0;
     float pixel_alt = _68;
     if (!_107)
@@ -169,7 +174,17 @@ void main()
     float _160;
     if (_107)
     {
-        _160 = float(_112);
+        // Sky/far pixel. Fully submerged: always wet (analytic murk below).
+        // STRADDLING with the eye below the mean sea: the near-level rays
+        // travel metres of water before surfacing, so they murk too - this
+        // was the "orange sky shines straight through the water while
+        // wading" hole (glaring on Sequoia, where the atmosphere-lit sky is
+        // bright orange over a green sea; invisible when the atmosphere is
+        // off and the sky is black). Steeply-rising rays exit fast and stay
+        // clear; the smoothstep is the same ray-rise ramp the droplet
+        // above-water mask uses. Eye above the mean sea keeps sky dry.
+        float straddle_sky = (cam_gap > 0.0) ? (1.0 - smoothstep(0.02, 0.12, ray_d_up)) : 0.0;
+        _160 = _112 ? 1.0 : (straddle ? straddle_sky : 0.0);
     }
     else
     {
@@ -206,9 +221,11 @@ void main()
         color = texture(scene_color_scene_smp, clamp(v_uv + ((vec2(sin((composite_fs_params[4].y * 1.2999999523162841796875) + (v_uv.y * 32.0)) + (0.5 * sin((composite_fs_params[4].y * 0.699999988079071044921875) + (v_uv.x * 47.0))), cos((composite_fs_params[4].y * 0.89999997615814208984375) + (v_uv.x * 28.0)) + (0.5 * cos((composite_fs_params[4].y * 1.60000002384185791015625) + (v_uv.y * 41.0)))) * composite_fs_params[4].x) * wet), vec2(0.0), vec2(1.0))).xyz;
     }
     float _259;
-    // Straddling joins this path for GEOMETRY pixels only (sky keeps wet = 0
-    // above, so the analytic branch below stays full-submersion-only).
-    if (_112 || (straddle && !_107))
+    // Straddling joins this path for geometry pixels (view-distance travel)
+    // AND - when the eye is below the mean sea - for sky pixels, whose wet
+    // weight above already ramps by ray rise so only the near-level rays
+    // murk (the waterline geometry silhouette still owns the crisp edge).
+    if (_112 || straddle)
     {
         if (_107)
         {
@@ -229,9 +246,7 @@ void main()
             // which saturate. A larger threshold used to snap finite -> huge and
             // drew a visible dark LINE at the horizon; keeping it tiny lets the
             // deep-water band fade into the water instead.
-            float gap = max(0.0, composite_fs_params[3].w - length(v_camera_pos - composite_fs_params[3].xyz));
-            float d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
-            _259 = (d_up > 0.0008) ? (gap / d_up) : 100000.0;
+            _259 = (ray_d_up > 0.0008) ? (cam_gap / ray_d_up) : 100000.0;
         }
         else
         {
@@ -280,8 +295,7 @@ void main()
     // the droplet blocks are skipped anyway.)
     float above_water;
     if (composite_fs_params[4].z > 0.25) {
-        float d_up = dot(normalize(v_view_dir), normalize(v_camera_pos - composite_fs_params[3].xyz));
-        above_water = smoothstep(-0.12, -0.02, d_up);
+        above_water = smoothstep(-0.12, -0.02, ray_d_up);
     } else {
         above_water = 1.0;
     }

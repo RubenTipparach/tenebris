@@ -632,6 +632,24 @@ Aiming the screenshot camera at the planet from orbit by guessing
 staring at empty starfields. **Do not hand-aim the from-orbit camera.**
 Use the deterministic tool that always frames the full disk:
 
+- **`TENEBRIS_DEV_SHOT=<path.png>` — the ONLY reliable way to grab a PNG
+  on Windows.** The engine itself glReadPixels the finished back buffer
+  once a second and atomically overwrites the file (`dev_shot.rs`).
+  External window capture does NOT work: PrintWindow returns a white
+  frame for a GL swapchain, and screen-copy loses the z-order fight with
+  whatever window the user has focused. Recipe: set the env vars, boot,
+  wait ~150 s (worldgen + hook arming), read the PNG, kill the client.
+  Read the PNG only AFTER the boot wait — it's overwritten continuously
+  from frame 60, so an early read sees a mid-boot frame.
+- **Water framing** (composes with `TENEBRIS_DEV_BODY=sequoia` +
+  `TENEBRIS_DEV_WEATHER=rain|snow|clear`): `TENEBRIS_DEV_DIVE=<m>` —
+  negative = AERIAL (camera |m| above the deepest ocean, aimed down at
+  the sheet: the "is the sea green or sky-coloured" framing), `< 2` =
+  wade (eye ~0.4 m BELOW the waterline — a straddle shot, mostly sky in
+  frame, NOT a water-sheet shot), `>= 2` = fully underwater; add
+  `TENEBRIS_DEV_LOOKUP=1` with a deep dive to aim straight up for
+  Snell's-window shots.
+
 - **`TENEBRIS_DEV_LODCAM=<metres>`** (combine with `TENEBRIS_DEV_SP=<name>`):
   each frame parks the camera `<metres>` beyond the planet surface on a
   sun-perpendicular azimuth (terminator bisects the disk), lifted off the

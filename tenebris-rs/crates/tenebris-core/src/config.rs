@@ -550,6 +550,33 @@ pub struct LodConfig {
      * back to the global water_config values. */
     pub tileset_water_sky_horizon: [Vec3; 5],
     pub tileset_water_sky_zenith: [Vec3; 5],
+    /* Per-tileset Fresnel sky-reflection STRENGTH (how much the surface
+     * mirrors the sky vs shows its own water colour). The global default
+     * (0.5) makes grazing-angle water a near-full sky mirror - on a body
+     * with a dark/orange sky (Sequoia) that renders the sea as a flat
+     * sky-coloured sheet that shifts with view angle, never green. A low
+     * value here lets the green deep_color dominate at every angle.
+     * <= 0 falls back to the global water_config sky_horizon_strength. */
+    pub tileset_water_sky_strength: [f32; 5],
+    /* Per-tileset scale on how much the WATER pass fogs toward the live
+     * atmosphere sky colour (FRAME_FOG). The water cap fogs itself with
+     * the same haze the terrain uses, so on a body with a strongly
+     * coloured sky (Sequoia's orange/red dusk) the sea inherits the SKY
+     * colour and loses its green - proven by the sea going green again
+     * once the camera leaves the atmosphere. A low value keeps the water
+     * its own colour in-atmosphere; 1.0 (or <= 0 -> 1.0) = full terrain
+     * fog. Terrain still gets the full atmospheric haze - this only
+     * decouples the WATER surface. */
+    pub tileset_water_fog_scale: [f32; 5],
+    /* Per-tileset COLOUR the water pass fogs toward, replacing the live
+     * atmosphere sky colour (FRAME_FOG.xyz) on the WATER surface only.
+     * The fog SCALE above thins the density (.w); this overrides the
+     * fogged-toward hue itself. Sequoia's sea fogs toward the orange/red
+     * dusk sky by default (FRAME_FOG carries the horizon colour), so far
+     * water reads orange in-atmosphere even with the density scaled down;
+     * a green-grey haze here keeps distant water green instead of tan.
+     * {0,0,0} falls back to the live sky-matched FRAME_FOG colour. */
+    pub tileset_water_fog_color: [Vec3; 5],
     /* Atmospheric limb-rim light painted over TERRAIN near the limb
      * when seen from orbit (hex shader + distant impostor). {0,0,0}
      * falls back to the global distant_rim_color - which is Tenebris
@@ -660,14 +687,14 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
      * absorption. */
     tileset_water_deep_color: [
         VEC3_ZERO,            /* EARTH    - use global default       */
-        v3(0.04, 0.20, 0.10), /* SEQUOIA  - saturated alien green    */
+        v3(0.03, 0.16, 0.09), /* SEQUOIA  - dark green (Tenebris-magnitude, mirrored) */
         VEC3_ZERO,            /* CRAG     - no water (use global)    */
         VEC3_ZERO,            /* FROST    - pale ice (use global)    */
         VEC3_ZERO,            /* ASTEROID - use global default       */
     ],
     tileset_water_absorption: [
         VEC3_ZERO,            /* EARTH    - use global (0.60, 0.20, 0.10) */
-        v3(0.50, 0.10, 0.50), /* SEQUOIA  - red+blue die, green survives  */
+        v3(0.60, 0.10, 0.45), /* SEQUOIA  - green survives (Tenebris-magnitude, not opaque) */
         VEC3_ZERO,            /* CRAG     - no water                      */
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
@@ -685,6 +712,30 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         VEC3_ZERO,            /* CRAG     - no water                      */
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
+    ],
+    tileset_water_sky_strength: [
+        0.0, /* EARTH    - use global 0.5                              */
+        0.0, /* SEQUOIA  - use global 0.5 too (mirror works on Tenebris) */
+        0.0, /* CRAG     - no water                                    */
+        0.0, /* FROST    - use global                                  */
+        0.0, /* ASTEROID - use global                                  */
+    ],
+    tileset_water_fog_scale: [
+        1.0,  /* EARTH    - full fog: blue water fogging to blue sky is fine */
+        0.15, /* SEQUOIA  - barely fog the water: keep its green vs the
+               * orange/red sky (the sea inherits sky colour otherwise) */
+        1.0,  /* CRAG     - no water                                    */
+        1.0,  /* FROST    - full fog                                    */
+        1.0,  /* ASTEROID - full fog                                    */
+    ],
+    tileset_water_fog_color: [
+        VEC3_ZERO,            /* EARTH    - use live sky-matched fog      */
+        v3(0.12, 0.28, 0.18), /* SEQUOIA  - green-grey haze: far water
+                               * stays green in-atmosphere instead of
+                               * inheriting the orange/red dusk sky       */
+        VEC3_ZERO,            /* CRAG     - no water                      */
+        VEC3_ZERO,            /* FROST    - use live sky-matched fog      */
+        VEC3_ZERO,            /* ASTEROID - use live sky-matched fog      */
     ],
     tileset_rim_color: [
         VEC3_ZERO,            /* EARTH    - use global blue rim           */
@@ -789,6 +840,15 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                 "water_absorption" => vec3_or_err(val, &mut cfg.tileset_water_absorption[ts]),
                 "water_sky_horizon" => vec3_or_err(val, &mut cfg.tileset_water_sky_horizon[ts]),
                 "water_sky_zenith" => vec3_or_err(val, &mut cfg.tileset_water_sky_zenith[ts]),
+                "water_sky_strength" => {
+                    cfg.tileset_water_sky_strength[ts] = fval(val);
+                    0
+                }
+                "water_fog_scale" => {
+                    cfg.tileset_water_fog_scale[ts] = fval(val);
+                    0
+                }
+                "water_fog_color" => vec3_or_err(val, &mut cfg.tileset_water_fog_color[ts]),
                 "rim_color" => vec3_or_err(val, &mut cfg.tileset_rim_color[ts]),
                 _ => {
                     println!("[config] {}:{}: unknown palette key '{}'", path, line_no, key);
@@ -959,6 +1019,20 @@ pub struct WaterConfig {
     pub height_offset_m: f32,
     /* Refraction: scalar on the surface tangent gradient. */
     pub refract_amount: f32,
+    /* Max |screen-UV offset| of the refraction sample. The rain-ripple
+     * kernel spikes the gradient to ~8x the fbm waves; uncapped, the
+     * "refracted" sample lands on the SKY a third of a screen away and
+     * paints the sheet sky-colour (glaring on Sequoia orange-over-green,
+     * invisible on Tenebris blue-on-blue). */
+    pub refract_max_uv: f32,
+    /* Cap on |tangent gradient| before it bends the shading normal -
+     * spikes past this flipped the normal into the tangent plane and
+     * Schlick-mirrored the whole sheet. Foam reads the raw gradient. */
+    pub slope_max: f32,
+    /* Ceiling on the water pass's distance-fog mix. 1.0 = the far sheet
+     * may fully become the sky; <1 keeps a sliver of water colour at
+     * the horizon so the sea never reads as despawned into the limb. */
+    pub fog_max: f32,
     /* Beer-Lambert per-channel extinction (1/m). */
     pub absorption: Vec3,
     /* Saturation colour of deep water. */
@@ -1019,6 +1093,9 @@ pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
     depth_offset_m: 0.50,
     height_offset_m: 0.00,
     refract_amount: 0.04,
+    refract_max_uv: 0.03,
+    slope_max: 1.6,
+    fog_max: 0.82,
     absorption: v3(0.60, 0.20, 0.10),
     deep_color: v3(0.02, 0.10, 0.22),
     shoreline_fade_m: 0.50,
@@ -1161,6 +1238,18 @@ pub fn parse_water(src: &str, path: &str) -> i32 {
             }
             "refract_amount" => {
                 cfg.refract_amount = fval(val);
+                0
+            }
+            "refract_max_uv" => {
+                cfg.refract_max_uv = fval(val);
+                0
+            }
+            "slope_max" => {
+                cfg.slope_max = fval(val);
+                0
+            }
+            "fog_max" => {
+                cfg.fog_max = fval(val);
                 0
             }
             "absorption" => vec3_or_err(val, &mut cfg.absorption),
@@ -1688,6 +1777,11 @@ pub fn parse_atmosphere_with(
         } else if active_body >= 0 {
             /* Field assignment. */
             match key {
+                "enabled" => {
+                    /* on/off toggle: 0 = off, anything else = on. */
+                    patch.enabled = if fval(val) > 0.5 { 1.0 } else { 0.0 };
+                    0
+                }
                 "radius_mult" => {
                     patch.radius_mult = fval(val);
                     0
