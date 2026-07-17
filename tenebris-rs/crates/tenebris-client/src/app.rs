@@ -2331,6 +2331,24 @@ extern "C" fn init() {
     tenebris_core::scatter::load_config("assets/config/scatter.yaml");
     /* Cloud layer densities / drift (see client clouds.rs). */
     tenebris_core::clouds::load_config("assets/config/clouds.yaml");
+    /* Diagnostic: confirm the Sequoia look overrides actually parsed at
+     * boot (grep '[seq-diag]' in the log). If these print defaults, the
+     * yaml isn't being read - a working-directory / asset-path problem,
+     * not a code one. */
+    {
+        let cc = tenebris_core::clouds::config();
+        let ov = tenebris_core::clouds::sequoia_override();
+        println!(
+            "[seq-diag] clouds: global density={:.2} patch_clear={:.2} | sequoia override density={:?} patch_clear={:?} color={:?}",
+            cc.density, cc.patch_clear, ov.density, ov.patch_clear, ov.color
+        );
+        let l = tenebris_core::config::lod();
+        let ts = tenebris_core::planet::Tileset::Sequoia as usize;
+        println!(
+            "[seq-diag] lod sequoia: water_color={:?} full_depth={:.2} rim={:?}",
+            l.tileset_water_color[ts], l.tileset_water_full_depth_m[ts], l.tileset_rim_color[ts]
+        );
+    }
     tenebris_core::fishing::load_config("assets/config/fishing.yaml");
     tenebris_core::gameplay::load_config("assets/config/gameplay.yaml");
     /* Rocket part stats + flight constants (consumed by the rocket

@@ -3980,11 +3980,74 @@ fn body_load_detail(r: &mut Renderer, bi: usize) {
         let w = r.bodies[bi].world.borrow();
         (w.body.name, w.tile_count)
     };
+    /* DIAGNOSTIC: how much of THIS body's meshed data is water, and did
+     * the water actually mesh into cap geometry? Answers the "no water"
+     * question directly - if water_cols > 0 but water_idx == 0 the cap
+     * mesher dropped it (render bug); if water_cols == 0 the WORLD has
+     * no ocean (stale save or wrong seed), not a render bug. */
+    let (water_cols, top_hist) = {
+        let w = r.bodies[bi].world.borrow();
+        terrain_water_stats(&w)
+    };
+    let water_idx: i32 = r.bodies[bi].chunks[..chunk_n()]
+        .iter()
+        .map(|c| c.last_uploaded_water_idx_count)
+        .sum();
     println!(
-        "[renderer] loaded detail for {} (body={}, {} tiles) in {:.1} ms - \
-         compare net-client body-totals for this body to /saves output",
+        "[renderer] loaded detail for {} (body={}, {} tiles) in {:.1} ms",
         name, body_id, tile_count, elapsed_ms
     );
+    println!(
+        "[seq-diag] {} terrain: water_columns={:.1}% water_mesh_indices={} | top blocks: {}",
+        name,
+        100.0 * water_cols as f32 / tile_count.max(1) as f32,
+        water_idx,
+        top_hist
+    );
+}
+
+thread_local! {
+    /// Body ids already logged by the water-cap-skip diagnostic (log once each).
+    static WATER_DIAG: RefCell<std::collections::HashSet<i32>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Scan a world's surface columns: how many top out in Water, and a
+/// small histogram of the most common top blocks. Diagnostic only.
+fn terrain_water_stats(w: &World) -> (i64, String) {
+    use std::collections::HashMap;
+    let mut water = 0i64;
+    let mut hist: HashMap<u8, i64> = HashMap::new();
+    let depth = tenebris_core::world::WORLD_MAX_DEPTH as usize;
+    for t in 0..w.tile_count as usize {
+        let base = t * depth;
+        let col = &w.blocks[base..base + depth];
+        /* Topmost non-Air cell is the "surface" block. */
+        let mut top = Block::Air.raw();
+        for d in (0..depth).rev() {
+            if col[d] != Block::Air.raw() {
+                top = col[d];
+                break;
+            }
+        }
+        if top == Block::Water.raw() {
+            water += 1;
+        }
+        *hist.entry(top).or_insert(0) += 1;
+    }
+    let mut items: Vec<(u8, i64)> = hist.into_iter().collect();
+    items.sort_by(|a, b| b.1.cmp(&a.1));
+    let total = w.tile_count.max(1) as f32;
+    let s = items
+        .iter()
+        .take(5)
+        .map(|(b, n)| {
+            let blk = Block::from_raw(*b).unwrap_or(Block::Air);
+            format!("{:?} {:.0}%", blk, 100.0 * *n as f32 / total)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    (water, s)
 }
 
 /// Port of `body_unload_detail()`. Releases the per-chunk CPU meshes +
@@ -5604,6 +5667,18 @@ pub fn draw_water(view: Mat4, proj: Mat4, camera_world: Vec3) {
              * (anchor + hysteresis), so the passes agree by construction. */
             let _ = is_active;
             if !r.bodies[bi].chunked_now {
+                /* DIAGNOSTIC (once/body): the cap is gated on the body
+                 * drawing CHUNKS this frame - in the map/orbit view the
+                 * planet is the distant impostor (no chunks), so the cap
+                 * never draws and only the impostor's baked water_color
+                 * shows the sea. Logs why the near cap is skipped. */
+                if WATER_DIAG.with(|s| s.borrow_mut().insert(bi as i32)) {
+                    let nm = r.bodies[bi].world.borrow().body.name;
+                    println!(
+                        "[seq-diag] water cap SKIPPED for {}: body not chunked this frame (impostor LOD) - sea comes from the baked distant water_color only",
+                        nm
+                    );
+                }
                 continue;
             }
             let tris = body_draw_water(r, bi, vp, camera_world);
