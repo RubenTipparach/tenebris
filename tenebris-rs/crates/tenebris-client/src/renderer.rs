@@ -4169,6 +4169,22 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
         let vp_base = mat4_mul(proj, view);
         let frustum = extract_frustum(vp_base);
 
+        /* Point-light from the central star: every distant body must be lit
+         * from the STAR's render-frame position, not the active body's shared
+         * env.sun_dir. env.sun_dir is one parallel direction (correct only
+         * for the body you're standing on), so in the solar map - where you
+         * see the whole system at once - planets on the far side of the star
+         * were lit from the near side (the "planets aren't getting sunlight
+         * from the central star" bug). Each body's own to-star direction
+         * gives the correct day/night terminator per planet. */
+        let star_light_pos: Option<Vec3> = if r.active_body_idx >= 0 {
+            let active_id = r.bodies[r.active_body_idx as usize].world.borrow().body.id;
+            let t = tenebris_core::world_time::seconds();
+            Some(dvec3_to_vec3(orbit::apparent_star_pos(active_id, t)))
+        } else {
+            None
+        };
+
         sg::apply_pipeline(r.pip_distant);
         let mut tris = 0usize;
         for bi in 0..r.bodies.len() {
@@ -4217,8 +4233,22 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             let wc = config::water();
             let lc = config::lod();
             let rim = rim_color_for(&lc, body.world.borrow().body.tileset as usize);
+            /* Direction from THIS body to the star (fallback: the active
+             * body's shared sun_dir when no star position is available). */
+            let sun_dir = match star_light_pos {
+                Some(sp) => {
+                    let d = vec3_sub(sp, body.world_pos);
+                    let l = vec3_length(d);
+                    if l > 1e-3 {
+                        Vec3 { x: d.x / l, y: d.y / l, z: d.z / l }
+                    } else {
+                        r.env.sun_dir
+                    }
+                }
+                None => r.env.sun_dir,
+            };
             let dfp = shaders::distant::DistantFsParams {
-                u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
+                u_sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z],
                 u_pad0: 0.0,
                 u_ambient: overcast_ambient(r.env.ambient),
                 u_pad1: 0.0,
