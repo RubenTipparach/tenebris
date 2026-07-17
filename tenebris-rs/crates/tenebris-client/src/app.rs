@@ -6613,8 +6613,19 @@ fn frame_inner(app: &mut App) {
 
     /* Atmosphere + sky are anchored to whatever body the player is
      * currently standing on. Zeroed per-body fields fall back to the tuned
-     * defaults (see the C commentary). */
-    let active_body = app.player.borrow().body.unwrap_or(app.body);
+     * defaults (see the C commentary).
+     *
+     * Re-fetch the LIVE per-body config from the planet store by id every
+     * frame: player.body / app.body are value SNAPSHOTS taken at
+     * world-entry, so hot-reloaded atmosphere edits (which mutate BODIES[]
+     * via load_atmosphere) never reached them - the reload fired but the
+     * sky/fog kept rendering the stale copy. planet::get reads BODIES[]
+     * live; the non-atmo fields (pos, radius) are unchanged, so this only
+     * picks up the hot-reloadable knobs. */
+    let active_body = {
+        let snap = app.player.borrow().body.unwrap_or(app.body);
+        planet::get(snap.id)
+    };
 
     /* Sun direction comes from the on-rails sky sim: it circles the sky as
      * the active body spins (day/night) and drifts with its orbit. The star
