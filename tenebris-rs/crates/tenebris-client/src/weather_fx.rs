@@ -194,6 +194,11 @@ fn push_streak(top: DVec3, up: DVec3, right: DVec3, len: f64, half_w: f64) {
 /// Draw precipitation for the active body: the near shower plus distant
 /// storm shafts. Called in the offscreen opaque pass next to `clouds::draw`.
 pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
+    /* TENEBRIS_DEV_WEATHER=clear: no clouds AND no precipitation -
+     * biome screenshots want the terrain, not a shower. */
+    if forced_clear() {
+        return;
+    }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let local = dvec3_sub(p.position, center);
     let r = dvec3_length(local);
