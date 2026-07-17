@@ -5206,6 +5206,17 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             let mut f = FRAME_FOG.with(|c| c.get());
             let s = lp.tileset_water_fog_scale[ts_idx];
             f[3] *= if s > 0.0 { s } else { 1.0 };
+            /* Per-tileset fog COLOUR override: FRAME_FOG carries the live
+             * horizon-sky colour (orange/red at Sequoia dusk), so scaling
+             * the density alone still leaves distant water tinted by the
+             * sky hue. Replacing the colour fogs the sea toward its own
+             * green-grey haze instead. {0,0,0} keeps the sky-matched fog. */
+            let fc = lp.tileset_water_fog_color[ts_idx];
+            if fc.x > 0.0 || fc.y > 0.0 || fc.z > 0.0 {
+                f[0] = fc.x;
+                f[1] = fc.y;
+                f[2] = fc.z;
+            }
             f
         },
     };
