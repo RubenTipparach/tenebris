@@ -213,7 +213,10 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
                     st.seed = st.seed.wrapping_mul(0x9E37_79B9).wrapping_add(1);
                     /* Roll which fish is on the line - strength drives
                      * everything from here (window + reward). */
-                    st.species = AnimalKind::roll_fishing_species(hash2(st.seed as i32, 0x55));
+                    st.species = AnimalKind::roll_fishing_species(
+                        hash2(st.seed as i32, 0x55),
+                        w.body.tileset == tenebris_core::planet::Tileset::Sequoia,
+                    );
                 } else if st.phase == Phase::Bite && st.t > bite_window_for(&c, st.species) {
                     /* Missed it - the fish lets go, the float pops up. */
                     st.phase = Phase::Floating;

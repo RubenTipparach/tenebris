@@ -325,12 +325,22 @@ impl AnimalKind {
     ];
 
     /// Pick which fish bites, weighted by [`fishing_weight`]. `roll` is
-    /// a uniform [0, 1). Deterministic, so SP and MP agree.
-    pub fn roll_fishing_species(roll: f32) -> AnimalKind {
-        let total: u32 = Self::FISHING_TABLE.iter().map(|k| k.fishing_weight()).sum();
+    /// a uniform [0, 1). Deterministic, so SP and MP agree. The sea
+    /// serpent is Sequoia-only fauna - off Sequoia its table row is
+    /// skipped entirely (`sequoia` = fishing in Sequoia water).
+    pub fn roll_fishing_species(roll: f32, sequoia: bool) -> AnimalKind {
+        let on_line = |k: &AnimalKind| sequoia || *k != AnimalKind::SerpentFish;
+        let total: u32 = Self::FISHING_TABLE
+            .iter()
+            .filter(|k| on_line(k))
+            .map(|k| k.fishing_weight())
+            .sum();
         let mut acc = 0u32;
         let target = (roll.clamp(0.0, 0.9999) * total as f32) as u32;
         for k in Self::FISHING_TABLE {
+            if !on_line(&k) {
+                continue;
+            }
             acc += k.fishing_weight();
             if target < acc {
                 return k;
@@ -747,10 +757,11 @@ pub fn spawn_near_auto(w: &World, anchor_world: DVec3, id: u32, salt: u32) -> Op
          * band check uses ITS surface clearance (the deep reef fish
          * needs far more headroom than a minnow). */
         let wroll = rand01(id, salt.wrapping_add(47));
-        /* Sea serpents haunt every ocean, but Sequoia's green water is
-         * their home - a much bigger slice of its spawn roll. */
+        /* Sea serpents live ONLY in Sequoia's green water (user
+         * direction: the new fauna stays on the new planet). Off
+         * Sequoia the serpent slice is empty - turtles take it. */
         let serpent_cut =
-            if w.body.tileset == crate::planet::Tileset::Sequoia { 0.72 } else { 0.92 };
+            if w.body.tileset == crate::planet::Tileset::Sequoia { 0.72 } else { 1.0 };
         let species = if wroll < 0.36 {
             AnimalKind::Fish
         } else if wroll < 0.52 {
@@ -1347,8 +1358,21 @@ mod tests {
         assert!(s.windows(2).all(|w| w[0] < w[1]), "strength ascends: {s:?}");
         /* Weighted roll: the low end lands the common minnow, the top
          * of the range lands the rare reef fish. */
-        assert_eq!(AnimalKind::roll_fishing_species(0.0), AnimalKind::Fish);
-        assert_eq!(AnimalKind::roll_fishing_species(0.999), AnimalKind::LargeFish);
+        assert_eq!(AnimalKind::roll_fishing_species(0.0, true), AnimalKind::Fish);
+        assert_eq!(AnimalKind::roll_fishing_species(0.999, true), AnimalKind::LargeFish);
+        /* The sea serpent is Sequoia-only: off Sequoia no roll value
+         * can land it. */
+        for i in 0..100 {
+            let k = AnimalKind::roll_fishing_species(i as f32 / 100.0, false);
+            assert_ne!(k, AnimalKind::SerpentFish, "serpent hooked off Sequoia");
+        }
+        assert!(
+            (0..100).any(|i| {
+                AnimalKind::roll_fishing_species(i as f32 / 100.0, true)
+                    == AnimalKind::SerpentFish
+            }),
+            "serpent must be catchable on Sequoia"
+        );
     }
 
     #[test]

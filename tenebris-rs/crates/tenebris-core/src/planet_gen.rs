@@ -158,6 +158,11 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
      * gate keeps default-seed output byte-exact for the C-parity pins. */
     if biomes_active(body) {
         continent -= SEEDED_LAND_BIAS_TRIM;
+        /* Sequoia is land-dominant (~40% water target): give back most
+         * of the wetter-world trim. Tileset-gated, Tenebris unchanged. */
+        if body.tileset == crate::planet::Tileset::Sequoia {
+            continent += SEQUOIA_LAND_BIAS_RETURN;
+        }
     }
     /* C: (float)pow((double)fabs(continent), 0.8) */
     let continent_value = (if continent >= 0.0 { 1.0f32 } else { -1.0f32 })
@@ -228,8 +233,14 @@ pub fn surface_altitude(body: &BodyConfig, unit_dir: DVec3) -> f32 {
         if base > sea && base < sea + RIVER_MAX_ELEV_M {
             let n = noise01(body.seed ^ RIVER_SEED_SALT, unit_dir, RIVER_SCALE, 4);
             let channel = 1.0 - (2.0 * n - 1.0).abs();
-            if channel > RIVER_THRESHOLD {
-                let t = (channel - RIVER_THRESHOLD) / (1.0 - RIVER_THRESHOLD);
+            /* Sequoia (River Lands): wider, more frequent channels. */
+            let threshold = if body.tileset == crate::planet::Tileset::Sequoia {
+                SEQUOIA_RIVER_THRESHOLD
+            } else {
+                RIVER_THRESHOLD
+            };
+            if channel > threshold {
+                let t = (channel - threshold) / (1.0 - threshold);
                 let t = t * t * (3.0 - 2.0 * t); /* smoothstep river banks */
                 let bed = sea - RIVER_DEPTH_M;
                 base += (bed - base) * t; /* pull the channel toward the bed */
@@ -323,12 +334,26 @@ const MOUNTAIN_SNOWCAP_ELEV_M: f32 = 40.0;
 /// their ocean floors run deeper. Both are biomes_active-gated so
 /// default-seed output stays byte-exact for the C-parity pins.
 const SEEDED_SEA_RAISE_M: f32 = 1.0;
-/// Sequoia carries its sea HIGHER still - the sister world is an
-/// archipelago (SEQUOIA_PLAN.md: oceans visibly dominate the disk from
-/// orbit, ~green islands in dark water). Added on top of the seeded
-/// raise for Tileset::Sequoia bodies only, so Tenebris terrain is
+/// Sequoia carries its sea one extra block up (rivers + lakes flood a
+/// little further inland) but the world is LAND-dominant: the user's
+/// direction is ~40% water with winding rivers, not the earlier
+/// archipelago. Tileset::Sequoia-gated so Tenebris terrain is
 /// untouched byte-for-byte.
-const SEQUOIA_EXTRA_SEA_RAISE_M: f32 = 3.0;
+const SEQUOIA_EXTRA_SEA_RAISE_M: f32 = 1.0;
+/// Sequoia gives back most of the seeded land-bias trim (the knob that
+/// makes seeded worlds ~half ocean), pushing its water coverage down
+/// toward the ~40% target. Pinned by the coverage-band test below.
+const SEQUOIA_LAND_BIAS_RETURN: f32 = 0.10;
+/// Sequoia's rivers are a signature feature (River Lands): a lower
+/// channel threshold cuts wider, more frequent channels than the
+/// default seeded-world rivers.
+const SEQUOIA_RIVER_THRESHOLD: f32 = 0.78;
+/// Sequoia's cold cap is small - the world reads red/brown/green from
+/// orbit, not white. Latitude gates well above the default 0.875 /
+/// 0.95, and snow starts two bands higher up the slopes.
+const SEQUOIA_COLD_LATITUDE: f32 = 0.955;
+const SEQUOIA_POLAR_LATITUDE: f32 = 0.975;
+const SEQUOIA_SNOW_ELEV: f32 = 40.0;
 /* Deep oceans: seeded basins run this multiple of the base ocean depth
  * (up to the ~62 m the 64-layer sub-sea budget allows before the floor
  * clamps onto bedrock), so open water is a real dive, not a shallow pool.
@@ -446,7 +471,14 @@ pub fn biome(body: &BodyConfig, unit_dir: DVec3) -> Biome {
         return Biome::Beach;
     }
     let latitude = unit_dir.y.abs() as f32;
-    if latitude > COLD_LATITUDE {
+    /* Sequoia's cold cap is much smaller - the world reads red/brown,
+     * not white (user direction: "a lot of snow" was too much). */
+    let cold_lat = if body.tileset == crate::planet::Tileset::Sequoia {
+        SEQUOIA_COLD_LATITUDE
+    } else {
+        COLD_LATITUDE
+    };
+    if latitude > cold_lat {
         return Biome::Tundra;
     }
     if surface > MOUNTAIN_ELEV_M {
@@ -505,9 +537,18 @@ pub fn profile(body: &BodyConfig, unit_dir: DVec3) -> ColumnProfile {
     }
     /* C: (float)fabs(unit_dir.y) - f64 abs, then truncate to f32. */
     let latitude = unit_dir.y.abs() as f32;
-    let polar = latitude > POLAR_LATITUDE;
-    let cold = latitude > COLD_LATITUDE;
-    let snow_line = if cold { SNOW_ELEV * 0.5 } else { SNOW_ELEV };
+    /* Sequoia: smaller polar/cold caps + a snow line two bands higher,
+     * so snow is saved for actual peaks (tileset-gated; every other
+     * body keeps the exact legacy values - profile pins below). */
+    let sequoia = body.tileset == Tileset::Sequoia;
+    let (polar_lat, cold_lat, snow_elev) = if sequoia {
+        (SEQUOIA_POLAR_LATITUDE, SEQUOIA_COLD_LATITUDE, SEQUOIA_SNOW_ELEV)
+    } else {
+        (POLAR_LATITUDE, COLD_LATITUDE, SNOW_ELEV)
+    };
+    let polar = latitude > polar_lat;
+    let cold = latitude > cold_lat;
+    let snow_line = if cold { snow_elev * 0.5 } else { snow_elev };
     ColumnProfile {
         surface_m,
         latitude,
@@ -606,9 +647,15 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
             /* Seeded worlds order the elevation bands naturally: a
              * rocky tree-line band first, snow ON TOP of it - the
              * legacy order painted snow at 22 m with bare stone above
-             * 32 m, which read as snow BELOW the peaks. */
-            if surface > STONE_ELEV {
+             * 32 m, which read as snow BELOW the peaks. Sequoia's
+             * slate mountains stay bare rock up to its higher snow
+             * line, so only real peaks whiten. */
+            let high_snow = if prof.sequoia { SEQUOIA_SNOW_ELEV } else { STONE_ELEV };
+            if surface > high_snow {
                 return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
+            }
+            if prof.sequoia && surface > STONE_ELEV {
+                return Block::Stone;
             }
             /* Tundra stays snowy at every elevation - only temperate
              * hills get the rocky tree-line band. */
@@ -729,20 +776,23 @@ mod biome_tests {
 
 
     #[test]
-    fn sequoia_is_an_archipelago_with_sporewood() {
-        /* Sequoia's seeded gen must read as a DIFFERENT world: the sea
-         * sits SEQUOIA_EXTRA_SEA_RAISE_M higher (more ocean coverage),
-         * and its dry band grows mycelium flats - never desert sand. */
+    fn sequoia_river_lands_with_sporewood() {
+        /* Sequoia's seeded gen must read as a DIFFERENT world: land-
+         * dominant with ~40% water (user direction), wider/more
+         * frequent rivers than the default seeded worlds, a small snow
+         * cap, and a dry band that grows mycelium flats - never sand. */
         let mut seq = planet::get(BodyId::Sequoia);
         seq.seed = 0xC0FFEE_D00D; /* custom seed -> biomes active */
         let mut ten = planet::get(BodyId::Tenebris);
         ten.seed = 0xC0FFEE_D00D;
-        assert!(sea_raise_m(&seq) > sea_raise_m(&ten) + 1.0, "higher sea");
 
         let n = 20000usize;
         let ga = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
-        let mut seq_ocean = 0usize;
-        let mut ten_ocean = 0usize;
+        let sea = SEA_LEVEL + sea_raise_m(&seq);
+        let mut seq_water = 0usize;
+        let mut seq_rivers = 0usize;
+        let mut seq_snowy = 0usize;
+        let mut ten_snowy = 0usize;
         let mut mycelium = 0usize;
         let mut seq_sand_desert = 0usize;
         for i in 0..n {
@@ -754,16 +804,33 @@ mod biome_tests {
                 yy,
                 r * th.sin(),
             ));
-            if biome(&seq, dir) == Biome::Ocean {
-                seq_ocean += 1;
+            let s = surface_altitude(&seq, dir);
+            if s < sea {
+                seq_water += 1;
+                /* River tile: water in the carved channel band. */
+                let ch = 1.0
+                    - (2.0 * noise01(seq.seed ^ RIVER_SEED_SALT, dir, RIVER_SCALE, 4) - 1.0)
+                        .abs();
+                if ch > SEQUOIA_RIVER_THRESHOLD {
+                    seq_rivers += 1;
+                }
             }
-            if biome(&ten, dir) == Biome::Ocean {
-                ten_ocean += 1;
+            /* Snow coverage: count snowy TOPS on both worlds. */
+            let sprof = profile(&seq, dir);
+            if sprof.surface_m >= sea
+                && sample_with_profile(&sprof, sprof.surface_m - 0.5) == Block::SeqSnow
+            {
+                seq_snowy += 1;
+            }
+            let tprof = profile(&ten, dir);
+            if tprof.surface_m >= SEA_LEVEL + SEEDED_SEA_RAISE_M
+                && sample_with_profile(&tprof, tprof.surface_m - 0.5) == Block::Snow
+            {
+                ten_snowy += 1;
             }
             /* Sample the actual top block in the Sequoia dry band. */
-            if biome(&seq, dir) == Biome::Desert {
-                let prof = profile(&seq, dir);
-                let top = sample_with_profile(&prof, prof.surface_m - 0.5);
+            if sprof.biome == Biome::Desert {
+                let top = sample_with_profile(&sprof, sprof.surface_m - 0.5);
                 match top {
                     Block::SeqMycelium | Block::SeqDirt => mycelium += 1,
                     Block::Sand | Block::SeqSand => seq_sand_desert += 1,
@@ -771,9 +838,15 @@ mod biome_tests {
                 }
             }
         }
+        let water_frac = seq_water as f64 / n as f64;
         assert!(
-            seq_ocean as f64 > ten_ocean as f64 * 1.1,
-            "sequoia oceans ({seq_ocean}) must clearly exceed tenebris's ({ten_ocean})"
+            (0.33..=0.47).contains(&water_frac),
+            "sequoia water fraction {water_frac:.3} outside the ~40% band"
+        );
+        assert!(seq_rivers > 100, "rivers must be a visible feature ({seq_rivers})");
+        assert!(
+            (seq_snowy as f64) < ten_snowy as f64 * 0.5,
+            "sequoia snow tops ({seq_snowy}) must be well under tenebris's ({ten_snowy})"
         );
         assert!(mycelium > 0, "sporewood mycelium tops must exist");
         assert_eq!(seq_sand_desert, 0, "no sand deserts on sequoia");
@@ -977,7 +1050,10 @@ mod tests {
     // sequoia<<3 | crag<<4 | frost<<5 | asteroid<<6.
     const PROFILE_PINS: [(u32, u32, u32, u32); 6] = [
         (0xbfb9bf39, 0x3f08d677, 0x41b00000, 0),
-        (0x4187ce13, 0x3f57e0cf, 0x41b00000, 8),
+        /* Sequoia snow_line re-pinned 22.0 -> 40.0 (0x41b00000 ->
+         * 0x42200000): the smaller-snow-cap look pass raised
+         * SEQUOIA_SNOW_ELEV deliberately. */
+        (0x4187ce13, 0x3f57e0cf, 0x42200000, 8),
         (0x406c700b, 0x3f7fe5cd, 0x41300000, 3),
         (0x40af3c31, 0x3f6f5780, 0x41300000, 18),
         (0x40c4e7f9, 0x3f13cd3a, 0x41b00000, 36),

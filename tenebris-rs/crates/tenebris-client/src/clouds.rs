@@ -123,7 +123,7 @@ fn push_puff_box(
 /// Draw the cloud layer for the active body. Called in the offscreen
 /// opaque pass next to the other sgl world entities.
 pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
-    let cfg = clouds_cfg::config();
+    let mut cfg = clouds_cfg::config();
     if cfg.density <= 0.0 {
         return;
     }
@@ -131,6 +131,13 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
      * layer so orbital biome captures see the terrain. */
     if crate::weather_fx::forced_clear() {
         return;
+    }
+    /* Sequoia wears brown skies: its yaml section overrides the cloud
+     * albedo for this body only (puffs + far shell both read cfg.color). */
+    if w.body.tileset == tenebris_core::planet::Tileset::Sequoia {
+        if let Some(c) = clouds_cfg::sequoia_color() {
+            cfg.color = c;
+        }
     }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let local = dvec3_sub(p.position, center);
@@ -484,7 +491,13 @@ fn draw_cloud_shell(
     if alpha <= 0.001 {
         return;
     }
-    let cfg = clouds_cfg::config();
+    let mut cfg = clouds_cfg::config();
+    /* Same per-tileset albedo override as the near puffs (draw()). */
+    if w.body.tileset == tenebris_core::planet::Tileset::Sequoia {
+        if let Some(c) = clouds_cfg::sequoia_color() {
+            cfg.color = c;
+        }
+    }
     let (tview, tsmp) = ensure_shell_texture(w);
 
     renderer::sgl_world_begin();

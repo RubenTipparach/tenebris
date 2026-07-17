@@ -47,3 +47,11 @@ clouds:
   lod_alt_m: 5000
   lod_fade_m: 1500
   shell_alpha: 0.6
+
+# Per-tileset override section: a top-level section named after a
+# tileset re-colours the cloud layer on those bodies only. Only `color`
+# is honoured here today; every other knob stays global.
+sequoia:
+  # Dusty tan-brown - Sequoia's skies match its red forests and hazy
+  # brown atmosphere rim.
+  color: [0.82, 0.68, 0.50]

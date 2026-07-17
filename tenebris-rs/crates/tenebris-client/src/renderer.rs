@@ -277,7 +277,10 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/wood.png"),                        /* 21 WOOD */
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
-    Some("assets/textures/grass.png"),                       /* 24 SEQ_LEAVES */
+    /* White base like the Sporewood tiles: grass.png has ~no red channel,
+     * so a red tint over it renders near-black - the "why are the redwoods
+     * dark" bug. Snow's white noise takes the rust tint faithfully. */
+    Some("assets/textures/snow.png"),                        /* 24 SEQ_LEAVES */
     /* Ore-bearing rock: dedicated stone-with-mineral-speck textures
      * (matches the JS rocks_*.png minerals set) rather than a flat tint
      * over plain rock - so each ore reads as specks embedded in stone. */
@@ -409,7 +412,7 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.00, 1.00, 1.00], /* WOOD     - passthrough        */
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
-    [1.45, 0.30, 0.30], /* SEQ_LEAVES - Sequoia red foliage */
+    [0.85, 0.38, 0.20], /* SEQ_LEAVES - rust-red redwood foliage (on white base) */
     /* Ore tints are neutral: the mineral colour lives in the dedicated
      * speck textures now, not a multiplier over plain rock. */
     [1.0, 1.0, 1.0], /* COAL_ORE   */
@@ -6819,8 +6822,10 @@ mod tests {
         /* Paths table spot checks (the C's paths[] order). */
         assert_eq!(ATLAS_PATHS[1], Some("assets/textures/water.png"));
         assert_eq!(ATLAS_PATHS[10], Some("assets/textures/torch.png"));
-        assert_eq!(ATLAS_PATHS[24], Some("assets/textures/grass.png"));
-        assert_eq!(ATLAS_TINTS[24], [1.45, 0.30, 0.30]);
+        /* SEQ_LEAVES re-based onto white snow.png so its rust-red tint
+         * actually reads red (grass.png has ~no red channel). */
+        assert_eq!(ATLAS_PATHS[24], Some("assets/textures/snow.png"));
+        assert_eq!(ATLAS_TINTS[24], [0.85, 0.38, 0.20]);
     }
 
     /* --------------------------------------------------------------- */

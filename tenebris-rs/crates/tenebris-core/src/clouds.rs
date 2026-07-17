@@ -86,10 +86,21 @@ impl CloudsConfig {
 }
 
 static S_CLOUDS: Mutex<CloudsConfig> = Mutex::new(CloudsConfig::DEFAULT);
+/// Per-tileset cloud-albedo override (yaml section named after the
+/// tileset, e.g. `sequoia:` with a `color:` field). None = use the
+/// global color. Only Sequoia needs one today - generalize when a
+/// second body wants its own sky.
+static S_SEQUOIA_COLOR: Mutex<Option<[f32; 3]>> = Mutex::new(None);
 
 /// Current cloud tuning (compiled-in defaults until `load_config`).
 pub fn config() -> CloudsConfig {
     *S_CLOUDS.lock().unwrap()
+}
+
+/// Cloud albedo for a Sequoia-tileset body: the `sequoia:` section's
+/// color when set, the global color otherwise.
+pub fn sequoia_color() -> Option<[f32; 3]> {
+    *S_SEQUOIA_COLOR.lock().unwrap()
 }
 
 /// Install a config directly (bypasses the yaml merge). For tests.
@@ -99,26 +110,43 @@ pub fn set_config(cfg: CloudsConfig) {
 
 /// Parse clouds.yaml (tiny key/value subset; `color` is a vec3 list).
 /// A field set to / left at zero keeps the compiled-in default; a
-/// negative `density` switches clouds off.
+/// negative `density` switches clouds off. A bare `sequoia:` section
+/// header starts the per-tileset override block - only its `color` is
+/// honoured today (Sequoia's brown skies).
 pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
     let mut cfg = CloudsConfig::DEFAULT;
+    let mut seq_color: Option<[f32; 3]> = None;
+    let mut in_sequoia = false;
     for raw in src.split('\n') {
         let line = match raw.find('#') {
             Some(h) => &raw[..h],
             None => raw,
         }
-        .trim();
-        let Some(colon) = line.find(':') else { continue };
-        let key = line[..colon].trim();
-        let val = line[colon + 1..].trim();
+        .trim_end();
+        let trimmed = line.trim();
+        let Some(colon) = trimmed.find(':') else { continue };
+        let key = trimmed[..colon].trim();
+        let val = trimmed[colon + 1..].trim();
+        /* Top-level section headers (no value, no indent). */
+        if val.is_empty() && !line.starts_with(' ') {
+            in_sequoia = key.eq_ignore_ascii_case("sequoia");
+            continue;
+        }
         if key == "color" {
             let inner = val.trim_start_matches('[').trim_end_matches(']');
             let parts: Vec<f32> =
                 inner.split(',').filter_map(|s| s.trim().parse().ok()).collect();
             if parts.len() == 3 && parts.iter().any(|v| *v > 0.0) {
-                cfg.color = [parts[0], parts[1], parts[2]];
+                if in_sequoia {
+                    seq_color = Some([parts[0], parts[1], parts[2]]);
+                } else {
+                    cfg.color = [parts[0], parts[1], parts[2]];
+                }
             }
             continue;
+        }
+        if in_sequoia {
+            continue; /* only color is per-tileset today */
         }
         let Ok(v) = val.parse::<f32>() else { continue };
         if v == 0.0 {
@@ -144,6 +172,7 @@ pub fn parse_config(src: &str, _path: &str) -> CloudsConfig {
         }
     }
     *S_CLOUDS.lock().unwrap() = cfg;
+    *S_SEQUOIA_COLOR.lock().unwrap() = seq_color;
     cfg
 }
 
@@ -174,6 +203,21 @@ mod tests {
         assert_eq!(p.patch_scale, 6.0);
         assert_eq!(p.patch_clear, 0.0, "negative patch_clear = uniform sky");
         assert_eq!(p.patch_soft, CloudsConfig::DEFAULT.patch_soft);
+        set_config(CloudsConfig::DEFAULT);
+    }
+
+    #[test]
+    fn sequoia_section_overrides_color_only() {
+        let c = parse_config(
+            "clouds:\n  color: [0.9, 0.9, 1.0]\n  density: 0.5\nsequoia:\n  color: [0.8, 0.6, 0.4]\n  density: 0.9\n",
+            "t",
+        );
+        assert_eq!(c.color, [0.9, 0.9, 1.0], "global color untouched");
+        assert_eq!(c.density, 0.5, "sequoia section must not leak scalars");
+        assert_eq!(sequoia_color(), Some([0.8, 0.6, 0.4]));
+        /* No section -> no override. */
+        parse_config("color: [1.0, 1.0, 1.0]\n", "t");
+        assert_eq!(sequoia_color(), None);
         set_config(CloudsConfig::DEFAULT);
     }
 

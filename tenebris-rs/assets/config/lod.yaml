@@ -152,7 +152,10 @@ earth:
 
 sequoia:
   water_color:        [0.16, 0.42, 0.34]
-  lowland_tint:       [0.75, 0.85, 0.55]
+  # Warm tan-red lowlands so the distant impostor matches the near-tier
+  # ground (tan sequoia grass + rust-red redwood crowns), not the old
+  # green that no longer exists on the surface.
+  lowland_tint:       [0.85, 0.68, 0.48]
   peak_tint:          [1.00, 0.95, 0.80]
   water_full_depth_m: 4.0
   # Close-up water gets a saturated alien-green tint via Beer-Lambert.

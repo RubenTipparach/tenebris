@@ -300,8 +300,9 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
                     /* Redwood groves: sparser than fields so each giant
                      * reads as a monument, with a tall varied trunk. */
                     Biome::Fields | Biome::Beach => (10, 6),
-                    /* Sporewood: giant mushrooms on the mycelium. */
-                    Biome::Desert => (26, 1),
+                    /* Sporewood: GIANT mushrooms on the mycelium - tall
+                     * stems so the caps tower like the redwoods do. */
+                    Biome::Desert => (26, 4),
                     Biome::Tundra => (2, 3),
                     Biome::Mountains => (0, 0),
                     _ => (10, 6),
@@ -332,7 +333,7 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
                 let trunk = 3
                     + ((h >> 8) & 1) as i32
                     + extra_trunk
-                    + if is_redwood { ((h >> 9) & 3) as i32 } else { 0 };
+                    + if is_redwood || is_mushroom { ((h >> 9) & 3) as i32 } else { 0 };
                 let trunk_top = surface_idx + trunk;
                 /* Crown shapes: pines wear a tall narrow leaf sleeve
                  * down most of the trunk; REDWOODS bare the lower 2/3 of
@@ -346,7 +347,9 @@ fn gen_column(body: &BodyConfig, grid: &Goldberg, tile_idx: i32, col: &mut [u8])
                     let bole = surface_idx + (trunk * 2) / 3;
                     (bole + 1, trunk_top + 2, bole)
                 } else if is_mushroom {
-                    (trunk_top + 1, trunk_top + 2, trunk_top)
+                    /* Three cap layers - a domed head worthy of the
+                     * giant stem. */
+                    (trunk_top + 1, trunk_top + 3, trunk_top)
                 } else {
                     (trunk_top - 1, trunk_top + 2, trunk_top)
                 };
