@@ -5004,6 +5004,20 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     let model = mat4_translate(body.world_pos);
     let mvp = mat4_mul(vp, model);
 
+    /* The water FS works in PLANET-LOCAL space (v_wpos is the raw chunk
+     * vertex; only the mvp composes the body translation), so the camera
+     * must be handed over PLANET-LOCAL too - same convention hex.fs
+     * documents for its slot [3]. Passing the WORLD camera "worked" only
+     * because Tenebris sits at the origin; on any offset body (Sequoia at
+     * x=20000) every view-dependent term broke: the fog distance read
+     * ~20 km for every fragment (fog saturated -> the whole sheet turned
+     * the sky-average colour, "fixed" by atmosphere enabled:0 because
+     * that zeroes the density), and Fresnel / specular / Snell's window
+     * angles were computed against a garbage near-constant view vector
+     * (the "busted shader, solid colour that changes with view angle"
+     * look). */
+    let cam_local = vec3_sub(camera_world, body.world_pos);
+
     /* All water knobs come from water.yaml; near/far stay hardcoded
      * (renderer-pipeline detail, mirrors main_web's projection). */
     let w = config::water();
@@ -5089,7 +5103,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         );
 
         let fs_mobile = shaders::water_mobile::FsParamsMobile {
-            u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
+            u_camera_pos: [cam_local.x, cam_local.y, cam_local.z],
             _pad_12: [0; 4],
             u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
             u_time: t_scaled,
@@ -5157,7 +5171,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     sg::apply_uniforms(shaders::water::UB_VS_PARAMS, &sg::value_as_range(&vs_params));
 
     let fs_params = shaders::water::FsParams {
-        u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
+        u_camera_pos: [cam_local.x, cam_local.y, cam_local.z],
         _pad_12: [0; 4],
         u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
         u_time: t_scaled,
