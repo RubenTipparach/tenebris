@@ -1000,6 +1000,20 @@ pub struct WaterConfig {
     pub height_offset_m: f32,
     /* Refraction: scalar on the surface tangent gradient. */
     pub refract_amount: f32,
+    /* Max |screen-UV offset| of the refraction sample. The rain-ripple
+     * kernel spikes the gradient to ~8x the fbm waves; uncapped, the
+     * "refracted" sample lands on the SKY a third of a screen away and
+     * paints the sheet sky-colour (glaring on Sequoia orange-over-green,
+     * invisible on Tenebris blue-on-blue). */
+    pub refract_max_uv: f32,
+    /* Cap on |tangent gradient| before it bends the shading normal -
+     * spikes past this flipped the normal into the tangent plane and
+     * Schlick-mirrored the whole sheet. Foam reads the raw gradient. */
+    pub slope_max: f32,
+    /* Ceiling on the water pass's distance-fog mix. 1.0 = the far sheet
+     * may fully become the sky; <1 keeps a sliver of water colour at
+     * the horizon so the sea never reads as despawned into the limb. */
+    pub fog_max: f32,
     /* Beer-Lambert per-channel extinction (1/m). */
     pub absorption: Vec3,
     /* Saturation colour of deep water. */
@@ -1060,6 +1074,9 @@ pub const WATER_DEFAULTS: WaterConfig = WaterConfig {
     depth_offset_m: 0.50,
     height_offset_m: 0.00,
     refract_amount: 0.04,
+    refract_max_uv: 0.03,
+    slope_max: 1.6,
+    fog_max: 0.82,
     absorption: v3(0.60, 0.20, 0.10),
     deep_color: v3(0.02, 0.10, 0.22),
     shoreline_fade_m: 0.50,
@@ -1202,6 +1219,18 @@ pub fn parse_water(src: &str, path: &str) -> i32 {
             }
             "refract_amount" => {
                 cfg.refract_amount = fval(val);
+                0
+            }
+            "refract_max_uv" => {
+                cfg.refract_max_uv = fval(val);
+                0
+            }
+            "slope_max" => {
+                cfg.slope_max = fval(val);
+                0
+            }
+            "fog_max" => {
+                cfg.fog_max = fval(val);
                 0
             }
             "absorption" => vec3_or_err(val, &mut cfg.absorption),

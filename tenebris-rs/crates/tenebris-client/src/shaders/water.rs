@@ -75,7 +75,10 @@ pub struct FsParams {
     pub u_refract_amount: f32,
     pub u_near: f32,
     pub u_far: f32,
-    pub _pad_44: [u8; 4],
+    /// Max |screen-UV offset| of the refraction sample (fs_params[2].w,
+    /// hand-added into the old padding). Rain-ripple gradient spikes used
+    /// to throw the sample onto the sky; this caps the reach.
+    pub u_refract_max_uv: f32,
     pub u_absorption: [f32; 3],
     pub _pad_60: [u8; 4],
     pub u_deep_color: [f32; 3],
@@ -85,6 +88,9 @@ pub struct FsParams {
     pub u_sun_tint: [f32; 3],
     pub _pad_108: [u8; 4],
     pub u_foam_crest: [f32; 4],
+    /// x = lo, y = hi, z = weight, w = u_slope_max (hand-added into the
+    /// unused .w): cap on |tangent gradient| before it bends the normal,
+    /// so rain-ripple spikes can't flip the surface into a full mirror.
     pub u_foam_slope: [f32; 4],
     pub u_foam_color: [f32; 3],
     pub _pad_156: [u8; 4],
@@ -95,7 +101,11 @@ pub struct FsParams {
     pub u_ripple_speed: f32,
     pub u_wave_steepness: f32,
     pub u_night_floor: f32,
-    pub _pad_204: [u8; 4],
+    /// Ceiling on the distance-fog mix (fs_params[12].w, hand-added into
+    /// the old padding): 1.0 = the far sheet may fully become the sky
+    /// (Tenebris-style melt), <1 keeps a sliver of water colour at the
+    /// horizon so the sea never reads as despawned.
+    pub u_fog_max: f32,
     pub u_torch_color: [f32; 4],
     pub u_flow_speed_falling: f32,
     /// Rain intensity 0..1 (fs_params[14].y) for the surface rain ripples;

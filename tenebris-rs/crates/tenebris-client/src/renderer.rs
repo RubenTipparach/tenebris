@@ -5164,7 +5164,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_refract_amount: w.refract_amount,
         u_near: 0.3,
         u_far: 20000.0,
-        _pad_44: [0; 4],
+        u_refract_max_uv: w.refract_max_uv,
         u_absorption: [absorb.x, absorb.y, absorb.z],
         _pad_60: [0; 4],
         u_deep_color: [deep_c.x, deep_c.y, deep_c.z],
@@ -5176,7 +5176,8 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         /* Foam scalars packed into vec4s; crest.w doubles as the mix
          * intensity, slope.w unused (kept aligned). */
         u_foam_crest: [w.foam_crest_lo, w.foam_crest_hi, w.foam_crest_weight, w.foam_intensity],
-        u_foam_slope: [w.foam_slope_lo, w.foam_slope_hi, w.foam_slope_weight, 0.0],
+        /* slope.w = slope_max: normal-perturbation cap (rain spikes). */
+        u_foam_slope: [w.foam_slope_lo, w.foam_slope_hi, w.foam_slope_weight, w.slope_max],
         u_foam_color: [w.foam_color.x, w.foam_color.y, w.foam_color.z],
         _pad_156: [0; 4],
         u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
@@ -5186,7 +5187,9 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_ripple_speed: w.ripple_speed,
         u_wave_steepness: w.wave_steepness,
         u_night_floor: l.night_ambient_floor,
-        _pad_204: [0; 4],
+        /* Fog ceiling: the sheet hazes toward the sky but never fully
+         * becomes it (kept the sea visible against the limb atmosphere). */
+        u_fog_max: w.fog_max,
         u_torch_color: [l.torch_color.x, l.torch_color.y, l.torch_color.z, l.torch_intensity],
         u_flow_speed_falling: config::water_flow().uv_speed_falling,
         /* Rain intensity for the surface rain ripples (same eased wetness

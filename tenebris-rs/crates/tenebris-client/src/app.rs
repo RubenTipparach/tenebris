@@ -7189,6 +7189,10 @@ fn frame_inner(app: &mut App) {
 
     profiler::end_frame();
     renderer::end_frame();
+    /* Dev screenshot hook (TENEBRIS_DEV_SHOT=<path.png>): reads the
+     * completed back buffer - see dev_shot.rs for why external window
+     * capture doesn't work here. */
+    crate::dev_shot::maybe_write(sapp::width(), sapp::height());
 }
 
 /* --------------------------------------------------------------------- */

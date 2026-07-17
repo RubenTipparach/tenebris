@@ -243,7 +243,18 @@ void main()
         vec2 wr_g = rain_ripple_grad(wr_uv, fs_params[1].w) * (fs_params[14].y * WATER_RAIN_RIPPLE_STRENGTH);
         _612 += _513 * wr_g.x + wr_tv * wr_g.y;
     }
-    vec3 _621 = normalize(_459 - (_612 * fs_params[12].y));
+    // Slope clamp (fs_params[8].w = u_slope_max) BEFORE the gradient bends the
+    // normal: the rain-ripple kernel spikes the gradient to ~8x the fbm waves,
+    // flipping the normal into the tangent plane - Schlick then hits 1.0 and
+    // the whole sheet becomes a flat sky mirror. Foam still reads the raw
+    // gradient below, so storm foam keeps its bite.
+    vec3 n_grad = _612;
+    float n_grad_l = length(n_grad);
+    if (n_grad_l > fs_params[8].w)
+    {
+        n_grad *= fs_params[8].w / n_grad_l;
+    }
+    vec3 _621 = normalize(_459 - (n_grad * fs_params[12].y));
     vec2 _645 = gl_FragCoord.xy / vec2(textureSize(water_scene_color_water_scene_smp, 0));
     vec4 _653 = texture(water_scene_depth_water_scene_depth_smp, _645);
     float _654 = _653.x;
@@ -251,7 +262,29 @@ void main()
     {
         discard;
     }
-    vec4 _679 = texture(water_scene_color_water_scene_smp, clamp(_645 + (_612.xy * fs_params[2].x), vec2(0.0), vec2(1.0)));
+    // Refraction offset clamp (fs_params[2].w = u_refract_max_uv): gradient
+    // spikes threw the sample up to a third of the screen away - onto the SKY -
+    // painting the water sky-colour (glaring on Sequoia's orange sky over green
+    // sea; invisible on Tenebris blue-on-blue, which is why it shipped).
+    vec2 refr_off = _612.xy * fs_params[2].x;
+    float refr_l = length(refr_off);
+    if (refr_l > fs_params[2].w)
+    {
+        refr_off *= fs_params[2].w / refr_l;
+    }
+    vec2 refr_uv = clamp(_645 + refr_off, vec2(0.0), vec2(1.0));
+    // Refraction validity: reject samples on the wrong side of the sky
+    // boundary (sky sampled for a seafloor pixel or vice versa) and samples of
+    // geometry IN FRONT of the surface (foreground smear). Same far-plane test
+    // the composite uses for its sky mask.
+    float refr_z = texture(water_scene_depth_water_scene_depth_smp, refr_uv).x;
+    bool own_sky = _654 >= 0.99998999;
+    bool smp_sky = refr_z >= 0.99998999;
+    if ((smp_sky != own_sky) || (refr_z < gl_FragCoord.z))
+    {
+        refr_uv = _645;
+    }
+    vec4 _679 = texture(water_scene_color_water_scene_smp, refr_uv);
     vec3 _680 = _679.xyz;
     if (!gl_FrontFacing)
     {
@@ -269,6 +302,10 @@ void main()
     vec3 _966 = ((mix(mix(mix(fs_params[4].xyz, _680, exp(fs_params[3].xyz * (-max(0.0, (_748 / (_753 - (((2.0 * _654) - 1.0) * _762))) - (_748 / (_753 - (((2.0 * gl_FragCoord.z) - 1.0) * _762))))))), mix(fs_params[10].xyz, fs_params[11].xyz, vec3(_840)), vec3(_858)), fs_params[9].xyz, vec3(_926)) + ((fs_params[6].xyz * pow(max(dot(_621, normalize(_806 + normalize(fs_params[1].xyz))), 0.0), fs_params[5].x)) * fs_params[4].w)) * mix(fs_params[12].z, 1.0, v_sun_brightness * v_sky_light)) + (((fs_params[13].xyz * fs_params[13].w) * v_torch_light) * (_858 + _926));
     float fog_d = length(v_wpos - fs_params[0].xyz);
     float fog_f = (1.0 - exp(-fog_d * fs_params[15].w)) * step(9.9999997e-05, fs_params[15].w);
+    // Fog ceiling (fs_params[12].w = u_fog_max): the sheet may haze toward the
+    // sky but never fully BECOME it - at 1.0 the far water flattened into the
+    // limb atmosphere with no boundary and read as "the sea despawned".
+    fog_f = min(fog_f, fs_params[12].w);
     frag_color = vec4(mix(_966, fs_params[15].xyz, vec3(fog_f)), 1.0);
 }
 
