@@ -4010,6 +4010,9 @@ thread_local! {
     /// Body ids already logged by the water-cap-skip diagnostic (log once each).
     static WATER_DIAG: RefCell<std::collections::HashSet<i32>> =
         RefCell::new(std::collections::HashSet::new());
+    /// Tileset indices already logged by the water-colour diagnostic.
+    static WATER_COLOR_DIAG: RefCell<std::collections::HashSet<i32>> =
+        RefCell::new(std::collections::HashSet::new());
 }
 
 /// Scan a world's surface columns: how many top out in Water, and a
@@ -5025,6 +5028,23 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         || lp.tileset_water_sky_zenith[ts_idx].z > 0.0
     {
         sky_z = lp.tileset_water_sky_zenith[ts_idx];
+    }
+
+    /* DIAGNOSTIC (once/body): the exact water colours the near cap sends
+     * to the shader. If Sequoia (ts_idx should be 1) shows the global
+     * blue sky_h/deep_c instead of its green overrides, the per-tileset
+     * merge isn't reaching the near cap. */
+    if WATER_COLOR_DIAG.with(|s| s.borrow_mut().insert(ts_idx as i32)) {
+        let nm = body.world.borrow().body.name;
+        println!(
+            "[seq-diag] water cap DRAW {} ts_idx={} deep={:?} absorb={:?} sky_h={:?} sky_z={:?}",
+            nm,
+            ts_idx,
+            [deep_c.x, deep_c.y, deep_c.z],
+            [absorb.x, absorb.y, absorb.z],
+            [sky_h.x, sky_h.y, sky_h.z],
+            [sky_z.x, sky_z.y, sky_z.z],
+        );
     }
 
     let mut tris = 0usize;

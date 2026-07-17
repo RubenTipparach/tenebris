@@ -745,13 +745,21 @@ pub fn sample_with_profile(prof: &ColumnProfile, altitude_m: f32) -> Block {
                 }
                 return if prof.sequoia { Block::SeqMycelium } else { Block::Grass };
             }
-            Biome::Jungle => return Block::JungleGrass,
+            Biome::Jungle => {
+                /* Sequoia has NO green jungle - its wet-highland band is
+                 * part of the TALL-TREES identity (tan sequoia sod under
+                 * dense redwoods), never Tenebris's green JungleGrass.
+                 * (User: "Sequoia doesnt have green grass.") */
+                return if prof.sequoia { Block::SeqGrass } else { Block::JungleGrass };
+            }
             Biome::Tundra => {
                 /* Low-elevation cold band: snowy ground (the snow-line
                  * branch above already whitened everything higher). */
                 return if prof.sequoia { Block::SeqSnow } else { Block::Snow };
             }
-            Biome::Fields if prof.biomes_on => return Block::DryGrass,
+            /* Tenebris pasture reskin (yellow-green DryGrass). Sequoia
+             * keeps its own tan sod (SeqGrass) - it has NO green grass. */
+            Biome::Fields if prof.biomes_on && !prof.sequoia => return Block::DryGrass,
             _ => {}
         }
         return if prof.sequoia { Block::SeqGrass } else { Block::Grass };
