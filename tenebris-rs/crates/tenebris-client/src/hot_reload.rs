@@ -3,12 +3,14 @@
 //! mtime moved since the last poll, re-run the loaders so an edit shows up
 //! in-game without a restart.
 //!
-//! Why it "just works": the tuning configs the renderer consumes are read
-//! fresh every frame - `config::water()` / `config::lod()` return the
-//! current Mutex snapshot, and the atmosphere overrides are applied onto
-//! `planet::BODIES[]` which the per-frame `build_env` re-reads. So replacing
-//! the snapshot / re-applying the overrides is all that's needed; the next
-//! frame picks it up.
+//! Why it works: the tuning configs the renderer consumes are read fresh
+//! every frame - `config::water()` / `config::lod()` return the current
+//! Mutex snapshot, and the atmosphere overrides are applied onto
+//! `planet::BODIES[]`, which the per-frame env build re-fetches by id via
+//! `planet::get()` (it used to read a stale BodyConfig snapshot taken at
+//! world-entry - that was the "reload fires but nothing changes" bug). So
+//! replacing the snapshot / re-applying the overrides is all that's needed;
+//! the next frame picks it up.
 //!
 //! Native only - WASM has no filesystem to stat (and ships the configs
 //! baked into the bundle), so the whole module compiles out there.

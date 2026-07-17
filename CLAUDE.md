@@ -42,6 +42,76 @@ the item-visuals + static-asset rules below).
 
 This rule stays in force until the user says otherwise.
 
+## New planet (sister world) setup — Dos and Don'ts
+
+Adding a planet is NOT "drop a body in the list." A sister world only
+comes alive when its seed, biome gates, rosters, textures, config, and
+tests are ALL wired - miss one and it silently renders as a reskinned
+Tenebris (the "you changed absolutely nothing" trap). This checklist is
+the distilled scar tissue from bringing Sequoia up to standard.
+
+**DO**
+
+- **Reseed the body from the world seed.** `biomes_active(body)` is true
+  only when `body.seed != default_seed(body.id)`; every sister-specific
+  path (oceans, rivers, biome remap, redwoods, mushrooms, textures) hides
+  behind it. Derive with `planet::derive_body_seed(world_seed, id)`
+  (identity at Tenebris so its spawn terrain stays byte-identical;
+  splitmix64 + a collision guard for sisters) and reseed ALL bodies on
+  world regen. Forget this and the planet runs the default seed - NOTHING
+  you add turns on.
+- **Gate every planet feature on the body / tileset** so it can't leak:
+  land fauna in `fauna::land_spawn_kind`, water fauna in the
+  `spawn_near_auto` water path, flora (trees / mushrooms / scatter in
+  `world.rs` + wild fruit in `crops.rs`), biome remap in `planet_gen.rs`.
+  Tileset indices: Earth=0, Sequoia=1, Crag=2, Frost=3, Asteroid=4.
+- **Give it a UNIQUE flora + fauna roster**, provably disjoint - extend
+  `planets_field_disjoint_rosters` (see the flora/fauna rule above). A
+  species lives on exactly one planet.
+- **Bake its OWN textures** under `tenebris-rs/assets/textures/` from a
+  `tools/gen-<planet>-textures.py` generator. Never reuse another
+  planet's art (Sequoia dirt must not be the snow texture).
+- **Put every per-planet number in per-tileset YAML, never in code:**
+  `assets/config/lod.yaml` (water colour / deep / absorption / sky
+  reflection / fog scale + fog colour / rim), `atmosphere.yaml` (`enabled`
+  toggle, `radius_mult` = MAX height, `lower_radius_mult` = MIN height,
+  scattering, sunset, distance fog), `clouds.yaml` (colour / density).
+  Honour the zero-sentinel - `{0,0,0}` / `0.0` means "use the global" -
+  and give the planet REAL values, not just documented placeholders.
+- **Water shader math is PLANET-LOCAL.** Hand the water FS the
+  planet-local camera (`cam_local = camera_world - body.world_pos`), the
+  same convention `hex.fs` uses. An offset body (Sequoia sits at
+  x~=20000) breaks EVERY view-dependent term if you pass the world
+  camera: fog distance reads ~20 km for every fragment so the sheet
+  saturates to the sky colour (the "orange water in atmosphere, green
+  only out of it" bug, mis-"fixed" by turning the atmosphere off), and
+  Fresnel / specular / Snell's-window angles resolve against a garbage
+  view vector (the "solid colour that changes with view angle" look).
+  This was the true root cause of the Sequoia water saga.
+- **Keep lifeless worlds lifeless.** Barren / icy / asteroid bodies spawn
+  no fauna and no flora - `fauna::body_has_fauna(body)` is the gate.
+- **Extend the tests in the same change:** the seed-activation test
+  (`derived_seed_activates_..._biomes_and_water_band`), the disjointness
+  test, and any per-planet biome / river / flora test.
+- **Get in-game confirmation for the look.** Headless tests have passed
+  while a planet still rendered wrong; only the user's in-game check
+  counts for worldgen / visual changes.
+
+**DON'T**
+
+- Don't leave the planet on the default seed - its biomes stay OFF.
+- Don't reuse another planet's species (flora OR fauna) or its textures.
+- Don't hard-code per-planet colours / thresholds in code or shaders -
+  per-tileset YAML with the zero-sentinel fallback instead.
+- Don't spawn wildlife or plants on barren / icy / asteroid bodies.
+- Don't pass the WORLD camera to the water shader on an offset body.
+- Don't reference the C or JS trees for the planet's assets - copy what
+  you need into `tenebris-rs/assets/`.
+- Don't treat green tests as proof, and don't add a species without also
+  extending the disjointness test and giving it an icon / model / texture.
+
+This rule stays in force until the user says otherwise.
+
 ## HIGH PRIORITY BUG: the ship must NEVER despawn when you exit it
 
 **Status: OPEN. Standing instruction from the user (all-caps, engrained).**
@@ -257,91 +327,33 @@ at the same point in the call graph as `world_set` is wired today.
 A new mutator without a same-frame save is a bug, not a feature
 request.
 
-## The Rust port (`tenebris-rs/`) is the leading platform — C and JS are archive-only
+## C and JS trees are frozen archives — all work is in `tenebris-rs/`
 
-`tenebris-rs/` is now the primary, leading development target. All new
-work, features, and fixes happen there. **The C tree (`tenebris-c/`) and
-the JS tree (`src/`, `public/`, ...) are kept only for archival /
-historical reference — their implementations no longer matter.**
+`tenebris-rs/` is the primary, leading development target. The C tree
+(`tenebris-c/`) and the JS tree (`src/`, `public/`, `index.html`, ...)
+are kept ONLY for historical reference.
 
-Concretely:
+- **Do not edit them.** No fixes, refactors, reformats, or parity syncs
+  to `tenebris-c/` or the JS tree, even for an obvious bug or typo — port
+  the change into `tenebris-rs/`, or leave it alone.
+- **Do not chase parity.** Rust leads; when it diverges from C/JS that is
+  fine. Golden mesh / worldgen / sim hashes are Rust-golden — re-pin them
+  to the intended Rust output, don't hold Rust back for a C contract.
+- **Rust must not depend on them.** No `tenebris-c/` or JS path in a Rust
+  `include_*` / `concat!` / build script / test fixture; COPY any needed
+  asset into `tenebris-rs/assets/` rather than pointing at the C copy.
+  Reading C/JS to learn how a feature worked is fine and encouraged.
+- **Two carve-outs that must NOT be "cleaned up":** `//! Port of
+  tenebris-c/...` attribution comments (documentation, not a dependency),
+  and the save / wire-compat string literals that contain `tenebris-c` —
+  the `tenebris-c:` localStorage / KV key namespaces, the
+  `wss://tenebris-c.fly.dev/` server URL, the `tenebris-c` `%APPDATA%`
+  config dir. Changing those breaks existing saves and MP interop; they
+  stay verbatim.
 
-- **Do not chase parity with C or JS.** When Rust behaviour diverges from
-  the C/JS implementation, that is fine — Rust leads. Do not "fix" Rust to
-  match C/JS, and do not hold back a Rust change because it would break a
-  C-parity guarantee.
-- **Golden tests are Rust-golden.** Pinned mesh / worldgen / sim hashes in
-  `tenebris-rs/` are snapshots of the *intended Rust output*, not a C-parity
-  contract. When an intentional gameplay/visual change moves them, re-pin to
-  the new Rust values (verify the change is the one you meant, then update
-  the constant) and note why. Older "generated from the C build" comments
-  are historical.
-- **Reading C/JS to learn how a feature worked is still fine** and often
-  useful. But treat them as documentation of the past, not a spec to honour.
-- **Never edit C or JS to keep them in sync with Rust.** They are frozen
-  archives; do not touch them (the older "all development happens in
-  `tenebris-c/`" note below is superseded by this section).
-
-This rule stays in force until the user says otherwise.
-
-## DO NOT MODIFY THE TENEBRIS JS SOURCE — IT IS DEPRECATED
-
-The original Three.js / TypeScript implementation lives at the repo root
-(`src/`, `public/`, `index.html`, `package.json`, etc.). **It is
-deprecated.** It exists only as a reference implementation for the C port
-to study; it is not maintained, not shipped, and not part of the active
-product.
-
-**Updates to the JS code are strictly off limits.** Do not edit, refactor,
-"fix", reformat, or otherwise touch any file under the JS tree — including
-shaders under `src/shaders/`, configs under `src/config/`, world generation
-under `src/planet/`, or anything else outside `tenebris-c/`. Reading the JS
-to learn how a feature works is fine and encouraged. Touching it is not,
-even if you spot a bug, a typo, or an obvious improvement — port the fix
-into `tenebris-c/` instead, or leave it alone.
-
-This rule stays in force until the user says otherwise.
-
-## Active port lives under `tenebris-c/`
-
-All development happens in the C + Sokol + WASM port at `tenebris-c/`. If
-something feels like it should change in the JS, instead change the C port
-to no longer depend on the JS shape — or surface the question and let the
-user decide.
-
-## The Rust port (`tenebris-rs/`) is self-contained — never reference the C or JS trees
-
-The Rust port under `tenebris-rs/` is a standalone target that owns its
-own source, assets, and build scripts. **Rust code and Rust build
-scripts must NEVER reference the C tree (`tenebris-c/`) or the
-deprecated JS tree (`src/`, `public/`, ...) as a build-time or runtime
-dependency** — no `..\tenebris-c` paths, no `../../../tenebris-c/...`
-in `concat!` / `include_*` / test fixtures, no cd-ing into a sibling
-tree, no borrowing its assets.
-
-- **Build / run scripts** (`run-rust.bat`, any future Rust tooling) may
-  only touch paths under `tenebris-rs/`. The binary builds and runs from
-  `tenebris-rs/` and loads assets from `tenebris-rs/assets/`.
-- **Assets** the Rust build needs live under `tenebris-rs/assets/` and
-  are the Rust port's own copy. When the port needs an asset that only
-  exists in the C tree, COPY it into `tenebris-rs/assets/` — never point
-  at the C copy. (This supersedes the older "shared asset tree, not
-  duplicated" note in `tenebris-rs/PORTING.md`.)
-- **Rust source, including tests**, must not open, include, or hard-code
-  a filesystem path into `tenebris-c/` or the JS tree.
-
-Two things are explicitly NOT covered by this rule:
-
-1. **`//! Port of tenebris-c/...` attribution comments** and any other
-   prose that merely *names* the C file a module was ported from. Those
-   are documentation, not a dependency — reading the C / JS to learn how
-   a feature works stays fine and encouraged.
-2. **Save / wire-compat string literals** that happen to contain the
-   text `tenebris-c` — the `tenebris-c:` localStorage / KV key
-   namespaces, the `wss://tenebris-c.fly.dev/` server URL, the
-   `tenebris-c` config dir name under `%APPDATA%`. These are on-disk /
-   on-wire identifiers; changing them breaks existing saves and MP
-   interop, so they stay exactly as-is (see PORTING.md hard rule 1).
+The long-form historical rules (the old "development happens in
+`tenebris-c/`" era, the full JS-deprecation and Rust-self-contained
+notes) live in `legacy.md`.
 
 This rule stays in force until the user says otherwise.
 
