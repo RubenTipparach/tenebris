@@ -1392,8 +1392,16 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
      * stops adding them on top, then drop into 6DOF mutation of the
      * basis directly. Without this, the player keeps seeing through
      * a phantom yaw/pitch offset that mouse-look in space can never
-     * cancel. */
-    if !was_in_space && p.is_in_space {
+     * cancel.
+     *
+     * NOT while riding a rocket: the bake rotates basis.up by the frozen
+     * board-time pitch, and the ridden rocket is drawn ALONG basis.up, so
+     * this snapped the nose sideways the instant the ship crossed the SOI
+     * seam (the "rocket angle jumps leaving the atmosphere" bug). A rider
+     * has no scalar look to preserve - the chase cam owns its own orbit,
+     * and the 6DOF branch bakes any residual scalars later if the player
+     * exits to spacewalk. So keep basis.up on its radial/flight axis. */
+    if !was_in_space && p.is_in_space && !crate::rocket_ride::is_riding() {
         bake_yaw_pitch_into_basis(p);
     }
     /* Edge: leaving space -> entering a gravity well. Arm the roll

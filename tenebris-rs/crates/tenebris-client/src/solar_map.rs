@@ -23,11 +23,13 @@
 
 use sokol::app as sapp;
 
-use tenebris_core::math::{dvec3_add, dvec3_make, dvec3_sub, dvec3_to_vec3, DVec3};
+use tenebris_core::math::{
+    dvec3_add, dvec3_make, dvec3_normalize, dvec3_sub, dvec3_to_vec3, DVec3,
+};
 use tenebris_core::orbit;
 use tenebris_core::planet::{self, BodyId};
 
-use crate::gfx_math::{mat4_look_at, mat4_perspective, Mat4};
+use crate::gfx_math::{mat4_look_at_dir, mat4_perspective, Mat4};
 use crate::nav_ui::{self, Target};
 
 use std::cell::RefCell;
@@ -270,10 +272,21 @@ pub fn camera(aspect: f32) -> Option<(Mat4, Mat4, DVec3)> {
     let off = dvec3_make(cp * cy * dist, sp * dist, cp * sy * dist);
     let eye = dvec3_add(f, off);
     let eye_f = dvec3_to_vec3(eye);
-    let focus_f = dvec3_to_vec3(f);
-    let view = mat4_look_at(
+    /* Build the view from a look DIRECTION computed in f64, not from
+     * mat4_look_at(eye, focus) which does `normalize(focus - eye)` in f32.
+     * At solar-system magnitudes (bodies at +/-20 km, the sun ~150 km) that
+     * f32 subtraction of two huge, nearly-equal vectors is catastrophic
+     * cancellation: the orientation columns pick up ULP-scale noise that
+     * shimmers frame-to-frame as the ship (hence eye + focus) moves - the
+     * "jitter on the ship position in the map" bug. Solving the direction in
+     * doubles first keeps the rotation exact; only the translation column
+     * carries the magnitude, which merely shifts the world uniformly. This
+     * is the same trick the flight chase-cam already uses (mat4_look_at_dir,
+     * rocket_cam.rs) and why normal ship view never jittered. */
+    let look_dir = dvec3_to_vec3(dvec3_normalize(dvec3_sub(f, eye)));
+    let view = mat4_look_at_dir(
         eye_f,
-        focus_f,
+        look_dir,
         tenebris_core::math::Vec3 { x: 0.0, y: 1.0, z: 0.0 },
     );
     let sc = tenebris_core::config::solar();
