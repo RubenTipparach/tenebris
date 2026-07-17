@@ -199,6 +199,12 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     if forced_clear() {
         return;
     }
+    /* No atmosphere -> no clouds, so no rain / snow either (precipitation
+     * falls from the cloud deck). Same live-store atmosphere gate the
+     * cloud layer uses - keeps airless moons / asteroids dry. */
+    if !tenebris_core::planet::body_has_atmosphere(&tenebris_core::planet::get(w.body.id)) {
+        return;
+    }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let local = dvec3_sub(p.position, center);
     let r = dvec3_length(local);

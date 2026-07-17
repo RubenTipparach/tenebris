@@ -6671,7 +6671,7 @@ fn frame_inner(app: &mut App) {
         }
         c.get() == 1
     });
-    let has_atmo = active_body.has_water && active_body.atmo_enabled && !no_atmo;
+    let has_atmo = tenebris_core::planet::body_has_atmosphere(&active_body) && !no_atmo;
     let planet_r = active_body.radius_m as f32;
     let radius_mult = if active_body.atmo_radius_mult > 0.0 { active_body.atmo_radius_mult } else { 1.3 };
     let lower_mult = if active_body.atmo_lower_radius_mult > 0.0 { active_body.atmo_lower_radius_mult } else { 1.0 };

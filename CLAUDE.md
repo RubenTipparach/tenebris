@@ -90,6 +90,13 @@ the distilled scar tissue from bringing Sequoia up to standard.
   This was the true root cause of the Sequoia water saga.
 - **Keep lifeless worlds lifeless.** Barren / icy / asteroid bodies spawn
   no fauna and no flora - `fauna::body_has_fauna(body)` is the gate.
+- **No atmosphere = no sky effects.** Clouds AND precipitation (rain /
+  snow) are gated on `planet::body_has_atmosphere(body)` (=
+  `has_water && atmo_enabled`) - the same predicate the sky scattering
+  and distance fog use. Airless bodies (moons, asteroids, barren / icy
+  worlds, or any body with atmosphere.yaml `enabled: 0`) draw no clouds
+  and no weather. Route any new atmosphere-dependent effect through that
+  one predicate so they can't drift apart.
 - **Extend the tests in the same change:** the seed-activation test
   (`derived_seed_activates_..._biomes_and_water_band`), the disjointness
   test, and any per-planet biome / river / flora test.

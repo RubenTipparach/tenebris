@@ -615,6 +615,17 @@ pub fn get(id: BodyId) -> BodyConfig {
     BODIES.lock().unwrap()[id as usize]
 }
 
+/// True when a body has an atmosphere. Combines the renderer's long-
+/// standing "`has_water` is the atmosphere predicate" convention with the
+/// explicit `atmo_enabled` toggle (atmosphere.yaml `enabled: 0`). Airless
+/// bodies - moons, asteroids, barren/icy worlds, or any body with the
+/// toggle off - return false: no sky scattering, no distance fog, and no
+/// clouds. Keep the atmosphere-dependent renderer gates (sky, fog, clouds)
+/// reading THIS so they can't drift apart.
+pub fn body_has_atmosphere(b: &BodyConfig) -> bool {
+    b.has_water && b.atmo_enabled
+}
+
 /// Port of `planet_get()` for a raw integer id - mirrors the C
 /// "NULL when id is out of range" behavior.
 pub fn get_by_index(index: i32) -> Option<BodyConfig> {
@@ -943,6 +954,24 @@ mod tests {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         *BODIES.lock().unwrap() = BODIES_INIT;
         guard
+    }
+
+    #[test]
+    fn body_has_atmosphere_only_for_watered_enabled_worlds() {
+        let _g = lock_and_reset();
+        /* Earth-likes have water + atmosphere on by default -> clouds. */
+        assert!(body_has_atmosphere(&get(BodyId::Tenebris)));
+        assert!(body_has_atmosphere(&get(BodyId::Sequoia)));
+        /* Airless bodies (moons, the barren + icy worlds, asteroids) all
+         * have has_water == false, so no atmosphere -> no clouds. */
+        assert!(!body_has_atmosphere(&get(BodyId::Luna)));
+        assert!(!body_has_atmosphere(&get(BodyId::Crag)));
+        assert!(!body_has_atmosphere(&get(BodyId::Frostbite)));
+        assert!(!body_has_atmosphere(&get(BodyId::Asteroid0)));
+        /* The atmo_enabled toggle (atmosphere.yaml `enabled: 0`) strips
+         * the atmosphere - and the clouds - even from a watered world. */
+        BODIES.lock().unwrap()[BodyId::Tenebris as usize].atmo_enabled = false;
+        assert!(!body_has_atmosphere(&get(BodyId::Tenebris)));
     }
 
     #[test]

@@ -127,6 +127,16 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
     if cfg.density <= 0.0 {
         return;
     }
+    /* No atmosphere -> no clouds. Airless bodies (moons, asteroids,
+     * barren/icy worlds, or any body with atmosphere.yaml `enabled: 0`)
+     * have no sky to hang a cloud deck in, so skip BOTH the near per-puff
+     * shell and the far-LOD cloud sphere. Read the LIVE planet store (not
+     * the World's body snapshot) so an `enabled: 0` hot-reload strips the
+     * clouds the same frame - same convention the cloud-height override
+     * below and the atmosphere/fog gates already use. */
+    if !tenebris_core::planet::body_has_atmosphere(&tenebris_core::planet::get(w.body.id)) {
+        return;
+    }
     /* Dev override (TENEBRIS_DEV_WEATHER=clear): skip the whole cloud
      * layer so orbital biome captures see the terrain. */
     if crate::weather_fx::forced_clear() {
