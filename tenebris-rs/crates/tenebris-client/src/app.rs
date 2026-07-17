@@ -6850,6 +6850,7 @@ fn frame_inner(app: &mut App) {
             p.basis.right,
             p.basis.fwd,
             p.basis.up,
+            active_body.id,
             rocket_ride::is_riding() && !map_open,
             p.is_in_space,
             sim_t,

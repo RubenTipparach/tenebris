@@ -425,6 +425,14 @@ fn arrow(from: DVec3, dir: DVec3, len: f64, col: [f32; 4]) {
 /// (self-gates otherwise, so the call site can stay unconditional).
 /// `right`/`fwd`/`nose` are the rocket's basis for the attitude arrows.
 #[allow(clippy::too_many_arguments)]
+/// Beyond this many active-body radii the flight overlay adds the full
+/// heliocentric system chart (planet rings, belt, all moons) on top of its
+/// lean near-body layer - "fly far enough and you see the solar system's
+/// orbits", the same rings the O-map draws. Nearer than this only the
+/// local station + Tenebris-moon tracks show, to keep low orbit uncluttered.
+const SYSTEM_RINGS_MIN_RADII: f64 = 6.0;
+
+#[allow(clippy::too_many_arguments)]
 pub fn draw_world(
     view: Mat4,
     proj: Mat4,
@@ -434,6 +442,7 @@ pub fn draw_world(
     right: DVec3,
     fwd: DVec3,
     nose: DVec3,
+    active: BodyId,
     riding: bool,
     in_space: bool,
     sim_t: f64,
@@ -441,6 +450,12 @@ pub fn draw_world(
     if !riding || !in_space {
         return;
     }
+    /* Far enough from the active body to show the whole system chart? The
+     * active body's static render anchor is its centre. */
+    let active_body = planet::get(active);
+    let active_center = dvec3_make(active_body.pos_x, active_body.pos_y, active_body.pos_z);
+    let far_out =
+        dvec3_length(dvec3_sub(pos, active_center)) > active_body.radius_m * SYSTEM_RINGS_MIN_RADII;
     /* Seed the eye-shell remap (see vtx): all line geometry this frame
      * collapses onto a shell around the CAMERA, so the far plane can
      * never clip the orbit tracks however far out the camera zooms. */
@@ -471,16 +486,49 @@ pub fn draw_world(
     let st_pos = station::orbit_pos(sim_t);
     cross_marker(st_pos, 40.0, STATION_TRACK_COL);
 
-    /* The two moons' tracks ride the same chart: their real orbit rings
-     * (inclination + current spin frame, so each ring passes through its
-     * moon) plus a marker at the moon itself. */
-    for moon in [BodyId::Luna, BodyId::Selene] {
-        if let Some(pts) =
-            tenebris_core::orbit::moon_track(BodyId::Tenebris, moon, sim_t, ORBIT_SEGS)
-        {
-            line_strip(&pts, MOON_TRACK_COL);
-            let mp = tenebris_core::orbit::apparent_pos(BodyId::Tenebris, moon, sim_t);
-            cross_marker(mp, 60.0, MOON_TRACK_COL);
+    /* Near-body layer: Tenebris's two moons (their real inclined rings +
+     * a marker at each moon). Suppressed once far_out, where the full
+     * system chart below draws every moon instead (no double-draw). */
+    if !far_out {
+        for moon in [BodyId::Luna, BodyId::Selene] {
+            if let Some(pts) =
+                tenebris_core::orbit::moon_track(BodyId::Tenebris, moon, sim_t, ORBIT_SEGS)
+            {
+                line_strip(&pts, MOON_TRACK_COL);
+                let mp = tenebris_core::orbit::apparent_pos(BodyId::Tenebris, moon, sim_t);
+                cross_marker(mp, 60.0, MOON_TRACK_COL);
+            }
+        }
+    }
+
+    /* Far-out layer: the whole heliocentric chart (planets about the star,
+     * their moons, the asteroid belt band) - the same rings the O-map
+     * draws, so flying out into interplanetary space finally shows the
+     * solar system's orbits in the normal flight view. The eye-shell remap
+     * (vtx) keeps these ~150 km rings inside the far plane at any zoom. */
+    if far_out {
+        use tenebris_core::orbit;
+        for id in [BodyId::Crag, BodyId::Tenebris, BodyId::Sequoia, BodyId::Frostbite] {
+            if let Some(pts) = orbit::body_track(active, id, sim_t, ORBIT_SEGS) {
+                line_strip(&pts, PLANET_TRACK_COL);
+            }
+        }
+        for id in [
+            BodyId::Luna,
+            BodyId::Selene,
+            BodyId::Verdant,
+            BodyId::Sprout,
+            BodyId::Quartz,
+            BodyId::Rime,
+        ] {
+            if let Some(pts) = orbit::body_track(active, id, sim_t, 128) {
+                line_strip(&pts, MOON_TRACK_COL);
+            }
+        }
+        for id in [BodyId::Asteroid0, BodyId::Asteroid9] {
+            if let Some(pts) = orbit::body_track(active, id, sim_t, ORBIT_SEGS) {
+                line_strip(&pts, BELT_TRACK_COL);
+            }
         }
     }
 
