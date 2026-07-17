@@ -653,6 +653,41 @@ pub fn default_seed(id: BodyId) -> u64 {
     BODIES_INIT[id as usize].seed
 }
 
+/// Deterministically derive a per-body worldgen seed from a single SP
+/// world seed, so EVERY planet in the world - not just the spawn body -
+/// runs the biome-active generator (oceans, rivers, biome remap) with a
+/// terrain unique to that world.
+///
+/// - **Identity at the spawn body (Tenebris):** `derive(ws, Tenebris) ==
+///   ws`, so the spawn planet's terrain is byte-identical to today and
+///   the `w.body.seed == target_seed` regen-guard stays valid.
+/// - **Every other body** gets a splitmix64-avalanched, per-id-offset
+///   seed that is *guaranteed* to differ from its compiled default (the
+///   explicit collision guard), so `planet_gen::biomes_active` is always
+///   true for it and its biome layer switches on.
+///
+/// This is a PERMANENT determinism contract: a world persists only its
+/// single seed, and every reload re-derives the sisters from it. Changing
+/// this function re-rolls every existing world's sister planets, so don't.
+pub fn derive_body_seed(world_seed: u64, id: BodyId) -> u64 {
+    if id == BodyId::Tenebris {
+        return world_seed;
+    }
+    /* splitmix64 finalizer, offset per body by the golden-ratio odd
+     * constant so two bodies never share a noise stream even for a
+     * structured world seed. The constants are the algorithm's identity
+     * (the "no magic numbers" hash-constant exception), so they stay
+     * inline. */
+    let mut z = world_seed.wrapping_add(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(id as u64 + 1));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    if z == default_seed(id) {
+        z ^= 0x9E37_79B9_7F4A_7C15; /* hard non-collision -> biomes_active */
+    }
+    z
+}
+
 /// Port of `planet_set_atmosphere()`. Apply a YAML-loaded atmosphere
 /// patch on top of a body's compiled-in defaults. Each field is only
 /// assigned when the patch's value is non-zero, so an empty patch is a

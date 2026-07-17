@@ -4159,11 +4159,55 @@ fn claim_terrain_for_session(
     regen
 }
 
-fn start_world_regen(app: &mut App, seed: u64) {
-    planet::set_seed(BodyId::Tenebris, seed);
+thread_local! {
+    /// Sister-planet body ids whose World was just regenerated from a new
+    /// derived seed and need a one-shot GPU remesh once the loader finishes
+    /// re-generating them. Drained in LoadStage::Moons.
+    static MOON_REMESH_PENDING: std::cell::RefCell<std::collections::HashSet<u32>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// `reseed_sisters`: in SP on a seed-carrying world, derive a per-body
+/// seed for EVERY planet so all of them (not just Tenebris) run the
+/// biome-active generator, and rebuild their World objects in place so
+/// they regenerate. false on MP (server pins compiled defaults) and on
+/// pre-seed SP worlds (keep their sister terrain byte-identical so old
+/// edits stay aligned) - there the derivation is identity at Tenebris
+/// and the sisters keep their compiled seeds.
+fn start_world_regen(app: &mut App, seed: u64, reseed_sisters: bool) {
+    if reseed_sisters {
+        /* derive_body_seed is identity at Tenebris, so the spawn planet
+         * still gets exactly `seed` and the seed-match guard is stable. */
+        for id in BodyId::ALL {
+            planet::set_seed(id, planet::derive_body_seed(seed, id));
+        }
+    } else {
+        planet::set_seed(BodyId::Tenebris, seed);
+    }
     let body = planet::get(BodyId::Tenebris);
     app.body = body;
     *app.world.borrow_mut() = World::create(&body, planet::subdivisions_for_radius(body.radius_m));
+    /* Rebuild every sister planet's World IN PLACE (through the shared
+     * RefCell the renderer clones) so it regenerates from its new derived
+     * seed. Emptying it makes the loader's Moons stage re-gen + re-mesh
+     * it; set_seed alone is inert because each World holds a private copy
+     * of its body/seed. Runs once per world entry (start_world_regen is
+     * latched by terrain_tag), never per frame. */
+    if reseed_sisters {
+        for w_rc in &app.moons {
+            let id = w_rc.borrow().body.id;
+            let b = planet::get(id);
+            *w_rc.borrow_mut() = World::create(&b, planet::subdivisions_for_radius(b.radius_m));
+            let idx = id as usize;
+            if idx < SP_SAVES_APPLIED_MAX {
+                app.sp_saves_applied[idx] = false;
+            }
+            /* If this moon was already detail-meshed, its GPU mesh is now
+             * stale; flag it so the Moons loader stage remeshes it once
+             * gen completes (no-op for never-approached moons). */
+            MOON_REMESH_PENDING.with(|s| s.borrow_mut().insert(b.id as u32));
+        }
+    }
     /* World-scoped client state from the previous terrain. The
      * incoming session's torches / crops replay from persistence when
      * the session entry flow resumes (apply_sp_world_saves); the herd
@@ -4231,7 +4275,13 @@ fn maybe_apply_sp_resume(app: &mut App) {
          * and the tag is this session's - so no second pass.
          * `!generated` covers the very first entry: boot no longer loads
          * any terrain, because the menu doesn't need it. */
-        start_world_regen(app, target_seed);
+        /* Reseed the sister planets from the world seed ONLY when this
+         * world carries a real (post-seed-feature) seed. A pre-seed world
+         * resolves to default_seed(Tenebris); keep its sisters on compiled
+         * defaults so their persisted edits stay aligned with byte-
+         * identical legacy terrain. */
+        let reseed_sisters = target_seed != planet::default_seed(BodyId::Tenebris);
+        start_world_regen(app, target_seed, reseed_sisters);
         return;
     }
 
@@ -4454,7 +4504,10 @@ fn maybe_prime_mode_for_state(app: &mut App) {
                 (w.body.seed == mp_seed, w.gen_complete())
             };
             if claim_terrain_for_session(&mut app.terrain_tag, "mp", seed_matches, generated) {
-                start_world_regen(app, mp_seed);
+                /* MP keeps every body on its compiled default seed to stay
+                 * byte-identical with the dedicated server's worldgen -
+                 * never reseed the sisters here. */
+                start_world_regen(app, mp_seed, false);
             }
 
             /* MP defaults to survival: blocks have quantity. Torches
@@ -5092,6 +5145,12 @@ fn loader_step(app: &mut App, mut l: Loader) -> Option<Loader> {
                 let w_rc = app.moons[idx].clone();
                 let body_id = w_rc.borrow().body.id as u32;
                 if w_rc.borrow().gen_complete() && renderer::world_for_body(body_id).is_some() {
+                    /* Regenerated resident moon (world-derived reseed):
+                     * rebuild its mesh once so the new biome terrain shows.
+                     * remesh_body_now no-ops if never detail-meshed. */
+                    if MOON_REMESH_PENDING.with(|s| s.borrow_mut().remove(&body_id)) {
+                        renderer::remesh_body_now(body_id);
+                    }
                     idx += 1;
                     continue;
                 }

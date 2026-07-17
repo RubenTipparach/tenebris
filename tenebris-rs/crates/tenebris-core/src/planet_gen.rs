@@ -844,6 +844,52 @@ mod biome_tests {
     }
 
     #[test]
+    fn derived_seed_activates_sequoia_biomes_and_water_band() {
+        /* The real-world path: an SP world persists ONE seed and derives
+         * every sister planet's seed from it. This proves the DERIVATION
+         * (not a hand-set seed) switches Sequoia's biome layer on and
+         * lands its water in the ~40% band - i.e. the actual fix, not
+         * just the generator in isolation. */
+        let world_seed = 0x6338ddf8f86c7456u64;
+
+        /* (a) identity at the spawn body, guaranteed non-default elsewhere. */
+        assert_eq!(planet::derive_body_seed(world_seed, BodyId::Tenebris), world_seed);
+        for id in BodyId::ALL {
+            if id == BodyId::Tenebris {
+                continue;
+            }
+            let s = planet::derive_body_seed(world_seed, id);
+            assert_ne!(s, planet::default_seed(id), "{id:?} derived seed must differ from its default");
+        }
+
+        /* (b) biomes_active flips true for Sequoia under the derived seed. */
+        let mut seq = planet::get(BodyId::Sequoia);
+        seq.seed = planet::derive_body_seed(world_seed, BodyId::Sequoia);
+        assert!(biomes_active(&seq), "sequoia biomes must be active under the derived seed");
+
+        /* (c) water fraction lands in the ~40% band. */
+        let n = 20000usize;
+        let ga = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        let sea = SEA_LEVEL + sea_raise_m(&seq);
+        let mut water = 0usize;
+        for i in 0..n {
+            let yy = 1.0 - (i as f64 + 0.5) / n as f64 * 2.0;
+            let r = (1.0 - yy * yy).max(0.0).sqrt();
+            let th = ga * i as f64;
+            let dir =
+                crate::math::dvec3_normalize(crate::math::dvec3_make(r * th.cos(), yy, r * th.sin()));
+            if surface_altitude(&seq, dir) < sea {
+                water += 1;
+            }
+        }
+        let frac = water as f64 / n as f64;
+        assert!(
+            (0.33..=0.47).contains(&frac),
+            "sequoia water fraction {frac:.3} outside the ~40% band under the derived seed"
+        );
+    }
+
+    #[test]
     fn sequoia_river_lands_with_sporewood() {
         /* Sequoia's seeded gen must read as a DIFFERENT world: land-
          * dominant with ~40% water (user direction), wider/more
