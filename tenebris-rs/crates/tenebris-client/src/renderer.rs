@@ -277,10 +277,11 @@ const ATLAS_PATHS: [Option<&str>; ATLAS_TILES] = [
     Some("assets/textures/wood.png"),                        /* 21 WOOD */
     Some("assets/textures/grass.png"),                       /* 22 LEAVES */
     Some("assets/textures/rocks.png"),                       /* 23 BEDROCK */
-    /* White base like the Sporewood tiles: grass.png has ~no red channel,
-     * so a red tint over it renders near-black - the "why are the redwoods
-     * dark" bug. Snow's white noise takes the rust tint faithfully. */
-    Some("assets/textures/snow.png"),                        /* 24 SEQ_LEAVES */
+    /* Warm bright base: grass.png has ~no red channel (red tint over it
+     * rendered near-black), and snow.png's blue noise specks survived the
+     * tint as blue dithering on the crowns. Sand is cream with warm noise,
+     * so the rust tint reads clean. */
+    Some("assets/textures/sand.png"),                        /* 24 SEQ_LEAVES */
     /* Ore-bearing rock: dedicated stone-with-mineral-speck textures
      * (matches the JS rocks_*.png minerals set) rather than a flat tint
      * over plain rock - so each ore reads as specks embedded in stone. */
@@ -412,7 +413,7 @@ const ATLAS_TINTS: [[f32; 3]; ATLAS_TILES] = [
     [1.00, 1.00, 1.00], /* WOOD     - passthrough        */
     [0.65, 1.05, 0.50], /* LEAVES   - saturated green    */
     [0.30, 0.30, 0.32], /* BEDROCK  - near-black slate   */
-    [0.85, 0.38, 0.20], /* SEQ_LEAVES - rust-red redwood foliage (on white base) */
+    [1.00, 0.42, 0.22], /* SEQ_LEAVES - rust-red redwood foliage (on sand base) */
     /* Ore tints are neutral: the mineral colour lives in the dedicated
      * speck textures now, not a multiplier over plain rock. */
     [1.0, 1.0, 1.0], /* COAL_ORE   */
@@ -2060,6 +2061,21 @@ thread_local! {
 }
 
 /// Overcast-dimmed ambient fill for a terrain uniform.
+/// Per-tileset atmospheric limb-rim colour with global fallback (zero
+/// sentinel, same merge rule as the other lod.yaml palette fields). The
+/// global default is Tenebris's blue - bodies with non-blue atmospheres
+/// (Sequoia's brown haze) override it or their terrain reads blue-tinted
+/// from orbit.
+fn rim_color_for(lc: &config::LodConfig, ts: usize) -> Vec3 {
+    let ts = if ts < 5 { ts } else { 0 };
+    let c = lc.tileset_rim_color[ts];
+    if c.x > 0.0 || c.y > 0.0 || c.z > 0.0 {
+        c
+    } else {
+        lc.distant_rim_color
+    }
+}
+
 fn overcast_ambient(base: Vec3) -> [f32; 3] {
     let oc = FRAME_OVERCAST.with(|c| c.get());
     let dim = 1.0 - oc * tenebris_core::weather::config().overcast_amb_dim;
@@ -4078,6 +4094,7 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
             let wc = config::water();
             let lc = config::lod();
+            let rim = rim_color_for(&lc, body.world.borrow().body.tileset as usize);
             let dfp = shaders::distant::DistantFsParams {
                 u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                 u_pad0: 0.0,
@@ -4091,7 +4108,7 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 u_pad2: 0.0,
                 u_pad3: 0.0,
                 u_pad4: 0.0,
-                u_rim_color: [lc.distant_rim_color.x, lc.distant_rim_color.y, lc.distant_rim_color.z],
+                u_rim_color: [rim.x, rim.y, rim.z],
                 u_rim_power: lc.distant_rim_power,
                 u_rim_intensity: lc.distant_rim_intensity,
                 u_rim_floor: lc.distant_rim_floor,
@@ -5315,20 +5332,24 @@ pub fn draw_world(
                  * shader can fade the rim IN as the ground fog fades OUT. Rim
                  * look reuses the shared lod.yaml distant_rim_* knobs. */
                 let lodc = config::lod();
-                let (cam_local, sea_radius_rim, fog_h) = {
+                let (cam_local, sea_radius_rim, fog_h, rim_ts) = {
                     let idx = r.active_body_idx;
                     if idx >= 0 && (idx as usize) < r.bodies.len() {
                         let ab = &r.bodies[idx as usize];
                         let cl = vec3_sub(camera_world, ab.world_pos);
-                        let fh = {
+                        let (fh, ts) = {
                             let bw = ab.world.borrow();
-                            if bw.body.atmo_fog_height_m > 0.0 { bw.body.atmo_fog_height_m } else { 60.0 }
+                            (
+                                if bw.body.atmo_fog_height_m > 0.0 { bw.body.atmo_fog_height_m } else { 60.0 },
+                                bw.body.tileset as usize,
+                            )
                         };
-                        ([cl.x, cl.y, cl.z], ab.radius_m, fh)
+                        ([cl.x, cl.y, cl.z], ab.radius_m, fh, ts)
                     } else {
-                        ([0.0, 0.0, 0.0], 1.0, 60.0)
+                        ([0.0, 0.0, 0.0], 1.0, 60.0, 0)
                     }
                 };
+                let rim = rim_color_for(&lodc, rim_ts);
                 let hex_fs_light = shaders::hex::HexFsLight {
                     u_sun_dir: [r.env.sun_dir.x, r.env.sun_dir.y, r.env.sun_dir.z],
                     _pad_12: [0; 4],
@@ -5345,7 +5366,7 @@ pub fn draw_world(
                     ],
                     u_cam_local: cam_local,
                     u_sea_radius: sea_radius_rim,
-                    u_rim_color: [lodc.distant_rim_color.x, lodc.distant_rim_color.y, lodc.distant_rim_color.z],
+                    u_rim_color: [rim.x, rim.y, rim.z],
                     u_rim_power: lodc.distant_rim_power,
                     u_rim_intensity: lodc.distant_rim_intensity,
                     u_fog_height_m: fog_h,
@@ -6838,10 +6859,11 @@ mod tests {
         /* Paths table spot checks (the C's paths[] order). */
         assert_eq!(ATLAS_PATHS[1], Some("assets/textures/water.png"));
         assert_eq!(ATLAS_PATHS[10], Some("assets/textures/torch.png"));
-        /* SEQ_LEAVES re-based onto white snow.png so its rust-red tint
-         * actually reads red (grass.png has ~no red channel). */
-        assert_eq!(ATLAS_PATHS[24], Some("assets/textures/snow.png"));
-        assert_eq!(ATLAS_TINTS[24], [0.85, 0.38, 0.20]);
+        /* SEQ_LEAVES re-based onto warm sand.png so its rust-red tint
+         * reads clean (grass.png has ~no red channel; snow.png's blue
+         * noise specks survived the tint as blue crown dithering). */
+        assert_eq!(ATLAS_PATHS[24], Some("assets/textures/sand.png"));
+        assert_eq!(ATLAS_TINTS[24], [1.00, 0.42, 0.22]);
     }
 
     /* --------------------------------------------------------------- */

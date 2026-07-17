@@ -169,6 +169,10 @@ sequoia:
   # global blue-white sky mirror and the green never shows. Green sea.
   water_sky_horizon:  [0.55, 0.85, 0.60]
   water_sky_zenith:   [0.12, 0.40, 0.25]
+  # Limb-rim light the terrain wears from orbit (hex shader + distant
+  # impostor). The global distant_rim_color is Tenebris BLUE - without
+  # this override Sequoia's whole disk reads blue-tinted from space.
+  rim_color:          [0.80, 0.55, 0.30]
 
 crag:
   water_color:        [0.55, 0.30, 0.18]
