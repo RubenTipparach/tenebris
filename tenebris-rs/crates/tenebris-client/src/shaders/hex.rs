@@ -212,7 +212,7 @@ pub struct HexFsRain {
     }
 
 */
-pub const HEX_VS_SOURCE_GLSL410: &str = concat!(include_str!("hex.vs.glsl"), "\0");
+pub static HEX_VS_SOURCE_GLSL410: &str = concat!(include_str!("hex.vs.glsl"), "\0");
 /*
     #version 410
 
@@ -325,7 +325,7 @@ pub const HEX_VS_SOURCE_GLSL410: &str = concat!(include_str!("hex.vs.glsl"), "\0
     }
 
 */
-pub const HEX_FS_SOURCE_GLSL410: &str = concat!(include_str!("hex.fs.glsl"), "\0");
+pub static HEX_FS_SOURCE_GLSL410: &str = concat!(include_str!("hex.fs.glsl"), "\0");
 pub fn hex_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
     let mut desc = sg::ShaderDesc::new();
     desc.label = c"hex_shader".as_ptr();

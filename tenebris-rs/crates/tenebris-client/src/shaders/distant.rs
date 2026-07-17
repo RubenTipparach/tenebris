@@ -156,7 +156,7 @@ pub const DISTANT_VS_SOURCE_GLSL410: [u8; 412] = [
     }
 
 */
-pub const DISTANT_FS_SOURCE_GLSL410: &str =
+pub static DISTANT_FS_SOURCE_GLSL410: &str =
     concat!(include_str!("distant.fs.glsl"), "\0");
 /*
     #version 300 es

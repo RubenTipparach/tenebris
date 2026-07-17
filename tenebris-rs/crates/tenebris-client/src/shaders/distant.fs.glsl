@@ -32,6 +32,15 @@ void main() {
     vec2 uv = dir_to_uv(n_geo);
     vec4 alb = texture(tex_albedo_smp_clamp, uv);
     vec4 nrm = texture(tex_normal_smp_clamp, uv);
+
+    // Flat-albedo debug (renderer sets [6].z when TENEBRIS_DEV_LODFLAT):
+    // draw the raw baked texture with NO lighting/rim, to tell a bad
+    // texture apart from a bad shader.
+    if (distant_fs_params[6].z > 0.5) {
+        frag_color = vec4(alb.xyz, 0.0);
+        return;
+    }
+
     vec3 sun = normalize(distant_fs_params[0].xyz);
 
     // Tangent-space normal perturbation about the geometric sphere normal.

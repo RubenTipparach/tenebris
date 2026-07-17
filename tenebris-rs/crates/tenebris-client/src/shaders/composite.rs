@@ -96,7 +96,7 @@ pub struct CompositeFsParams {
     }
 
 */
-pub const COMPOSITE_VS_SOURCE_GLSL410: &str =
+pub static COMPOSITE_VS_SOURCE_GLSL410: &str =
     concat!(include_str!("composite.vs.glsl"), "\0");
 /*
     #version 410
@@ -178,7 +178,7 @@ pub const COMPOSITE_VS_SOURCE_GLSL410: &str =
     }
 
 */
-pub const COMPOSITE_FS_SOURCE_GLSL410: &str =
+pub static COMPOSITE_FS_SOURCE_GLSL410: &str =
     concat!(include_str!("composite.fs.glsl"), "\0");
 /*
     #version 300 es

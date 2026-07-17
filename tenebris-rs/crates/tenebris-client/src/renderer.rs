@@ -3271,6 +3271,42 @@ fn build_distant_textures_for_body(body: &mut ChunkedBody, col_avg: &[Vec3; ATLA
     let bcfg = body.world.borrow().body;
     let (albedo, normal) = build_distant_texture_pixels(&bcfg, body.distant_color, col_avg);
 
+    /* LOD-albedo colour diagnostic (TENEBRIS_DEV_LODDIAG): print the raw
+     * baked albedo at a few equirect pixels + the sampling breakdown at the
+     * equator/prime-meridian, so a "why is this body blue" question is
+     * answered from the numbers, not guesswork. */
+    if std::env::var("TENEBRIS_DEV_LODDIAG").is_ok() {
+        let w = DISTANT_TEX_W;
+        let h = DISTANT_TEX_H;
+        let at = |px: i32, py: i32| {
+            let i = ((py * w + px) * 4) as usize;
+            (albedo[i], albedo[i + 1], albedo[i + 2], albedo[i + 3])
+        };
+        let dir = distant_pixel_to_dir(w / 4, h / 2); /* equator, prime meridian */
+        let sm = {
+            let mut s = planet_gen::surface_altitude(&bcfg, dir);
+            if bcfg.barren {
+                s *= 0.3;
+            }
+            s
+        };
+        let prof = planet_gen::profile(&bcfg, dir);
+        let top = planet_gen::sample_with_profile(&prof, sm);
+        let col = blocks::face_tile(top, FaceCap::Top) as i32;
+        let cavg = if (0..ATLAS_TILES as i32).contains(&col) {
+            col_avg[col as usize]
+        } else {
+            body.distant_color
+        };
+        let (r, g, b, a) = at(w / 4, h / 2);
+        println!(
+            "[lod-diag] {:<10} tileset={:?} barren={} icy={} has_water={} | equator: top={:?} col_avg=({:.2},{:.2},{:.2}) -> albedo=({},{},{}) waterA={} | fallback=({:.2},{:.2},{:.2})",
+            bcfg.name, bcfg.tileset, bcfg.barren, bcfg.icy, bcfg.has_water,
+            top, cavg.x, cavg.y, cavg.z, r, g, b, a,
+            body.distant_color.x, body.distant_color.y, body.distant_color.z,
+        );
+    }
+
     let mut desc = sg::ImageDesc {
         width: DISTANT_TEX_W,
         height: DISTANT_TEX_H,
@@ -4184,6 +4220,10 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
         } else {
             None
         };
+        /* Debug (TENEBRIS_DEV_LODFLAT): draw the raw baked albedo UNLIT - no
+         * diffuse, ambient, water spec, or atmospheric rim - to separate a
+         * "texture is wrong" bug from a "shader is wrong" bug at a glance. */
+        let flat_debug = std::env::var("TENEBRIS_DEV_LODFLAT").is_ok();
 
         sg::apply_pipeline(r.pip_distant);
         let mut tris = 0usize;
@@ -4232,7 +4272,13 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
             sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
             let wc = config::water();
             let lc = config::lod();
-            let rim = rim_color_for(&lc, body.world.borrow().body.tileset as usize);
+            let body_cfg = body.world.borrow().body;
+            let rim = rim_color_for(&lc, body_cfg.tileset as usize);
+            /* Atmospheric rim only on bodies with an ATMOSPHERE. Barren
+             * bodies (moons, asteroids, Crag) are airless - the blue
+             * fresnel halo was painting a whole sunlit hemisphere blue on
+             * airless moons (the "half the moon is blue" bug). */
+            let rim_intensity = if body_cfg.barren { 0.0 } else { lc.distant_rim_intensity };
             /* Direction from THIS body to the star (fallback: the active
              * body's shared sun_dir when no star position is available). */
             let sun_dir = match star_light_pos {
@@ -4266,9 +4312,10 @@ pub fn draw_moons(view: Mat4, proj: Mat4, camera_world: Vec3) {
                 u_pad4: 0.0,
                 u_rim_color: [rim.x, rim.y, rim.z],
                 u_rim_power: lc.distant_rim_power,
-                u_rim_intensity: lc.distant_rim_intensity,
+                u_rim_intensity: rim_intensity,
                 u_rim_floor: lc.distant_rim_floor,
-                u_pad5: 0.0,
+                /* .z (pad5) = flat-albedo debug flag read by the shader. */
+                u_pad5: if flat_debug { 1.0 } else { 0.0 },
                 u_pad6: 0.0,
             };
             sg::apply_uniforms(shaders::distant::UB_DISTANT_FS_PARAMS, &sg::value_as_range(&dfp));

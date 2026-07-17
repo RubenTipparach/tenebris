@@ -149,7 +149,7 @@ pub struct FsParams {
     }
 
 */
-pub const WATER_VS_SOURCE_GLSL410: &str = concat!(include_str!("water.vs.glsl"), "\0");
+pub static WATER_VS_SOURCE_GLSL410: &str = concat!(include_str!("water.vs.glsl"), "\0");
 /*
     #version 410
 
@@ -373,7 +373,7 @@ pub const WATER_VS_SOURCE_GLSL410: &str = concat!(include_str!("water.vs.glsl"),
     }
 
 */
-pub const WATER_FS_SOURCE_GLSL410: &str = concat!(include_str!("water.fs.glsl"), "\0");
+pub static WATER_FS_SOURCE_GLSL410: &str = concat!(include_str!("water.fs.glsl"), "\0");
 pub fn water_shader_desc(backend: sg::Backend) -> sg::ShaderDesc {
     let mut desc = sg::ShaderDesc::new();
     desc.label = c"water_shader".as_ptr();
