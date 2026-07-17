@@ -5043,6 +5043,13 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
     {
         sky_z = lp.tileset_water_sky_zenith[ts_idx];
     }
+    /* Per-tileset Fresnel sky-reflection strength (how much the surface
+     * mirrors the sky vs shows the water colour). <= 0 keeps the global. */
+    let sky_strength = if lp.tileset_water_sky_strength[ts_idx] > 0.0 {
+        lp.tileset_water_sky_strength[ts_idx]
+    } else {
+        w.sky_horizon_strength
+    };
 
     /* DIAGNOSTIC (once/body): the exact water colours the near cap sends
      * to the shader. If Sequoia (ts_idx should be 1) shows the global
@@ -5092,7 +5099,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
             u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
             _pad_92: [0; 4],
             u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
-            u_sky_horizon_strength: w.sky_horizon_strength,
+            u_sky_horizon_strength: sky_strength,
             u_ripple_scale: w.ripple_scale,
             u_ripple_speed: w.ripple_speed,
             u_wave_steepness: w.wave_steepness,
@@ -5170,7 +5177,7 @@ fn body_draw_water(r: &Renderer, bi: usize, vp: Mat4, camera_world: Vec3) -> usi
         u_foam_color: [w.foam_color.x, w.foam_color.y, w.foam_color.z],
         _pad_156: [0; 4],
         u_sky_horizon: [sky_h.x, sky_h.y, sky_h.z],
-        u_sky_horizon_strength: w.sky_horizon_strength,
+        u_sky_horizon_strength: sky_strength,
         u_sky_zenith: [sky_z.x, sky_z.y, sky_z.z],
         u_ripple_scale: w.ripple_scale,
         u_ripple_speed: w.ripple_speed,

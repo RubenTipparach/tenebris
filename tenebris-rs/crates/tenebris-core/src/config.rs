@@ -550,6 +550,14 @@ pub struct LodConfig {
      * back to the global water_config values. */
     pub tileset_water_sky_horizon: [Vec3; 5],
     pub tileset_water_sky_zenith: [Vec3; 5],
+    /* Per-tileset Fresnel sky-reflection STRENGTH (how much the surface
+     * mirrors the sky vs shows its own water colour). The global default
+     * (0.5) makes grazing-angle water a near-full sky mirror - on a body
+     * with a dark/orange sky (Sequoia) that renders the sea as a flat
+     * sky-coloured sheet that shifts with view angle, never green. A low
+     * value here lets the green deep_color dominate at every angle.
+     * <= 0 falls back to the global water_config sky_horizon_strength. */
+    pub tileset_water_sky_strength: [f32; 5],
     /* Atmospheric limb-rim light painted over TERRAIN near the limb
      * when seen from orbit (hex shader + distant impostor). {0,0,0}
      * falls back to the global distant_rim_color - which is Tenebris
@@ -660,14 +668,14 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
      * absorption. */
     tileset_water_deep_color: [
         VEC3_ZERO,            /* EARTH    - use global default       */
-        v3(0.10, 0.46, 0.28), /* SEQUOIA  - vivid green, saturates fast */
+        v3(0.03, 0.16, 0.09), /* SEQUOIA  - dark green (Tenebris-magnitude, mirrored) */
         VEC3_ZERO,            /* CRAG     - no water (use global)    */
         VEC3_ZERO,            /* FROST    - pale ice (use global)    */
         VEC3_ZERO,            /* ASTEROID - use global default       */
     ],
     tileset_water_absorption: [
         VEC3_ZERO,            /* EARTH    - use global (0.60, 0.20, 0.10) */
-        v3(1.60, 0.55, 1.35), /* SEQUOIA  - red+blue die within ~1m, green survives */
+        v3(0.60, 0.10, 0.45), /* SEQUOIA  - green survives (Tenebris-magnitude, not opaque) */
         VEC3_ZERO,            /* CRAG     - no water                      */
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
@@ -685,6 +693,13 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
         VEC3_ZERO,            /* CRAG     - no water                      */
         VEC3_ZERO,            /* FROST    - use global                    */
         VEC3_ZERO,            /* ASTEROID - use global                    */
+    ],
+    tileset_water_sky_strength: [
+        0.0, /* EARTH    - use global 0.5                              */
+        0.0, /* SEQUOIA  - use global 0.5 too (mirror works on Tenebris) */
+        0.0, /* CRAG     - no water                                    */
+        0.0, /* FROST    - use global                                  */
+        0.0, /* ASTEROID - use global                                  */
     ],
     tileset_rim_color: [
         VEC3_ZERO,            /* EARTH    - use global blue rim           */
@@ -789,6 +804,10 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
                 "water_absorption" => vec3_or_err(val, &mut cfg.tileset_water_absorption[ts]),
                 "water_sky_horizon" => vec3_or_err(val, &mut cfg.tileset_water_sky_horizon[ts]),
                 "water_sky_zenith" => vec3_or_err(val, &mut cfg.tileset_water_sky_zenith[ts]),
+                "water_sky_strength" => {
+                    cfg.tileset_water_sky_strength[ts] = fval(val);
+                    0
+                }
                 "rim_color" => vec3_or_err(val, &mut cfg.tileset_rim_color[ts]),
                 _ => {
                     println!("[config] {}:{}: unknown palette key '{}'", path, line_no, key);

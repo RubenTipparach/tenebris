@@ -163,15 +163,19 @@ sequoia:
   # of metres deep near its many shores, so it must read full-green by
   # ~1.5 m or the coasts wash back to land colour and the seas vanish.
   water_full_depth_m: 1.5
-  # Close-up water: a VIVID green that saturates fast. The near cap
-  # otherwise washes pale - shallow water refracts the pale seabed/sky
-  # and the whole sheet fogs toward Sequoia's pale horizon. A bright
-  # deep_color + strong absorption (red & blue die within a metre,
-  # green survives) makes even shallow water read solid green before
-  # the refraction/fog can bleach it. Beer-Lambert: colour reaches
-  # deep_color as thickness*absorption grows.
-  water_deep_color:   [0.10, 0.46, 0.28]
-  water_absorption:   [1.60, 0.55, 1.35]
+  # Close-up water = Tenebris's WORKING water, mirrored blue->green.
+  # (Tenebris: deep [0.02,0.10,0.22], absorb [0.60,0.20,0.10] - reads as
+  # real transparent water.) Cranking these (bright deep + absorb 1.6)
+  # made Sequoia's sea a flat OPAQUE sheet that only mirrored the sky and
+  # shifted with view angle - the 'busted shader' look. These keep the
+  # same transparency, just tinted green (green channel absorbed least so
+  # green survives; dark deep_color = natural depth tint).
+  water_deep_color:   [0.03, 0.16, 0.09]
+  water_absorption:   [0.60, 0.10, 0.45]
+  # Fresnel sky-mirror strength (<=0 = global 0.5). Sequoia keeps the
+  # global default like Tenebris - the flat look was the absorption, not
+  # the reflection, and green sky_horizon already keeps the mirror green.
+  water_sky_strength: 0.0
   # Sky-reflection tones the cap mirrors at grazing angles - from orbit
   # every view ray grazes, so WITHOUT these the sea renders as the
   # global blue-white sky mirror and the green never shows. Green sea.
