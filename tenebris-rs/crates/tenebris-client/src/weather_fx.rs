@@ -102,24 +102,36 @@ pub fn storm_active() -> bool {
 /// or the TENEBRIS_DEV_WEATHER=rain|snow screenshot override. The toggle
 /// wins so it can be flipped live; the env value seeds the default.
 pub fn forced_precip() -> Option<Precip> {
+    let s = STORM.with(|c| c.get());
+    match if s != 0 { s } else { weather_env() } {
+        1 => Some(Precip::Rain),
+        2 => Some(Precip::Snow),
+        _ => None,
+    }
+}
+
+/// TENEBRIS_DEV_WEATHER=clear screenshot override: suppress the cloud
+/// layer entirely so orbital biome captures aren't buried under the
+/// moisture sim's cover (ocean-heavy worlds cloud over fast).
+pub fn forced_clear() -> bool {
+    weather_env() == 3
+}
+
+/// Parsed-once TENEBRIS_DEV_WEATHER value: 0 none, 1 rain, 2 snow, 3 clear.
+fn weather_env() -> i8 {
     thread_local! { static F: Cell<i8> = const { Cell::new(-2) }; }
-    let env = F.with(|c| {
+    F.with(|c| {
         if c.get() == -2 {
             let v = std::env::var("TENEBRIS_DEV_WEATHER").unwrap_or_default();
             c.set(match v.as_str() {
                 "rain" => 1,
                 "snow" => 2,
+                "clear" => 3,
                 _ => 0,
             });
         }
         c.get()
-    });
-    let s = STORM.with(|c| c.get());
-    match if s != 0 { s } else { env } {
-        1 => Some(Precip::Rain),
-        2 => Some(Precip::Snow),
-        _ => None,
-    }
+    })
 }
 
 fn hashf(i: u32, salt: u32) -> f64 {

@@ -127,6 +127,11 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
     if cfg.density <= 0.0 {
         return;
     }
+    /* Dev override (TENEBRIS_DEV_WEATHER=clear): skip the whole cloud
+     * layer so orbital biome captures see the terrain. */
+    if crate::weather_fx::forced_clear() {
+        return;
+    }
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
     let local = dvec3_sub(p.position, center);
     let r = dvec3_length(local);
