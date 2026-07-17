@@ -4694,7 +4694,10 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             FRAME_WET.with(|c| c.set(wet_now));
 
             let bc = tenebris_core::planet::get(ab.world.borrow().body.id);
-            if bc.atmo_fog_density > 0.0 {
+            /* Atmosphere-off bodies (atmosphere.yaml enabled:0) get NO
+             * distance fog either - a clean crisp airless look, and the
+             * sea keeps its own colour with nothing to inherit. */
+            if bc.atmo_fog_density > 0.0 && bc.atmo_enabled {
                 let cam = vec3_sub(r.env.camera_world, body_center);
                 let cam_r = (cam.x * cam.x + cam.y * cam.y + cam.z * cam.z).sqrt().max(1e-3);
                 /* Fog colour = the ACTUAL Caelum sky at the horizon

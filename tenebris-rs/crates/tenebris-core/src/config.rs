@@ -1729,6 +1729,11 @@ pub fn parse_atmosphere_with(
         } else if active_body >= 0 {
             /* Field assignment. */
             match key {
+                "enabled" => {
+                    /* on/off toggle: 0 = off, anything else = on. */
+                    patch.enabled = if fval(val) > 0.5 { 1.0 } else { 0.0 };
+                    0
+                }
                 "radius_mult" => {
                     patch.radius_mult = fval(val);
                     0

@@ -425,6 +425,10 @@ thread_local! {
     /// Dev: freeze the world clock at a fixed time of day (TENEBRIS_DEV_TIME)
     /// so a screenshot captures a chosen sun angle. -1 unknown, 0 run, 1 freeze.
     static DEV_TIME_FROZEN: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
+    /// Dev: force the atmosphere + distance fog OFF (TENEBRIS_DEV_NO_ATMO) to
+    /// test whether the water surface inherits the sky through the atmosphere
+    /// pipeline. -1 unknown, 0 keep atmosphere, 1 disabled.
+    static DEV_NO_ATMO: std::cell::Cell<i8> = const { std::cell::Cell::new(-1) };
 }
 
 /// Dev-only: once in-game and a few frames settled, drop the requested dev
@@ -6555,7 +6559,17 @@ fn frame_inner(app: &mut App) {
             solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0)),
         )
     };
-    let has_atmo = active_body.has_water;
+    /* Dev diagnostic (TENEBRIS_DEV_NO_ATMO=1): force the atmosphere +
+     * its distance fog OFF for the active body, to test whether the
+     * water surface inheriting the sky colour comes from the atmosphere
+     * pipeline (user hypothesis). Parsed once. */
+    let no_atmo = DEV_NO_ATMO.with(|c| {
+        if c.get() < 0 {
+            c.set(std::env::var("TENEBRIS_DEV_NO_ATMO").is_ok() as i8);
+        }
+        c.get() == 1
+    });
+    let has_atmo = active_body.has_water && active_body.atmo_enabled && !no_atmo;
     let planet_r = active_body.radius_m as f32;
     let radius_mult = if active_body.atmo_radius_mult > 0.0 { active_body.atmo_radius_mult } else { 1.3 };
     let lower_mult = if active_body.atmo_lower_radius_mult > 0.0 { active_body.atmo_lower_radius_mult } else { 1.0 };

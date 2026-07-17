@@ -199,6 +199,10 @@ pub struct BodyConfig {
     /// camera altitude (m above sea level) where fog fades out - climb
     /// above the weather and the vista clears. 0 -> 60.
     pub atmo_fog_height_m: f32,
+    /// Atmosphere on/off. `has_water` bodies default to ON; set false
+    /// (via atmosphere.yaml `enabled: 0`) to strip the sky + distance
+    /// fog entirely - the sea then keeps its own colour with no haze.
+    pub atmo_enabled: bool,
 
     /* ---- Gravity field. Per-body overrides for the lod.yaml-level
      * defaults (gravity_full_mult / gravity_falloff_mult). Below
@@ -219,6 +223,10 @@ pub struct BodyConfig {
 /// express partial overrides.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BodyAtmo {
+    /// Atmosphere on/off toggle. -1 = unspecified (keep compiled default,
+    /// i.e. on for has_water bodies); 0 = force OFF; >0 = force ON. Lets
+    /// atmosphere.yaml write `enabled: 0` to strip a body's sky + fog.
+    pub enabled: f32,
     pub radius_mult: f32,
     pub lower_radius_mult: f32,
     pub rayleigh_scale: f32,
@@ -239,6 +247,7 @@ pub struct BodyAtmo {
 impl BodyAtmo {
     /// memset(&patch, 0, sizeof(patch)) equivalent.
     pub const ZERO: BodyAtmo = BodyAtmo {
+        enabled: -1.0, /* unspecified: keep the compiled default */
         radius_mult: 0.0,
         lower_radius_mult: 0.0,
         rayleigh_scale: 0.0,
@@ -292,6 +301,9 @@ const ZERO_BODY: BodyConfig = BodyConfig {
     atmo_fog_color: VEC3_ZERO,
     atmo_fog_density: 0.0,
     atmo_fog_height_m: 0.0,
+    /* has_water bodies get an atmosphere by default; atmosphere.yaml
+     * `enabled: 0` flips this off per body. */
+    atmo_enabled: true,
     gravity_full_mult: 0.0,
     gravity_falloff_mult: 0.0,
 };
@@ -696,6 +708,10 @@ pub fn derive_body_seed(world_seed: u64, id: BodyId) -> u64 {
 pub fn set_atmosphere(id: BodyId, p: &BodyAtmo) {
     let mut bodies = BODIES.lock().unwrap();
     let b = &mut bodies[id as usize];
+    /* enabled: -1 unspecified (keep default), 0 = off, >0 = on. */
+    if p.enabled >= 0.0 {
+        b.atmo_enabled = p.enabled > 0.5;
+    }
     if p.radius_mult > 0.0 {
         b.atmo_radius_mult = p.radius_mult;
     }

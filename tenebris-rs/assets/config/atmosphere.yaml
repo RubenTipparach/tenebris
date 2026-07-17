@@ -10,8 +10,21 @@
 # folded to underscores for the YAML key.
 #
 # Fields:
-#   radius_mult         float  outer shell radius / planet radius
-#   lower_radius_mult   float  atmosphere lower bound / planet radius
+#   enabled             float  atmosphere ON/OFF toggle. Omit / 1 = on
+#                              (the default for water bodies); 0 = OFF -
+#                              strips the sky scattering AND the distance
+#                              fog, leaving a crisp airless look. Use this
+#                              to test whether the atmosphere is tinting
+#                              the water (the sea keeps its own colour
+#                              with the atmosphere off).
+#   --- Atmosphere HEIGHT (all relative to the planet radius) ---
+#   radius_mult         float  MAX height: outer shell radius / planet
+#                              radius (bigger = taller/thicker shell)
+#   lower_radius_mult   float  MIN height: atmosphere lower bound / planet
+#                              radius. 1.0 = starts at the ground; >1.0
+#                              lifts the bottom up (thinner shell, water
+#                              sits BELOW the haze); <1.0 sinks it under
+#                              the surface. (see below for the original note)
 #                              (1.0 = atmosphere starts at the ground;
 #                              >1.0 lifts the bottom up, thinning the
 #                              shell; <1.0 sinks it under the surface.
