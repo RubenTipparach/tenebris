@@ -259,6 +259,9 @@ impl Conic {
                 .atan2((e - 1.0).sqrt() * (h * 0.5).cosh())
         };
 
+        if !nu.is_finite() {
+            return None;
+        }
         let r = p / (1.0 + e * nu.cos());
         let pos = self.point_at(r, nu);
         /* Perifocal velocity: sqrt(mu/p) * [ -sin nu P + (e + cos nu) Q ]. */
@@ -267,6 +270,19 @@ impl Conic {
             dvec3_scale(self.p_hat, -s * nu.sin()),
             dvec3_scale(self.q_hat, s * (e + nu.cos())),
         );
+        /* Never hand back non-finite state: a diverged Kepler/hyperbolic
+         * solve would otherwise flow into node geometry and rasterize as a
+         * black NaN blob over the HUD. Callers treat None as "no node". */
+        if !(r.is_finite()
+            && pos.x.is_finite()
+            && pos.y.is_finite()
+            && pos.z.is_finite()
+            && vel.x.is_finite()
+            && vel.y.is_finite()
+            && vel.z.is_finite())
+        {
+            return None;
+        }
         Some((pos, vel))
     }
 }

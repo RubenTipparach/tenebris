@@ -7556,9 +7556,11 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                 }
             });
             /* Maneuver planner: place a burn node on the orbit and tune its
-             * prograde/normal/radial delta-v. The predicted orbit + the
-             * required-vs-available delta-v show in the readout above and as
-             * the magenta track (flight view AND the O-map). */
+             * prograde/normal/radial delta-v. DISABLED via
+             * nav_ui::MANEUVER_ENABLED for now - the on-canvas overlay drew
+             * degenerate (NaN) geometry over the attitude gizmo on hyperbolic
+             * orbits. The Core math + node state stay intact for the rework. */
+            if nav_ui::MANEUVER_ENABLED {
             ui.separator();
             ui.collapsing("Maneuver", |ui| match nav_ui::node_params() {
                 None => {
@@ -7597,6 +7599,7 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             });
+            }
             ui.label(
                 egui::RichText::new(
                     "hold Space: throttle   WASD: steer   Q/R: roll\n\

@@ -70,6 +70,14 @@ const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
 /// reads as distinct from the live cyan/orange track).
 const NODE_COL: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 const NODE_ORBIT_COL: [f32; 4] = [0.95, 0.5, 0.9, 0.8];
+/// Master switch for the whole maneuver-planner UI (the on-canvas overlay,
+/// the readout lines, AND the egui editor). DISABLED for now at the user's
+/// request: the on-canvas node overlay was drawing degenerate (NaN) geometry
+/// on hyperbolic / interplanetary orbits, which rasterized as a black blob
+/// over the attitude gizmo. The Core math (`nav::plan_burn` etc.) and this
+/// module's node state stay intact and tested; flip this back on when the
+/// visuals are reworked (a proper widget / gizmo pass).
+pub const MANEUVER_ENABLED: bool = false;
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
 /// The moons' orbit rings - cooler + fainter than the station's so the
 /// dockable target stays the loudest line on the chart.
@@ -214,6 +222,9 @@ pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
 /// they read at any zoom. Call between `sgl_overlay_begin/end` on the line
 /// pipeline (same context the orbit tracks use).
 fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
+    if !MANEUVER_ENABLED {
+        return;
+    }
     let Some(plan) = node_plan(pos, vel) else {
         return;
     };
@@ -698,6 +709,12 @@ pub fn draw_world(
      * readable from ANY zoom. Nose (thrust) in the crosshair yellow, its
      * negatives dim; fwd green, right red (the WASD steering axes). */
     let cam_d = crate::rocket_cam::state().cur_distance as f64;
+
+    /* Planned maneuver drawn FIRST, so the ship's attitude arrows below
+     * render ON TOP of it and are never obscured (the "something is
+     * covering my directional arrows" bug). */
+    draw_node(pos, vel, cam_d);
+
     if cam_d > tenebris_core::rocket::config().camera.zoom_far_m as f64 {
         let len = cam_d * 0.12;
         arrow(pos, nose, len * 1.4, NOSE_COL);
@@ -707,9 +724,6 @@ pub fn draw_world(
         arrow(pos, right, len, [0.95, 0.35, 0.3, 0.9]);
         arrow(pos, dvec3_scale(right, -1.0), len * 0.7, [0.95, 0.35, 0.3, 0.35]);
     }
-
-    /* Planned maneuver: predicted orbit + node marker + delta-v arrow. */
-    draw_node(pos, vel, crate::rocket_cam::state().cur_distance as f64);
 
     renderer::sgl_overlay_end();
 }
@@ -970,8 +984,9 @@ pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
     }
     /* Planned maneuver: the required delta-v (what the burn costs) vs the
      * ship's available delta-v (rocket_ride, the real staged number), plus
-     * the orbit the burn produces. */
-    if let (Some((dt, pro, nrm, rad)), Some(plan)) = (node_params(), node_plan(pos, vel)) {
+     * the orbit the burn produces. Gated with the rest of the planner UI. */
+    if MANEUVER_ENABLED {
+        if let (Some((dt, pro, nrm, rad)), Some(plan)) = (node_params(), node_plan(pos, vel)) {
         let avail = crate::rocket_ride::delta_v_mps() as f64;
         let flag = if plan.dv_total <= avail { "" } else { "  (SHORT)" };
         out.push(format!(
@@ -991,6 +1006,7 @@ pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
             } else {
                 out.push(format!("  -> ESCAPE  Pe {:.0} m  e {:.2}", after.periapsis_m - r, after.e));
             }
+        }
         }
     }
     out
