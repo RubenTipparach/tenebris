@@ -1328,6 +1328,20 @@ fn dev_maybe_place(app: &mut App) {
             if let Some(ride) = RocketRide::from_stack(&stack, &cfg) {
                 crate::rocket_ride::begin(ride, stack.to_vec(), -1, -1, pos, up);
             }
+            /* Level prograde attitude for a clean navball demo: nose along
+             * prograde, radial-out at screen-top (roll ~0), so the pitch
+             * ladder reads horizontally like an ADI. */
+            {
+                let mut p = app.player.borrow_mut();
+                let nose = tenebris_core::math::dvec3_normalize(vel);
+                let fwd = tenebris_core::math::dvec3_scale(up, -1.0);
+                let right = tenebris_core::math::dvec3_normalize(
+                    tenebris_core::math::dvec3_cross(nose, fwd),
+                );
+                p.basis.up = nose;
+                p.basis.fwd = fwd;
+                p.basis.right = right;
+            }
             /* Pre-plan a prograde burn a quarter-orbit ahead. */
             let period = tenebris_core::nav::Conic::from_state(
                 &tenebris_core::nav::dominant_body(pos),
@@ -1343,7 +1357,12 @@ fn dev_maybe_place(app: &mut App) {
             /* Zoom the chase cam out so the whole orbit + the node gizmo fit
              * the frame (the node sits ~a third of the way round). */
             crate::rocket_cam::set_distance(4000.0);
-            println!("[dev] planner showcase: circular orbit + prograde node 6 m/s");
+            /* Engage the prograde autopilot: the PID swings the nose down to
+             * the horizon (prograde is ~tangential), so the navball shows the
+             * mid pitch band with its degree numbers - and it demos the
+             * rotate-to-symbol autopilot at the same time. */
+            crate::nav_ui::toggle_autopilot(crate::nav_ui::AttMode::Prograde);
+            println!("[dev] planner showcase: circular orbit + prograde node 6 m/s + SAS prograde");
         }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
@@ -7223,7 +7242,9 @@ fn frame_inner(app: &mut App) {
                 sun_dir,
                 sim_t,
             );
-            /* Autopilot-button tooltip label (text pass over the ball panel). */
+            /* Navball pitch-ladder degree numbers + autopilot-button tooltip
+             * label (text pass over the sgl ball geometry). */
+            nav_ui::draw_navball_degrees_text(sapp::widthf(), sapp::heightf());
             nav_ui::draw_ap_tooltip_text(sapp::widthf(), sapp::heightf());
         }
         /* Credits wallet (top-right). */

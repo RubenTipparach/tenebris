@@ -48,15 +48,17 @@ use tenebris_core::station;
 /* ------------------------------ tunables ------------------------------ */
 /* Navball look. TODO(ui.yaml): designer knobs, move to config in the UI
  * polish pass - kept in one block so the migration is mechanical. */
-const BALL_RADIUS_PX: f32 = 78.0;
+const BALL_RADIUS_PX: f32 = 92.0;
 const BALL_MARGIN_PX: f32 = 26.0; /* above the screen bottom */
 const BALL_SEGS: usize = 48;
 const MARKER_R_PX: f32 = 6.0;
 /// Beyond this many body radii the ground hemisphere swings from the planet
 /// to the star (the "brown points at the SOI, sun if heliocentric" rule).
 const SOI_RADII: f64 = 60.0;
-/// Pitch-ladder line colour (faint, so markers stay legible over it).
-const LADDER_COL: [f32; 4] = [0.85, 0.90, 0.98, 0.35];
+/// Pitch-ladder tick colours: major (10 deg, with a number) brighter than the
+/// minor (5 deg) ticks, both faint enough that markers stay legible.
+const LADDER_MAJOR: [f32; 4] = [0.90, 0.94, 1.0, 0.7];
+const LADDER_MINOR: [f32; 4] = [0.80, 0.86, 0.95, 0.4];
 const SKY: [f32; 4] = [0.18, 0.42, 0.72, 0.92];
 const GROUND: [f32; 4] = [0.52, 0.33, 0.16, 0.95];
 const RIM: [f32; 4] = [0.85, 0.88, 0.95, 0.9];
@@ -326,6 +328,10 @@ thread_local! {
     /// Tooltip label anchor (screen px) + mode, set while hovering so the text
     /// pass can print the label over the panel drawn on the ball pass.
     static AP_TIP: Cell<Option<(f32, f32, AttMode)>> = const { Cell::new(None) };
+    /// Pitch-ladder major-tick number anchors (screen px) + value, filled by
+    /// the ball pass and printed by the sdtx text pass.
+    static LADDER_NUMS: std::cell::RefCell<Vec<(f32, f32, i32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 const BTN_PX: f32 = 26.0;
@@ -1589,38 +1595,95 @@ fn marker(cx: f32, cy: f32, bx: f32, by: f32, bz: f32, mode: AttMode, col: [f32;
     draw_glyph(mode, x, y, MARKER_R_PX, [col[0], col[1], col[2], alpha]);
 }
 
-/// Pitch ladder: rings of constant elevation above/below the local horizon,
-/// projected onto the ball, so attitude reads in degrees. The horizon (0 deg)
-/// is already the sky/ground seam; this adds the +-30 and +-60 rings. Only
-/// the front-facing arc of each ring is drawn.
+/// Pitch ladder, ADI-style: a short horizontal tick at each pitch line up the
+/// ball's vertical meridian, from -90 to +90. Minor ticks every 5 deg, longer
+/// major ticks every 10 deg, and the major ticks carry a degree NUMBER
+/// (stashed for the sdtx text pass). Each tick is drawn at the front point of
+/// its constant-elevation circle where that circle crosses the vertical
+/// meridian, oriented along the circle's tangent so it tilts correctly with
+/// roll. The horizon (0 deg) is also the sky/ground seam.
 fn draw_pitch_ladder(cx: f32, cy: f32, up: DVec3, right: DVec3, fwd: DVec3, nose: DVec3) {
-    /* Horizon-plane basis (directions perpendicular to up). */
-    let seed = if up.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
-    let e1 = dvec3_normalize(dvec3_cross(up, seed));
-    let e2 = dvec3_cross(up, e1);
-    let n = 72;
-    for deg in [-60.0f64, -30.0, 30.0, 60.0] {
-        let (s, c) = (deg.to_radians().sin(), deg.to_radians().cos());
+    /* Ladder direction is the ATTITUDE-vertical, the plane of {up, nose}, so
+     * it tilts with roll (KSP ADI) instead of the screen vertical. `w` is the
+     * horizon-ward axis (component of the nose perpendicular to up); a
+     * direction at elevation deg is d = sin*up + cos*w, which sits on the
+     * front face for every |deg| < 90. */
+    let nu = dvec3_dot(nose, up);
+    let w = dvec3_sub(nose, dvec3_scale(up, nu));
+    let wl = dvec3_length(w);
+    if wl < 1e-3 {
+        return; /* nose at the zenith/nadir pole: no meaningful pitch line */
+    }
+    let w = dvec3_scale(w, 1.0 / wl);
+    let mut nums: Vec<(f32, f32, i32)> = Vec::new();
+    let mut last_num: Option<(f32, f32)> = None;
+    for deg in (-85..=85).step_by(5) {
+        let major = deg % 10 == 0;
+        let (s, c) = ((deg as f64).to_radians().sin(), (deg as f64).to_radians().cos());
+        let d0 = dvec3_add(dvec3_scale(up, s), dvec3_scale(w, c));
+        let (bx, by, bz) = ball_coords(d0, right, fwd, nose);
+        if bz <= 0.0 {
+            continue;
+        }
+        let p0 = (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
+        /* Screen tangent along the elevation circle (perp to up and d0), so
+         * the tick is horizontal-on-the-ball and rolls with the ship. */
+        let tan3 = dvec3_cross(up, d0);
+        if dvec3_dot(tan3, tan3) < 1e-9 {
+            continue;
+        }
+        let d1 = dvec3_normalize(dvec3_add(d0, dvec3_scale(dvec3_normalize(tan3), 0.03)));
+        let (tx, ty, _) = ball_coords(d1, right, fwd, nose);
+        let (mut dx, mut dy) =
+            ((tx - bx) * BALL_RADIUS_PX, -(ty - by) * BALL_RADIUS_PX);
+        let dl = (dx * dx + dy * dy).sqrt().max(1e-3);
+        dx /= dl;
+        dy /= dl;
+        let half = if major { 30.0 } else { 13.0 };
+        let col = if major { LADDER_MAJOR } else { LADDER_MINOR };
         sgl::begin_lines();
-        sgl::c4f(LADDER_COL[0], LADDER_COL[1], LADDER_COL[2], LADDER_COL[3]);
-        let mut prev: Option<(f32, f32)> = None;
-        for i in 0..=n {
-            let t = i as f64 / n as f64 * std::f64::consts::TAU;
-            let horiz = dvec3_add(dvec3_scale(e1, t.cos()), dvec3_scale(e2, t.sin()));
-            let d = dvec3_add(dvec3_scale(up, s), dvec3_scale(horiz, c));
-            let (bx, by, bz) = ball_coords(d, right, fwd, nose);
-            if bz > 0.0 {
-                let p = (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
-                if let Some(q) = prev {
-                    sgl::v2f(q.0, q.1);
-                    sgl::v2f(p.0, p.1);
-                }
-                prev = Some(p);
-            } else {
-                prev = None; /* break the strip across the back hemisphere */
+        sgl::c4f(col[0], col[1], col[2], col[3]);
+        sgl::v2f(p0.0 - dx * half, p0.1 - dy * half);
+        sgl::v2f(p0.0 + dx * half, p0.1 + dy * half);
+        sgl::end();
+        if major {
+            /* Number just past the right end of the tick (signed pitch).
+             * Skip if it would collide with the last one placed - near the
+             * poles the pitch lines compress, so labelling every 10 deg there
+             * would overlap; drop those and keep the readable central band. */
+            let (nx, ny) = (p0.0 + dx * (half + 10.0), p0.1 + dy * (half + 10.0));
+            let ok = last_num.map_or(true, |(lx, ly)| (nx - lx).hypot(ny - ly) > 16.0);
+            if ok {
+                nums.push((nx, ny, deg as i32));
+                last_num = Some((nx, ny));
             }
         }
-        sgl::end();
+    }
+    LADDER_NUMS.with(|c| *c.borrow_mut() = nums);
+}
+
+/// Print the pitch-ladder degree numbers collected by [`draw_pitch_ladder`].
+/// Separate text pass (sdtx) since the ladder ticks draw on the sgl ball
+/// pass. Only points that landed inside the ball are printed.
+pub fn draw_navball_degrees_text(screen_w: f32, screen_h: f32) {
+    let nums = LADDER_NUMS.with(|c| c.borrow().clone());
+    if nums.is_empty() {
+        return;
+    }
+    let cx = screen_w * 0.5;
+    let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
+    let cell = 8.0f32;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::color3b(0xe8, 0xec, 0xf4);
+    for (x, y, v) in nums {
+        /* Keep labels on/near the ball so they don't spill onto the buttons. */
+        if (x - cx).hypot(y - cy) > BALL_RADIUS_PX + 4.0 {
+            continue;
+        }
+        let s = format!("{v}");
+        sdtx::pos((x - s.len() as f32 * cell * 0.5) / cell, (y - 4.0) / cell);
+        sdtx::puts(&s);
     }
 }
 
@@ -1685,99 +1748,41 @@ pub fn draw_hud(
     let cx = screen_w * 0.5;
     let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
 
-    /* Sky disc. */
+    /* Ball body: a concentric-ring triangle mesh, each vertex tinted sky or
+     * ground by whether its 3-D direction is above or below the local horizon
+     * (dot(d, up)). GL interpolates across the boundary, so the horizon reads
+     * as a soft seam that stays correct at ANY pitch/roll - replacing the old
+     * horizon-polygon construction that over-filled to all-ground near the
+     * horizon. `d` is the front-face direction reconstructed from the ball
+     * coords: dot(d,right)=bx, dot(d,fwd)=-by, dot(d,nose)=bz. */
+    let rings = 22usize;
+    let vert = |r: f32, a: f32| {
+        let (bx, by) = (r * a.cos(), r * a.sin());
+        let bz = (1.0 - bx * bx - by * by).max(0.0).sqrt();
+        let d = dvec3_add(
+            dvec3_add(dvec3_scale(right, bx as f64), dvec3_scale(fwd, -(by as f64))),
+            dvec3_scale(nose, bz as f64),
+        );
+        let c = if dvec3_dot(d, up) >= 0.0 { SKY } else { GROUND };
+        sgl::c4f(c[0], c[1], c[2], c[3]);
+        sgl::v2f(cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
+    };
     sgl::begin_triangles();
-    sgl::c4f(SKY[0], SKY[1], SKY[2], SKY[3]);
-    for i in 0..BALL_SEGS {
-        let a0 = i as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-        let a1 = (i + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-        sgl::v2f(cx, cy);
-        sgl::v2f(cx + a0.cos() * BALL_RADIUS_PX, cy + a0.sin() * BALL_RADIUS_PX);
-        sgl::v2f(cx + a1.cos() * BALL_RADIUS_PX, cy + a1.sin() * BALL_RADIUS_PX);
+    for ri in 0..rings {
+        let r0 = ri as f32 / rings as f32;
+        let r1 = (ri + 1) as f32 / rings as f32;
+        for si in 0..BALL_SEGS {
+            let a0 = si as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
+            let a1 = (si + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
+            vert(r0, a0);
+            vert(r1, a0);
+            vert(r1, a1);
+            vert(r0, a0);
+            vert(r1, a1);
+            vert(r0, a1);
+        }
     }
     sgl::end();
-
-    /* Ground: the hemisphere of directions BELOW the local horizon,
-     * projected onto the ball. Sample the horizon great circle (all
-     * directions perpendicular to `up`), keep the visible arc, and close
-     * the polygon through the rim on the ground side. Degenerate cases
-     * (nose straight up/down) have no visible horizon - all sky or all
-     * ground. */
-    let nose_up = dvec3_dot(nose, up);
-    if nose_up < 0.999 {
-        /* Horizon plane basis. */
-        let seed = if up.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
-        let e1 = dvec3_normalize(dvec3_cross(up, seed));
-        let e2 = dvec3_cross(up, e1);
-        /* Visible horizon arc in ball space. */
-        let mut arc: Vec<(f32, f32)> = Vec::new();
-        let n = 96;
-        for i in 0..=n {
-            let a = i as f64 / n as f64 * std::f64::consts::TAU;
-            let d = dvec3_add(dvec3_scale(e1, a.cos()), dvec3_scale(e2, a.sin()));
-            let (bx, by, bz) = ball_coords(d, right, fwd, nose);
-            if bz > 0.0 {
-                arc.push((bx, by));
-            }
-        }
-        /* Where "down" projects - the rim point the closing sweep passes
-         * through, so the filled side is the ground side. */
-        let (dx, dy, _dz) = ball_coords(dvec3_scale(up, -1.0), right, fwd, nose);
-        if nose_up <= -0.999 || arc.len() < 2 {
-            /* Nose straight down (or horizon fully hidden while pointing
-             * groundward): the whole ball is ground. */
-            if nose_up < 0.0 {
-                sgl::begin_triangles();
-                sgl::c4f(GROUND[0], GROUND[1], GROUND[2], GROUND[3]);
-                for i in 0..BALL_SEGS {
-                    let a0 = i as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-                    let a1 = (i + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-                    sgl::v2f(cx, cy);
-                    sgl::v2f(cx + a0.cos() * BALL_RADIUS_PX, cy + a0.sin() * BALL_RADIUS_PX);
-                    sgl::v2f(cx + a1.cos() * BALL_RADIUS_PX, cy + a1.sin() * BALL_RADIUS_PX);
-                }
-                sgl::end();
-            }
-        } else {
-            /* Fan from the ground-side rim midpoint over the arc + the rim
-             * arc between the horizon's endpoints (walked the ground way). */
-            let dlen = (dx * dx + dy * dy).sqrt().max(1e-4);
-            let (gx, gy) = (dx / dlen, dy / dlen);
-            /* Order the polygon: arc points, then rim points from the
-             * arc's end angle to its start angle passing the ground point. */
-            let a_start = arc[0];
-            let a_end = *arc.last().unwrap();
-            let ang = |p: (f32, f32)| p.1.atan2(p.0);
-            let (s, e, g) = (ang(a_start), ang(a_end), gy.atan2(gx));
-            /* Sweep from e to s in the direction that passes g. */
-            let norm = |a: f32| {
-                let mut a = a;
-                while a < 0.0 {
-                    a += std::f32::consts::TAU;
-                }
-                a % std::f32::consts::TAU
-            };
-            let ccw_dist = |from: f32, to: f32| norm(to - from);
-            let through_g_ccw = ccw_dist(e, g) < ccw_dist(e, s);
-            let sweep = if through_g_ccw { ccw_dist(e, s) } else { -(std::f32::consts::TAU - ccw_dist(e, s)) };
-            let rim_steps = 24;
-            let mut poly: Vec<(f32, f32)> = arc.clone();
-            for i in 1..=rim_steps {
-                let a = e + sweep * i as f32 / rim_steps as f32;
-                poly.push((a.cos(), a.sin()));
-            }
-            /* Fan from the ground point (inside the polygon by construction). */
-            sgl::begin_triangles();
-            sgl::c4f(GROUND[0], GROUND[1], GROUND[2], GROUND[3]);
-            let fan = (gx * 0.5, gy * 0.5);
-            for w in poly.windows(2) {
-                sgl::v2f(cx + fan.0 * BALL_RADIUS_PX, cy - fan.1 * BALL_RADIUS_PX);
-                sgl::v2f(cx + w[0].0 * BALL_RADIUS_PX, cy - w[0].1 * BALL_RADIUS_PX);
-                sgl::v2f(cx + w[1].0 * BALL_RADIUS_PX, cy - w[1].1 * BALL_RADIUS_PX);
-            }
-            sgl::end();
-        }
-    }
 
     /* Rim ring. */
     sgl::begin_triangles();
