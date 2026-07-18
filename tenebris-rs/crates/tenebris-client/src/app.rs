@@ -1337,8 +1337,10 @@ fn dev_maybe_place(app: &mut App) {
             .map(|c| c.period_s)
             .unwrap_or(0.0);
             crate::nav_ui::toggle_node(period);
-            crate::nav_ui::set_node_params(period * 0.25, 220.0, 0.0, 0.0);
-            println!("[dev] planner showcase: circular orbit + prograde node 220 m/s");
+            /* A gentle prograde nudge (well under escape) so the predicted
+             * orbit is a nicely raised ellipse, not a straight escape line. */
+            crate::nav_ui::set_node_params(period * 0.25, 5.0, 0.0, 0.0);
+            println!("[dev] planner showcase: circular orbit + prograde node 5 m/s");
         }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
