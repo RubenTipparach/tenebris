@@ -7714,13 +7714,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
         match e._type {
             sapp::EventType::MouseDown if e.mouse_button == sapp::Mousebutton::Left => {
-                app.rocket_cam_drag = true;
+                /* Grab a maneuver-gizmo handle if the click landed on one;
+                 * otherwise start a chase-camera orbit drag (unchanged). */
+                if crate::nav_ui::gizmo_pick(e.mouse_x, e.mouse_y) {
+                    app.rocket_cam_drag = false;
+                } else {
+                    app.rocket_cam_drag = true;
+                }
             }
             sapp::EventType::MouseUp if e.mouse_button == sapp::Mousebutton::Left => {
+                crate::nav_ui::gizmo_release();
                 app.rocket_cam_drag = false;
             }
-            sapp::EventType::MouseMove if app.rocket_cam_drag => {
-                rocket_cam::orbit(e.mouse_dx, e.mouse_dy);
+            sapp::EventType::MouseMove => {
+                if crate::nav_ui::gizmo_dragging() {
+                    crate::nav_ui::gizmo_drag(e.mouse_dx, e.mouse_dy);
+                } else if app.rocket_cam_drag {
+                    rocket_cam::orbit(e.mouse_dx, e.mouse_dy);
+                }
             }
             _ => {}
         }

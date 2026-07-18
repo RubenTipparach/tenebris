@@ -223,20 +223,134 @@ pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
     nav::plan_burn(&conic, n.dt, n.pro, n.nrm, n.rad)
 }
 
+/* ---- gizmo screen-space interaction (drag the 3D handles) ---- */
+
+/// The gizmo's on-screen geometry, refreshed each frame by [`draw_node`] and
+/// read by the mouse hit-test in the event loop. `handles` is (screen x, y,
+/// axis 0=pro/1=nrm/2=rad, sign +/-1).
+#[derive(Clone, Copy)]
+struct GizmoScreen {
+    node: (f32, f32),
+    handles: [(f32, f32, u8, f64); 6],
+}
+
+thread_local! {
+    static GIZMO_SCREEN: Cell<Option<GizmoScreen>> = const { Cell::new(None) };
+    /// Active drag: (axis, sign); axis 3 = the center (slide along the orbit).
+    static GIZMO_DRAG: Cell<Option<(u8, f64)>> = const { Cell::new(None) };
+}
+
+/// Grab radius (px) and drag sensitivities. Tunable feel; not physics.
+const GIZMO_GRAB_PX: f32 = 24.0;
+const GIZMO_DV_PER_PX: f64 = 0.12; /* m/s of delta-v per pixel pulled */
+const GIZMO_DT_PER_PX: f64 = 2.5; /* seconds of time-to-node per pixel */
+
+/// Project a world point to window pixels through `vp` (= proj*view). `None`
+/// behind the camera. The nav eye-shell remap moves lines ALONG their eye ray,
+/// so this projection of the raw world point lands on the same pixel the drawn
+/// handle does.
+fn project(vp: &Mat4, p: DVec3, sw: f32, sh: f32) -> Option<(f32, f32)> {
+    let (x, y, z) = (p.x as f32, p.y as f32, p.z as f32);
+    let m = &vp.m;
+    let cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    let cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    let cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if cw <= 1e-3 {
+        return None;
+    }
+    Some(((cx / cw * 0.5 + 0.5) * sw, (1.0 - (cy / cw * 0.5 + 0.5)) * sh))
+}
+
+/// LMB-down hit-test at window pixel (mx,my). Grabs the nearest handle or the
+/// center within [`GIZMO_GRAB_PX`]; returns true if something was grabbed (so
+/// the caller suppresses the camera orbit). Empty space returns false ->
+/// left-drag keeps orbiting the camera.
+pub fn gizmo_pick(mx: f32, my: f32) -> bool {
+    if !NODE_OVERLAY_ENABLED || !node_active() {
+        return false;
+    }
+    let Some(g) = GIZMO_SCREEN.with(|c| c.get()) else {
+        return false;
+    };
+    let r2 = GIZMO_GRAB_PX * GIZMO_GRAB_PX;
+    let mut best: Option<(u8, f64, f32)> = None;
+    for (hx, hy, axis, sign) in g.handles.iter().copied() {
+        let d2 = (mx - hx) * (mx - hx) + (my - hy) * (my - hy);
+        if d2 < r2 && best.map_or(true, |b| d2 < b.2) {
+            best = Some((axis, sign, d2));
+        }
+    }
+    let cd2 = (mx - g.node.0).powi(2) + (my - g.node.1).powi(2);
+    if cd2 < r2 && best.map_or(true, |b| cd2 < b.2) {
+        GIZMO_DRAG.with(|c| c.set(Some((3, 0.0)))); /* center slide */
+        return true;
+    }
+    if let Some((axis, sign, _)) = best {
+        GIZMO_DRAG.with(|c| c.set(Some((axis, sign))));
+        return true;
+    }
+    false
+}
+
+pub fn gizmo_dragging() -> bool {
+    GIZMO_DRAG.with(|c| c.get().is_some())
+}
+
+pub fn gizmo_release() {
+    GIZMO_DRAG.with(|c| c.set(None));
+}
+
+/// Apply a mouse move (dx,dy px) to the active drag: pull a handle along its
+/// on-screen axis to grow that delta-v, or slide the center -> time-to-node.
+pub fn gizmo_drag(dx: f32, dy: f32) {
+    let Some((axis, sign)) = GIZMO_DRAG.with(|c| c.get()) else {
+        return;
+    };
+    let Some((dt, pro, nrm, rad)) = node_params() else {
+        return;
+    };
+    if axis == 3 {
+        set_node_params((dt + dx as f64 * GIZMO_DT_PER_PX).max(0.0), pro, nrm, rad);
+        return;
+    }
+    /* Pull along the handle's CURRENT screen direction (recomputed each move
+     * so it tracks the arrow as it grows). */
+    let Some(g) = GIZMO_SCREEN.with(|c| c.get()) else {
+        return;
+    };
+    let Some((hx, hy, _, _)) = g.handles.iter().copied().find(|h| h.2 == axis && h.3 == sign)
+    else {
+        return;
+    };
+    let (sdx, sdy) = (hx - g.node.0, hy - g.node.1);
+    let len = (sdx * sdx + sdy * sdy).sqrt().max(1.0);
+    let pull = (dx * sdx + dy * sdy) / len; /* signed pixels along the handle */
+    let delta = sign * pull as f64 * GIZMO_DV_PER_PX;
+    let (mut p, mut nm, mut r) = (pro, nrm, rad);
+    match axis {
+        0 => p += delta,
+        1 => nm += delta,
+        _ => r += delta,
+    }
+    set_node_params(dt, p, nm, r);
+}
+
 /// Draw the planned maneuver over the orbit tracks: the predicted post-burn
 /// orbit (magenta), a node marker, and a delta-v arrow. Shared by the flight
 /// view and the map so both render the same plan. `cam_d` sizes the marks so
 /// they read at any zoom. Call between `sgl_overlay_begin/end` on the line
 /// pipeline (same context the orbit tracks use).
-fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
+fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64, vp: Mat4) {
     if !NODE_OVERLAY_ENABLED {
         return;
     }
     let Some(plan) = node_plan(pos, vel) else {
+        GIZMO_SCREEN.with(|c| c.set(None));
         return;
     };
     let n = plan.node_pos;
     if !(n.x.is_finite() && n.y.is_finite() && n.z.is_finite()) {
+        GIZMO_SCREEN.with(|c| c.set(None));
         return; /* diverged conic -> draw nothing, never a NaN blob */
     }
     /* Divergent predicted trajectory (purple) - the orbit the burn makes. */
@@ -250,24 +364,36 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
             line_strip(&pts, NODE_PATH_COL);
         }
     }
-    /* The scaling gizmo: prograde / normal / radial handles at the node,
-     * oriented to the orbital plane, each arrow growing with its delta-v.
-     * Lengths scale with camera distance so the widget reads at any zoom. */
+    /* Six handles at the node (dir, axis 0/1/2, sign, colour, signed dv on
+     * that side). The pulled side grows with |dv|; the idle side stays at the
+     * base grab length. Lengths scale with camera distance to read at any
+     * zoom. Each handle's arrow is drawn AND its tip projected to screen for
+     * the drag hit-test. */
     let (_, dvp, dvn, dvr) = node_params().unwrap_or((0.0, 0.0, 0.0, 0.0));
     let base = cam_d * 0.09;
-    let grow = cam_d * 0.010; /* extra length per m/s of dv on that axis */
-    let len = |c: f64| base + c.abs() * grow;
+    let grow = cam_d * 0.010;
     let neg = |d: DVec3| dvec3_scale(d, -1.0);
-    /* Each pair: the pulled side grows with |dv|, the idle side stays at the
-     * base grab length. */
-    arrow(n, plan.prograde, if dvp >= 0.0 { len(dvp) } else { base }, H_PROGRADE);
-    arrow(n, neg(plan.prograde), if dvp < 0.0 { len(dvp) } else { base }, H_RETRO);
-    arrow(n, plan.normal, if dvn >= 0.0 { len(dvn) } else { base }, H_NORMAL);
-    arrow(n, neg(plan.normal), if dvn < 0.0 { len(dvn) } else { base }, H_NORMAL_B);
-    arrow(n, plan.radial_out, if dvr >= 0.0 { len(dvr) } else { base }, H_RADIAL);
-    arrow(n, neg(plan.radial_out), if dvr < 0.0 { len(dvr) } else { base }, H_RADIAL_B);
+    let handles: [(DVec3, u8, f64, [f32; 4], f64); 6] = [
+        (plan.prograde, 0, 1.0, H_PROGRADE, if dvp >= 0.0 { dvp } else { 0.0 }),
+        (neg(plan.prograde), 0, -1.0, H_RETRO, if dvp < 0.0 { dvp } else { 0.0 }),
+        (plan.normal, 1, 1.0, H_NORMAL, if dvn >= 0.0 { dvn } else { 0.0 }),
+        (neg(plan.normal), 1, -1.0, H_NORMAL_B, if dvn < 0.0 { dvn } else { 0.0 }),
+        (plan.radial_out, 2, 1.0, H_RADIAL, if dvr >= 0.0 { dvr } else { 0.0 }),
+        (neg(plan.radial_out), 2, -1.0, H_RADIAL_B, if dvr < 0.0 { dvr } else { 0.0 }),
+    ];
+    let (sw, sh) = (sokol::app::widthf(), sokol::app::heightf());
+    let mut screen = [(0.0f32, 0.0f32, 0u8, 0.0f64); 6];
+    for (i, (dir, axis, sign, col, dv)) in handles.iter().enumerate() {
+        let l = base + dv.abs() * grow;
+        arrow(n, *dir, l, *col);
+        let (sx, sy) = project(&vp, dvec3_add(n, dvec3_scale(*dir, l)), sw, sh)
+            .unwrap_or((-1.0e4, -1.0e4));
+        screen[i] = (sx, sy, *axis, *sign);
+    }
     /* Center grab handle. */
     cross_marker(n, (cam_d * 0.02).clamp(3.0, 3_000.0), H_CENTER);
+    let node_screen = project(&vp, n, sw, sh).unwrap_or((-1.0e4, -1.0e4));
+    GIZMO_SCREEN.with(|c| c.set(Some(GizmoScreen { node: node_screen, handles: screen })));
 }
 
 /// The maneuver-planner widget: a self-contained egui panel with a top-down
@@ -519,7 +645,7 @@ pub fn draw_map_orbits(
         }
         /* Planned maneuver: same predicted-orbit + node draw as the flight
          * view, so a burn planned in either place shows in both. */
-        draw_node(ship_pos, ship_vel, cam_d);
+        draw_node(ship_pos, ship_vel, cam_d, crate::gfx_math::mat4_mul(proj, view));
     }
 
     renderer::sgl_overlay_end();
@@ -862,7 +988,7 @@ pub fn draw_world(
     /* Planned maneuver drawn FIRST, so the ship's attitude arrows below
      * render ON TOP of it and are never obscured (the "something is
      * covering my directional arrows" bug). */
-    draw_node(pos, vel, cam_d);
+    draw_node(pos, vel, cam_d, crate::gfx_math::mat4_mul(proj, view));
 
     if cam_d > tenebris_core::rocket::config().camera.zoom_far_m as f64 {
         let len = cam_d * 0.12;
