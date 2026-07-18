@@ -29,5 +29,8 @@ futures-util = "0.3"
 # (GL) thread keeps ownership of all sokol_gfx buffer uploads.
 rayon = "1"
 egui = "0.34.3"
+# 2D plotting widget for the maneuver planner's orbit chart (self-contained
+# egui window - replaces the old on-canvas overlay that fought the HUD).
+egui_plot = "0.35"
 
 [dev-dependencies]

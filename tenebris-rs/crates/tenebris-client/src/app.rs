@@ -7555,50 +7555,15 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                     solar_map::toggle();
                 }
             });
-            /* Maneuver planner: place a burn node on the orbit and tune its
-             * prograde/normal/radial delta-v. DISABLED via
-             * nav_ui::MANEUVER_ENABLED for now - the on-canvas overlay drew
-             * degenerate (NaN) geometry over the attitude gizmo on hyperbolic
-             * orbits. The Core math + node state stay intact for the rework. */
+            /* Maneuver planner: a self-contained egui_plot orbit chart + burn
+             * controls (nav_ui::egui_maneuver). Replaces the old on-canvas 3D
+             * overlay that drew NaN geometry over the attitude gizmo; the
+             * widget is NaN-filtered and can't touch the flight HUD. */
             if nav_ui::MANEUVER_ENABLED {
-            ui.separator();
-            ui.collapsing("Maneuver", |ui| match nav_ui::node_params() {
-                None => {
-                    if ui.button("Plan node").clicked() {
-                        let period = tenebris_core::nav::Conic::from_state(
-                            &tenebris_core::nav::dominant_body(pos),
-                            pos,
-                            vel,
-                        )
-                        .map(|c| c.period_s)
-                        .unwrap_or(0.0);
-                        nav_ui::toggle_node(period);
-                    }
-                    ui.label(
-                        egui::RichText::new("place a burn node on your orbit").weak().size(11.0),
-                    );
-                }
-                Some((mut dt, mut pro, mut nrm, mut rad)) => {
-                    egui::Grid::new("mnvr-node").num_columns(2).show(ui, |ui| {
-                        ui.label("time to node (s)");
-                        ui.add(egui::DragValue::new(&mut dt).speed(5.0).range(0.0..=1e8));
-                        ui.end_row();
-                        ui.label("prograde (m/s)");
-                        ui.add(egui::DragValue::new(&mut pro).speed(1.0));
-                        ui.end_row();
-                        ui.label("normal (m/s)");
-                        ui.add(egui::DragValue::new(&mut nrm).speed(1.0));
-                        ui.end_row();
-                        ui.label("radial (m/s)");
-                        ui.add(egui::DragValue::new(&mut rad).speed(1.0));
-                        ui.end_row();
-                    });
-                    nav_ui::set_node_params(dt, pro, nrm, rad);
-                    if ui.button("Clear node").clicked() {
-                        nav_ui::clear_node();
-                    }
-                }
-            });
+                ui.separator();
+                ui.collapsing("Maneuver", |ui| {
+                    nav_ui::egui_maneuver(ui, pos, vel);
+                });
             }
             ui.label(
                 egui::RichText::new(

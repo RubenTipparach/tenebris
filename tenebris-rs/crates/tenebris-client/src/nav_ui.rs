@@ -70,14 +70,14 @@ const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
 /// reads as distinct from the live cyan/orange track).
 const NODE_COL: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
 const NODE_ORBIT_COL: [f32; 4] = [0.95, 0.5, 0.9, 0.8];
-/// Master switch for the whole maneuver-planner UI (the on-canvas overlay,
-/// the readout lines, AND the egui editor). DISABLED for now at the user's
-/// request: the on-canvas node overlay was drawing degenerate (NaN) geometry
-/// on hyperbolic / interplanetary orbits, which rasterized as a black blob
-/// over the attitude gizmo. The Core math (`nav::plan_burn` etc.) and this
-/// module's node state stay intact and tested; flip this back on when the
-/// visuals are reworked (a proper widget / gizmo pass).
-pub const MANEUVER_ENABLED: bool = false;
+/// Master switch for the maneuver-planner egui widget ([`egui_maneuver`]) -
+/// the self-contained `egui_plot` orbit chart + burn controls. ON.
+pub const MANEUVER_ENABLED: bool = true;
+/// The OLD 3D on-canvas node overlay ([`draw_node`]): predicted orbit + node
+/// marker + dv arrow drawn in world space over the flight view. Superseded by
+/// the egui_plot chart and kept OFF - it drew degenerate (NaN) geometry on
+/// hyperbolic orbits that rasterized as a black blob over the attitude gizmo.
+const NODE_OVERLAY_ENABLED: bool = false;
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
 /// The moons' orbit rings - cooler + fainter than the station's so the
 /// dockable target stays the loudest line on the chart.
@@ -222,7 +222,7 @@ pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
 /// they read at any zoom. Call between `sgl_overlay_begin/end` on the line
 /// pipeline (same context the orbit tracks use).
 fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
-    if !MANEUVER_ENABLED {
+    if !NODE_OVERLAY_ENABLED {
         return;
     }
     let Some(plan) = node_plan(pos, vel) else {
@@ -242,6 +242,129 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
         let dir = dvec3_scale(plan.dv_world, 1.0 / plan.dv_total);
         arrow(plan.node_pos, dir, cam_d * 0.14, NODE_COL);
     }
+}
+
+/// The maneuver-planner widget: a self-contained egui panel with a top-down
+/// `egui_plot` orbit chart (current orbit, predicted post-burn orbit, the
+/// node, the ship, the focus body) plus the burn controls and the
+/// required-vs-available delta-v. Replaces the old on-canvas 3D overlay, so it
+/// can never paint over the flight HUD; every plotted series is NaN-filtered
+/// so a diverged conic draws nothing instead of a garbage blob. Call from the
+/// Flight panel's Maneuver section while riding.
+pub fn egui_maneuver(ui: &mut egui::Ui, pos: DVec3, vel: DVec3) {
+    let focus = nav::dominant_body(pos);
+    let Some(current) = Conic::from_state(&focus, pos, vel) else {
+        ui.label("no orbit to plan from yet");
+        return;
+    };
+
+    /* Burn controls. */
+    match node_params() {
+        None => {
+            if ui.button("Plan node").clicked() {
+                toggle_node(current.period_s);
+            }
+        }
+        Some((mut dt, mut pro, mut nrm, mut rad)) => {
+            egui::Grid::new("mnvr-node").num_columns(2).show(ui, |ui| {
+                ui.label("time to node (s)");
+                ui.add(egui::DragValue::new(&mut dt).speed(5.0).range(0.0..=1e8));
+                ui.end_row();
+                ui.label("prograde (m/s)");
+                ui.add(egui::DragValue::new(&mut pro).speed(1.0));
+                ui.end_row();
+                ui.label("normal (m/s)");
+                ui.add(egui::DragValue::new(&mut nrm).speed(1.0));
+                ui.end_row();
+                ui.label("radial (m/s)");
+                ui.add(egui::DragValue::new(&mut rad).speed(1.0));
+                ui.end_row();
+            });
+            set_node_params(dt, pro, nrm, rad);
+            if ui.button("Clear node").clicked() {
+                clear_node();
+            }
+        }
+    }
+
+    /* Required vs available delta-v + the resulting orbit. */
+    let plan = node_plan(pos, vel);
+    if let Some(p) = &plan {
+        let avail = crate::rocket_ride::delta_v_mps() as f64;
+        let col = if p.dv_total <= avail {
+            egui::Color32::from_rgb(120, 230, 140)
+        } else {
+            egui::Color32::from_rgb(240, 120, 110)
+        };
+        ui.colored_label(col, format!("need {:.1} m/s    have {:.1} m/s", p.dv_total, avail));
+        if let Some(after) = &p.after {
+            let r = focus.radius_m;
+            if after.e < 1.0 {
+                ui.label(format!(
+                    "-> Ap {:.0} m   Pe {:.0} m   T {:.0} s",
+                    after.apoapsis_m - r,
+                    after.periapsis_m - r,
+                    after.period_s
+                ));
+            } else {
+                ui.label(format!("-> ESCAPE   Pe {:.0} m   e {:.2}", after.periapsis_m - r, after.e));
+            }
+        }
+    }
+
+    /* Top-down orbit chart, centred on the focus body: world (x,z) -> plot
+     * (x,y). Every series is NaN-filtered so a diverged/hyperbolic conic can
+     * never poison the plot (the old overlay's black-blob failure mode). */
+    let (fx, fz) = (current.focus.x, current.focus.z);
+    let proj = |q: DVec3| -> [f64; 2] { [q.x - fx, q.z - fz] };
+    let finite = |v: Vec<[f64; 2]>| -> Vec<[f64; 2]> {
+        v.into_iter().filter(|q| q[0].is_finite() && q[1].is_finite()).collect()
+    };
+    let cur_pts = finite(current.sample(256, HYPERBOLA_CLIP_M).into_iter().map(proj).collect());
+    let burn_pts = plan.as_ref().and_then(|p| p.after.as_ref()).map(|after| {
+        finite(after.sample(256, HYPERBOLA_CLIP_M).into_iter().map(proj).collect())
+    });
+    let node_xy = plan.as_ref().map(|p| proj(p.node_pos)).filter(|q| q[0].is_finite() && q[1].is_finite());
+    let ship_xy = proj(pos);
+
+    egui_plot::Plot::new("mnvr-plot")
+        .data_aspect(1.0)
+        .height(190.0)
+        .show_axes(false)
+        .show_grid(true)
+        .show(ui, |pu| {
+            pu.points(
+                egui_plot::Points::new("body", vec![[0.0, 0.0]])
+                    .radius(5.0)
+                    .color(egui::Color32::from_rgb(120, 170, 255)),
+            );
+            pu.line(
+                egui_plot::Line::new("orbit", cur_pts)
+                    .color(egui::Color32::from_rgb(90, 220, 235))
+                    .width(1.5),
+            );
+            if let Some(bp) = burn_pts {
+                pu.line(
+                    egui_plot::Line::new("burn", bp)
+                        .color(egui::Color32::from_rgb(240, 120, 230))
+                        .width(1.5),
+                );
+            }
+            if ship_xy[0].is_finite() && ship_xy[1].is_finite() {
+                pu.points(
+                    egui_plot::Points::new("ship", vec![ship_xy])
+                        .radius(3.5)
+                        .color(egui::Color32::WHITE),
+                );
+            }
+            if let Some(np) = node_xy {
+                pu.points(
+                    egui_plot::Points::new("node", vec![np])
+                        .radius(5.0)
+                        .color(egui::Color32::from_rgb(255, 80, 220)),
+                );
+            }
+        });
 }
 
 /// Display name for the HUD ("none" when nothing is targeted).
@@ -984,8 +1107,9 @@ pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
     }
     /* Planned maneuver: the required delta-v (what the burn costs) vs the
      * ship's available delta-v (rocket_ride, the real staged number), plus
-     * the orbit the burn produces. Gated with the rest of the planner UI. */
-    if MANEUVER_ENABLED {
+     * the orbit the burn produces. The egui widget shows this too; the HUD
+     * text line is tied to the (off) 3D overlay to avoid duplication. */
+    if NODE_OVERLAY_ENABLED {
         if let (Some((dt, pro, nrm, rad)), Some(plan)) = (node_params(), node_plan(pos, vel)) {
         let avail = crate::rocket_ride::delta_v_mps() as f64;
         let flag = if plan.dv_total <= avail { "" } else { "  (SHORT)" };
