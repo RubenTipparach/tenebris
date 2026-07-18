@@ -991,13 +991,17 @@ pub fn draw_world(
     draw_node(pos, vel, cam_d, crate::gfx_math::mat4_mul(proj, view));
 
     if cam_d > tenebris_core::rocket::config().camera.zoom_far_m as f64 {
+        /* All axes the SAME length so the gizmo reads as a uniform cross;
+         * only the nose (forward/thrust) arrow is drawn longer to call out
+         * which way the ship points. Left/right and up/down are told apart
+         * by vibrancy (full alpha vs dim), not by length. */
         let len = cam_d * 0.12;
         arrow(pos, nose, len * 1.4, NOSE_COL);
-        arrow(pos, dvec3_scale(nose, -1.0), len * 0.7, [NOSE_COL[0], NOSE_COL[1], NOSE_COL[2], 0.35]);
+        arrow(pos, dvec3_scale(nose, -1.0), len, [NOSE_COL[0], NOSE_COL[1], NOSE_COL[2], 0.35]);
         arrow(pos, fwd, len, [0.3, 0.9, 0.35, 0.9]);
-        arrow(pos, dvec3_scale(fwd, -1.0), len * 0.7, [0.3, 0.9, 0.35, 0.35]);
+        arrow(pos, dvec3_scale(fwd, -1.0), len, [0.3, 0.9, 0.35, 0.35]);
         arrow(pos, right, len, [0.95, 0.35, 0.3, 0.9]);
-        arrow(pos, dvec3_scale(right, -1.0), len * 0.7, [0.95, 0.35, 0.3, 0.35]);
+        arrow(pos, dvec3_scale(right, -1.0), len, [0.95, 0.35, 0.3, 0.35]);
     }
 
     renderer::sgl_overlay_end();
