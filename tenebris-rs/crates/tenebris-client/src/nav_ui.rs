@@ -65,19 +65,26 @@ const TARGET_COL: [f32; 4] = [0.98, 0.35, 0.75, 1.0];
 const ORBIT_SEGS: usize = 768;
 const ELLIPSE_COL: [f32; 4] = [0.35, 0.9, 0.95, 0.85];
 const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
-/// Planned-maneuver colours: the node marker + delta-v arrow (bright
-/// magenta) and the predicted post-burn orbit (a lighter magenta so it
-/// reads as distinct from the live cyan/orange track).
-const NODE_COL: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
-const NODE_ORBIT_COL: [f32; 4] = [0.95, 0.5, 0.9, 0.8];
-/// Master switch for the maneuver-planner egui widget ([`egui_maneuver`]) -
-/// the self-contained `egui_plot` orbit chart + burn controls. ON.
+/// Maneuver-gizmo colours (KSP-style burn handles) + the divergent predicted
+/// trajectory (purple). Prograde green, normal purple, radial cyan; the
+/// negative handle of each pair is a dimmer shade of the same hue.
+const H_PROGRADE: [f32; 4] = [0.75, 0.95, 0.30, 1.0];
+const H_RETRO: [f32; 4] = [0.55, 0.70, 0.25, 1.0];
+const H_NORMAL: [f32; 4] = [0.70, 0.35, 0.95, 1.0];
+const H_NORMAL_B: [f32; 4] = [0.48, 0.26, 0.72, 1.0];
+const H_RADIAL: [f32; 4] = [0.30, 0.85, 0.95, 1.0];
+const H_RADIAL_B: [f32; 4] = [0.22, 0.58, 0.70, 1.0];
+const H_CENTER: [f32; 4] = [1.0, 0.90, 0.35, 1.0];
+/// The purple divergent curve = the trajectory the planned burn produces.
+const NODE_PATH_COL: [f32; 4] = [0.72, 0.38, 0.95, 0.9];
+
+/// Master switch for the maneuver-planner egui controls ([`egui_maneuver`]).
 pub const MANEUVER_ENABLED: bool = true;
-/// The OLD 3D on-canvas node overlay ([`draw_node`]): predicted orbit + node
-/// marker + dv arrow drawn in world space over the flight view. Superseded by
-/// the egui_plot chart and kept OFF - it drew degenerate (NaN) geometry on
-/// hyperbolic orbits that rasterized as a black blob over the attitude gizmo.
-const NODE_OVERLAY_ENABLED: bool = false;
+/// The in-world 3D maneuver gizmo ([`draw_node`]): burn handles at the node
+/// oriented to the orbital plane + the divergent purple trajectory. ON now -
+/// it is NaN-guarded (a diverged conic draws nothing) and draws UNDER the
+/// ship's attitude arrows, so it can't obscure the gizmo like the old version.
+const NODE_OVERLAY_ENABLED: bool = true;
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
 /// The moons' orbit rings - cooler + fainter than the station's so the
 /// dockable target stays the loudest line on the chart.
@@ -228,20 +235,39 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
     let Some(plan) = node_plan(pos, vel) else {
         return;
     };
+    let n = plan.node_pos;
+    if !(n.x.is_finite() && n.y.is_finite() && n.z.is_finite()) {
+        return; /* diverged conic -> draw nothing, never a NaN blob */
+    }
+    /* Divergent predicted trajectory (purple) - the orbit the burn makes. */
     if let Some(after) = &plan.after {
-        line_strip(&after.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M), NODE_ORBIT_COL);
-        let pe = dvec3_add(after.focus, dvec3_scale(after.p_hat, after.periapsis_m));
-        cross_marker(pe, 22.0, NODE_ORBIT_COL);
-        if after.apoapsis_m.is_finite() {
-            let ap = dvec3_add(after.focus, dvec3_scale(after.p_hat, -after.apoapsis_m));
-            cross_marker(ap, 22.0, NODE_ORBIT_COL);
+        let pts: Vec<DVec3> = after
+            .sample(ORBIT_SEGS, HYPERBOLA_CLIP_M)
+            .into_iter()
+            .filter(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+            .collect();
+        if pts.len() > 1 {
+            line_strip(&pts, NODE_PATH_COL);
         }
     }
-    cross_marker(plan.node_pos, (cam_d * 0.03).clamp(4.0, 6_000.0), NODE_COL);
-    if plan.dv_total > 1e-3 {
-        let dir = dvec3_scale(plan.dv_world, 1.0 / plan.dv_total);
-        arrow(plan.node_pos, dir, cam_d * 0.14, NODE_COL);
-    }
+    /* The scaling gizmo: prograde / normal / radial handles at the node,
+     * oriented to the orbital plane, each arrow growing with its delta-v.
+     * Lengths scale with camera distance so the widget reads at any zoom. */
+    let (_, dvp, dvn, dvr) = node_params().unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let base = cam_d * 0.09;
+    let grow = cam_d * 0.010; /* extra length per m/s of dv on that axis */
+    let len = |c: f64| base + c.abs() * grow;
+    let neg = |d: DVec3| dvec3_scale(d, -1.0);
+    /* Each pair: the pulled side grows with |dv|, the idle side stays at the
+     * base grab length. */
+    arrow(n, plan.prograde, if dvp >= 0.0 { len(dvp) } else { base }, H_PROGRADE);
+    arrow(n, neg(plan.prograde), if dvp < 0.0 { len(dvp) } else { base }, H_RETRO);
+    arrow(n, plan.normal, if dvn >= 0.0 { len(dvn) } else { base }, H_NORMAL);
+    arrow(n, neg(plan.normal), if dvn < 0.0 { len(dvn) } else { base }, H_NORMAL_B);
+    arrow(n, plan.radial_out, if dvr >= 0.0 { len(dvr) } else { base }, H_RADIAL);
+    arrow(n, neg(plan.radial_out), if dvr < 0.0 { len(dvr) } else { base }, H_RADIAL_B);
+    /* Center grab handle. */
+    cross_marker(n, (cam_d * 0.02).clamp(3.0, 3_000.0), H_CENTER);
 }
 
 /// The maneuver-planner widget: a self-contained egui panel with a top-down

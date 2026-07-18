@@ -1339,8 +1339,11 @@ fn dev_maybe_place(app: &mut App) {
             crate::nav_ui::toggle_node(period);
             /* A gentle prograde nudge (well under escape) so the predicted
              * orbit is a nicely raised ellipse, not a straight escape line. */
-            crate::nav_ui::set_node_params(period * 0.25, 5.0, 0.0, 0.0);
-            println!("[dev] planner showcase: circular orbit + prograde node 5 m/s");
+            crate::nav_ui::set_node_params(period * 0.30, 6.0, 0.0, 0.0);
+            /* Zoom the chase cam out so the whole orbit + the node gizmo fit
+             * the frame (the node sits ~a third of the way round). */
+            crate::rocket_cam::set_distance(4000.0);
+            println!("[dev] planner showcase: circular orbit + prograde node 6 m/s");
         }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the

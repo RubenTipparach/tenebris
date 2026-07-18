@@ -182,6 +182,19 @@ pub fn zoom(notches: f32) {
     });
 }
 
+/// Jump the orbit distance straight to `m` metres (clamped to the configured
+/// range), current AND target so it takes effect immediately - used by the
+/// planner screenshot showcase to frame the whole orbit + node gizmo.
+pub fn set_distance(m: f32) {
+    let c = tenebris_core::rocket::config().camera;
+    CAM.with(|cell| {
+        let cam = &mut *cell.borrow_mut();
+        let d = m.clamp(c.min_distance_m, c.max_distance_m);
+        cam.target_distance = d;
+        cam.cur_distance = d;
+    });
+}
+
 /// Ease the orbit toward its target. Frame-rate independent:
 /// `1 - exp(-rate * dt)`.
 pub fn update(dt: f32) {
