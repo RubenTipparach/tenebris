@@ -61,6 +61,13 @@
 #   fog_height_m      float  camera altitude (m above sea level) where
 #                            the fog has fully faded out - climb above
 #                            the weather and the vista clears
+#   cloud_max_height_m float per-body CLOUD DECK CEILING: the altitude
+#                            (m above the surface) the cloud shell rides
+#                            at, overriding the global clouds.yaml
+#                            altitude_m for this planet. Higher = clouds
+#                            fly higher (a taller atmosphere); lower =
+#                            they hug the ground. 0 / omit = use the
+#                            global cloud altitude.
 #
 # ALL fields above are LIVE and HOT-RELOADABLE: wavelengths + sunset_*
 # drive BOTH the GPU sky dome and the CPU distance-fog colour (they were
@@ -113,6 +120,9 @@ tenebris:
   # sky at the horizon (no fog_color tint).
   fog_density: 0.006
   fog_height_m: 130.0
+  # Cloud deck ceiling (m above surface); overrides the global clouds.yaml
+  # altitude_m for this body. 0 / omit = use the global.
+  cloud_max_height_m: 60.0
 
 # Sequoia — sister Earth-like with a dusty BROWN atmosphere: the edge
 # fresnel / limb halo reads as hazy tan-brown from orbit (user
@@ -129,7 +139,7 @@ sequoia:
   # bound (MIN height). Raise lower_radius_mult above 1.0 to lift the
   # haze off the ground so the water sits below it.
   radius_mult: 1.24
-  lower_radius_mult: 1.0
+  lower_radius_mult: .9
 
   # --- scattering / brightness ---
   # sun_intensity kept low so the limb halo shows COLOUR instead of
@@ -139,7 +149,7 @@ sequoia:
   # wavelengths, the inverse of Tenebris's blue-sky 5.6/9.5/19.6. Both are
   # LIVE now - dial rayleigh_scale for how thick/brown the air reads, and
   # wavelengths for the exact hue. (Save the file to see it hot-reload.)
-  rayleigh_scale: 1.2
+  rayleigh_scale: 2.1
   wavelengths: [18.0, 10.0, 4.5]
   # Mie is colourless forward sun-glow - modest so it doesn't whiten
   # the rim; the haze reads from the boosted Rayleigh instead.
@@ -147,12 +157,12 @@ sequoia:
   # Mie phase asymmetry (forward-scatter tightness). Global default 0.76.
   mie_g: 0.85
   # Vertical density falloff (thin shell like Tenebris). Global 0.25.
-  scale_height: 0.6
+  scale_height: 0.2
 
   # --- sunset / horizon warmth (all LIVE) ---
   # Warm-tint blend at dusk. 0.85 matches the classic look; lower for a
   # subtler dusk, higher for a stronger warm wash.
-  sunset_strength: 0.85
+  sunset_strength: 5.85
   sunset_tint: [1.25, 1.00, 0.70]
   sunset_glow: [1.00, 0.75, 0.40]
   sunset_horizon: [0.85, 0.55, 0.25]
@@ -169,6 +179,10 @@ sequoia:
   # Camera altitude (m above sea) where the fog fully fades - climb
   # above this and the vista clears.
   fog_height_m: 130.0
+  # Cloud deck ceiling (m above surface); overrides the global clouds.yaml
+  # altitude_m for this body. Raise it to fly Sequoia's clouds higher.
+  # 0 / omit = use the global.
+  cloud_max_height_m: 60.0
 
 # Add other has_water=true bodies here. Bodies without atmosphere
 # (moons, asteroids, icy planets) ignore this file entirely.
