@@ -65,6 +65,11 @@ const TARGET_COL: [f32; 4] = [0.98, 0.35, 0.75, 1.0];
 const ORBIT_SEGS: usize = 768;
 const ELLIPSE_COL: [f32; 4] = [0.35, 0.9, 0.95, 0.85];
 const ESCAPE_COL: [f32; 4] = [0.95, 0.6, 0.25, 0.85];
+/// Planned-maneuver colours: the node marker + delta-v arrow (bright
+/// magenta) and the predicted post-burn orbit (a lighter magenta so it
+/// reads as distinct from the live cyan/orange track).
+const NODE_COL: [f32; 4] = [1.0, 0.3, 0.85, 1.0];
+const NODE_ORBIT_COL: [f32; 4] = [0.95, 0.5, 0.9, 0.8];
 const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
 /// The moons' orbit rings - cooler + fainter than the station's so the
 /// dockable target stays the loudest line on the chart.
@@ -131,6 +136,101 @@ pub fn target() -> Option<Target> {
 /// entry point. Accepts any body, asteroids included.
 pub fn set_target(t: Option<Target>) {
     TARGET_SEL.with(|c| c.set(t));
+}
+
+/* --------------------------- maneuver node ---------------------------- */
+
+/// A planned burn: how far ahead on the orbit it sits (`dt`, seconds) and
+/// the prograde / normal / radial delta-v (m/s) applied there. The heavy
+/// lifting - propagating to the node and re-solving the conic - is Core
+/// (`nav::plan_burn`); this just holds the edit state.
+#[derive(Clone, Copy)]
+struct Node {
+    dt: f64,
+    pro: f64,
+    nrm: f64,
+    rad: f64,
+}
+
+thread_local! {
+    /// The active maneuver node, if the pilot is planning one. Persists
+    /// across the flight like the target does.
+    static NODE: Cell<Option<Node>> = const { Cell::new(None) };
+}
+
+/// Is a maneuver node currently being planned?
+pub fn node_active() -> bool {
+    NODE.with(|c| c.get().is_some())
+}
+
+/// Create a node (seeded a quarter-period ahead with a zero burn) or clear
+/// the existing one. `period_s` is the current orbit's period for the lead
+/// time; non-finite (escape orbit) falls back to a fixed lead.
+pub fn toggle_node(period_s: f64) {
+    NODE.with(|c| {
+        if c.get().is_some() {
+            c.set(None);
+        } else {
+            let dt = if period_s.is_finite() && period_s > 0.0 { period_s * 0.25 } else { 120.0 };
+            c.set(Some(Node { dt, pro: 0.0, nrm: 0.0, rad: 0.0 }));
+        }
+    });
+}
+
+/// Drop the current node.
+pub fn clear_node() {
+    NODE.with(|c| c.set(None));
+}
+
+/// The node's edit state (time-to-node s, prograde, normal, radial m/s), or
+/// `None` when no node is planned. For the egui editor.
+pub fn node_params() -> Option<(f64, f64, f64, f64)> {
+    NODE.with(|c| c.get().map(|n| (n.dt, n.pro, n.nrm, n.rad)))
+}
+
+/// Write the node's edit state back (a no-op if no node is planned). Time is
+/// clamped non-negative - you can't plan a burn in the past.
+pub fn set_node_params(dt: f64, pro: f64, nrm: f64, rad: f64) {
+    NODE.with(|c| {
+        if c.get().is_some() {
+            c.set(Some(Node { dt: dt.max(0.0), pro, nrm, rad }));
+        }
+    });
+}
+
+/// The planned burn for the current ship state: propagates the node onto the
+/// orbit and re-solves the resulting conic. `None` when no node is set or the
+/// orbit can't be propagated (degenerate / radial).
+pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
+    let n = NODE.with(|c| c.get())?;
+    let focus = nav::dominant_body(pos);
+    let conic = Conic::from_state(&focus, pos, vel)?;
+    nav::plan_burn(&conic, n.dt, n.pro, n.nrm, n.rad)
+}
+
+/// Draw the planned maneuver over the orbit tracks: the predicted post-burn
+/// orbit (magenta), a node marker, and a delta-v arrow. Shared by the flight
+/// view and the map so both render the same plan. `cam_d` sizes the marks so
+/// they read at any zoom. Call between `sgl_overlay_begin/end` on the line
+/// pipeline (same context the orbit tracks use).
+fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64) {
+    let Some(plan) = node_plan(pos, vel) else {
+        return;
+    };
+    if let Some(after) = &plan.after {
+        line_strip(&after.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M), NODE_ORBIT_COL);
+        let pe = dvec3_add(after.focus, dvec3_scale(after.p_hat, after.periapsis_m));
+        cross_marker(pe, 22.0, NODE_ORBIT_COL);
+        if after.apoapsis_m.is_finite() {
+            let ap = dvec3_add(after.focus, dvec3_scale(after.p_hat, -after.apoapsis_m));
+            cross_marker(ap, 22.0, NODE_ORBIT_COL);
+        }
+    }
+    cross_marker(plan.node_pos, (cam_d * 0.03).clamp(4.0, 6_000.0), NODE_COL);
+    if plan.dv_total > 1e-3 {
+        let dir = dvec3_scale(plan.dv_world, 1.0 / plan.dv_total);
+        arrow(plan.node_pos, dir, cam_d * 0.14, NODE_COL);
+    }
 }
 
 /// Display name for the HUD ("none" when nothing is targeted).
@@ -257,6 +357,9 @@ pub fn draw_map_orbits(
                 cross_marker(ap, 25.0, col);
             }
         }
+        /* Planned maneuver: same predicted-orbit + node draw as the flight
+         * view, so a burn planned in either place shows in both. */
+        draw_node(ship_pos, ship_vel, cam_d);
     }
 
     renderer::sgl_overlay_end();
@@ -605,6 +708,9 @@ pub fn draw_world(
         arrow(pos, dvec3_scale(right, -1.0), len * 0.7, [0.95, 0.35, 0.3, 0.35]);
     }
 
+    /* Planned maneuver: predicted orbit + node marker + delta-v arrow. */
+    draw_node(pos, vel, crate::rocket_cam::state().cur_distance as f64);
+
     renderer::sgl_overlay_end();
 }
 
@@ -862,6 +968,31 @@ pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
         let rel = dvec3_length(dvec3_sub(vel, tv));
         out.push(format!("target {}  {:.0} m  rel {:.1} m/s", target_name(), dist, rel));
     }
+    /* Planned maneuver: the required delta-v (what the burn costs) vs the
+     * ship's available delta-v (rocket_ride, the real staged number), plus
+     * the orbit the burn produces. */
+    if let (Some((dt, pro, nrm, rad)), Some(plan)) = (node_params(), node_plan(pos, vel)) {
+        let avail = crate::rocket_ride::delta_v_mps() as f64;
+        let flag = if plan.dv_total <= avail { "" } else { "  (SHORT)" };
+        out.push(format!(
+            "NODE in {:.0}s  need {:.1} / have {:.1} m/s{}",
+            dt, plan.dv_total, avail, flag
+        ));
+        out.push(format!("  pro {:.1}  nrm {:.1}  rad {:.1} m/s", pro, nrm, rad));
+        if let Some(after) = &plan.after {
+            let r = focus.radius_m;
+            if after.e < 1.0 {
+                out.push(format!(
+                    "  -> Ap {:.0} m  Pe {:.0} m  T {:.0} s",
+                    after.apoapsis_m - r,
+                    after.periapsis_m - r,
+                    after.period_s
+                ));
+            } else {
+                out.push(format!("  -> ESCAPE  Pe {:.0} m  e {:.2}", after.periapsis_m - r, after.e));
+            }
+        }
+    }
     out
 }
 
@@ -887,6 +1018,33 @@ mod tests {
         assert_eq!(target(), None, "one past the end is none");
         cycle_target();
         assert_eq!(target(), Some(Target::Station), "and it wraps");
+    }
+
+    /// The maneuver node: create seeds a quarter-period lead + zero burn,
+    /// edits round-trip, and node_plan produces the required dv + the orbit
+    /// the burn makes (a prograde burn raises apoapsis).
+    #[test]
+    fn maneuver_node_plans_a_burn() {
+        clear_node();
+        assert!(!node_active());
+        toggle_node(1000.0);
+        assert!(node_active());
+        let (dt, pro, nrm, rad) = node_params().unwrap();
+        assert!((dt - 250.0).abs() < 1e-9, "quarter-period lead");
+        assert_eq!((pro, nrm, rad), (0.0, 0.0, 0.0), "seeded with no burn");
+
+        set_node_params(60.0, 40.0, 0.0, 0.0);
+        let b = planet::get(BodyId::Tenebris);
+        let r = 10_000.0;
+        let v = (nav::mu(&b) / r).sqrt(); /* circular */
+        let plan = node_plan(dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 0.0, v)).unwrap();
+        assert!((plan.dv_total - 40.0).abs() < 1e-6, "required dv = the burn magnitude");
+        let after = plan.after.expect("prograde burn stays bound");
+        assert!(after.apoapsis_m > r + 1.0, "prograde raises apoapsis");
+
+        clear_node();
+        assert!(!node_active());
+        assert!(node_plan(dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 0.0, v)).is_none());
     }
 
     /// Ball space is the craft's steering frame: nose dead centre, and the
