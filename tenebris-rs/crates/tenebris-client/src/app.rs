@@ -477,10 +477,11 @@ fn dev_maybe_place(app: &mut App) {
     let center = app.player.borrow().last_tile;
     let dev_mode = DEV_PLACE_MODE.with(|c| c.get());
     /* Most showcases build on the tile under the player, so they need a valid
-     * last_tile. The dive showcase (21) instead scans the whole planet for the
-     * deepest ocean and repositions the camera itself, so it must run even when
-     * the player spawns in orbit (last_tile == -1). */
-    if center < 0 && dev_mode != 21 {
+     * last_tile. The dive showcase (21) scans the whole planet and repositions
+     * the camera itself, and the planner showcase (25) parks the player in
+     * orbit - both must run even when the player spawns in orbit
+     * (last_tile == -1). */
+    if center < 0 && !matches!(dev_mode, 21 | 25) {
         return;
     }
     /* Showcases that probe real Water/terrain blocks on the teleported
@@ -1294,6 +1295,50 @@ fn dev_maybe_place(app: &mut App) {
             }
             p.pitch = -0.85;
             println!("[dev] built station-casino showcase around tile {center}");
+        }
+        25 => {
+            /* Maneuver-planner showcase (TENEBRIS_DEV_PLANNER): board a starter
+             * rocket in a circular orbit around the spawn body and pre-plan a
+             * prograde burn, so a headless still frames the egui planner chart
+             * (current + predicted orbit, node, need-vs-have delta-v). */
+            use tenebris_core::items::{COMMAND_MODULE, FUEL_TANK, ROCKET_ENGINE, VACUUM_ENGINE};
+            use tenebris_core::rocket::RocketRide;
+            let (pos, vel, up) = {
+                let w = app.world.borrow();
+                let c = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                /* Low circular orbit: well inside the body's SOI (the moons sit
+                 * ~5.9 km out) and clearly in space (space seam ~1.8 R). */
+                let r = w.body.radius_m + 2000.0;
+                let mu = tenebris_core::nav::mu(&w.body);
+                let v = (mu / r).sqrt();
+                let dir = dvec3_make(1.0, 0.0, 0.0);
+                let pos = dvec3_add(c, dvec3_scale(dir, r));
+                (pos, dvec3_make(0.0, 0.0, v), dir)
+            };
+            {
+                let mut p = app.player.borrow_mut();
+                p.position = pos;
+                p.velocity = vel;
+                p.is_in_space = true;
+                p.last_tile = -1;
+            }
+            let stack =
+                [ROCKET_ENGINE, FUEL_TANK, FUEL_TANK, VACUUM_ENGINE, FUEL_TANK, COMMAND_MODULE];
+            let cfg = tenebris_core::rocket::config();
+            if let Some(ride) = RocketRide::from_stack(&stack, &cfg) {
+                crate::rocket_ride::begin(ride, stack.to_vec(), -1, -1, pos, up);
+            }
+            /* Pre-plan a prograde burn a quarter-orbit ahead. */
+            let period = tenebris_core::nav::Conic::from_state(
+                &tenebris_core::nav::dominant_body(pos),
+                pos,
+                vel,
+            )
+            .map(|c| c.period_s)
+            .unwrap_or(0.0);
+            crate::nav_ui::toggle_node(period);
+            crate::nav_ui::set_node_params(period * 0.25, 220.0, 0.0, 0.0);
+            println!("[dev] planner showcase: circular orbit + prograde node 220 m/s");
         }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
@@ -2590,6 +2635,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_CASINO").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(24));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_PLANNER").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(25));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     }
     if std::env::var("TENEBRIS_DEV_KIT").is_ok() {
@@ -7561,9 +7609,11 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
              * widget is NaN-filtered and can't touch the flight HUD. */
             if nav_ui::MANEUVER_ENABLED {
                 ui.separator();
-                ui.collapsing("Maneuver", |ui| {
-                    nav_ui::egui_maneuver(ui, pos, vel);
-                });
+                egui::CollapsingHeader::new("Maneuver")
+                    .default_open(std::env::var("TENEBRIS_DEV_PLANNER").is_ok())
+                    .show(ui, |ui| {
+                        nav_ui::egui_maneuver(ui, pos, vel);
+                    });
             }
             ui.label(
                 egui::RichText::new(
