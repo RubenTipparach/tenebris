@@ -169,6 +169,13 @@ pub struct FlightConstants {
     /// WASD pitches and yaws the ship. The mouse orbits the chase camera
     /// in this mode, so steering is entirely on the keys.
     pub steer_rate_rads: f32,
+    /// Attitude autopilot (rotate-to-symbol / SAS-hold) PID gains. Kp turns
+    /// the nose toward the picked direction, Kd damps the approach so it
+    /// settles, Ki trims residual. The commanded angular rate is clamped to
+    /// `steer_rate_rads` so the autopilot never out-spins manual steering.
+    pub att_kp: f32,
+    pub att_ki: f32,
+    pub att_kd: f32,
 }
 
 /// Reentry-FX thresholds (client visual; `[reentry]` in rocket.yaml).
@@ -306,6 +313,12 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
          * dependent. We apply the rate directly (dt-correct), landing in
          * the same ballpark without the fps coupling. */
         steer_rate_rads: 0.9,
+        /* Kp ~ 4 turns briskly, Kd ~ 1.2 damps the last few degrees so the
+         * nose settles instead of ringing; Ki off (nothing biases a
+         * kinematic plant). Tunable in rocket.yaml, confirm feel in-game. */
+        att_kp: 4.0,
+        att_ki: 0.0,
+        att_kd: 1.2,
     },
     reentry: ReentryConstants { min_speed_mps: 45.0, full_speed_mps: 95.0, max_alt_m: 120.0 },
     salvage: SalvageConstants {
@@ -403,6 +416,9 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("camera", "zoom_far_m") => c.camera.zoom_far_m = val,
             ("camera", "planet_view_min_m") => c.camera.planet_view_min_m = val,
             ("flight", "steer_rate_rads") => c.flight.steer_rate_rads = val,
+            ("flight", "att_kp") => c.flight.att_kp = val,
+            ("flight", "att_ki") => c.flight.att_ki = val,
+            ("flight", "att_kd") => c.flight.att_kd = val,
             ("engine", "thrust_n") => c.engine.thrust_n = val,
             ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
             ("engine", "mass_kg") => c.engine.mass_kg = val,

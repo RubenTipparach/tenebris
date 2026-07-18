@@ -42,6 +42,13 @@ parachute_drag: 0.95
 # Attitude authority, rad/s: how fast WASD pitches/yaws the ship. The mouse
 # orbits the chase camera in rocket mode, so steering is all on the keys.
 steer_rate_rads: 0.9
+# Attitude autopilot (rotate-to-symbol / SAS-hold) PID gains. Kp turns the
+# nose toward the picked navball direction, Kd damps the last few degrees so
+# it settles instead of ringing, Ki trims residual (off by default - nothing
+# biases a kinematic plant). The commanded rate is clamped to steer_rate_rads.
+att_kp: 4.0
+att_ki: 0.0
+att_kd: 1.2
 
 # Third-person chase camera (client). Ported from the JS RocketCamera
 # (src/rocket/RocketCamera.ts + ROCKET_CONFIG.CAMERA). The camera orbits the

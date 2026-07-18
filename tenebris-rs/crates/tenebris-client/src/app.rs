@@ -7207,6 +7207,10 @@ fn frame_inner(app: &mut App) {
         if flying {
             let p = app.player.borrow();
             let sim_t = tenebris_core::world_time::seconds();
+            /* Render-frame unit vector to the star, so the navball's ground
+             * hemisphere can swing to the sun when we leave a planet's SOI. */
+            let active_id = p.body.unwrap_or(app.body).id;
+            let sun_dir = tenebris_core::orbit::sun_direction(active_id, sim_t);
             nav_ui::draw_hud(
                 sapp::widthf(),
                 sapp::heightf(),
@@ -7216,6 +7220,7 @@ fn frame_inner(app: &mut App) {
                 p.basis.right,
                 p.basis.fwd,
                 p.basis.up,
+                sun_dir,
                 sim_t,
             );
         }
@@ -7550,12 +7555,25 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
     if !rocket_ride::is_riding() {
         return;
     }
-    let (pos, vel) = {
+    let (pos, vel, right, fwd, nose, active_id) = {
         let p = app.player.borrow();
         /* The ship's one origin (mesh centre) - see the draw_world call. */
-        (crate::rocket_fx::ride_center(p.position, p.basis.up), p.velocity)
+        (
+            crate::rocket_fx::ride_center(p.position, p.basis.up),
+            p.velocity,
+            p.basis.right,
+            p.basis.fwd,
+            p.basis.up,
+            p.body.unwrap_or(app.body).id,
+        )
     };
     let sim_t = tenebris_core::world_time::seconds();
+    /* Attitude in degrees, consistent with the navball's SOI-aware up. */
+    let att_line = {
+        let up = nav_ui::navball_up(pos, tenebris_core::orbit::sun_direction(active_id, sim_t));
+        let (pitch, roll) = nav_ui::attitude_degrees(up, right, fwd, nose);
+        format!("pitch {pitch:+.0} deg   roll {roll:+.0} deg")
+    };
     let mut do_stage = false;
     let mut do_exit = false;
     let mut do_respawn = false;
@@ -7564,6 +7582,7 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
         .resizable(false)
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-10.0, -10.0))
         .show(ctx, |ui| {
+            ui.label(egui::RichText::new(&att_line).monospace().size(12.0));
             for line in nav_ui::readout_lines(pos, vel, sim_t) {
                 ui.label(egui::RichText::new(line).monospace().size(12.0));
             }

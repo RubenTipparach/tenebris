@@ -357,6 +357,94 @@ pub fn available_dv(exhaust_mps: f64, wet_kg: f64, dry_kg: f64) -> f64 {
     exhaust_mps * (wet_kg / dry_kg).ln()
 }
 
+/* -------------------------- attitude autopilot ------------------------- */
+/* A KSP-SAS-style controller that points the ship's nose at a chosen        */
+/* direction (prograde, target, maneuver, ...). The plant here is kinematic  */
+/* - the client steers by rotating the basis directly, no angular momentum   */
+/* - so this is a PID whose output is a COMMANDED ANGULAR VELOCITY (world     */
+/* axes) that the caller integrates into the basis. Kp turns toward the      */
+/* target, Kd damps against the closing rate so it settles instead of        */
+/* ringing, Ki trims any residual. Gains live in rocket.yaml (flight.*).     */
+
+/// PID gains + the rate clamp for the attitude autopilot.
+#[derive(Clone, Copy, Debug)]
+pub struct AttGains {
+    pub kp: f64,
+    pub ki: f64,
+    pub kd: f64,
+    /// Hard cap on |omega| (rad/s), so the ship can't spin faster than its
+    /// manual steer rate.
+    pub max_rate: f64,
+}
+
+/// Mutable PID state carried between frames by the caller.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AttPidState {
+    pub integ: DVec3,
+    pub prev_err: DVec3,
+    pub have_prev: bool,
+}
+
+impl AttPidState {
+    pub fn reset(&mut self) {
+        *self = AttPidState::default();
+    }
+}
+
+/// Rotation vector (axis * angle, world space, radians) that turns `nose`
+/// onto `target`. Zero when aligned; magnitude is the angle between them.
+/// Antiparallel picks an arbitrary perpendicular axis for a half-turn so the
+/// controller doesn't stall at exactly 180 deg.
+pub fn attitude_error(nose: DVec3, target: DVec3) -> DVec3 {
+    let c = dvec3_dot(nose, target).clamp(-1.0, 1.0);
+    let axis = dvec3_cross(nose, target);
+    let s = dvec3_length(axis);
+    if s < 1e-9 {
+        if c > 0.0 {
+            return dvec3_make(0.0, 0.0, 0.0);
+        }
+        let seed = if nose.x.abs() < 0.9 {
+            dvec3_make(1.0, 0.0, 0.0)
+        } else {
+            dvec3_make(0.0, 1.0, 0.0)
+        };
+        let a = dvec3_normalize(dvec3_cross(nose, seed));
+        return dvec3_scale(a, std::f64::consts::PI);
+    }
+    let angle = s.atan2(c);
+    dvec3_scale(axis, angle / s)
+}
+
+/// One PID step: commanded angular velocity (world axes) to null `err`,
+/// updating the integral + previous-error state in place. |omega| is clamped
+/// to `g.max_rate`. `dt` in seconds.
+pub fn attitude_pid_step(g: AttGains, st: &mut AttPidState, err: DVec3, dt: f64) -> DVec3 {
+    /* Integral with anti-windup clamp (per component). */
+    st.integ = dvec3_add(st.integ, dvec3_scale(err, dt));
+    let imax = 0.5;
+    st.integ = dvec3_make(
+        st.integ.x.clamp(-imax, imax),
+        st.integ.y.clamp(-imax, imax),
+        st.integ.z.clamp(-imax, imax),
+    );
+    let deriv = if st.have_prev && dt > 1e-6 {
+        dvec3_scale(dvec3_sub(err, st.prev_err), 1.0 / dt)
+    } else {
+        dvec3_make(0.0, 0.0, 0.0)
+    };
+    st.prev_err = err;
+    st.have_prev = true;
+    let mut omega = dvec3_add(
+        dvec3_add(dvec3_scale(err, g.kp), dvec3_scale(st.integ, g.ki)),
+        dvec3_scale(deriv, g.kd),
+    );
+    let mag = dvec3_length(omega);
+    if mag > g.max_rate {
+        omega = dvec3_scale(omega, g.max_rate / mag);
+    }
+    omega
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +452,51 @@ mod tests {
 
     fn tenebris() -> BodyConfig {
         planet::get(BodyId::Tenebris)
+    }
+
+    /// The attitude error is zero when aligned and equals the between-angle
+    /// otherwise, with an axis perpendicular to both.
+    #[test]
+    fn attitude_error_is_zero_aligned_and_the_between_angle_otherwise() {
+        let x = dvec3_make(1.0, 0.0, 0.0);
+        let y = dvec3_make(0.0, 1.0, 0.0);
+        assert!(dvec3_length(attitude_error(x, x)) < 1e-9);
+        let e = attitude_error(x, y);
+        assert!((dvec3_length(e) - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        /* axis is +z (x cross y). */
+        assert!((dvec3_normalize(e).z - 1.0).abs() < 1e-6);
+    }
+
+    /// The PID drives the nose onto the target under the game's kinematic
+    /// plant (rate command integrated straight into the orientation), and
+    /// settles there without running away.
+    #[test]
+    fn attitude_pid_converges_and_holds() {
+        let g = AttGains { kp: 4.0, ki: 0.0, kd: 1.2, max_rate: 0.9 };
+        let mut st = AttPidState::default();
+        let mut nose = dvec3_make(1.0, 0.0, 0.0);
+        let target = dvec3_normalize(dvec3_make(0.1, 1.0, 0.2));
+        let dt = 1.0 / 60.0;
+        for _ in 0..1200 {
+            let err = attitude_error(nose, target);
+            let omega = attitude_pid_step(g, &mut st, err, dt);
+            /* Rotate the nose by omega*dt (Rodrigues) - the kinematic plant. */
+            let ang = dvec3_length(omega) * dt;
+            if ang > 1e-12 {
+                let axis = dvec3_scale(omega, 1.0 / dvec3_length(omega));
+                let (s, c) = (ang.sin(), ang.cos());
+                let cross = dvec3_cross(axis, nose);
+                let dot = dvec3_dot(axis, nose);
+                nose = dvec3_add(
+                    dvec3_add(dvec3_scale(nose, c), dvec3_scale(cross, s)),
+                    dvec3_scale(axis, dot * (1.0 - c)),
+                );
+                nose = dvec3_normalize(nose);
+            }
+        }
+        /* Converges onto the target and holds there (within a few degrees;
+         * the exact deadband is a gain-tuning detail confirmed in-game). */
+        assert!(dvec3_dot(nose, target) > 0.995, "cos={}", dvec3_dot(nose, target));
     }
 
     /// Propagating zero seconds returns the state the conic was built from -

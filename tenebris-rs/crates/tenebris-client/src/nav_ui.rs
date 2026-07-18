@@ -51,6 +51,11 @@ const BALL_RADIUS_PX: f32 = 78.0;
 const BALL_MARGIN_PX: f32 = 26.0; /* above the screen bottom */
 const BALL_SEGS: usize = 48;
 const MARKER_R_PX: f32 = 6.0;
+/// Beyond this many body radii the ground hemisphere swings from the planet
+/// to the star (the "brown points at the SOI, sun if heliocentric" rule).
+const SOI_RADII: f64 = 60.0;
+/// Pitch-ladder line colour (faint, so markers stay legible over it).
+const LADDER_COL: [f32; 4] = [0.85, 0.90, 0.98, 0.35];
 const SKY: [f32; 4] = [0.18, 0.42, 0.72, 0.92];
 const GROUND: [f32; 4] = [0.52, 0.33, 0.16, 0.95];
 const RIM: [f32; 4] = [0.85, 0.88, 0.95, 0.9];
@@ -1024,9 +1029,260 @@ fn ball_coords(d: DVec3, right: DVec3, fwd: DVec3, nose: DVec3) -> (f32, f32, f3
     )
 }
 
-fn marker(cx: f32, cy: f32, bx: f32, by: f32, bz: f32, col: [f32; 4]) {
-    /* Front hemisphere draws where it projects; behind clamps to the rim,
-     * dimmed, so you still know which way to turn. */
+/// The KSP-style attitude targets. Each names a world direction to point the
+/// nose at (except [`AttMode::KillRot`], which just holds the current
+/// attitude). Shared by the navball markers, the rotate-to buttons, and the
+/// PID autopilot so all three agree on what "prograde" etc. mean.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AttMode {
+    Prograde,
+    Retrograde,
+    Normal,
+    Antinormal,
+    RadialOut,
+    RadialIn,
+    Target,
+    AntiTarget,
+    Maneuver,
+    KillRot,
+}
+
+impl AttMode {
+    /// The 10 modes in button order (KSP SAS layout).
+    pub const ALL: [AttMode; 10] = [
+        AttMode::Prograde,
+        AttMode::Retrograde,
+        AttMode::Normal,
+        AttMode::Antinormal,
+        AttMode::RadialOut,
+        AttMode::RadialIn,
+        AttMode::Target,
+        AttMode::AntiTarget,
+        AttMode::Maneuver,
+        AttMode::KillRot,
+    ];
+
+    /// Short label for the hover tooltip (ASCII only - navball font rule).
+    pub fn label(self) -> &'static str {
+        match self {
+            AttMode::Prograde => "Prograde",
+            AttMode::Retrograde => "Retrograde",
+            AttMode::Normal => "Normal",
+            AttMode::Antinormal => "Anti-normal",
+            AttMode::RadialOut => "Radial out",
+            AttMode::RadialIn => "Radial in",
+            AttMode::Target => "Target",
+            AttMode::AntiTarget => "Anti-target",
+            AttMode::Maneuver => "Maneuver node",
+            AttMode::KillRot => "Kill rotation",
+        }
+    }
+
+    /// Marker/handle colour for this mode.
+    pub fn color(self) -> [f32; 4] {
+        match self {
+            AttMode::Prograde => PROGRADE,
+            AttMode::Retrograde => RETROGRADE,
+            AttMode::Normal => NORMAL,
+            AttMode::Antinormal => [NORMAL[0] * 0.7, NORMAL[1] * 0.7, NORMAL[2] * 0.85, 1.0],
+            AttMode::RadialOut => RADIAL_OUT,
+            AttMode::RadialIn => [RADIAL_OUT[0] * 0.7, RADIAL_OUT[1] * 0.7, RADIAL_OUT[2] * 0.85, 1.0],
+            AttMode::Target => TARGET_COL,
+            AttMode::AntiTarget => [TARGET_COL[0] * 0.7, TARGET_COL[1] * 0.5, TARGET_COL[2] * 0.7, 1.0],
+            AttMode::Maneuver => [0.35, 0.7, 0.98, 1.0],
+            AttMode::KillRot => [0.85, 0.88, 0.95, 1.0],
+        }
+    }
+}
+
+/// World-space unit direction the nose should point for `mode`, or `None`
+/// when it isn't defined right now (no speed for pro/retro, no target
+/// selected, no maneuver node, or [`AttMode::KillRot`] which has no aim).
+/// `focus_c` is the dominant body's centre; `up` is radial-out (SOI up).
+pub fn mode_dir(
+    mode: AttMode,
+    pos: DVec3,
+    vel: DVec3,
+    up: DVec3,
+    focus_c: DVec3,
+    sim_t: f64,
+) -> Option<DVec3> {
+    let spd = dvec3_length(vel);
+    match mode {
+        AttMode::Prograde if spd > 1.0 => Some(dvec3_scale(vel, 1.0 / spd)),
+        AttMode::Retrograde if spd > 1.0 => Some(dvec3_scale(vel, -1.0 / spd)),
+        AttMode::Normal | AttMode::Antinormal => {
+            let h = dvec3_cross(dvec3_sub(pos, focus_c), vel);
+            if dvec3_dot(h, h) > 1e-6 {
+                let n = dvec3_normalize(h);
+                Some(if mode == AttMode::Normal { n } else { dvec3_scale(n, -1.0) })
+            } else {
+                None
+            }
+        }
+        AttMode::RadialOut => Some(up),
+        AttMode::RadialIn => Some(dvec3_scale(up, -1.0)),
+        AttMode::Target | AttMode::AntiTarget => {
+            let (tp, _tv) = target_state(sim_t)?;
+            let to = dvec3_sub(tp, pos);
+            if dvec3_dot(to, to) > 1.0 {
+                let d = dvec3_normalize(to);
+                Some(if mode == AttMode::Target { d } else { dvec3_scale(d, -1.0) })
+            } else {
+                None
+            }
+        }
+        AttMode::Maneuver => {
+            let plan = node_plan(pos, vel)?;
+            if dvec3_dot(plan.dv_world, plan.dv_world) > 1e-9 {
+                Some(dvec3_normalize(plan.dv_world))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/* ---- navball glyph primitives (screen space, sgl ortho) ---- */
+
+fn ui_disc(x: f32, y: f32, r: f32, col: [f32; 4]) {
+    sgl::begin_triangles();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    let n = 12;
+    for i in 0..n {
+        let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
+        sgl::v2f(x, y);
+        sgl::v2f(x + a0.cos() * r, y + a0.sin() * r);
+        sgl::v2f(x + a1.cos() * r, y + a1.sin() * r);
+    }
+    sgl::end();
+}
+
+fn ui_ring(x: f32, y: f32, r: f32, col: [f32; 4]) {
+    sgl::begin_lines();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    let n = 16;
+    for i in 0..n {
+        let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
+        let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
+        sgl::v2f(x + a0.cos() * r, y + a0.sin() * r);
+        sgl::v2f(x + a1.cos() * r, y + a1.sin() * r);
+    }
+    sgl::end();
+}
+
+fn ui_line(x0: f32, y0: f32, x1: f32, y1: f32, col: [f32; 4]) {
+    sgl::begin_lines();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    sgl::v2f(x0, y0);
+    sgl::v2f(x1, y1);
+    sgl::end();
+}
+
+/// Filled or outlined triangle, apex up (`up=true`) or down.
+fn ui_tri(x: f32, y: f32, r: f32, col: [f32; 4], up: bool) {
+    let s = if up { -1.0 } else { 1.0 };
+    let (ax, ay) = (x, y + s * r);
+    let (bx, by) = (x - r * 0.9, y - s * r * 0.7);
+    let (cxp, cyp) = (x + r * 0.9, y - s * r * 0.7);
+    sgl::begin_triangles();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    sgl::v2f(ax, ay);
+    sgl::v2f(bx, by);
+    sgl::v2f(cxp, cyp);
+    sgl::end();
+}
+
+/// Diamond: filled when `fill`, else outline.
+fn ui_diamond(x: f32, y: f32, r: f32, col: [f32; 4], fill: bool) {
+    if fill {
+        sgl::begin_triangles();
+        sgl::c4f(col[0], col[1], col[2], col[3]);
+        sgl::v2f(x, y - r);
+        sgl::v2f(x + r, y);
+        sgl::v2f(x, y + r);
+        sgl::v2f(x, y - r);
+        sgl::v2f(x, y + r);
+        sgl::v2f(x - r, y);
+        sgl::end();
+    } else {
+        sgl::begin_lines();
+        sgl::c4f(col[0], col[1], col[2], col[3]);
+        let p = [(x, y - r), (x + r, y), (x, y + r), (x - r, y)];
+        for i in 0..4 {
+            let a = p[i];
+            let b = p[(i + 1) % 4];
+            sgl::v2f(a.0, a.1);
+            sgl::v2f(b.0, b.1);
+        }
+        sgl::end();
+    }
+}
+
+/// Four corner brackets around (x,y), target-reticle style.
+fn ui_brackets(x: f32, y: f32, r: f32, col: [f32; 4]) {
+    let e = r * 0.45;
+    for &(sx, sy) in &[(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        let (cxx, cyy) = (x + sx * r, y + sy * r);
+        ui_line(cxx, cyy, cxx - sx * e, cyy, col);
+        ui_line(cxx, cyy, cxx, cyy - sy * e, col);
+    }
+}
+
+/// Draw the distinct glyph for `mode` at screen (x,y). Shape AND colour set
+/// each apart so they read at a glance even overlapping on the ball.
+fn draw_glyph(mode: AttMode, x: f32, y: f32, r: f32, col: [f32; 4]) {
+    let spokes = |cnt: &[f32]| {
+        for a in cnt {
+            let ar = a.to_radians();
+            ui_line(x + ar.cos() * r, y + ar.sin() * r, x + ar.cos() * r * 1.7, y + ar.sin() * r * 1.7, col);
+        }
+    };
+    match mode {
+        AttMode::Prograde => {
+            ui_ring(x, y, r, col);
+            ui_disc(x, y, r * 0.3, col);
+            spokes(&[-90.0, 30.0, 150.0]);
+        }
+        AttMode::Retrograde => {
+            ui_ring(x, y, r, col);
+            let d = r * 0.6;
+            ui_line(x - d, y - d, x + d, y + d, col);
+            ui_line(x - d, y + d, x + d, y - d, col);
+            spokes(&[-90.0, 30.0, 150.0]);
+        }
+        AttMode::Normal => ui_tri(x, y, r, col, true),
+        AttMode::Antinormal => ui_tri(x, y, r, col, false),
+        AttMode::RadialOut => {
+            ui_diamond(x, y, r, col, false);
+            ui_disc(x, y, r * 0.28, col);
+        }
+        AttMode::RadialIn => ui_diamond(x, y, r * 0.85, col, true),
+        AttMode::Target => {
+            ui_brackets(x, y, r, col);
+            ui_disc(x, y, r * 0.3, col);
+        }
+        AttMode::AntiTarget => {
+            ui_brackets(x, y, r, col);
+            let d = r * 0.4;
+            ui_line(x - d, y - d, x + d, y + d, col);
+            ui_line(x - d, y + d, x + d, y - d, col);
+        }
+        AttMode::Maneuver => {
+            ui_ring(x, y, r, col);
+            ui_disc(x, y, r * 0.3, col);
+            spokes(&[-90.0, 30.0, 150.0]);
+        }
+        AttMode::KillRot => {}
+    }
+}
+
+/// Place a mode's marker on the ball. Front hemisphere draws where it
+/// projects; the back hemisphere clamps to the rim and dims, so you still
+/// know which way to turn toward it.
+fn marker(cx: f32, cy: f32, bx: f32, by: f32, bz: f32, mode: AttMode, col: [f32; 4]) {
     let (px, py, alpha) = if bz > 0.0 {
         (bx, by, col[3])
     } else {
@@ -1035,17 +1291,70 @@ fn marker(cx: f32, cy: f32, bx: f32, by: f32, bz: f32, col: [f32; 4]) {
     };
     let x = cx + px * BALL_RADIUS_PX;
     let y = cy - py * BALL_RADIUS_PX; /* screen y grows downward */
-    sgl::begin_triangles();
-    sgl::c4f(col[0], col[1], col[2], alpha);
-    let n = 10;
-    for i in 0..n {
-        let a0 = i as f32 / n as f32 * std::f32::consts::TAU;
-        let a1 = (i + 1) as f32 / n as f32 * std::f32::consts::TAU;
-        sgl::v2f(x, y);
-        sgl::v2f(x + a0.cos() * MARKER_R_PX, y + a0.sin() * MARKER_R_PX);
-        sgl::v2f(x + a1.cos() * MARKER_R_PX, y + a1.sin() * MARKER_R_PX);
+    draw_glyph(mode, x, y, MARKER_R_PX, [col[0], col[1], col[2], alpha]);
+}
+
+/// Pitch ladder: rings of constant elevation above/below the local horizon,
+/// projected onto the ball, so attitude reads in degrees. The horizon (0 deg)
+/// is already the sky/ground seam; this adds the +-30 and +-60 rings. Only
+/// the front-facing arc of each ring is drawn.
+fn draw_pitch_ladder(cx: f32, cy: f32, up: DVec3, right: DVec3, fwd: DVec3, nose: DVec3) {
+    /* Horizon-plane basis (directions perpendicular to up). */
+    let seed = if up.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
+    let e1 = dvec3_normalize(dvec3_cross(up, seed));
+    let e2 = dvec3_cross(up, e1);
+    let n = 72;
+    for deg in [-60.0f64, -30.0, 30.0, 60.0] {
+        let (s, c) = (deg.to_radians().sin(), deg.to_radians().cos());
+        sgl::begin_lines();
+        sgl::c4f(LADDER_COL[0], LADDER_COL[1], LADDER_COL[2], LADDER_COL[3]);
+        let mut prev: Option<(f32, f32)> = None;
+        for i in 0..=n {
+            let t = i as f64 / n as f64 * std::f64::consts::TAU;
+            let horiz = dvec3_add(dvec3_scale(e1, t.cos()), dvec3_scale(e2, t.sin()));
+            let d = dvec3_add(dvec3_scale(up, s), dvec3_scale(horiz, c));
+            let (bx, by, bz) = ball_coords(d, right, fwd, nose);
+            if bz > 0.0 {
+                let p = (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
+                if let Some(q) = prev {
+                    sgl::v2f(q.0, q.1);
+                    sgl::v2f(p.0, p.1);
+                }
+                prev = Some(p);
+            } else {
+                prev = None; /* break the strip across the back hemisphere */
+            }
+        }
+        sgl::end();
     }
-    sgl::end();
+}
+
+/// The navball "up" (radial-out): toward the sky, away from the ground
+/// hemisphere. Near a planet that's away from the body centre; once we're
+/// past its influence the primary is the star, so up flips to away-from-sun
+/// (brown points at the sun) - the "brown tracks the SOI, sun if
+/// heliocentric" rule. `sun_dir` is the render-frame unit vector to the star.
+pub fn navball_up(pos: DVec3, sun_dir: DVec3) -> DVec3 {
+    let focus = nav::dominant_body(pos);
+    let focus_c = dvec3_make(focus.pos_x, focus.pos_y, focus.pos_z);
+    let rel = dvec3_sub(pos, focus_c);
+    if dvec3_length(rel) > focus.radius_m * SOI_RADII {
+        dvec3_scale(sun_dir, -1.0)
+    } else {
+        dvec3_normalize(rel)
+    }
+}
+
+/// Attitude in degrees for the HUD readout: pitch (nose elevation above the
+/// local horizon, +up) and roll (how far the ball's "up" is rotated from
+/// screen-up about the nose). Pure - shared style with [`readout_lines`].
+pub fn attitude_degrees(up: DVec3, right: DVec3, fwd: DVec3, nose: DVec3) -> (f64, f64) {
+    let pitch = dvec3_dot(nose, up).clamp(-1.0, 1.0).asin().to_degrees();
+    /* Where radial-out projects on the ball: its screen angle from straight
+     * up IS the roll. */
+    let (bx, by) = (dvec3_dot(up, right), -dvec3_dot(up, fwd));
+    let roll = (bx).atan2(by).to_degrees();
+    (pitch, roll)
 }
 
 /// Draw the navball + orbital readouts. Call from the HUD block while
@@ -1062,11 +1371,12 @@ pub fn draw_hud(
     right: DVec3,
     fwd: DVec3,
     nose: DVec3,
+    sun_dir: DVec3,
     sim_t: f64,
 ) {
     let focus = nav::dominant_body(pos);
     let focus_c = dvec3_make(focus.pos_x, focus.pos_y, focus.pos_z);
-    let up = dvec3_normalize(dvec3_sub(pos, focus_c));
+    let up = navball_up(pos, sun_dir);
 
     /* 2D prologue - own ortho block, same pattern as hotbar_ui. */
     sgl::defaults();
@@ -1192,31 +1502,20 @@ pub fn draw_hud(
     }
     sgl::end();
 
-    /* Markers. Prograde/retrograde need some speed to mean anything. */
-    let spd = dvec3_length(vel);
-    if spd > 1.0 {
-        let pro = dvec3_scale(vel, 1.0 / spd);
-        let (bx, by, bz) = ball_coords(pro, right, fwd, nose);
-        marker(cx, cy, bx, by, bz, PROGRADE);
-        let (rx, ry, rz) = ball_coords(dvec3_scale(pro, -1.0), right, fwd, nose);
-        marker(cx, cy, rx, ry, rz, RETROGRADE);
-        /* Orbit normal (h = r x v): the "tilt the plane" direction. */
-        let rel = dvec3_sub(pos, focus_c);
-        let h = dvec3_cross(rel, vel);
-        if dvec3_dot(h, h) > 1e-6 {
-            let (nx, ny, nz) = ball_coords(dvec3_normalize(h), right, fwd, nose);
-            marker(cx, cy, nx, ny, nz, NORMAL);
+    /* Pitch ladder: constant-elevation rings every 30 deg from the horizon,
+     * so attitude reads in degrees off the ball, not just by feel. */
+    draw_pitch_ladder(cx, cy, up, right, fwd, nose);
+
+    /* Direction markers - one distinct glyph per attitude mode, all driven
+     * by the same mode_dir() the buttons and autopilot use. KillRot has no
+     * direction so it is skipped. */
+    for mode in AttMode::ALL {
+        if mode == AttMode::KillRot {
+            continue;
         }
-    }
-    /* Radial out - "up" away from the focus body. */
-    let (ux, uy, uz) = ball_coords(up, right, fwd, nose);
-    marker(cx, cy, ux, uy, uz, RADIAL_OUT);
-    /* Target direction. */
-    if let Some((tp, _tv)) = target_state(sim_t) {
-        let to = dvec3_sub(tp, pos);
-        if dvec3_dot(to, to) > 1.0 {
-            let (tx, ty, tz) = ball_coords(dvec3_normalize(to), right, fwd, nose);
-            marker(cx, cy, tx, ty, tz, TARGET_COL);
+        if let Some(d) = mode_dir(mode, pos, vel, up, focus_c, sim_t) {
+            let (bx, by, bz) = ball_coords(d, right, fwd, nose);
+            marker(cx, cy, bx, by, bz, mode, mode.color());
         }
     }
 
