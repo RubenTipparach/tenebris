@@ -31,6 +31,7 @@
 
 use std::cell::Cell;
 
+use sokol::debugtext as sdtx;
 use sokol::gfx as sg;
 use sokol::gl as sgl;
 
@@ -228,6 +229,239 @@ pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
     nav::plan_burn(&conic, n.dt, n.pro, n.nrm, n.rad)
 }
 
+/* ---- attitude autopilot (rotate the nose to a navball symbol) ---- */
+
+thread_local! {
+    /// The engaged autopilot mode, or `None` (manual). One at a time, KSP-SAS
+    /// style.
+    static AUTOPILOT: Cell<Option<AttMode>> = const { Cell::new(None) };
+    /// PID state, reset whenever the mode changes so the integral doesn't
+    /// carry across targets.
+    static AP_PID: std::cell::RefCell<nav::AttPidState> =
+        std::cell::RefCell::new(nav::AttPidState { integ: ZERO_V, prev_err: ZERO_V, have_prev: false });
+}
+
+const ZERO_V: DVec3 = DVec3 { x: 0.0, y: 0.0, z: 0.0 };
+
+/// The engaged autopilot mode (`None` = manual control).
+pub fn autopilot_mode() -> Option<AttMode> {
+    AUTOPILOT.with(|c| c.get())
+}
+
+/// Engage `mode`, or disengage if it's already the active one (button
+/// toggles). Resets the PID on any change of target.
+pub fn toggle_autopilot(mode: AttMode) {
+    AUTOPILOT.with(|c| {
+        if c.get() == Some(mode) {
+            c.set(None);
+        } else {
+            c.set(Some(mode));
+            AP_PID.with(|p| p.borrow_mut().reset());
+        }
+    });
+}
+
+/// Force manual control (called when the pilot touches WASD/QR).
+pub fn clear_autopilot() {
+    AUTOPILOT.with(|c| {
+        if c.get().is_some() {
+            c.set(None);
+            AP_PID.with(|p| p.borrow_mut().reset());
+        }
+    });
+}
+
+/// Commanded angular velocity (world axes) to hold the engaged autopilot
+/// mode, or `None` when manual / the mode has no current direction (no
+/// target, no node, no speed). `nose` is the ship's thrust axis (basis.up).
+/// The caller integrates this omega into the basis. [`AttMode::KillRot`]
+/// returns zero (a kinematic ship has no residual spin to null, so it just
+/// holds the current heading).
+pub fn autopilot_omega(
+    pos: DVec3,
+    vel: DVec3,
+    nose: DVec3,
+    sun_dir: DVec3,
+    sim_t: f64,
+    dt: f64,
+) -> Option<DVec3> {
+    let mode = AUTOPILOT.with(|c| c.get())?;
+    if mode == AttMode::KillRot {
+        return Some(ZERO_V);
+    }
+    let up = navball_up(pos, sun_dir);
+    let focus = nav::dominant_body(pos);
+    let focus_c = dvec3_make(focus.pos_x, focus.pos_y, focus.pos_z);
+    let target = mode_dir(mode, pos, vel, up, focus_c, sim_t)?;
+    let err = nav::attitude_error(nose, target);
+    let f = tenebris_core::rocket::config().flight;
+    let g = nav::AttGains {
+        kp: f.att_kp as f64,
+        ki: f.att_ki as f64,
+        kd: f.att_kd as f64,
+        max_rate: f.steer_rate_rads as f64,
+    };
+    Some(AP_PID.with(|p| nav::attitude_pid_step(g, &mut p.borrow_mut(), err, dt)))
+}
+
+/* ---- rotate-to-symbol buttons (a cluster beside the navball) ---- */
+
+#[derive(Clone, Copy)]
+struct BtnRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    mode: AttMode,
+    avail: bool,
+}
+
+thread_local! {
+    /// The 10 buttons' screen rects, refreshed each frame by the navball draw
+    /// and read by the mouse hit-test in the event loop.
+    static AP_BUTTONS: Cell<Option<[BtnRect; 10]>> = const { Cell::new(None) };
+    /// Which button the cursor is over (for the highlight + tooltip), set from
+    /// the event loop on mouse-move.
+    static AP_HOVER: Cell<Option<AttMode>> = const { Cell::new(None) };
+    /// Tooltip label anchor (screen px) + mode, set while hovering so the text
+    /// pass can print the label over the panel drawn on the ball pass.
+    static AP_TIP: Cell<Option<(f32, f32, AttMode)>> = const { Cell::new(None) };
+}
+
+const BTN_PX: f32 = 26.0;
+const BTN_GAP: f32 = 4.0;
+
+/// Filled rect (screen space).
+fn ui_rect(x: f32, y: f32, w: f32, h: f32, col: [f32; 4]) {
+    sgl::begin_triangles();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    sgl::v2f(x, y);
+    sgl::v2f(x + w, y);
+    sgl::v2f(x + w, y + h);
+    sgl::v2f(x, y);
+    sgl::v2f(x + w, y + h);
+    sgl::v2f(x, y + h);
+    sgl::end();
+}
+
+fn ui_rect_outline(x: f32, y: f32, w: f32, h: f32, col: [f32; 4]) {
+    sgl::begin_lines();
+    sgl::c4f(col[0], col[1], col[2], col[3]);
+    let p = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    for i in 0..4 {
+        let a = p[i];
+        let b = p[(i + 1) % 4];
+        sgl::v2f(a.0, a.1);
+        sgl::v2f(b.0, b.1);
+    }
+    sgl::end();
+}
+
+/// Set from the event loop each mouse-move (Phase-3 tooltip + hover glow).
+pub fn set_ap_hover(m: Option<AttMode>) {
+    AP_HOVER.with(|c| c.set(m));
+}
+
+/// The mode whose button the cursor is over, if any.
+pub fn ap_hover(mx: f32, my: f32) -> Option<AttMode> {
+    let rects = AP_BUTTONS.with(|c| c.get())?;
+    rects
+        .iter()
+        .find(|r| mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h)
+        .map(|r| r.mode)
+}
+
+/// LMB hit-test on the button cluster: toggles that mode's autopilot and
+/// returns true (so the caller swallows the click). Only fires while riding.
+pub fn autopilot_button_pick(mx: f32, my: f32) -> bool {
+    if !crate::rocket_ride::is_riding() {
+        return false;
+    }
+    let Some(rects) = AP_BUTTONS.with(|c| c.get()) else {
+        return false;
+    };
+    for r in rects {
+        if r.avail && mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h {
+            toggle_autopilot(r.mode);
+            return true;
+        }
+    }
+    false
+}
+
+/// Draw the 10-button cluster to the LEFT of the ball, glyph per mode,
+/// engaged highlighted, unavailable dimmed. Stashes the rects for hit-test.
+fn draw_autopilot_buttons(cx: f32, cy: f32, pos: DVec3, vel: DVec3, up: DVec3, focus_c: DVec3, sim_t: f64) {
+    let bw = 2.0 * BTN_PX + BTN_GAP;
+    let bh = 5.0 * BTN_PX + 4.0 * BTN_GAP;
+    let left = cx - BALL_RADIUS_PX - 16.0 - bw;
+    let top = cy - bh * 0.5;
+    let hover = AP_HOVER.with(|c| c.get());
+    let engaged = autopilot_mode();
+    let rects: [BtnRect; 10] = std::array::from_fn(|i| {
+        let mode = AttMode::ALL[i];
+        let col = (i % 2) as f32;
+        let row = (i / 2) as f32;
+        let x = left + col * (BTN_PX + BTN_GAP);
+        let y = top + row * (BTN_PX + BTN_GAP);
+        let avail =
+            mode == AttMode::KillRot || mode_dir(mode, pos, vel, up, focus_c, sim_t).is_some();
+        let is_eng = engaged == Some(mode);
+        let is_hov = hover == Some(mode);
+        let bg = if is_eng {
+            [0.24, 0.30, 0.42, 0.92]
+        } else if is_hov {
+            [0.16, 0.19, 0.26, 0.88]
+        } else {
+            [0.09, 0.10, 0.14, 0.82]
+        };
+        ui_rect(x, y, BTN_PX, BTN_PX, bg);
+        let border = if is_eng {
+            [1.0, 0.90, 0.35, 1.0]
+        } else if is_hov {
+            [0.8, 0.85, 0.95, 0.9]
+        } else {
+            [0.45, 0.50, 0.60, 0.7]
+        };
+        ui_rect_outline(x, y, BTN_PX, BTN_PX, border);
+        let mut gc = mode.color();
+        if !avail {
+            gc[3] *= 0.3;
+        }
+        draw_glyph(mode, x + BTN_PX * 0.5, y + BTN_PX * 0.5, BTN_PX * 0.26, gc);
+        BtnRect { x, y, w: BTN_PX, h: BTN_PX, mode, avail }
+    });
+    AP_BUTTONS.with(|c| c.set(Some(rects)));
+
+    /* Instant tooltip panel above the hovered button (label printed in the
+     * text pass by draw_ap_tooltip_text). */
+    if let Some(hmode) = hover {
+        let label = hmode.label();
+        let tw = label.len() as f32 * 8.0 + 10.0;
+        let tx = (left + bw * 0.5 - tw * 0.5).max(2.0);
+        let ty = top - 22.0;
+        ui_rect(tx, ty, tw, 16.0, [0.05, 0.06, 0.09, 0.92]);
+        ui_rect_outline(tx, ty, tw, 16.0, [0.6, 0.65, 0.75, 0.85]);
+        AP_TIP.with(|c| c.set(Some((tx + 5.0, ty + 4.0, hmode))));
+    } else {
+        AP_TIP.with(|c| c.set(None));
+    }
+}
+
+/// Print the hovered button's tooltip label. Separate text pass (sdtx) since
+/// the panel is drawn on the sgl ball pass. Call from the HUD text block.
+pub fn draw_ap_tooltip_text(screen_w: f32, screen_h: f32) {
+    let Some((x, y, mode)) = AP_TIP.with(|c| c.get()) else {
+        return;
+    };
+    let cell = 8.0f32;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::pos(x / cell, y / cell);
+    sdtx::color3b(0xf0, 0xf2, 0xf8);
+    sdtx::puts(mode.label());
+}
+
 /* ---- gizmo screen-space interaction (drag the 3D handles) ---- */
 
 /// The gizmo's on-screen geometry, refreshed each frame by [`draw_node`] and
@@ -243,6 +477,9 @@ thread_local! {
     static GIZMO_SCREEN: Cell<Option<GizmoScreen>> = const { Cell::new(None) };
     /// Active drag: (axis, sign); axis 3 = the center (slide along the orbit).
     static GIZMO_DRAG: Cell<Option<(u8, f64)>> = const { Cell::new(None) };
+    /// Handle under the cursor for the hover glow: -2 none, -1 center, 0..5
+    /// the handle index in `GizmoScreen::handles`.
+    static GIZMO_HOVER: Cell<i8> = const { Cell::new(-2) };
 }
 
 /// Grab radius (px) and drag sensitivities. Tunable feel; not physics.
@@ -295,6 +532,42 @@ pub fn gizmo_pick(mx: f32, my: f32) -> bool {
         return true;
     }
     false
+}
+
+/// Per-frame hover test: record which handle (or the center) the cursor is
+/// over so [`draw_node`] can light it up. Cheap; call on every mouse-move.
+pub fn gizmo_hover(mx: f32, my: f32) {
+    let hov = (|| {
+        if !NODE_OVERLAY_ENABLED || !node_active() {
+            return Some(-2i8);
+        }
+        let g = GIZMO_SCREEN.with(|c| c.get())?;
+        let r2 = GIZMO_GRAB_PX * GIZMO_GRAB_PX;
+        let mut best: Option<(i8, f32)> = None;
+        for (i, (hx, hy, _, _)) in g.handles.iter().enumerate() {
+            let d2 = (mx - hx) * (mx - hx) + (my - hy) * (my - hy);
+            if d2 < r2 && best.map_or(true, |b| d2 < b.1) {
+                best = Some((i as i8, d2));
+            }
+        }
+        let cd2 = (mx - g.node.0).powi(2) + (my - g.node.1).powi(2);
+        if cd2 < r2 && best.map_or(true, |b| cd2 < b.1) {
+            return Some(-1i8);
+        }
+        Some(best.map_or(-2, |b| b.0))
+    })()
+    .unwrap_or(-2);
+    GIZMO_HOVER.with(|c| c.set(hov));
+}
+
+/// Push a colour toward white (hover highlight) while keeping its alpha.
+fn brighten(c: [f32; 4]) -> [f32; 4] {
+    [
+        (c[0] + 0.35).min(1.0),
+        (c[1] + 0.35).min(1.0),
+        (c[2] + 0.35).min(1.0),
+        c[3],
+    ]
 }
 
 pub fn gizmo_dragging() -> bool {
@@ -387,16 +660,21 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64, vp: Mat4) {
         (neg(plan.radial_out), 2, -1.0, H_RADIAL_B, if dvr < 0.0 { dvr } else { 0.0 }),
     ];
     let (sw, sh) = (sokol::app::widthf(), sokol::app::heightf());
+    let hover = GIZMO_HOVER.with(|c| c.get());
     let mut screen = [(0.0f32, 0.0f32, 0u8, 0.0f64); 6];
     for (i, (dir, axis, sign, col, dv)) in handles.iter().enumerate() {
         let l = base + dv.abs() * grow;
-        arrow(n, *dir, l, *col);
+        /* Light up the handle under the cursor: brighten toward white and
+         * grow it a touch so it reads as grabbable. */
+        let c = if hover == i as i8 { brighten(*col) } else { *col };
+        arrow(n, *dir, if hover == i as i8 { l * 1.15 } else { l }, c);
         let (sx, sy) = project(&vp, dvec3_add(n, dvec3_scale(*dir, l)), sw, sh)
             .unwrap_or((-1.0e4, -1.0e4));
         screen[i] = (sx, sy, *axis, *sign);
     }
-    /* Center grab handle. */
-    cross_marker(n, (cam_d * 0.02).clamp(3.0, 3_000.0), H_CENTER);
+    /* Center grab handle (brightens on hover, hover index -1). */
+    let cc = if hover == -1 { brighten(H_CENTER) } else { H_CENTER };
+    cross_marker(n, (cam_d * 0.02).clamp(3.0, 3_000.0), cc);
     let node_screen = project(&vp, n, sw, sh).unwrap_or((-1.0e4, -1.0e4));
     GIZMO_SCREEN.with(|c| c.set(Some(GizmoScreen { node: node_screen, handles: screen })));
 }
@@ -1009,6 +1287,19 @@ pub fn draw_world(
         arrow(pos, dvec3_scale(right, -1.0), len, [0.95, 0.35, 0.3, 0.35]);
     }
 
+    /* When the cursor hovers an autopilot button, draw a long arrow from the
+     * ship in that symbol's world direction, so you can see where e.g.
+     * "prograde" actually points before committing to the burn. */
+    if let Some(hmode) = AP_HOVER.with(|c| c.get()) {
+        let sun_dir = tenebris_core::orbit::sun_direction(active, sim_t);
+        let up = navball_up(pos, sun_dir);
+        let focus = nav::dominant_body(pos);
+        let focus_c = dvec3_make(focus.pos_x, focus.pos_y, focus.pos_z);
+        if let Some(d) = mode_dir(hmode, pos, vel, up, focus_c, sim_t) {
+            arrow(pos, d, cam_d * 0.20, hmode.color());
+        }
+    }
+
     renderer::sgl_overlay_end();
 }
 
@@ -1275,7 +1566,11 @@ fn draw_glyph(mode: AttMode, x: f32, y: f32, r: f32, col: [f32; 4]) {
             ui_disc(x, y, r * 0.3, col);
             spokes(&[-90.0, 30.0, 150.0]);
         }
-        AttMode::KillRot => {}
+        AttMode::KillRot => {
+            /* Stability/hold: concentric rings (KSP's SAS-lock feel). */
+            ui_ring(x, y, r, col);
+            ui_ring(x, y, r * 0.45, col);
+        }
     }
 }
 
@@ -1518,6 +1813,9 @@ pub fn draw_hud(
             marker(cx, cy, bx, by, bz, mode, mode.color());
         }
     }
+
+    /* Rotate-to-symbol autopilot buttons, clustered left of the ball. */
+    draw_autopilot_buttons(cx, cy, pos, vel, up, focus_c, sim_t);
 
     /* Nose crosshair - fixed at centre by construction. */
     sgl::begin_lines();

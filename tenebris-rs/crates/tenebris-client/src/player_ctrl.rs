@@ -1494,6 +1494,18 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
              * Rate-based, not the JS's torque-into-per-frame-damped angular
              * velocity, which made handling fps-dependent. Rust leads;
              * dt-correct. Signs are a feel choice - confirm in-game.*/
+            /* Any manual attitude input drops the autopilot (KSP: nudging the
+             * controls disengages SAS-hold). Checked before the rates so a
+             * held key keeps it off. */
+            let manual_att = inp.phys.forward
+                || inp.phys.backward
+                || inp.phys.left
+                || inp.phys.right
+                || inp.phys.roll_left
+                || inp.phys.roll_right;
+            if manual_att {
+                crate::nav_ui::clear_autopilot();
+            }
             let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
             let roll_rate = l.space_roll_speed as f64 * dt as f64;
             let mut pitch = 0.0f64; /* about basis.right */
@@ -1528,6 +1540,34 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             if roll != 0.0 {
                 p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, roll);
                 p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, roll);
+            }
+            /* Autopilot: when no manual input, the PID points the nose at the
+             * engaged navball symbol. Its commanded angular velocity rotates
+             * the whole basis about one world axis (nose = basis.up). */
+            if !manual_att {
+                let sim_t = tenebris_core::world_time::seconds();
+                let sun_dir = p
+                    .body
+                    .map(|b| tenebris_core::orbit::sun_direction(b.id, sim_t))
+                    .unwrap_or(dvec3_make(0.0, 1.0, 0.0));
+                let ship_pos = crate::rocket_fx::ride_center(p.position, p.basis.up);
+                if let Some(omega) = crate::nav_ui::autopilot_omega(
+                    ship_pos,
+                    p.velocity,
+                    p.basis.up,
+                    sun_dir,
+                    sim_t,
+                    dt as f64,
+                ) {
+                    let mag = dvec3_length(omega);
+                    let ang = mag * dt as f64;
+                    if ang > 1e-9 {
+                        let axis = dvec3_scale(omega, 1.0 / mag);
+                        p.basis.up = rotate_axis_angle(p.basis.up, axis, ang);
+                        p.basis.fwd = rotate_axis_angle(p.basis.fwd, axis, ang);
+                        p.basis.right = rotate_axis_angle(p.basis.right, axis, ang);
+                    }
+                }
             }
             orthonormalise_basis(&mut p.basis);
         } else if station_field {

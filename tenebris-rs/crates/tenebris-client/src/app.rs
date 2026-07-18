@@ -7223,6 +7223,8 @@ fn frame_inner(app: &mut App) {
                 sun_dir,
                 sim_t,
             );
+            /* Autopilot-button tooltip label (text pass over the ball panel). */
+            nav_ui::draw_ap_tooltip_text(sapp::widthf(), sapp::heightf());
         }
         /* Credits wallet (top-right). */
         draw_credits_hud(app, sapp::widthf(), sapp::heightf());
@@ -7733,9 +7735,11 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
         match e._type {
             sapp::EventType::MouseDown if e.mouse_button == sapp::Mousebutton::Left => {
-                /* Grab a maneuver-gizmo handle if the click landed on one;
-                 * otherwise start a chase-camera orbit drag (unchanged). */
-                if crate::nav_ui::gizmo_pick(e.mouse_x, e.mouse_y) {
+                /* Priority: a rotate-to-symbol button (2D HUD, topmost), then
+                 * a maneuver-gizmo handle, else start a chase-camera orbit. */
+                if crate::nav_ui::autopilot_button_pick(e.mouse_x, e.mouse_y) {
+                    app.rocket_cam_drag = false;
+                } else if crate::nav_ui::gizmo_pick(e.mouse_x, e.mouse_y) {
                     app.rocket_cam_drag = false;
                 } else {
                     app.rocket_cam_drag = true;
@@ -7746,10 +7750,17 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
                 app.rocket_cam_drag = false;
             }
             sapp::EventType::MouseMove => {
+                /* Track which autopilot button the cursor is over (hover glow
+                 * + tooltip). */
+                crate::nav_ui::set_ap_hover(crate::nav_ui::ap_hover(e.mouse_x, e.mouse_y));
                 if crate::nav_ui::gizmo_dragging() {
                     crate::nav_ui::gizmo_drag(e.mouse_dx, e.mouse_dy);
-                } else if app.rocket_cam_drag {
-                    rocket_cam::orbit(e.mouse_dx, e.mouse_dy);
+                } else {
+                    /* Light up the maneuver-gizmo handle under the cursor. */
+                    crate::nav_ui::gizmo_hover(e.mouse_x, e.mouse_y);
+                    if app.rocket_cam_drag {
+                        rocket_cam::orbit(e.mouse_dx, e.mouse_dy);
+                    }
                 }
             }
             _ => {}
