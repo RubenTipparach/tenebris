@@ -53,7 +53,10 @@ thread_local! {
 const TANK_FISH_SIZE: f32 = 0.42;
 /// The water surface sits this far below the glass top so it reads as a
 /// sheet held inside the tank, not flush with the rim.
-const WATER_DROP_M: f64 = 0.14;
+/// Water surface drop below the tank's top face - matches
+/// `hex_mesher::AQUARIUM_WATER_DROP_M` (where the surface is actually
+/// drawn) so the side gradient's surface reference lines up with it.
+const WATER_DROP_M: f64 = 0.22;
 /// Radius (as a fraction of the cell) the fish circle around the centre.
 const SWIM_RADIUS: f64 = 0.26;
 
@@ -70,8 +73,6 @@ struct GlassCell {
     top: bool,
     bottom: bool,
     side: [bool; MAX_VERTS_PER_TILE],
-    /// Aquarium extras.
-    is_aquarium: bool,
     /// This tank holds water (its glass sides + floor are tinted with the
     /// planet's water colour so the cell reads as full of water).
     filled: bool,
@@ -81,8 +82,6 @@ struct GlassCell {
     /// stacked column, so the column reads as one body of water with no
     /// per-cell seam.
     surface_r: f64,
-    /// Draw the water surface (filled, and no filled tank directly above).
-    water_surface: bool,
     /// Species wire ids of the fish inside.
     fish: [u8; 8],
     fish_count: usize,
@@ -104,11 +103,6 @@ fn filled_water_at(w: &World, tile: i32, depth: i32) -> bool {
             .unwrap_or(false)
 }
 
-/// Is the cell above `(tile, depth)` a filled aquarium? (Used so a stacked
-/// column of tanks shows one water surface at the very top.)
-fn filled_tank_above(w: &World, tile: i32, depth: i32) -> bool {
-    filled_water_at(w, tile, depth + 1)
-}
 
 /// Enumerate the glass / aquarium cells to draw this frame.
 fn cells(w: &World) -> Vec<GlassCell> {
@@ -139,9 +133,7 @@ fn cells(w: &World) -> Vec<GlassCell> {
         }
 
         let aq = e.aquarium();
-        let is_aquarium = b == Block::Aquarium;
         let filled = aq.map(|a| a.water).unwrap_or(false);
-        let water_surface = filled && !filled_tank_above(w, tile, depth);
         /* Water surface radius for the WHOLE column: scan up while the cell
          * above is another filled tank, so a stacked column shares one
          * surface and its side shading grades continuously (no per-cell
@@ -177,10 +169,8 @@ fn cells(w: &World) -> Vec<GlassCell> {
             top: !culled(b, above),
             bottom: depth > 0 && !culled(b, below),
             side,
-            is_aquarium,
             filled,
             surface_r,
-            water_surface,
             fish,
             fish_count,
             lit,
@@ -437,28 +427,9 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
             }
         }
 
-        /* Water surface: one flat hex cap at the column's surface radius.
-         * No side faces - the glass holds the water against the walls. The
-         * surface reads a touch brighter than the body (a nod to the sky
-         * the real water mirrors). */
-        if c.is_aquarium && c.water_surface {
-            let corner_w = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.surface_r));
-            let s = water.surface;
-            sgl::c4f(
-                (s.x * 1.15 * l).min(1.0),
-                (s.y * 1.15 * l).min(1.0),
-                (s.z * 1.15 * l).min(1.0),
-                0.66,
-            );
-            for k in 1..c.n - 1 {
-                v(corner_w(0));
-                v(corner_w(k));
-                v(corner_w(k + 1));
-                v(corner_w(0));
-                v(corner_w(k + 1));
-                v(corner_w(k));
-            }
-        }
+        /* The water SURFACE is not drawn here - it's emitted into the water
+         * mesh (hex_mesher::build_aquarium_water) so it renders through the
+         * water shader (refraction / fresnel), exactly like the ocean. */
     }
 
     sgl::end();

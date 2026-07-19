@@ -684,6 +684,11 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                     /* World state (tank contents) - persist same-frame; MP
                      * picks it up via the periodic block-entity diff. */
                     sp_save_tile_after_edit(w, s.hit_tile);
+                    /* Filling changed only the block-entity water flag, not
+                     * a block byte, so `set` didn't dirty the tile. Dirty it
+                     * so the water mesh rebuilds and draws the tank's water
+                     * surface (which renders through the water shader). */
+                    w.dirty_tile(s.hit_tile);
                 }
                 return;
             }

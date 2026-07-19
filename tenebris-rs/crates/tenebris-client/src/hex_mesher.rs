@@ -1337,6 +1337,56 @@ pub fn build_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
     bake_water_flow_uv(out, t, w, tile_idx, cap_depth, v_before, v_end);
 }
 
+/// Water surface DROP below a filled aquarium's top face (m). A touch
+/// above the wave swell so crests stay below the glass rim.
+const AQUARIUM_WATER_DROP_M: f32 = 0.22;
+
+/// Emit the water SURFACE cap for every filled aquarium in this tile's
+/// column that tops its (possibly stacked) water body, into the WATER
+/// mesh - so the tank surface renders through the water shader
+/// (refraction, fresnel, the sky mirror) exactly like the ocean. The
+/// tank's glass sides + floor + fish are drawn separately by
+/// `client::aquarium_fx` into the scene pass, so they are what this
+/// surface refracts. Only the TOP filled cell of a stack gets a surface -
+/// a stacked column is one body of water.
+pub fn build_aquarium_water(out: &mut HexMesh, w: &World, tile_idx: i32) {
+    let t = match w.grid.tile(tile_idx) {
+        Some(t) => t,
+        None => return,
+    };
+    let col_base = (tile_idx as usize) * WORLD_MAX_DEPTH as usize;
+    let filled_at = |d: i32| -> bool {
+        d >= 0
+            && d < WORLD_MAX_DEPTH
+            && w.blocks[col_base + d as usize] == Block::Aquarium.raw()
+            && w.block_entities
+                .get(tile_idx, d)
+                .and_then(|e| e.aquarium().map(|a| a.water))
+                .unwrap_or(false)
+    };
+    for d in 0..WORLD_MAX_DEPTH {
+        if !filled_at(d) || filled_at(d + 1) {
+            continue; /* not filled, or a filled tank sits above (same body) */
+        }
+        let v_before = out.vertices.len() as u32;
+        emit_cap(
+            out,
+            t,
+            w,
+            tile_idx,
+            d,
+            Block::Water,
+            /*is_top=*/ true,
+            /*width=*/ 1.0,
+            /*r_offset_m=*/ -AQUARIUM_WATER_DROP_M,
+            /*bake_lighting=*/ true,
+            /*wet=*/ 1.0,
+        );
+        let v_end = out.vertices.len() as u32;
+        bake_water_flow_uv(out, t, w, tile_idx, d, v_before, v_end);
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 /* Per-voxel water mesher. Walks every BLOCK_WATER cell in the column
  * (except the sea-level row, which the ocean cap above already owns)
