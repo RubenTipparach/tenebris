@@ -677,6 +677,27 @@ pub fn set_seed(id: BodyId, seed: u64) {
     BODIES.lock().unwrap()[id as usize].seed = seed;
 }
 
+/// Move every body into the HELIOCENTRIC physics frame: the star sits at the
+/// origin ([`sun_pos`]) and each body is PARKED at its heliocentric position
+/// (`orbit::heliocentric_pos` at t=0). Called once at startup after config
+/// load, before any world gen / spawn - so a coasting ship orbits the star and
+/// the planets sit at real interplanetary distances (Tenebris ~150 km out, the
+/// sisters further). Idempotent (re-runnable after a config reload).
+///
+/// `orbit::heliocentric_pos` reads only orbit elements + solar.yaml (never the
+/// BODIES table), so calling it while the table is locked can't deadlock.
+pub fn reposition_heliocentric() {
+    let mut bodies = BODIES.lock().unwrap();
+    for b in bodies.iter_mut() {
+        let p = crate::orbit::heliocentric_pos(b.id, 0.0);
+        b.pos_x = p.x;
+        b.pos_y = p.y;
+        b.pos_z = p.z;
+    }
+    /* Arm solar gravity now that the bodies are in the heliocentric frame. */
+    HELIOCENTRIC.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The compiled-in default seed for a body, unaffected by any
 /// `set_seed` patch. Pre-seed-feature SP saves and MP terrain assume
 /// this value - both map "no stored seed" to the default so existing
@@ -895,7 +916,67 @@ pub fn orbital_gravity_at(world_pos: DVec3) -> DVec3 {
         acc.y += dy / d * a;
         acc.z += dz / d * a;
     }
+    /* Central star: a fixed mass at the heliocentric origin (see sun_pos). Far
+     * from every planet a coasting ship falls into a SOLAR orbit; near a planet
+     * that planet's pull dominates (the SOI handover). Zero mu = disabled. */
+    let mu = sun_mu();
+    if mu > 0.0 {
+        let s = sun_pos();
+        let dx = s.x - world_pos.x;
+        let dy = s.y - world_pos.y;
+        let dz = s.z - world_pos.z;
+        let d2 = (dx * dx + dy * dy + dz * dz).max(1.0);
+        let d = d2.sqrt();
+        let a = mu / d2;
+        acc.x += dx / d * a;
+        acc.y += dy / d * a;
+        acc.z += dz / d * a;
+    }
     acc
+}
+
+/// The star's position in the heliocentric physics frame: the world origin.
+/// Every star-orbiting body is placed relative to it by
+/// [`reposition_heliocentric`].
+pub fn sun_pos() -> DVec3 {
+    DVec3 { x: 0.0, y: 0.0, z: 0.0 }
+}
+
+/// Set once [`reposition_heliocentric`] has parked the bodies into the
+/// heliocentric frame. Until then the star has no pull ([`sun_mu`] == 0), so
+/// the default (BODIES_INIT, Tenebris-at-origin) layout keeps the exact
+/// pre-heliocentric planet-only physics - which is also what the core tests
+/// exercise unless they opt into the heliocentric frame.
+static HELIOCENTRIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The star's gravitational parameter GM (m^3/s^2), from solar.yaml - but only
+/// once the bodies have been repositioned into the heliocentric frame
+/// ([`reposition_heliocentric`]). Zero before that (and if the config sets it
+/// to zero), which disables solar gravity entirely.
+pub fn sun_mu() -> f64 {
+    if HELIOCENTRIC.load(std::sync::atomic::Ordering::Relaxed) {
+        config::solar().sun_gravity_param as f64
+    } else {
+        0.0
+    }
+}
+
+/// A synthetic [`BodyConfig`] for the STAR: at the heliocentric origin
+/// ([`sun_pos`]), with gravity tuned so `nav::mu` reproduces [`sun_mu`]. Used
+/// as the SOI focus for a ship far from every planet, so its drawn conic is a
+/// heliocentric orbit. The id is a placeholder - callers read only its
+/// position + mu, never index it as a real body.
+pub fn sun_body() -> BodyConfig {
+    let radius = (config::solar().sun_radius_m as f64).max(1.0);
+    /* nav::mu = SURFACE_GRAVITY_MPS2_PER_G * gravity_g * radius^2; pick
+     * gravity_g so that identity yields sun_mu(). */
+    let gravity_g = (sun_mu() / (SURFACE_GRAVITY_MPS2_PER_G as f64 * radius * radius)) as f32;
+    BodyConfig {
+        name: "Sun",
+        radius_m: radius,
+        gravity_g,
+        ..ZERO_BODY
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -953,6 +1034,9 @@ mod tests {
     fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         *BODIES.lock().unwrap() = BODIES_INIT;
+        /* Back to the pre-heliocentric frame (Tenebris at origin, no solar
+         * gravity) so a heliocentric test can't leak its armed flag. */
+        HELIOCENTRIC.store(false, std::sync::atomic::Ordering::Relaxed);
         guard
     }
 
@@ -1005,6 +1089,33 @@ mod tests {
         /* A circular-orbit speed at 2R exists and is finite: v = sqrt(a*r). */
         let v_orbit = (mag_2r * 600.0).sqrt();
         assert!(v_orbit > 10.0 && v_orbit < 200.0, "orbit speed {}", v_orbit);
+    }
+
+    /// Repositioning parks Tenebris far from the origin and ARMS solar gravity,
+    /// so a coasting ship out between the star and a planet falls toward the
+    /// STAR (heliocentric orbit); the pre-reposition frame has no sun pull.
+    #[test]
+    fn heliocentric_frame_arms_solar_gravity_toward_the_star() {
+        let _g = lock_and_reset();
+        assert_eq!(sun_mu(), 0.0, "solar gravity is OFF before reposition");
+        let t0 = get(BodyId::Tenebris);
+        assert!(t0.pos_x == 0.0 && t0.pos_y == 0.0 && t0.pos_z == 0.0, "starts at origin");
+
+        reposition_heliocentric();
+        let t = get(BodyId::Tenebris);
+        let r = (t.pos_x * t.pos_x + t.pos_y * t.pos_y + t.pos_z * t.pos_z).sqrt();
+        assert!(r > 100_000.0, "Tenebris parked at a heliocentric distance, got {r}");
+        assert!(sun_mu() > 0.0, "solar gravity armed after reposition");
+
+        /* A point between the star (origin) and Tenebris: the star dominates,
+         * so the field pulls back toward the origin (-x here). */
+        let far = dvec3_make(r * 0.5, 0.0, 0.0);
+        let g = orbital_gravity_at(far);
+        assert!(g.x < 0.0, "far field pulls toward the star, got {:?}", g);
+
+        /* Restore the default frame for any test reading BODIES unlocked. */
+        *BODIES.lock().unwrap() = BODIES_INIT;
+        HELIOCENTRIC.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     // (radius_bits, seed, subdivisions, gravity_bits, pos_bits[3], flags, tileset)

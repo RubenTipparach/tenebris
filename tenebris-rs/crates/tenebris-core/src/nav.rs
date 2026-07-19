@@ -42,6 +42,19 @@ pub fn dominant_body(pos: DVec3) -> BodyConfig {
             best = b;
         }
     }
+    /* The central star (heliocentric frame): far from every planet the sun's
+     * pull wins and the ship's conic becomes a SOLAR orbit; inside a planet's
+     * SOI that planet still dominates. Skipped when solar gravity is off
+     * (sun_mu == 0), preserving the pre-heliocentric planet-only behaviour. */
+    if planet::sun_mu() > 0.0 {
+        let sun = planet::sun_body();
+        let d = dvec3_sub(planet::sun_pos(), pos);
+        let d2 = dvec3_dot(d, d).max((sun.radius_m * 0.5) * (sun.radius_m * 0.5));
+        let a = mu(&sun) / d2;
+        if a > best_a {
+            best = sun;
+        }
+    }
     best
 }
 

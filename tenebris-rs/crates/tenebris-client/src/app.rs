@@ -2352,6 +2352,11 @@ fn reload_tunable_configs() {
     config::load_solar("assets/config/solar.yaml");
     tenebris_core::scatter::load_config("assets/config/scatter.yaml");
     config::load_bonfire("assets/config/bonfire.yaml");
+    /* Heliocentric frame: after solar.yaml is loaded (it sets the star distance
+     * / scale), park every body at its heliocentric position - the star at the
+     * origin, Tenebris ~150 km out, the sisters further. Idempotent, so it also
+     * re-applies on a hot config reload. Runs before any world gen / spawn. */
+    planet::reposition_heliocentric();
 }
 
 extern "C" fn init() {

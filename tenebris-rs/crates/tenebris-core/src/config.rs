@@ -2170,6 +2170,11 @@ pub struct SolarConfig {
     /// The star's "physical" radius, metres. Sets the sun's angular size:
     /// drawn radius = sun_radius_m * (sun_visual_dist_m / sun_distance_m).
     pub sun_radius_m: f32,
+    /// The star's gravitational parameter GM (m^3/s^2) - the sun's pull in the
+    /// heliocentric physics frame. Sets how fast a ship orbits the star:
+    /// v_circ = sqrt(gm / r) at radius r. Tune for the desired interplanetary
+    /// transfer speeds / orbital periods.
+    pub sun_gravity_param: f32,
 
     /* ---- Sun surface shader (sun.fs.glsl) look knobs. ---- */
     /// Granule-core (hottest) colour. HDR-ish >1 values are fine.
@@ -2225,6 +2230,9 @@ const SOLAR_DEFAULTS: SolarConfig = SolarConfig {
      * disc) - a big, presence-heavy star that still reads as distant
      * thanks to the limb darkening. */
     sun_radius_m: 9_000.0,
+    /* GM ~= v^2 * r. At Tenebris's 150 km orbit this gives v_circ ~= 50 m/s
+     * (period ~5 h) - brisk enough to fly a transfer without warp, tunable. */
+    sun_gravity_param: 3.75e8,
     sun_color_hot: Vec3 { x: 1.40, y: 1.25, z: 0.90 },
     sun_color_cool: Vec3 { x: 1.10, y: 0.55, z: 0.16 },
     sun_color_spot: Vec3 { x: 0.55, y: 0.22, z: 0.10 },
@@ -2292,6 +2300,7 @@ pub fn parse_solar(src: &str, path: &str) -> i32 {
             "sun_distance_m" => cfg.sun_distance_m = v,
             "sun_visual_dist_m" => cfg.sun_visual_dist_m = v,
             "sun_radius_m" => cfg.sun_radius_m = v,
+            "sun_gravity_param" => cfg.sun_gravity_param = v,
             "sun_granule_scale" => cfg.sun_granule_scale = v,
             "sun_churn_speed" => cfg.sun_churn_speed = v,
             "sun_limb_power" => cfg.sun_limb_power = v,
