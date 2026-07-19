@@ -35,7 +35,7 @@ use tenebris_core::config;
 use tenebris_core::fauna::AnimalKind;
 use tenebris_core::goldberg::MAX_VERTS_PER_TILE;
 use tenebris_core::math::{
-    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, DVec3, Vec3,
+    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3, Vec3,
 };
 use tenebris_core::world::World;
 
@@ -282,6 +282,14 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
         return;
     }
     let body_c = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    /* Floating origin: the glass-shell vertices are baked as body_c + offset,
+     * so at heliocentric scale (body ~150 km off the world origin) absolute
+     * f32 vertices jitter. Rebase the body centre by the absolute camera and
+     * draw with the eye-at-origin scene view (the caller passes view_scene),
+     * matching the other props. The tank FISH keep an ABSOLUTE position -
+     * draw_kind rebases them through sgl_translate_scene - so only the shells
+     * use body_cr. */
+    let body_cr = dvec3_sub(body_c, renderer::camera_world_d());
 
     renderer::sgl_world_begin();
     sgl::defaults();
@@ -358,8 +366,8 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
 
     for c in &cells {
         let l = c.lit;
-        let corner_top = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.r_top));
-        let corner_bot = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.r_bot));
+        let corner_top = |k: usize| dvec3_add(body_cr, dvec3_scale(c.corners[k], c.r_top));
+        let corner_bot = |k: usize| dvec3_add(body_cr, dvec3_scale(c.corners[k], c.r_bot));
 
         /* Top glass lid: only on an EMPTY glass box (a filled tank shows
          * its water surface instead, drawn below). Pale, near-clear glass. */

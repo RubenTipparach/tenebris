@@ -7232,7 +7232,7 @@ fn frame_inner(app: &mut App) {
         /* Glass + aquariums (translucent shells, water surface, swimming
          * fish) - drawn after the opaque entities, before the water/cloud
          * passes, so the tank blends over the fish inside it. */
-        aquarium_fx::draw(&w, view, proj, renderer::time_seconds());
+        aquarium_fx::draw(&w, view_scene, proj, renderer::time_seconds());
     }
     profiler::end("draw-entities");
     /* Cloud layer above the surface - same pass, drifts with sim time
