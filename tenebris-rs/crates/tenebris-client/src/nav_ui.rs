@@ -496,11 +496,14 @@ const GIZMO_GRAB_PX: f32 = 24.0;
 const GIZMO_DV_PER_PX: f64 = 0.12; /* m/s of delta-v per pixel pulled */
 
 /// Project a world point to window pixels through `vp` (= proj*view). `None`
-/// behind the camera. The nav eye-shell remap moves lines ALONG their eye ray,
-/// so this projection of the raw world point lands on the same pixel the drawn
-/// handle does.
+/// behind the camera. The scene view is floating-origin rebased (eye at the
+/// world origin), so the point is first made CAMERA-RELATIVE (`p - eye`); the
+/// eye-shell remap only shifts points along their eye ray, so this direct
+/// projection still lands on the same pixel the drawn handle does.
 fn project(vp: &Mat4, p: DVec3, sw: f32, sh: f32) -> Option<(f32, f32)> {
-    let (x, y, z) = (p.x as f32, p.y as f32, p.z as f32);
+    let eye = REMAP_EYE.with(|c| c.get());
+    let rel = dvec3_sub(p, eye);
+    let (x, y, z) = (rel.x as f32, rel.y as f32, rel.z as f32);
     let m = &vp.m;
     let cx = m[0] * x + m[4] * y + m[8] * z + m[12];
     let cy = m[1] * x + m[5] * y + m[9] * z + m[13];
@@ -1058,17 +1061,19 @@ fn set_remap(eye: DVec3, cam_dist: f64, far_plane: f64) {
     REMAP_SHELL.with(|c| c.set(shell));
 }
 
-/// Emit a world-space nav vertex via the eye-shell remap.
+/// Emit a nav vertex via the eye-shell remap, in the FLOATING-ORIGIN render
+/// frame: the scene view is rebased to the camera (eye at the world origin),
+/// so the emitted vertex is CAMERA-RELATIVE (`q - eye`). The shell remap only
+/// changes the point's distance along its eye ray (depth), never its screen
+/// position, so the line still lands where it should; subtracting the eye
+/// keeps the f32 coordinate small and precise at any world scale.
 fn vtx(p: DVec3) {
     let eye = REMAP_EYE.with(|c| c.get());
     let shell = REMAP_SHELL.with(|c| c.get());
     let d = dvec3_sub(p, eye);
     let len = dvec3_length(d);
-    let q = if len > 1e-6 {
-        dvec3_add(eye, dvec3_scale(d, shell / len))
-    } else {
-        p
-    };
+    /* Camera-relative offset: shell-scaled ray direction, or ~0 at the eye. */
+    let q = if len > 1e-6 { dvec3_scale(d, shell / len) } else { dvec3_make(0.0, 0.0, 0.0) };
     sgl::v3f(q.x as f32, q.y as f32, q.z as f32);
 }
 

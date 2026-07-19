@@ -166,10 +166,10 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
      * LODCAM) looks at hemispheres the player isn't on, and a player-
      * anchored cull left those bare - the "clouds only around my player
      * in solar system view" bug. */
-    let anchor = {
-        let cw = renderer::camera_world();
-        dvec3_make(cw.x as f64, cw.y as f64, cw.z as f64)
-    };
+    /* Absolute f64 camera (NOT the floating-origin-rebased render camera,
+     * which is ~0): the cull compares against the body's absolute f64 center,
+     * so both operands must be true world positions. */
+    let anchor = renderer::camera_world_d();
     let local = dvec3_sub(anchor, center);
     let r = dvec3_length(local);
     if r < 1.0 {

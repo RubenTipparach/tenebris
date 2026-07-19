@@ -6691,6 +6691,22 @@ fn frame_inner(app: &mut App) {
         Some((mv, mp, me)) => (mv, mp, me),
         None => (view, proj, cam_eye),
     };
+    /* FLOATING ORIGIN: render with the camera AT the world origin. The eye
+     * is stripped from the view (its rotation is kept), and every body's
+     * render position is rebased to `body_world - origin_d` in f64 below, so
+     * the f32 vertex/matrix math never carries the world's ~150 km (and up)
+     * magnitude - which would otherwise quantize to ~cm and jitter. `origin_d`
+     * is the true f64 camera; all planet-local shader math (which subtracts
+     * the rebased camera, now ~0) stays precise at any scale. */
+    let origin_d = cam_eye;
+    /* `view_scene` renders the planet bodies + sky + nav lines + the fullscreen
+     * composite: it is the same view with the eye moved to the origin, paired
+     * with the floating-origin-rebased body positions below. Props (rocket,
+     * torches, animals, station, dropped stages) keep the ABSOLUTE `view` and
+     * their absolute positions - they sit near the active body's anchor (near
+     * origin) where f32 is already precise, and `view*P == view_scene*(P-cam)`
+     * so the two paths project + depth-sort identically. */
+    let view_scene = crate::gfx_math::mat4_clear_translation(view);
 
     /* Atmosphere + sky are anchored to whatever body the player is
      * currently standing on. Zeroed per-body fields fall back to the tuned
@@ -6720,19 +6736,24 @@ fn frame_inner(app: &mut App) {
     /* Map mode draws the star at its TRUE render-frame position and
      * physical radius (the far plane covers the system there); the
      * surface game keeps the angular-correct billboard inside zfar. */
+    /* sun_pos is rebased by the render origin (floating origin): computed in
+     * f64, then `- origin_d`, then cast - so the ~150 km star position keeps
+     * full precision relative to the camera. */
     let (sun_pos, sun_disc_radius) = if map_open {
+        let sp = orbit::apparent_star_pos(active_body.id, sim_t);
         (
-            dvec3_to_vec3(orbit::apparent_star_pos(active_body.id, sim_t)),
+            dvec3_to_vec3(dvec3_sub(sp, origin_d)),
             solar.sun_radius_m,
         )
     } else {
-        let sun_disc_dist = solar.sun_visual_dist_m;
+        let sun_disc_dist = solar.sun_visual_dist_m as f64;
+        let sp = dvec3_make(
+            active_body.pos_x + sun_dir.x as f64 * sun_disc_dist,
+            active_body.pos_y + sun_dir.y as f64 * sun_disc_dist,
+            active_body.pos_z + sun_dir.z as f64 * sun_disc_dist,
+        );
         (
-            Vec3 {
-                x: active_body.pos_x as f32 + sun_dir.x * sun_disc_dist,
-                y: active_body.pos_y as f32 + sun_dir.y * sun_disc_dist,
-                z: active_body.pos_z as f32 + sun_dir.z * sun_disc_dist,
-            },
+            dvec3_to_vec3(dvec3_sub(sp, origin_d)),
             solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0)),
         )
     };
@@ -6780,11 +6801,13 @@ fn frame_inner(app: &mut App) {
         sky_top: Vec3 { x: 0.02, y: 0.04, z: 0.10 },
         sky_bottom: Vec3 { x: 0.05, y: 0.08, z: 0.15 },
         ambient: Vec3 { x: 0.35, y: 0.35, z: 0.40 },
-        atmo_planet_center: Vec3 {
-            x: active_body.pos_x as f32,
-            y: active_body.pos_y as f32,
-            z: active_body.pos_z as f32,
-        },
+        /* Rebased by the render origin (floating origin) so the shader's
+         * planet-local camera (camera_world - center, camera now ~0) is a
+         * small-number subtraction precise at any world scale. */
+        atmo_planet_center: dvec3_to_vec3(dvec3_sub(
+            dvec3_make(active_body.pos_x, active_body.pos_y, active_body.pos_z),
+            origin_d,
+        )),
         atmo_planet_radius: clip_radius, /* Rp - atmosphere lower / planet-clip */
         atmo_radius: atmo_r,             /* Ra - outer shell                    */
         atmo_strength: if has_atmo { 1.0 } else { 0.0 },
@@ -6805,8 +6828,13 @@ fn frame_inner(app: &mut App) {
      * view matrix was actually built from, so the fresnel tracks the chase
      * camera while flying a rocket instead of a point 20 m in front of it. */
     let cam_world_d = cam_eye;
-    let cam_world = dvec3_to_vec3(cam_world_d);
-    env.camera_world = cam_world;
+    /* Floating origin: the render camera sits at the world origin (rebased),
+     * and the TRUE absolute camera goes to camera_world_d for the f64
+     * consumers (cloud cull). `cam_world` (passed to the draws below) is the
+     * rebased ~0 camera, matching the rebased body positions. */
+    env.camera_world_d = cam_world_d;
+    env.camera_world = Vec3::default();
+    let cam_world = Vec3::default();
     /* Spin the starfield with the planet's rotation so the sky wheels
      * overhead with the day, matching the sun + moons. */
     env.star_spin_angle = orbit::spin_angle(active_body.id, sim_t) as f32;
@@ -6826,10 +6854,10 @@ fn frame_inner(app: &mut App) {
         });
     }
     profiler::begin("draw-skybox");
-    renderer::draw_skybox(view, proj);
+    renderer::draw_skybox(view_scene, proj);
     profiler::end("draw-skybox");
     profiler::begin("draw-sun");
-    renderer::draw_sun(view, proj, cam_world);
+    renderer::draw_sun(view_scene, proj, cam_world);
     profiler::end("draw-sun");
     /* Publish this frame's mining state so the terrain pass paints the
      * crack channel on the mined cell in-shader (replaced the old
@@ -6868,13 +6896,13 @@ fn frame_inner(app: &mut App) {
     profiler::begin("draw-world");
     /* Pass the active body's world, not G.world - hardcoding G.world
      * reverted active to Tenebris every frame (LOD flap on Crag). */
-    renderer::draw_world(view, proj, &phys_world, cam_world, dt);
+    renderer::draw_world(view_scene, proj, &phys_world, cam_world, dt);
     profiler::end("draw-world");
     profiler::begin("draw-moons");
     /* Place every body for this frame from the on-rails orbit sim, then
      * draw them sweeping across the active body's sky. */
     renderer::update_celestial(active_body.id, sim_t);
-    renderer::draw_moons(view, proj, cam_world);
+    renderer::draw_moons(view_scene, proj, cam_world);
     profiler::end("draw-moons");
     profiler::begin("draw-torches");
     renderer::draw_torches(view, proj);
@@ -6896,7 +6924,8 @@ fn frame_inner(app: &mut App) {
     crate::station_fx::draw(
         view,
         proj,
-        dvec3_make(cam_world.x as f64, cam_world.y as f64, cam_world.z as f64),
+        /* Absolute camera (prop path uses the absolute `view`). */
+        cam_world_d,
         sim_t,
     );
     profiler::end("draw-station");
@@ -6905,7 +6934,7 @@ fn frame_inner(app: &mut App) {
     {
         let p = app.player.borrow();
         crate::nav_ui::draw_world(
-            view,
+            view_scene,
             proj,
             /* The CHASE camera's eye (not the player) - it seeds the
              * eye-shell remap that keeps orbit lines inside the far plane. */
@@ -6935,7 +6964,7 @@ fn frame_inner(app: &mut App) {
          * maneuver-target halo, and the ship marker + live conic. */
         if map_open {
             crate::nav_ui::draw_map_orbits(
-                view,
+                view_scene,
                 proj,
                 cam_eye,
                 active_body.id,
@@ -7135,7 +7164,7 @@ fn frame_inner(app: &mut App) {
 
     /* Hand off to the swapchain pass. */
     profiler::begin("compose");
-    renderer::compose_to_swapchain(view, proj);
+    renderer::compose_to_swapchain(view_scene, proj);
     profiler::end("compose");
 
     /* Water draws on TOP of the composited scene (samples offscreen colour +
@@ -7143,7 +7172,7 @@ fn frame_inner(app: &mut App) {
      * target; the lens pass below blits it to the swapchain with the camera
      * rain-on-glass droplets so they refract the real water. */
     profiler::begin("draw-water");
-    renderer::draw_water(view, proj, cam_world);
+    renderer::draw_water(view_scene, proj, cam_world);
     /* F5 toggle: yellow arrows on every water cell with non-zero flow
      * direction. */
     renderer::draw_water_flow_debug(view, proj);

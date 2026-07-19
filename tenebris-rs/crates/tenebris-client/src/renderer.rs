@@ -173,7 +173,19 @@ pub struct RenderEnv {
     pub atmo_sunset_tint: Vec3,
     pub atmo_sunset_glow: Vec3,
     pub atmo_sunset_horizon: Vec3,
+    /// Camera position in the RENDER frame: floating-origin rebased, so this
+    /// is ~0 (the camera renders at the world origin). Every body's render
+    /// position is likewise `body_world - camera_world_d`, so all the f32
+    /// `vec3_sub(camera_world, center)` planet-local math stays precise at
+    /// any world scale (150 km and beyond). Use [`camera_world_d`] for the
+    /// TRUE absolute camera (f64) needed by cull / LOD / cloud-anchor math.
     pub camera_world: Vec3,
+    /// The camera's TRUE absolute world position, f64. The floating-origin
+    /// render ORIGIN: body render positions are rebased by subtracting this
+    /// in f64 before the f32 cast. Consumers that need the real camera
+    /// location (cloud cull anchor, distance tests done in f64) read this,
+    /// NOT the rebased [`camera_world`].
+    pub camera_world_d: DVec3,
     /// Active body's spin angle (radians) about its +Y axis at the current
     /// sim time. The starfield samples through a basis counter-rotated by
     /// this, so the stars wheel across the sky with the day exactly like
@@ -1775,7 +1787,15 @@ struct ChunkedBody {
     /// When the LOD anchor first went beyond the unload radius; -1 = it
     /// is inside. Drives the unload debounce.
     detail_out_since: f32,
-    world_pos: Vec3,        /* model-translate origin (body centre) */
+    /// Body centre in the RENDER frame (floating-origin rebased:
+    /// `world_pos_d - camera_world_d`), recomputed every frame in
+    /// `begin_frame`. This is what the model-translate + planet-local shader
+    /// math use, so it stays small (~camera-relative) at any world scale.
+    world_pos: Vec3,
+    /// Body centre in TRUE absolute world coordinates, f64. The authoritative
+    /// position; `world_pos` is derived from it each frame. Set at
+    /// registration (static bodies) and per-frame for moving moons.
+    world_pos_d: DVec3,
     radius_m: f32,
     distant_color: Vec3,
     distant_vbuf: sg::Buffer,
@@ -1805,6 +1825,7 @@ impl ChunkedBody {
             chunked_now: false,
             detail_out_since: -1.0,
             world_pos: Vec3::default(),
+            world_pos_d: DVec3::default(),
             radius_m: 0.0,
             distant_color: Vec3::default(),
             distant_vbuf: sg::Buffer::new(),
@@ -2109,6 +2130,14 @@ thread_local! {
 /// camera looks at the planet from elsewhere.
 pub fn camera_world() -> Vec3 {
     R.with(|cell| cell.borrow().env.camera_world)
+}
+
+/// The frame's TRUE absolute camera position in f64 (`env.camera_world_d`).
+/// Unlike [`camera_world`] this is NOT floating-origin rebased, so it is the
+/// real world location - use it for cull / distance / anchor math done in
+/// f64 (e.g. the cloud horizon cull), which must not see the rebased ~0.
+pub fn camera_world_d() -> DVec3 {
+    R.with(|cell| cell.borrow().env.camera_world_d)
 }
 
 /// Per-tileset close-up water (deep_color, absorption) with global
@@ -3426,6 +3455,10 @@ fn register_world_record(r: &mut Renderer, w: &Rc<RefCell<World>>) -> Option<usi
     let mut body = ChunkedBody::new(w.clone());
     {
         let wb = w.borrow();
+        body.world_pos_d = DVec3 { x: wb.body.pos_x, y: wb.body.pos_y, z: wb.body.pos_z };
+        /* Render position is rebased to the camera each frame in begin_frame;
+         * seed it with the absolute so a body drawn before its first rebase
+         * (shouldn't happen) is at least self-consistent. */
         body.world_pos = Vec3 {
             x: wb.body.pos_x as f32,
             y: wb.body.pos_y as f32,
@@ -4246,9 +4279,13 @@ fn body_unload_detail(body: &mut ChunkedBody) {
 pub fn update_celestial(active: BodyId, t: f64) {
     R.with(|cell| {
         let r = &mut *cell.borrow_mut();
+        let origin = r.env.camera_world_d;
         for b in &mut r.bodies {
             let id = b.world.borrow().body.id;
-            b.world_pos = dvec3_to_vec3(orbit::apparent_pos(active, id, t));
+            /* Absolute render position from the on-rails sim, then floating-
+             * origin rebased to the camera (same rule as begin_frame). */
+            b.world_pos_d = orbit::apparent_pos(active, id, t);
+            b.world_pos = dvec3_to_vec3(dvec3_sub(b.world_pos_d, origin));
         }
     });
 }
@@ -4526,6 +4563,16 @@ pub fn begin_frame(w: i32, h: i32, env: RenderEnv) {
         let mut r = cell.borrow_mut();
         ensure_offscreen_targets(&mut r, w, h);
         r.env = env;
+        /* FLOATING ORIGIN: rebase every body's render centre to the camera
+         * this frame (`world_pos_d - camera_world_d`, f64 -> small f32). All
+         * the model-translate + planet-local shader math downstream reads
+         * `world_pos`, so this one pass keeps them precise at any world scale.
+         * Moving moons overwrite their own `world_pos` in draw_moons after
+         * updating `world_pos_d`. */
+        let origin = r.env.camera_world_d;
+        for b in r.bodies.iter_mut() {
+            b.world_pos = dvec3_to_vec3(dvec3_sub(b.world_pos_d, origin));
+        }
         r.tris = 0;
         r.tiles_remeshed = 0;
         r.relight_loop_ms_this_frame = 0.0;

@@ -51,6 +51,20 @@ pub fn mat4_translate(t: Vec3) -> Mat4 {
     r
 }
 
+/// Zero a view matrix's translation column, moving the eye to the world
+/// origin while keeping its orientation. The floating-origin pass renders
+/// with the camera AT the origin (so f32 vertex math never carries the
+/// world's ~150 km magnitude); each body is then drawn at `body_world -
+/// camera` (computed in f64), and this strips the eye from the view so the
+/// two agree. A look-at matrix's translation column is `-R*eye`, so zeroing
+/// it yields the pure rotation `R` = the view for an eye at the origin.
+pub fn mat4_clear_translation(mut m: Mat4) -> Mat4 {
+    m.m[12] = 0.0;
+    m.m[13] = 0.0;
+    m.m[14] = 0.0;
+    m
+}
+
 pub fn mat4_rotate_x(a: f32) -> Mat4 {
     let mut r = mat4_identity();
     let (c, s) = (a.cos(), a.sin());
