@@ -244,6 +244,9 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
         f.base = dvec3_sub(f.base, cam);
     }
 
+    /* ---------- Pass 1: the stick pile (opaque, depth-written) ----------
+     * Drawn in the WORLD (offscreen) context so it's part of the scene the
+     * water pass refracts and depth-tests against. */
     renderer::sgl_world_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -251,7 +254,6 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
     sgl::matrix_mode_modelview();
     sgl::load_matrix(&view.m[0]);
 
-    /* ---------- Pass 1: the stick pile (opaque, depth-written) ---------- */
     let mut pip = PIP.with(|p| p.get());
     if pip.id == 0 {
         pip = sgl::make_pipeline(&sg::PipelineDesc {
@@ -303,10 +305,24 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
         }
     }
     sgl::end();
+    renderer::sgl_world_end();
 
-    /* ---------- Pass 2: the flame billboard (flip-book, additive) ------- */
+    /* ---------- Pass 2: the flame billboard (flip-book, additive) -------
+     * Recorded in the OVERLAY (default) sgl context, NOT the world/offscreen
+     * one, so it flushes AFTER the water pass and depth-tests against the
+     * scene+water depth the composite forwarded. Recorded in the offscreen
+     * pass (as it used to be), the additive/no-depth-write flame left no depth
+     * for the later opaque water pass, so water overpainted the flame wherever
+     * the sea sat behind it - the "flame not drawing over water" bug. See
+     * renderer::sgl_overlay_begin. */
     let (fview, fsmp) = flame_texture();
-    if fview != 0 {
+    if fview != 0 && frames.iter().any(|f| f.lit) {
+        renderer::sgl_overlay_begin();
+        sgl::defaults();
+        sgl::matrix_mode_projection();
+        sgl::load_matrix(&proj.m[0]);
+        sgl::matrix_mode_modelview();
+        sgl::load_matrix(&view.m[0]);
         let mut fpip = FLAME_PIP.with(|p| p.get());
         if fpip.id == 0 {
             let mut desc = sg::PipelineDesc {
@@ -442,9 +458,15 @@ pub fn sync_lights(w: &mut World) {
     let range = torch::LIGHT_RANGE_M
         * tenebris_core::config::bonfire().light_radius_scale.max(0.1);
     /* Dirty around EVERY bonfire (lit or not) so both transitions relight:
-     * a fire coming on lights its surroundings, one going out clears them. */
+     * a fire coming on lights its surroundings, one going out clears them.
+     * BODY-LOCAL flame point: dirty_in_range projects radially from the body
+     * origin and compares body-local tile centres, exactly like the light
+     * bake (collect_lights uses local_base too). Passing f.base (absolute
+     * world) worked only on a body at the world origin (Tenebris); off-origin
+     * bodies dirtied the wrong tiles, so a lit fire never re-baked its
+     * surroundings and the ground stayed dark. */
     for f in frames(w) {
-        let flame = dvec3_to_vec3(dvec3_add(f.base, dvec3_scale(f.up, FLAME_TIP_M * 0.5)));
+        let flame = dvec3_to_vec3(dvec3_add(f.local_base, dvec3_scale(f.up, FLAME_TIP_M * 0.5)));
         w.dirty_in_range(flame, range);
     }
     torch::set_extra_lights(lights);
