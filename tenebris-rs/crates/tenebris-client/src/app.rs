@@ -1342,18 +1342,20 @@ fn dev_maybe_place(app: &mut App) {
                 p.basis.fwd = fwd;
                 p.basis.right = right;
             }
-            /* Pre-plan a prograde burn a quarter-orbit ahead. */
-            let period = tenebris_core::nav::Conic::from_state(
+            /* Pre-plan a prograde burn pinned ~a third of the way round the
+             * orbit (a fixed point in space, found by propagating the current
+             * state), with a gentle prograde nudge so the predicted orbit is a
+             * raised ellipse, not a straight escape line. */
+            if let Some(conic) = tenebris_core::nav::Conic::from_state(
                 &tenebris_core::nav::dominant_body(pos),
                 pos,
                 vel,
-            )
-            .map(|c| c.period_s)
-            .unwrap_or(0.0);
-            crate::nav_ui::toggle_node(period);
-            /* A gentle prograde nudge (well under escape) so the predicted
-             * orbit is a nicely raised ellipse, not a straight escape line. */
-            crate::nav_ui::set_node_params(period * 0.30, 6.0, 0.0, 0.0);
+            ) {
+                if let Some((anchor, _)) = conic.state_at(conic.period_s * 0.30) {
+                    crate::nav_ui::place_node_at(anchor);
+                    crate::nav_ui::set_node_burn(6.0, 0.0, 0.0);
+                }
+            }
             /* Zoom the chase cam out so the whole orbit + the node gizmo fit
              * the frame (the node sits ~a third of the way round). */
             crate::rocket_cam::set_distance(4000.0);
@@ -7650,10 +7652,29 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                     solar_map::toggle();
                 }
             });
-            /* Maneuver planning is now entirely in-world: click the orbit line
-             * to drop a node, drag its center along the line, pull the delta-v
-             * handles, right-click the center to clear. No egui planner panel -
-             * the HUD text line carries the required-vs-available dv readout. */
+            /* Maneuver-node controls: Reset zeroes the burn but keeps the node
+             * pinned where it is (undo a botched delta-v without re-placing);
+             * Clear drops it entirely. Both disabled with no node planned. The
+             * in-world affordances (drag handles, right-click center to clear)
+             * still work; these are the discoverable panel versions. */
+            let has_node = nav_ui::node_active();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(has_node, egui::Button::new("Reset burn"))
+                    .clicked()
+                {
+                    nav_ui::set_node_burn(0.0, 0.0, 0.0);
+                }
+                if ui
+                    .add_enabled(has_node, egui::Button::new("Clear node"))
+                    .clicked()
+                {
+                    nav_ui::clear_node();
+                }
+            });
+            /* Maneuver planning is otherwise in-world: click the orbit line to
+             * drop a node, drag its center along the line, pull the delta-v
+             * handles. The HUD text line carries the required-vs-available dv. */
             ui.label(
                 egui::RichText::new(
                     "hold Space: throttle   WASD: steer   Q/R: roll\n\

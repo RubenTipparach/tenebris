@@ -156,14 +156,15 @@ pub fn reset() {
 
 /// Orbit the camera. `dx`/`dy` are raw mouse pixels.
 ///
-/// Both axes add (dragging down raises the camera, so it looks down at the
-/// rocket) - matching the JS, whose "invert deltaX" comment describes an
-/// inversion its code never performs.
+/// Horizontal drag is INVERTED (dragging right swings the camera left around
+/// the rocket) - the "invert deltaX" behaviour the JS commented but never
+/// applied. Vertical adds (dragging down raises the camera, so it looks down
+/// at the rocket).
 pub fn orbit(dx: f32, dy: f32) {
     let c = tenebris_core::rocket::config().camera;
     CAM.with(|cell| {
         let m = &mut *cell.borrow_mut();
-        m.target_azimuth = wrap_pi(m.target_azimuth + dx * c.mouse_sens);
+        m.target_azimuth = wrap_pi(m.target_azimuth - dx * c.mouse_sens);
         m.target_elevation = clamp_elevation(m.target_elevation + dy * c.mouse_sens);
     });
 }
@@ -408,19 +409,27 @@ mod tests {
         assert_eq!(CAM.with(|m| m.borrow().target_distance), c.min_distance_m);
     }
 
-    /// Smoothing must converge to the target and never overshoot.
+    /// Smoothing must converge to the target and never overshoot. Direction-
+    /// agnostic: horizontal drag is inverted, so a positive dx drives the
+    /// azimuth NEGATIVE - the ease must stay within [start, target] either way.
     #[test]
     fn update_eases_toward_the_target() {
         reset();
         orbit(100.0, 0.0);
         let target = CAM.with(|m| m.borrow().target_azimuth);
-        let mut last = CAM.with(|m| m.borrow().cur_azimuth);
+        let start = CAM.with(|m| m.borrow().cur_azimuth);
+        let (lo, hi) = (start.min(target), start.max(target));
+        assert!((target - start).abs() > 1e-3, "test needs a non-trivial move");
+        let mut prev_err = f32::INFINITY;
         for _ in 0..200 {
             update(1.0 / 60.0);
             let cur = CAM.with(|m| m.borrow().cur_azimuth);
-            assert!(cur <= target + 1e-6, "overshot: {cur} > {target}");
-            last = cur;
+            assert!(cur >= lo - 1e-6 && cur <= hi + 1e-6, "overshot: {cur} not in [{lo}, {hi}]");
+            let err = (target - cur).abs();
+            assert!(err <= prev_err + 1e-6, "moved away from target: {err} > {prev_err}");
+            prev_err = err;
         }
+        let last = CAM.with(|m| m.borrow().cur_azimuth);
         assert!((last - target).abs() < 1e-3, "did not converge: {last} vs {target}");
     }
 }

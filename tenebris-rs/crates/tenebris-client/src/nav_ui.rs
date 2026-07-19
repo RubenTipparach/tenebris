@@ -161,13 +161,16 @@ pub fn set_target(t: Option<Target>) {
 
 /* --------------------------- maneuver node ---------------------------- */
 
-/// A planned burn: how far ahead on the orbit it sits (`dt`, seconds) and
-/// the prograde / normal / radial delta-v (m/s) applied there. The heavy
-/// lifting - propagating to the node and re-solving the conic - is Core
-/// (`nav::plan_burn`); this just holds the edit state.
+/// A planned burn PINNED to a fixed point in space (`anchor`, world coords) -
+/// NOT a lead time, so it does not slide along with the ship. Each frame the
+/// live orbit reprojects the anchor to its nearest point and derives the lead
+/// time to reach it (which counts down as the ship coasts up to it, and hops
+/// onto the new path if the orbit changes after a burn / SOI switch). `pro /
+/// nrm / rad` are the prograde / normal / radial delta-v (m/s) applied there.
+/// Propagation + conic re-solve is Core (`nav::plan_burn`).
 #[derive(Clone, Copy)]
 struct Node {
-    dt: f64,
+    anchor: DVec3,
     pro: f64,
     nrm: f64,
     rad: f64,
@@ -184,60 +187,55 @@ pub fn node_active() -> bool {
     NODE.with(|c| c.get().is_some())
 }
 
-/// Create a node (seeded a quarter-period ahead with a zero burn) or clear
-/// the existing one. `period_s` is the current orbit's period for the lead
-/// time; non-finite (escape orbit) falls back to a fixed lead.
-pub fn toggle_node(period_s: f64) {
-    NODE.with(|c| {
-        if c.get().is_some() {
-            c.set(None);
-        } else {
-            let dt = if period_s.is_finite() && period_s > 0.0 { period_s * 0.25 } else { 120.0 };
-            c.set(Some(Node { dt, pro: 0.0, nrm: 0.0, rad: 0.0 }));
-        }
-    });
-}
-
 /// Drop the current node.
 pub fn clear_node() {
     NODE.with(|c| c.set(None));
 }
 
-/// Place (or move) the node at a specific lead time `dt` (seconds ahead on the
-/// orbit), keeping any burn already dialed in. The click-on-orbit placer's
-/// entry point: unlike [`toggle_node`] it never toggles off, so clicking the
-/// trajectory line always leaves a node there to edit.
-pub fn place_node(dt: f64) {
+/// Place (or move) the node, pinning it to the world point `anchor` and
+/// keeping any burn already dialed in. The click-on-orbit / drag placer's
+/// entry point; never toggles off, so clicking the line always leaves a node.
+pub fn place_node_at(anchor: DVec3) {
     NODE.with(|c| {
         let (pro, nrm, rad) = c.get().map_or((0.0, 0.0, 0.0), |n| (n.pro, n.nrm, n.rad));
-        c.set(Some(Node { dt: dt.max(0.0), pro, nrm, rad }));
+        c.set(Some(Node { anchor, pro, nrm, rad }));
     });
 }
 
-/// The node's edit state (time-to-node s, prograde, normal, radial m/s), or
-/// `None` when no node is planned. For the egui editor.
-pub fn node_params() -> Option<(f64, f64, f64, f64)> {
-    NODE.with(|c| c.get().map(|n| (n.dt, n.pro, n.nrm, n.rad)))
+/// The node's burn (prograde, normal, radial m/s), or `None` when no node is
+/// planned. For the gizmo delta-v handles.
+pub fn node_burn() -> Option<(f64, f64, f64)> {
+    NODE.with(|c| c.get().map(|n| (n.pro, n.nrm, n.rad)))
 }
 
-/// Write the node's edit state back (a no-op if no node is planned). Time is
-/// clamped non-negative - you can't plan a burn in the past.
-pub fn set_node_params(dt: f64, pro: f64, nrm: f64, rad: f64) {
+/// Update just the node's burn, leaving its pinned location (a no-op if no
+/// node is planned).
+pub fn set_node_burn(pro: f64, nrm: f64, rad: f64) {
     NODE.with(|c| {
-        if c.get().is_some() {
-            c.set(Some(Node { dt: dt.max(0.0), pro, nrm, rad }));
+        if let Some(n) = c.get() {
+            c.set(Some(Node { anchor: n.anchor, pro, nrm, rad }));
         }
     });
 }
 
-/// The planned burn for the current ship state: propagates the node onto the
-/// orbit and re-solves the resulting conic. `None` when no node is set or the
-/// orbit can't be propagated (degenerate / radial).
+/// Seconds until the ship reaches the pinned node on its CURRENT orbit - the
+/// countdown that ticks to zero as you coast up to it (the node itself stays
+/// put). `None` when no node is planned or the orbit can't be built.
+pub fn node_lead_time(pos: DVec3, vel: DVec3) -> Option<f64> {
+    let n = NODE.with(|c| c.get())?;
+    let focus = nav::dominant_body(pos);
+    Conic::from_state(&focus, pos, vel)?.time_to_point(n.anchor)
+}
+
+/// The planned burn for the current ship state: reprojects the pinned node
+/// onto the live orbit, propagates to it, and re-solves the resulting conic.
+/// `None` when no node is set or the orbit can't be propagated.
 pub fn node_plan(pos: DVec3, vel: DVec3) -> Option<nav::BurnPlan> {
     let n = NODE.with(|c| c.get())?;
     let focus = nav::dominant_body(pos);
     let conic = Conic::from_state(&focus, pos, vel)?;
-    nav::plan_burn(&conic, n.dt, n.pro, n.nrm, n.rad)
+    let dt = conic.time_to_point(n.anchor)?;
+    nav::plan_burn(&conic, dt, n.pro, n.nrm, n.rad)
 }
 
 /* ---- attitude autopilot (rotate the nose to a navball symbol) ---- */
@@ -601,37 +599,38 @@ pub fn gizmo_release() {
 /* ---- click-on-orbit node placement (screen-space line pick) ---- */
 
 thread_local! {
-    /// The current orbit line projected to screen as `(px, py, dt)` vertices,
-    /// refreshed each frame by [`cache_orbit_pick`] from the flight / map draw
-    /// pass. The click-on-orbit node placer reads it to map a cursor position
-    /// to a time-to-node. Empty when no pickable orbit line is on screen.
-    static ORBIT_SCREEN: std::cell::RefCell<Vec<(f32, f32, f64)>> =
+    /// The current orbit line projected to screen as `(px, py, world_pos)`
+    /// vertices, refreshed each frame by [`cache_orbit_pick`] from the flight /
+    /// map draw pass. The click-on-orbit node placer reads it to map a cursor
+    /// position to a world point on the orbit (the node's pinned anchor). Empty
+    /// when no pickable orbit line is on screen.
+    static ORBIT_SCREEN: std::cell::RefCell<Vec<(f32, f32, DVec3)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Timed samples of the orbit for the pick cache. Coarser than the drawn line
+/// Samples of the orbit for the pick cache. Coarser than the drawn line
 /// (`ORBIT_SEGS`) - plenty for closest-point, cheaper to reproject each frame.
 const ORBIT_PICK_SEGS: usize = 256;
 /// How close (px) the cursor must be to the drawn orbit line to grab it.
 const LINE_PICK_PX: f32 = 14.0;
 
-/// Cache the current orbit as a screen-space timed polyline for click-picking.
-/// Call from the draw pass that draws the orbit line, with the SAME view-
-/// projection, so the cached pixels coincide with the visible line (the eye-
-/// shell remap moves points along their eye ray, preserving screen position).
-/// Clears the cache when there is no orbit to pick.
+/// Cache the current orbit as a screen-space polyline for click-picking. Call
+/// from the draw pass that draws the orbit line, with the SAME view-projection,
+/// so the cached pixels coincide with the visible line (the eye-shell remap
+/// moves points along their eye ray, preserving screen position). Clears the
+/// cache when there is no orbit to pick.
 pub fn cache_orbit_pick(pos: DVec3, vel: DVec3, vp: Mat4) {
     let (sw, sh) = (sokol::app::widthf(), sokol::app::heightf());
     let focus = nav::dominant_body(pos);
     let pts = Conic::from_state(&focus, pos, vel)
-        .map(|c| c.sample_timed(ORBIT_PICK_SEGS, HYPERBOLA_CLIP_M))
+        .map(|c| c.sample(ORBIT_PICK_SEGS, HYPERBOLA_CLIP_M))
         .unwrap_or_default();
     ORBIT_SCREEN.with(|c| {
         let mut v = c.borrow_mut();
         v.clear();
-        for (dt, p) in pts {
+        for p in pts {
             if let Some((sx, sy)) = project(&vp, p, sw, sh) {
-                v.push((sx, sy, dt));
+                v.push((sx, sy, p));
             }
         }
     });
@@ -642,20 +641,21 @@ pub fn clear_orbit_pick() {
     ORBIT_SCREEN.with(|c| c.borrow_mut().clear());
 }
 
-/// The time-to-node at the point on the cached orbit line closest to the
-/// cursor, or `None` when the cursor is farther than [`LINE_PICK_PX`] from the
-/// line. Screen-space closest-point over the polyline segments, `dt` lerped
-/// along the winning segment.
-fn closest_orbit_dt(mx: f32, my: f32) -> Option<f64> {
+/// The world point on the cached orbit line closest to the cursor, or `None`
+/// when the cursor is farther than [`LINE_PICK_PX`] from the line. Screen-space
+/// closest-point over the polyline segments, the world position lerped along
+/// the winning segment (a hair off the arc, but the node reprojects it onto
+/// the orbit, so dragging stays smooth).
+fn closest_orbit_point(mx: f32, my: f32) -> Option<DVec3> {
     ORBIT_SCREEN.with(|c| {
         let v = c.borrow();
         if v.len() < 2 {
             return None;
         }
-        let mut best: Option<(f32, f64)> = None; /* (dist^2 px, dt) */
+        let mut best: Option<(f32, DVec3)> = None; /* (dist^2 px, world pos) */
         for w in v.windows(2) {
-            let (ax, ay, adt) = w[0];
-            let (bx, by, bdt) = w[1];
+            let (ax, ay, aw) = w[0];
+            let (bx, by, bw) = w[1];
             let (ex, ey) = (bx - ax, by - ay);
             let len2 = ex * ex + ey * ey;
             let t = if len2 > 1e-6 {
@@ -666,39 +666,40 @@ fn closest_orbit_dt(mx: f32, my: f32) -> Option<f64> {
             let (px, py) = (ax + ex * t, ay + ey * t);
             let d2 = (mx - px) * (mx - px) + (my - py) * (my - py);
             if best.map_or(true, |b| d2 < b.0) {
-                best = Some((d2, adt + (bdt - adt) * t as f64));
+                let wp = dvec3_add(aw, dvec3_scale(dvec3_sub(bw, aw), t as f64));
+                best = Some((d2, wp));
             }
         }
         match best {
-            Some((d2, dt)) if d2 <= LINE_PICK_PX * LINE_PICK_PX => Some(dt),
+            Some((d2, wp)) if d2 <= LINE_PICK_PX * LINE_PICK_PX => Some(wp),
             _ => None,
         }
     })
 }
 
-/// LMB on the trajectory line: drop the maneuver node at the clicked point
-/// (or relocate the existing one there, keeping its burn) and begin a center-
-/// drag so a click-and-drag slides it along the line. Returns true when the
-/// line was grabbed. The "click anywhere on the trajectory to spawn a node"
-/// entry point; call after the gizmo-handle pick so grabbing a handle wins.
+/// LMB on the trajectory line: pin the maneuver node at the clicked point (or
+/// relocate the existing one there, keeping its burn) and begin a center-drag
+/// so a click-and-drag slides it along the line. Returns true when the line was
+/// grabbed. The "click anywhere on the trajectory to spawn a node" entry point;
+/// call after the gizmo-handle pick so grabbing a handle wins.
 pub fn trajectory_pick(mx: f32, my: f32) -> bool {
     if !NODE_OVERLAY_ENABLED {
         return false;
     }
-    let Some(dt) = closest_orbit_dt(mx, my) else {
+    let Some(anchor) = closest_orbit_point(mx, my) else {
         return false;
     };
-    place_node(dt);
+    place_node_at(anchor);
     GIZMO_DRAG.with(|c| c.set(Some((3, 0.0)))); /* center slide follows the drag */
     true
 }
 
-/// Slide the node to the point on the orbit line closest to the cursor - the
-/// center-drag behaviour. A no-op when the cursor is off the line, so the node
-/// stays put rather than jumping when you drag past the line's end.
+/// Slide the node to the orbit point closest to the cursor - the center-drag
+/// behaviour. A no-op when the cursor is off the line, so the node stays put
+/// rather than jumping when you drag past the line's end.
 pub fn node_slide_to(mx: f32, my: f32) {
-    if let (Some(dt), Some((_, pro, nrm, rad))) = (closest_orbit_dt(mx, my), node_params()) {
-        set_node_params(dt, pro, nrm, rad);
+    if let Some(anchor) = closest_orbit_point(mx, my) {
+        place_node_at(anchor);
     }
 }
 
@@ -731,7 +732,7 @@ pub fn gizmo_drag(mx: f32, my: f32, dx: f32, dy: f32) {
         node_slide_to(mx, my); /* center -> closest point on the line */
         return;
     }
-    let Some((dt, pro, nrm, rad)) = node_params() else {
+    let Some((pro, nrm, rad)) = node_burn() else {
         return;
     };
     /* Pull along the handle's CURRENT screen direction (recomputed each move
@@ -753,7 +754,7 @@ pub fn gizmo_drag(mx: f32, my: f32, dx: f32, dy: f32) {
         1 => nm += delta,
         _ => r += delta,
     }
-    set_node_params(dt, p, nm, r);
+    set_node_burn(p, nm, r);
 }
 
 /// Draw the planned maneuver over the orbit tracks: the predicted post-burn
@@ -790,7 +791,7 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64, vp: Mat4) {
      * base grab length. Lengths scale with camera distance to read at any
      * zoom. Each handle's arrow is drawn AND its tip projected to screen for
      * the drag hit-test. */
-    let (_, dvp, dvn, dvr) = node_params().unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let (dvp, dvn, dvr) = node_burn().unwrap_or((0.0, 0.0, 0.0));
     let base = cam_d * 0.09;
     let grow = cam_d * 0.010;
     let neg = |d: DVec3| dvec3_scale(d, -1.0);
@@ -1946,7 +1947,9 @@ pub fn readout_lines(pos: DVec3, vel: DVec3, sim_t: f64) -> Vec<String> {
      * the orbit the burn produces. The egui widget shows this too; the HUD
      * text line is tied to the (off) 3D overlay to avoid duplication. */
     if NODE_OVERLAY_ENABLED {
-        if let (Some((dt, pro, nrm, rad)), Some(plan)) = (node_params(), node_plan(pos, vel)) {
+        if let (Some((pro, nrm, rad)), Some(dt), Some(plan)) =
+            (node_burn(), node_lead_time(pos, vel), node_plan(pos, vel))
+        {
         let avail = crate::rocket_ride::delta_v_mps() as f64;
         let flag = if plan.dv_total <= avail { "" } else { "  (SHORT)" };
         out.push(format!(
@@ -1996,31 +1999,45 @@ mod tests {
         assert_eq!(target(), Some(Target::Station), "and it wraps");
     }
 
-    /// The maneuver node: create seeds a quarter-period lead + zero burn,
-    /// edits round-trip, and node_plan produces the required dv + the orbit
-    /// the burn makes (a prograde burn raises apoapsis).
+    /// The maneuver node pins to a FIXED point on the orbit: node_plan produces
+    /// the required dv + the orbit the burn makes (a prograde burn raises
+    /// apoapsis), the lead time is the countdown to that pinned point, and it
+    /// clears cleanly.
     #[test]
     fn maneuver_node_plans_a_burn() {
         clear_node();
         assert!(!node_active());
-        toggle_node(1000.0);
-        assert!(node_active());
-        let (dt, pro, nrm, rad) = node_params().unwrap();
-        assert!((dt - 250.0).abs() < 1e-9, "quarter-period lead");
-        assert_eq!((pro, nrm, rad), (0.0, 0.0, 0.0), "seeded with no burn");
-
-        set_node_params(60.0, 40.0, 0.0, 0.0);
         let b = planet::get(BodyId::Tenebris);
-        let r = 10_000.0;
+        /* r = 5 km keeps Tenebris the dominant body here - at 10 km it ties
+         * with Sequoia (20 km away, larger mu) and the focus flips, which is
+         * the interplanetary-ambiguity the heliocentric work has to resolve. */
+        let r = 5_000.0;
         let v = (nav::mu(&b) / r).sqrt(); /* circular */
-        let plan = node_plan(dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 0.0, v)).unwrap();
+        let pos = dvec3_make(r, 0.0, 0.0);
+        let vel = dvec3_make(0.0, 0.0, v);
+        assert_eq!(nav::dominant_body(pos).name, "Tenebris", "test needs Tenebris to dominate");
+        let conic = Conic::from_state(&b, pos, vel).unwrap();
+
+        /* Pin the node at the fixed point a quarter-orbit ahead. */
+        let (anchor, _) = conic.state_at(conic.period_s * 0.25).unwrap();
+        place_node_at(anchor);
+        assert!(node_active());
+        assert_eq!(node_burn().unwrap(), (0.0, 0.0, 0.0), "placed with no burn");
+
+        set_node_burn(40.0, 0.0, 0.0);
+        assert_eq!(node_burn().unwrap(), (40.0, 0.0, 0.0), "burn edits round-trip");
+        let plan = node_plan(pos, vel).unwrap();
         assert!((plan.dv_total - 40.0).abs() < 1e-6, "required dv = the burn magnitude");
         let after = plan.after.expect("prograde burn stays bound");
         assert!(after.apoapsis_m > r + 1.0, "prograde raises apoapsis");
 
+        /* Pinned, not sliding: the lead to the fixed anchor is a quarter period. */
+        let lead = node_lead_time(pos, vel).unwrap();
+        assert!((lead - conic.period_s * 0.25).abs() < conic.period_s * 1e-2, "quarter-orbit lead");
+
         clear_node();
         assert!(!node_active());
-        assert!(node_plan(dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 0.0, v)).is_none());
+        assert!(node_plan(pos, vel).is_none());
     }
 
     /// Ball space is the craft's steering frame: nose dead centre, and the

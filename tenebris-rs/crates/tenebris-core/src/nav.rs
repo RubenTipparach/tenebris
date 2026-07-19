@@ -324,39 +324,29 @@ impl Conic {
         }
     }
 
-    /// Sample the conic into `n` `(dt, world_pos)` pairs: the SAME curve
-    /// [`Conic::sample`] traces, but each vertex tagged with the seconds-from-
-    /// now it occurs, monotonically increasing along the polyline. The
-    /// maneuver planner maps a click on the drawn orbit back to a time-to-node
-    /// through this. Ellipse: one full period `[0, period]`. Hyperbola: the
-    /// arc clipped at `r_max`, timed symmetric about periapsis. Empty when the
-    /// orbit can't be propagated.
-    pub fn sample_timed(&self, n: usize, r_max: f64) -> Vec<(f64, DVec3)> {
-        let n = n.max(8);
-        let mut out = Vec::with_capacity(n + 1);
-        let (t0, t1) = if self.e < 1.0 {
-            if !(self.period_s.is_finite() && self.period_s > 0.0) {
-                return out;
-            }
-            (0.0, self.period_s)
-        } else {
-            /* Time window = the dt at the anomalies where r hits r_max, so the
-             * timed polyline covers exactly the drawn (clipped) escape arc. */
-            let p = self.periapsis_m * (1.0 + self.e);
-            let c = ((p / r_max - 1.0) / self.e).clamp(-1.0, 1.0);
-            let th_max = c.acos();
-            match (self.time_from_nu(-th_max), self.time_from_nu(th_max)) {
-                (Some(a), Some(b)) => (a, b),
-                _ => return out,
-            }
-        };
-        for i in 0..=n {
-            let dt = t0 + i as f64 / n as f64 * (t1 - t0);
-            if let Some((p, _)) = self.state_at(dt) {
-                out.push((dt, p));
-            }
+    /// Lead time (seconds) from the epoch until a body coasting on this orbit
+    /// reaches the point ON the orbit nearest `world_pt`. Projects `world_pt`
+    /// into the orbit plane, takes its true anomaly, and returns the forward
+    /// time-of-flight there. Ellipse: wrapped into `[0, period)`, so it is
+    /// always the countdown to the NEXT pass through that point - which lets a
+    /// maneuver node be pinned to a fixed spot in space (the anchor) while the
+    /// lead time ticks down as the ship coasts toward it, and reproject onto a
+    /// new orbit after a burn / SOI change. Hyperbola: the signed flight time.
+    /// `None` for a degenerate orbit or a point with no defined anomaly.
+    pub fn time_to_point(&self, world_pt: DVec3) -> Option<f64> {
+        let rel = dvec3_sub(world_pt, self.focus);
+        let x = dvec3_dot(rel, self.p_hat);
+        let y = dvec3_dot(rel, self.q_hat);
+        if x.hypot(y) < 1e-9 {
+            return None; /* on the focus / orbit normal - no anomaly */
         }
-        out
+        let nu = y.atan2(x);
+        let dt = self.time_from_nu(nu)?;
+        if self.e < 1.0 && self.period_s.is_finite() && self.period_s > 0.0 {
+            Some(dt.rem_euclid(self.period_s))
+        } else {
+            Some(dt)
+        }
     }
 }
 
@@ -650,42 +640,30 @@ mod tests {
         );
     }
 
-    /// The timed sampler tags each vertex with a monotonically increasing
-    /// lead time spanning one period, and a click-to-time round trip recovers
-    /// the point's time - the mapping the click-on-orbit node placer relies on.
+    /// A node PINNED to a fixed orbit point stays put: `time_to_point` recovers
+    /// the lead time of a known point, and as the ship coasts along the SAME
+    /// orbit the lead time to that SAME world point counts down by the advance
+    /// - the "the node doesn't slide, the ship catches up" property.
     #[test]
-    fn sample_timed_is_monotonic_and_round_trips_a_point() {
+    fn time_to_point_pins_a_location_and_counts_down() {
         let b = tenebris();
         let r = 9_000.0;
-        /* Purely tangential, 1.12x circular -> a clean bound ellipse (e~0.25),
-         * start at periapsis. An out-of-plane component here would swamp the
-         * small circular speed at this radius and go hyperbolic. */
         let v = 1.12 * (mu(&b) / r).sqrt();
         let pos = dvec3_make(r, 0.0, 0.0);
         let vel = dvec3_make(0.0, 0.0, v);
-        let c = Conic::from_state(&b, pos, vel).unwrap();
-        assert!(c.e < 1.0 && c.period_s.is_finite(), "test needs a bound orbit, got e={}", c.e);
-        let samples = c.sample_timed(256, 40_000.0);
-        assert!(samples.len() > 200, "timed sample too sparse: {}", samples.len());
-        /* dt climbs monotonically from ~0 to ~period. */
-        assert!(samples[0].0.abs() < 1.0);
-        assert!((samples.last().unwrap().0 - c.period_s).abs() < c.period_s * 0.02);
-        for w in samples.windows(2) {
-            assert!(w[1].0 >= w[0].0, "dt not monotonic: {} then {}", w[0].0, w[1].0);
-        }
-        /* Pick the true point at t = 0.4 * period, find the nearest sampled
-         * vertex, and confirm its tagged dt matches - closest-point -> time. */
-        let want_dt = c.period_s * 0.4;
-        let (want_pos, _) = c.state_at(want_dt).unwrap();
-        let best = samples
-            .iter()
-            .min_by(|a, x| {
-                dvec3_length(dvec3_sub(a.1, want_pos))
-                    .partial_cmp(&dvec3_length(dvec3_sub(x.1, want_pos)))
-                    .unwrap()
-            })
-            .unwrap();
-        assert!((best.0 - want_dt).abs() < c.period_s / 256.0 * 2.0, "recovered {} want {want_dt}", best.0);
+        let c0 = Conic::from_state(&b, pos, vel).unwrap();
+        /* A fixed point on the orbit, 40% of a period ahead. */
+        let lead0 = c0.period_s * 0.4;
+        let (anchor, _) = c0.state_at(lead0).unwrap();
+        let t0 = c0.time_to_point(anchor).unwrap();
+        assert!((t0 - lead0).abs() < c0.period_s * 1e-3, "recover {t0} want {lead0}");
+        /* Coast the ship 25% of a period and rebuild the conic from the new
+         * state. The lead to the SAME anchor must shrink by that advance. */
+        let (p1, v1) = c0.state_at(c0.period_s * 0.25).unwrap();
+        let c1 = Conic::from_state(&b, p1, v1).unwrap();
+        let t1 = c1.time_to_point(anchor).unwrap();
+        let expected = c0.period_s * (0.4 - 0.25);
+        assert!((t1 - expected).abs() < c0.period_s * 5e-3, "countdown {t1} want {expected}");
     }
 
     /// Half a period around a circle lands on the antipode with the velocity
