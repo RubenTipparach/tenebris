@@ -624,6 +624,24 @@ The two layers never mix: a touch-only DOM control (the mobile
 pause Esc-stand-in) is hidden on desktop; a cross-platform panel
 (the pause menu itself) renders into the canvas on every device.
 
+## Controls: Interact is F, E is reserved for roll
+
+**Standing instruction from the user (engrained).** The context/Interact
+action (open a machine, board a ship, use the aquarium, else toggle the
+inventory) is bound to **F**. **E is RESERVED for roll** - the space-flight
+roll pair is **Q (roll left) / E (roll right)**, the classic left/right
+roll layout. `toggle_fly` sits on **R**.
+
+Bindings live in `tenebris-rs/assets/config/controls.yaml` (the runtime
+override) AND the compiled-in defaults in
+`tenebris-rs/crates/tenebris-client/src/controls.rs::default_bindings`
+(the fallback when the yaml omits an action) - keep the two in sync. The
+game reads the ACTION, never the raw key, so on-screen prompts (`[F] open
+...`) track the binding automatically via `controls::action_label`. Do
+not move Interact back onto E or bind anything else to E.
+
+This rule stays in force until the user says otherwise.
+
 ## Static game asset guidelines
 
 These rules apply to every asset Claude generates, hand-edits, or asks

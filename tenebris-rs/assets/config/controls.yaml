@@ -38,7 +38,7 @@ move_right:      D
 jump:            Space
 sprint:          LeftShift, RightShift
 fly_down:        LeftControl, RightControl, C
-toggle_fly:      F
+toggle_fly:      R
 survival_toggle: G
 
 # Menus.
@@ -46,14 +46,15 @@ pause:           Escape
 tech_tree:       K
 crafting:        B
 
-# Space flight: roll the view with Q / R (E is free for interact).
+# Space flight: roll the view with Q / E (the classic left/right roll
+# pair). E is RESERVED for roll - interact lives on F.
 roll_left:       Q
-roll_right:      R
+roll_right:      E
 
 # Context action: aim at a machine (chest, furnace, 3D printer, power
-# generator, rocket pad, ...) and press this to open it; otherwise it
-# toggles the inventory.
-interact:        E
+# generator, rocket pad, aquarium, ...) and press this to open it;
+# otherwise it toggles the inventory. On F so E stays free for roll.
+interact:        F
 
 eat:             V
 plant:           T

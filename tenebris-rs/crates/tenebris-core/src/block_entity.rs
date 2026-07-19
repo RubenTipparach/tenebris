@@ -215,6 +215,48 @@ impl LaunchPadState {
     }
 }
 
+/// Max fish one aquarium tank can hold. Fixed-size so [`AquariumState`]
+/// stays `Copy`.
+pub const AQUARIUM_CAP: usize = 6;
+
+/// A placed aquarium's contents: whether it has been filled with a water
+/// bucket, and the fish swimming inside (each an `AnimalKind::to_u8` wire
+/// id). Fish can only be added to a watered tank. Purely visual sim - the
+/// fish don't tick game state, the renderer animates them - so only the
+/// species list + water flag need to persist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AquariumState {
+    /// Filled with water (a water bucket was poured in). Empty tanks show
+    /// only glass and refuse fish.
+    pub water: bool,
+    /// Species wire ids (`AnimalKind::to_u8`) of the fish inside.
+    pub fish: [u8; AQUARIUM_CAP],
+    /// How many entries of `fish` are live (0..=AQUARIUM_CAP).
+    pub count: u8,
+}
+
+impl AquariumState {
+    /// The live fish species wire ids.
+    pub fn fish(&self) -> &[u8] {
+        &self.fish[..(self.count as usize).min(AQUARIUM_CAP)]
+    }
+
+    /// True if the tank is at capacity.
+    pub fn is_full(&self) -> bool {
+        self.count as usize >= AQUARIUM_CAP
+    }
+
+    /// Add one fish (species wire id). Returns false if the tank is full.
+    pub fn add_fish(&mut self, kind: u8) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        self.fish[self.count as usize] = kind;
+        self.count += 1;
+        true
+    }
+}
+
 /// Machine-specific placed state. `Copy` (every variant is fixed-size) so
 /// the whole `BlockEntity` stays cheap to store/return.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,6 +280,8 @@ pub enum MachineState {
     Printer(PrinterState),
     /// Launch pad with an assembled rocket-part stack.
     LaunchPad(LaunchPadState),
+    /// Aquarium: water flag + the fish swimming inside.
+    Aquarium(AquariumState),
 }
 
 impl Default for MachineState {
@@ -410,6 +454,26 @@ impl BlockEntity {
             _ => unreachable!(),
         }
     }
+
+    /// Borrow the aquarium contents if this entity is an aquarium.
+    pub fn aquarium(&self) -> Option<&AquariumState> {
+        match &self.state {
+            MachineState::Aquarium(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Promote this entity to an aquarium (if it isn't already) and return
+    /// its contents for mutation.
+    pub fn aquarium_mut(&mut self) -> &mut AquariumState {
+        if !matches!(self.state, MachineState::Aquarium(_)) {
+            self.state = MachineState::Aquarium(AquariumState::default());
+        }
+        match &mut self.state {
+            MachineState::Aquarium(a) => a,
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// Advance a 3D printer: while powered with an active job, fill the
@@ -470,6 +534,9 @@ pub fn init_machine_state(e: &mut BlockEntity, b: crate::blocks::Block) {
         }
         Block::LaunchPad => {
             e.launch_pad_mut();
+        }
+        Block::Aquarium => {
+            e.aquarium_mut();
         }
         _ => {}
     }
@@ -693,7 +760,8 @@ pub fn bonfire_tick(b: &mut BonfireState, dt: f32) -> bool {
  *   `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr`- furnace (progress is
  *                                                transient, not carried)
  *   `:s:` steam engine, `:e:` electric furnace, `:k:` computer,
- *   `:p:` printer, `:l:` launch pad (segments, part ids bottom->top).
+ *   `:p:` printer, `:l:` launch pad (segments, part ids bottom->top),
+ *   `:q:` aquarium (water flag, then the fish species wire ids).
  * Changing this format breaks existing saves - extend, don't rework. */
 
 /// Serialise one placed entity to its record string.
@@ -767,6 +835,13 @@ pub fn record_write(tile: i32, depth: i32, e: &BlockEntity) -> String {
             rec.push_str(&format!(":l:{}", l.segments));
             for &id in l.parts() {
                 rec.push_str(&format!(",{id}"));
+            }
+        }
+        MachineState::Aquarium(a) => {
+            /* water flag, then each fish species wire id. */
+            rec.push_str(&format!(":q:{}", a.water as u8));
+            for &k in a.fish() {
+                rec.push_str(&format!(",{k}"));
             }
         }
     }
@@ -857,6 +932,17 @@ pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
             }
             let ids: Vec<u16> = v.iter().skip(1).map(|&n| n as u16).collect();
             pad.set_parts(&ids);
+        }
+        Some("q") => {
+            /* water flag, then the fish species wire ids. */
+            let v = nums(parts.get(4).copied().unwrap_or(""));
+            let aq = e.aquarium_mut();
+            if let Some(&w0) = v.first() {
+                aq.water = w0 != 0;
+            }
+            for &k in v.iter().skip(1) {
+                aq.add_fish(k as u8);
+            }
         }
         _ => {}
     }
@@ -1192,9 +1278,40 @@ mod tests {
         assert_eq!(pad.segments, 4);
         assert_eq!(pad.parts(), &[ROCKET_ENGINE, FUEL_TANK]);
 
+        /* Aquarium: water flag + fish list survive in order. */
+        let mut aq = BlockEntity::with_facing(1);
+        {
+            let a = aq.aquarium_mut();
+            a.water = true;
+            assert!(a.add_fish(7)); /* minnow */
+            assert!(a.add_fish(11)); /* reef fish */
+        }
+        let (_, _, back) = record_parse(&record_write(8, 60, &aq)).unwrap();
+        let a = back.aquarium().unwrap();
+        assert!(a.water);
+        assert_eq!(a.fish(), &[7, 11]);
+        /* An empty, dry tank round-trips to water=false / no fish. */
+        let mut dry = BlockEntity::with_facing(0);
+        dry.aquarium_mut();
+        let (_, _, back) = record_parse(&record_write(1, 1, &dry)).unwrap();
+        let a = back.aquarium().unwrap();
+        assert!(!a.water);
+        assert_eq!(a.count, 0);
+
         /* Garbage rejects cleanly. */
         assert_eq!(record_parse(""), None);
         assert_eq!(record_parse("1:2"), None);
         assert_eq!(record_parse("a:b:c"), None);
+    }
+
+    #[test]
+    fn aquarium_respects_capacity() {
+        let mut a = AquariumState::default();
+        for i in 0..AQUARIUM_CAP {
+            assert!(a.add_fish(i as u8), "fish {i} fits");
+        }
+        assert!(a.is_full());
+        assert!(!a.add_fish(99), "over-capacity add is rejected");
+        assert_eq!(a.fish().len(), AQUARIUM_CAP);
     }
 }

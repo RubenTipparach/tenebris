@@ -129,9 +129,37 @@ pub const KIWI_SEEDS: ItemId = ITEM_BASE + 46; // 146
 
 /// Empty bucket - crafted from iron. Use on water to scoop it up
 /// (-> WATER_BUCKET); use a water bucket on a crop to water it and speed
-/// its growth (or just let it rain).
+/// its growth (or just let it rain). A water bucket also fills an
+/// aquarium block (right-click).
 pub const BUCKET: ItemId = ITEM_BASE + 47; // 147
 pub const WATER_BUCKET: ItemId = ITEM_BASE + 48; // 148
+
+/// Live fish - the catch of fishing / netting, one item per species so
+/// each fish carries its OWN sprite. Eat one raw (small restore), cook it
+/// into COOKED_FISH, or drop it into a filled aquarium (right-click the
+/// tank with the fish equipped) to keep it swimming. Ids append-only past
+/// the vacuum engine (149) - never renumber, saved bags key off these.
+pub const FISH_MINNOW: ItemId = ITEM_BASE + 50; // 150
+pub const FISH_REEF: ItemId = ITEM_BASE + 51; // 151
+pub const FISH_EEL: ItemId = ITEM_BASE + 52; // 152
+pub const FISH_RAY: ItemId = ITEM_BASE + 53; // 153
+pub const FISH_TURTLE: ItemId = ITEM_BASE + 54; // 154
+pub const FISH_SERPENT: ItemId = ITEM_BASE + 55; // 155
+
+/// Fishing net - crafted from sticks + plank. Fishing is a random roll;
+/// the net lets you pick your prize: swim up to a fish and left-click it
+/// to scoop that exact species into the bag.
+pub const NET: ItemId = ITEM_BASE + 56; // 156
+
+/// The six live-fish items, ordered to match `fauna::AnimalKind`'s water
+/// species. `is_fish_item` gates the raw-eat / aquarium-drop paths.
+pub const FISH_ITEMS: [ItemId; 6] =
+    [FISH_MINNOW, FISH_REEF, FISH_EEL, FISH_RAY, FISH_TURTLE, FISH_SERPENT];
+
+/// True if `id` is one of the live-fish items (a fishing / net catch).
+pub fn is_fish_item(id: ItemId) -> bool {
+    FISH_ITEMS.contains(&id)
+}
 
 /// What an item *is*, for stacking / placement / tool-gating rules. Grows
 /// as the tech tree lands (Component, Ingot, Ammo, ...).
@@ -233,6 +261,15 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: KIWI_SEEDS, name: "kiwi-seeds", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: BUCKET, name: "bucket", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: WATER_BUCKET, name: "water-bucket", kind: ItemKind::Tool, stack: 1 },
+    /* Live fish - one per catchable / aquarium species (the sprite lives
+     * per-item; see client::ui_icons). Resources so they stack. */
+    ItemDef { id: FISH_MINNOW, name: "minnow", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISH_REEF, name: "reef-fish", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISH_EEL, name: "eel", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISH_RAY, name: "ray", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISH_TURTLE, name: "turtle", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: FISH_SERPENT, name: "sea-serpent", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: NET, name: "net", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: COPPER, name: "copper", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: TIN, name: "tin", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: IRON, name: "iron", kind: ItemKind::Resource, stack: 64 },
@@ -288,6 +325,8 @@ fn block_id_by_name(name: &str) -> Option<ItemId> {
         "casino-sign" => Block::CasinoSign,
         "slot-machine" => Block::SlotMachine,
         "card-table" => Block::CardTable,
+        "glass" => Block::Glass,
+        "aquarium" => Block::Aquarium,
         _ => return None,
     };
     Some(from_block(b))
@@ -323,6 +362,8 @@ fn block_name(b: Block) -> &'static str {
         Block::CasinoSign => "casino-sign",
         Block::SlotMachine => "slot-machine",
         Block::CardTable => "card-table",
+        Block::Glass => "glass",
+        Block::Aquarium => "aquarium",
         _ => "block",
     }
 }
@@ -424,6 +465,8 @@ fn block_display(b: Block) -> &'static str {
         Block::CasinoSign => "Casino Sign",
         Block::SlotMachine => "Slot Machine",
         Block::CardTable => "Card Table",
+        Block::Glass => "Glass",
+        Block::Aquarium => "Aquarium",
     }
 }
 
@@ -443,6 +486,14 @@ pub fn smelt_output(id: ItemId) -> Option<(ItemId, u16)> {
         /* Cooking reuses the furnace: raw meat -> cooked meat. */
         RAW_MEAT => Some((COOKED_MEAT, 1)),
         RAW_FISH => Some((COOKED_FISH, 1)),
+        /* Any live fish cooks down to the same cooked-fish meal, so the
+         * catch-and-cook food loop works whichever species you land. */
+        FISH_MINNOW | FISH_REEF | FISH_EEL | FISH_RAY | FISH_TURTLE | FISH_SERPENT => {
+            Some((COOKED_FISH, 1))
+        }
+        /* Glassmaking: sand melted in the furnace becomes a glass block -
+         * the aquarium's building material. */
+        _ if id == from_block(Block::Sand) => Some((from_block(Block::Glass), 1)),
         /* Charring: a wood log cooked in a fire becomes charcoal. Works
          * in the furnace and the bonfire (same smelt map). */
         _ if id == from_block(Block::Wood) => Some((CHARCOAL, 1)),
@@ -597,6 +648,46 @@ mod tests {
             assert!(!is_block(id), "{name} is not a block");
             assert_eq!(stack_size(id), 8, "{name} stacks to 8");
         }
+    }
+
+    #[test]
+    fn fish_items_net_and_glass_resolve() {
+        /* Every live-fish item resolves its name, classifies as a
+         * Resource, and reads as a fish item. */
+        for (name, id) in [
+            ("minnow", FISH_MINNOW),
+            ("reef-fish", FISH_REEF),
+            ("eel", FISH_EEL),
+            ("ray", FISH_RAY),
+            ("turtle", FISH_TURTLE),
+            ("sea-serpent", FISH_SERPENT),
+        ] {
+            assert_eq!(id_by_name(name), Some(id), "{name} resolves");
+            assert_eq!(kind(id), ItemKind::Resource);
+            assert!(is_fish_item(id), "{name} is a fish item");
+            assert!(!is_block(id));
+        }
+        assert_eq!(FISH_ITEMS.len(), 6);
+        assert!(!is_fish_item(RAW_FISH), "generic raw fish is not a live-fish item");
+        /* Net is a stack-1 tool. */
+        assert_eq!(id_by_name("net"), Some(NET));
+        assert_eq!(kind(NET), ItemKind::Tool);
+        assert_eq!(stack_size(NET), 1);
+        /* Glass + aquarium are placeable blocks. */
+        assert_eq!(id_by_name("glass"), Some(from_block(Block::Glass)));
+        assert_eq!(id_by_name("aquarium"), Some(from_block(Block::Aquarium)));
+        assert_eq!(display_name(from_block(Block::Aquarium)).as_deref(), Some("Aquarium"));
+    }
+
+    #[test]
+    fn glassmaking_and_fish_cooking_smelt() {
+        /* Sand melts to glass; every live fish cooks to cooked fish. */
+        assert_eq!(smelt_output(from_block(Block::Sand)), Some((from_block(Block::Glass), 1)));
+        for f in FISH_ITEMS {
+            assert_eq!(smelt_output(f), Some((COOKED_FISH, 1)), "fish {f} cooks");
+        }
+        /* Glass itself doesn't re-smelt into anything. */
+        assert_eq!(smelt_output(from_block(Block::Glass)), None);
     }
 
     #[test]

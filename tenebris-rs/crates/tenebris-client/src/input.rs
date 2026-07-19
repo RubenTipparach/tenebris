@@ -1079,25 +1079,26 @@ mod tests {
         assert!(!state().phys.sprint);
         handle_event(&key(EventType::KeyDown, Keycode::C));
         assert!(state().phys.fly_down);
-        /* Roll is Q (left) / R (right) - E is the interact/inventory key now
-         * and no longer rolls (controls.yaml default scheme). */
+        /* Roll is the classic Q (left) / E (right) pair; E is reserved for
+         * roll, so interact lives on F (controls.yaml default scheme). */
         handle_event(&key(EventType::KeyDown, Keycode::Q));
         handle_event(&key(EventType::KeyDown, Keycode::E));
         assert!(state().phys.roll_left && state().phys.roll_right);
-        /* Roll-right moved to E; R is unbound now, so it must NOT drive roll. */
+        /* R is toggle-fly now, NOT roll - pressing it must not drive roll. */
         handle_event(&key(EventType::KeyUp, Keycode::E));
         handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(!state().phys.roll_right);
     }
 
     #[test]
-    fn f_toggles_fly_mode_on_down_only() {
+    fn r_toggles_fly_mode_on_down_only() {
         setup();
-        handle_event(&key(EventType::KeyDown, Keycode::F));
+        /* Toggle-fly moved to R (F is Interact now, E is roll). */
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(state().phys.fly_mode);
-        handle_event(&key(EventType::KeyUp, Keycode::F)); /* no-op */
+        handle_event(&key(EventType::KeyUp, Keycode::R)); /* no-op */
         assert!(state().phys.fly_mode);
-        handle_event(&key(EventType::KeyDown, Keycode::F));
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(!state().phys.fly_mode);
         set_fly_mode(true);
         assert!(state().phys.fly_mode);

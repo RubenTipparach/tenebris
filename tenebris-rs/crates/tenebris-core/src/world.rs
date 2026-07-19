@@ -490,6 +490,15 @@ impl World {
         }
     }
 
+    /// Mark a single tile for remesh. Public wrapper over
+    /// [`dirty_enqueue`] for edits that change a tile's APPEARANCE without
+    /// changing a block byte (which already dirties via `set`) - e.g.
+    /// filling an aquarium changes only its block-entity water flag, but
+    /// the water mesh must rebuild to draw the tank's surface.
+    pub fn dirty_tile(&mut self, tile: i32) {
+        self.dirty_enqueue(tile);
+    }
+
     /// Port of `world_stream_gen()`. Generate terrain for up to
     /// `max_tiles` tiles of the pending pool. Call each frame until
     /// `gen_complete` returns true.
