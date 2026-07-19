@@ -361,6 +361,79 @@ fn basis_from_quat(q: glam::DQuat) -> TangentBasis {
     }
 }
 
+/// One frame of rocket attitude control from the stick input, then derive the
+/// basis. Runs whenever the player is RIDING - in atmosphere, on the pad, or
+/// in space (rocket steering is available ANYWHERE, not just orbit). Manual
+/// WASD / Q-R disengages the autopilot and rotates the quaternion in the
+/// ship's body frame (pitch about right, yaw about fwd, roll about the nose);
+/// with no manual input, an engaged SAS autopilot points the nose. Quaternion-
+/// backed so there is no gimbal singularity (see the CLAUDE.md rule).
+fn steer_rocket_attitude(
+    p: &mut PlayerCtrl,
+    phys: &tenebris_core::physics::PhysInput,
+    roll_speed: f64,
+    dt: f32,
+) {
+    let manual_att =
+        phys.forward || phys.backward || phys.left || phys.right || phys.roll_left || phys.roll_right;
+    if manual_att {
+        crate::nav_ui::clear_autopilot();
+    }
+    let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
+    let roll_rate = roll_speed * dt as f64;
+    let mut pitch = 0.0f64; /* about basis.right */
+    if phys.forward {
+        pitch += rate;
+    }
+    if phys.backward {
+        pitch -= rate;
+    }
+    let mut yaw = 0.0f64; /* about basis.fwd */
+    if phys.right {
+        yaw += rate;
+    }
+    if phys.left {
+        yaw -= rate;
+    }
+    let mut roll = 0.0f64; /* about basis.up (the nose) */
+    if phys.roll_right {
+        roll += roll_rate;
+    }
+    if phys.roll_left {
+        roll -= roll_rate;
+    }
+    let mut q = quat_from_basis(&p.basis);
+    if pitch != 0.0 {
+        q *= glam::DQuat::from_axis_angle(glam::DVec3::X, pitch);
+    }
+    if yaw != 0.0 {
+        q *= glam::DQuat::from_axis_angle(glam::DVec3::Y, yaw);
+    }
+    if roll != 0.0 {
+        q *= glam::DQuat::from_axis_angle(glam::DVec3::Z, roll);
+    }
+    if !manual_att {
+        let sim_t = tenebris_core::world_time::seconds();
+        let sun_dir = p
+            .body
+            .map(|b| tenebris_core::orbit::sun_direction(b.id, sim_t))
+            .unwrap_or(dvec3_make(0.0, 1.0, 0.0));
+        let nose = tang_v(q * glam::DVec3::Z);
+        let ship_pos = crate::rocket_fx::ride_center(p.position, nose);
+        if let Some(omega) =
+            crate::nav_ui::autopilot_omega(ship_pos, p.velocity, nose, sun_dir, sim_t, dt as f64)
+        {
+            let mag = dvec3_length(omega);
+            let ang = mag * dt as f64;
+            if ang > 1e-9 {
+                let axis = dvec3_scale(omega, 1.0 / mag);
+                q = glam::DQuat::from_axis_angle(glam_v(axis), ang) * q;
+            }
+        }
+    }
+    p.basis = basis_from_quat(q.normalize());
+}
+
 /// Maximum per-frame parallel-transport rotation in
 /// sync_basis_to_planet. Anything larger means the player has been
 /// teleported tangentially in a single frame (lag-spike + velocity*dt
@@ -1516,102 +1589,22 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     }
 
     /* ============================================================== */
+    /* Rocket attitude steering runs whenever RIDING - in atmosphere, on the
+     * pad, or in space. Steering is available anywhere; only the translational
+     * physics (radial-thrust ascent vs 6DOF space flight) branches on mode
+     * below. The keys AIM basis.up (the nose / thrust axis): W/S pitch about
+     * right, A/D yaw about fwd, Q/R roll about the nose. */
+    if riding {
+        steer_rocket_attitude(p, &inp.phys, l.space_roll_speed as f64, dt);
+    }
+
+    /* ============================================================== */
     /* SPACE MODE - 6DOF orientation, thrust + drag flight.           */
     /* ============================================================== */
     if p.is_in_space {
         if riding {
-            /* Rocket attitude. The nose - and the thrust axis - is basis.up,
-             * so the keys AIM basis.up rather than the look direction (the
-             * mouse owns the camera in this mode). W/S pitch the nose
-             * fore/aft (rotate about right), A/D yaw it port/starboard
-             * (rotate about fwd), Q/R spin about it (rotate about up). Each
-             * rotation keeps its own axis fixed, so the three compose into
-             * full attitude control and the nose can be pointed anywhere.
-             *
-             * Rate-based, not the JS's torque-into-per-frame-damped angular
-             * velocity, which made handling fps-dependent. Rust leads;
-             * dt-correct. Signs are a feel choice - confirm in-game.*/
-            /* Any manual attitude input drops the autopilot (KSP: nudging the
-             * controls disengages SAS-hold). Checked before the rates so a
-             * held key keeps it off. */
-            let manual_att = inp.phys.forward
-                || inp.phys.backward
-                || inp.phys.left
-                || inp.phys.right
-                || inp.phys.roll_left
-                || inp.phys.roll_right;
-            if manual_att {
-                crate::nav_ui::clear_autopilot();
-            }
-            let rate = tenebris_core::rocket::config().flight.steer_rate_rads as f64 * dt as f64;
-            let roll_rate = l.space_roll_speed as f64 * dt as f64;
-            let mut pitch = 0.0f64; /* about basis.right */
-            if inp.phys.forward {
-                pitch += rate; /* W: pitch the nose over toward fwd */
-            }
-            if inp.phys.backward {
-                pitch -= rate; /* S: bring the nose back up */
-            }
-            let mut yaw = 0.0f64; /* about basis.fwd */
-            if inp.phys.right {
-                yaw += rate;
-            }
-            if inp.phys.left {
-                yaw -= rate;
-            }
-            let mut roll = 0.0f64; /* about basis.up (the nose) */
-            if inp.phys.roll_right {
-                roll += roll_rate;
-            }
-            if inp.phys.roll_left {
-                roll -= roll_rate;
-            }
-            /* Quaternion-backed attitude (no gimbal singularity; see the
-             * "rotational orientation must be quaternion-backed" repo rule).
-             * Seed the quat from the current basis, integrate this frame's
-             * BODY-frame stick input as intrinsic rotations (q = q * delta, so
-             * each axis is the ship's current one - pitch about right, then yaw
-             * about the NEW fwd, then roll about the NEW nose, matching the old
-             * sequential basis rotations exactly), then DERIVE the basis back.
-             * No orthonormalise, no pole, roll never lost. */
-            let mut q = quat_from_basis(&p.basis);
-            if pitch != 0.0 {
-                q *= glam::DQuat::from_axis_angle(glam::DVec3::X, pitch); /* about right */
-            }
-            if yaw != 0.0 {
-                q *= glam::DQuat::from_axis_angle(glam::DVec3::Y, yaw); /* about fwd */
-            }
-            if roll != 0.0 {
-                q *= glam::DQuat::from_axis_angle(glam::DVec3::Z, roll); /* about nose */
-            }
-            /* Autopilot: when no manual input, the PID points the nose at the
-             * engaged navball symbol. Its commanded angular velocity is
-             * WORLD-frame, so it LEFT-multiplies the orientation. */
-            if !manual_att {
-                let sim_t = tenebris_core::world_time::seconds();
-                let sun_dir = p
-                    .body
-                    .map(|b| tenebris_core::orbit::sun_direction(b.id, sim_t))
-                    .unwrap_or(dvec3_make(0.0, 1.0, 0.0));
-                let nose = tang_v(q * glam::DVec3::Z);
-                let ship_pos = crate::rocket_fx::ride_center(p.position, nose);
-                if let Some(omega) = crate::nav_ui::autopilot_omega(
-                    ship_pos,
-                    p.velocity,
-                    nose,
-                    sun_dir,
-                    sim_t,
-                    dt as f64,
-                ) {
-                    let mag = dvec3_length(omega);
-                    let ang = mag * dt as f64;
-                    if ang > 1e-9 {
-                        let axis = dvec3_scale(omega, 1.0 / mag);
-                        q = glam::DQuat::from_axis_angle(glam_v(axis), ang) * q;
-                    }
-                }
-            }
-            p.basis = basis_from_quat(q.normalize());
+            /* Attitude handled above (steering is available everywhere); the
+             * space branch only runs the 6DOF thrust + drag physics below. */
         } else if station_field {
             /* ON THE STATION DECK the mouse look is PLANET-STYLE: scalar
              * yaw/pitch layered over the basis (compute_look), with the
@@ -1874,8 +1867,12 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
 
     /* Bring basis into sync with the current radial up. Either via
      * the slerp (transition_timer counting down) or direct
-     * parallel-transport (steady state on the planet). */
-    if p.transition_timer_s > 0.0 {
+     * parallel-transport (steady state on the planet). SKIPPED while riding:
+     * the rocket's attitude is owned by the 6DOF steering above, so surface-
+     * aligning basis.up here would immediately undo the player's steering. */
+    if riding {
+        /* Attitude steered above; the nose stays where the player pointed it. */
+    } else if p.transition_timer_s > 0.0 {
         let target_up = dvec3_normalize(player_local_pos(p));
         let mut step = l.roll_slerp_speed * dt;
         if step > 1.0 {
@@ -1965,7 +1962,9 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     if body_in_water {
         speed *= l.water_movement_mult;
     }
-    let wish = walk_wish(p, &inp.phys);
+    /* No walking while riding a rocket: WASD is attitude steering (handled
+     * above), not a walk wish, so the ship doesn't also try to strafe. */
+    let wish = if riding { dvec3_make(0.0, 0.0, 0.0) } else { walk_wish(p, &inp.phys) };
 
     /* Water current force. When the player's body is submerged in a
      * flow cell (not a source or sleeping water - those have no flow
@@ -2130,32 +2129,50 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
         p.jump_held_s = 0.0;
         p.jump_consumed = false;
     }
-    if !p.grounded {
-        vy -= gravity as f64 * dt as f64;
-    }
-    /* Re-pack vy back into the world-space velocity. Tangential
-     * component (orthogonal to basis.up) is damped - without this
-     * the player keeps any orbital push from a recent space-mode
-     * coast forever. While submerged the damping kicks much harder
-     * (per JS PlayerConfig.WATER_DRAG ~ 3 /s) so swimming has the
-     * sluggish "moving through honey" feel. */
+    /* Velocity component perpendicular to basis.up, reused (and reassigned)
+     * by the ground/ceiling collision snapping below, so it is declared here. */
     let mut vel_tan = dvec3_sub(
         p.velocity,
         dvec3_scale(p.basis.up, dvec3_dot(p.velocity, p.basis.up)),
     );
-    let tan_damp_rate = if body_in_water {
-        l.water_drag_per_s as f64
+    if riding {
+        /* Rocket 6DOF atmospheric flight. Fold the engine thrust (vy, along
+         * the STEERED nose basis.up) back into velocity WITHOUT the walking
+         * tangential drag - a rocket coasts, it doesn't brake sideways. Then
+         * apply gravity RADIALLY (toward the planet centre), NOT along the
+         * steered nose: a tilted rocket still falls straight down, a vertical
+         * one fights gravity 1:1, and a gravity turn behaves like a real one.
+         * This is what makes WASD steering meaningful in atmosphere - the
+         * thrust follows the nose while gravity stays true. */
+        p.velocity = dvec3_add(vel_tan, dvec3_scale(p.basis.up, vy));
+        if !p.grounded {
+            let radial = dvec3_normalize(player_local_pos(p));
+            p.velocity = dvec3_sub(p.velocity, dvec3_scale(radial, gravity as f64 * dt as f64));
+        }
     } else {
-        2.0
-    };
-    let tan_damp = (-tan_damp_rate * dt as f64).exp();
-    vel_tan = dvec3_scale(vel_tan, tan_damp);
-    if body_in_water {
-        /* Same exponential drag on the vertical component so the
-         * player neither plummets nor rockets while submerged. */
-        vy *= (-(l.water_drag_per_s as f64) * dt as f64).exp();
+        if !p.grounded {
+            vy -= gravity as f64 * dt as f64;
+        }
+        /* Re-pack vy back into the world-space velocity. Tangential
+         * component (orthogonal to basis.up) is damped - without this
+         * the player keeps any orbital push from a recent space-mode
+         * coast forever. While submerged the damping kicks much harder
+         * (per JS PlayerConfig.WATER_DRAG ~ 3 /s) so swimming has the
+         * sluggish "moving through honey" feel. */
+        let tan_damp_rate = if body_in_water {
+            l.water_drag_per_s as f64
+        } else {
+            2.0
+        };
+        let tan_damp = (-tan_damp_rate * dt as f64).exp();
+        vel_tan = dvec3_scale(vel_tan, tan_damp);
+        if body_in_water {
+            /* Same exponential drag on the vertical component so the
+             * player neither plummets nor rockets while submerged. */
+            vy *= (-(l.water_drag_per_s as f64) * dt as f64).exp();
+        }
+        p.velocity = dvec3_add(vel_tan, dvec3_scale(p.basis.up, vy));
     }
-    p.velocity = dvec3_add(vel_tan, dvec3_scale(p.basis.up, vy));
 
     /* Apply position update from velocity. */
     p.position = dvec3_add(p.position, dvec3_scale(p.velocity, dt as f64));
