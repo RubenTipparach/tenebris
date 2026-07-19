@@ -6736,27 +6736,16 @@ fn frame_inner(app: &mut App) {
     /* Map mode draws the star at its TRUE render-frame position and
      * physical radius (the far plane covers the system there); the
      * surface game keeps the angular-correct billboard inside zfar. */
-    /* sun_pos is rebased by the render origin (floating origin): computed in
-     * f64, then `- origin_d`, then cast - so the ~150 km star position keeps
-     * full precision relative to the camera. */
-    let (sun_pos, sun_disc_radius) = if map_open {
-        let sp = orbit::apparent_star_pos(active_body.id, sim_t);
-        (
-            dvec3_to_vec3(dvec3_sub(sp, origin_d)),
-            solar.sun_radius_m,
-        )
-    } else {
-        let sun_disc_dist = solar.sun_visual_dist_m as f64;
-        let sp = dvec3_make(
-            active_body.pos_x + sun_dir.x as f64 * sun_disc_dist,
-            active_body.pos_y + sun_dir.y as f64 * sun_disc_dist,
-            active_body.pos_z + sun_dir.z as f64 * sun_disc_dist,
-        );
-        (
-            dvec3_to_vec3(dvec3_sub(sp, origin_d)),
-            solar.sun_radius_m * (solar.sun_visual_dist_m / solar.sun_distance_m.max(1.0)),
-        )
-    };
+    /* Sun at its TRUE heliocentric position (apparent_star_pos, ~150 km) with
+     * its true radius, in BOTH the map and the normal view - draw_sun's
+     * far_shell slides it inside zfar at identical apparent size (it is built
+     * for the 150 km sun). The old normal-view path pre-compressed it to an
+     * 18 km billboard, which far_shell then compressed AGAIN, landing the sun
+     * ~15 km in - way inside the far-out orbit rings (drawn at 150 km scale)
+     * and nowhere near the map's sun. Feeding the true position fixes both.
+     * Rebased by origin_d (floating origin) for camera-relative f32 precision. */
+    let sun_pos = dvec3_to_vec3(dvec3_sub(orbit::apparent_star_pos(active_body.id, sim_t), origin_d));
+    let sun_disc_radius = solar.sun_radius_m;
     /* Dev diagnostic (TENEBRIS_DEV_NO_ATMO=1): force the atmosphere +
      * its distance fog OFF for the active body, to test whether the
      * water surface inheriting the sky colour comes from the atmosphere
