@@ -1763,39 +1763,56 @@ pub fn draw_hud(
     let cx = screen_w * 0.5;
     let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
 
-    /* Ball body: a concentric-ring triangle mesh, each vertex tinted sky or
-     * ground by whether its 3-D direction is above or below the local horizon
-     * (dot(d, up)). GL interpolates across the boundary, so the horizon reads
-     * as a soft seam that stays correct at ANY pitch/roll - replacing the old
-     * horizon-polygon construction that over-filled to all-ground near the
-     * horizon. `d` is the front-face direction reconstructed from the ball
-     * coords: dot(d,right)=bx, dot(d,fwd)=-by, dot(d,nose)=bz. */
-    let rings = 22usize;
-    let vert = |r: f32, a: f32| {
-        let (bx, by) = (r * a.cos(), r * a.sin());
-        let bz = (1.0 - bx * bx - by * by).max(0.0).sqrt();
-        let d = dvec3_add(
-            dvec3_add(dvec3_scale(right, bx as f64), dvec3_scale(fwd, -(by as f64))),
-            dvec3_scale(nose, bz as f64),
-        );
-        let c = if dvec3_dot(d, up) >= 0.0 { SKY } else { GROUND };
+    /* Ball body: a clean sky cap + ground cap split by the horizon (the great
+     * circle perpendicular to `up`). The front hemisphere is an orthographic
+     * disc; along each radial spoke at screen angle theta the horizon sits at
+     * exactly ONE radius, solved in closed form, so the seam is a crisp curve
+     * instead of a stair-stepped mesh boundary.
+     *
+     * A spoke point at radius r has ball coords (r cos, r sin) and depth
+     * bz = sqrt(1-r^2), so dot(d,up) = r*P + sqrt(1-r^2)*W with
+     * P(theta) = cos*RU - sin*FU and W = dot(nose,up) = sin(pitch). That is
+     * zero at r_h = |W| / hypot(P, W), and only when P and W have opposite
+     * signs (otherwise the whole spoke is one hemisphere). Centre colour is
+     * set by W (r=0 -> d = nose), rim colour by P (r=1 -> on the horizon
+     * plane's silhouette). */
+    let ru = dvec3_dot(right, up) as f32;
+    let fu = dvec3_dot(fwd, up) as f32;
+    let w = dvec3_dot(nose, up) as f32;
+    let center_col = if w >= 0.0 { SKY } else { GROUND };
+    let spoke = |theta: f32| -> (f32, [f32; 4]) {
+        let p = theta.cos() * ru - theta.sin() * fu;
+        let split = if p * w >= 0.0 { 0.0 } else { w.abs() / p.hypot(w) };
+        (split, if p >= 0.0 { SKY } else { GROUND })
+    };
+    let pt = |theta: f32, r: f32| {
+        (cx + r * theta.cos() * BALL_RADIUS_PX, cy - r * theta.sin() * BALL_RADIUS_PX)
+    };
+    let emit = |x: f32, y: f32, c: [f32; 4]| {
         sgl::c4f(c[0], c[1], c[2], c[3]);
-        sgl::v2f(cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
+        sgl::v2f(x, y);
     };
     sgl::begin_triangles();
-    for ri in 0..rings {
-        let r0 = ri as f32 / rings as f32;
-        let r1 = (ri + 1) as f32 / rings as f32;
-        for si in 0..BALL_SEGS {
-            let a0 = si as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-            let a1 = (si + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-            vert(r0, a0);
-            vert(r1, a0);
-            vert(r1, a1);
-            vert(r0, a0);
-            vert(r1, a1);
-            vert(r0, a1);
-        }
+    for i in 0..BALL_SEGS {
+        let t0 = i as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
+        let t1 = (i + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
+        let (s0, rc0) = spoke(t0);
+        let (s1, rc1) = spoke(t1);
+        let a0 = pt(t0, s0);
+        let a1 = pt(t1, s1);
+        /* Inner cap (from centre to the horizon), centre-hemisphere colour. */
+        emit(cx, cy, center_col);
+        emit(a0.0, a0.1, center_col);
+        emit(a1.0, a1.1, center_col);
+        /* Outer band (horizon to rim), rim-hemisphere colour per spoke. */
+        let b0 = pt(t0, 1.0);
+        let b1 = pt(t1, 1.0);
+        emit(a0.0, a0.1, rc0);
+        emit(b0.0, b0.1, rc0);
+        emit(b1.0, b1.1, rc1);
+        emit(a0.0, a0.1, rc0);
+        emit(b1.0, b1.1, rc1);
+        emit(a1.0, a1.1, rc1);
     }
     sgl::end();
 
