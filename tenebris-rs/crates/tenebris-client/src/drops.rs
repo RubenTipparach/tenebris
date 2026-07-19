@@ -26,9 +26,9 @@ use tenebris_core::math::{
 };
 use tenebris_core::world::World;
 
+use crate::bag;
 use crate::gfx_math::Mat4;
 use crate::hex_mesher::HEX_ATLAS_U_STEP;
-use crate::inventory;
 use crate::player_ctrl::PlayerCtrl;
 use crate::renderer;
 
@@ -156,9 +156,9 @@ fn fallback_block(item: ItemId) -> Block {
 }
 
 /// Per-frame: age, magnet toward the player, collect in pickup range.
-/// Routing matches the old direct-add: placeable blocks go to the hotbar
-/// (`inventory::add`), everything else to the bag. A drop that doesn't
-/// fit (hotbar full) stays on the ground and retries as slots free up.
+/// EVERY collected item - block or resource - fills the HOTBAR first, then
+/// spills into the bag (`bag::give`). A drop that doesn't fully fit keeps its
+/// remainder on the ground and retries as slots free up (no item loss).
 pub fn update(dt: f32, p: &mut PlayerCtrl) {
     let player_at = dvec3_add(p.position, dvec3_scale(p.basis.up, 0.8));
     S.with(|c| {
@@ -171,7 +171,12 @@ pub fn update(dt: f32, p: &mut PlayerCtrl) {
             let dist = dvec3_length(to_player);
             let mut collected = false;
             if dist < PICKUP_RADIUS_M {
-                collected = try_collect(p, d.item, d.count);
+                /* Hotbar-first, then bag (bag::give). Any amount that doesn't
+                 * fit stays on the drop so it retries as slots free up - no
+                 * item loss on a partial pickup. */
+                let rem = bag::give(&mut p.inventory, &mut p.bag, d.item, d.count);
+                d.count = rem;
+                collected = rem == 0;
             } else if dist < MAGNET_RADIUS_M && dist > 1e-6 {
                 /* Accelerating pull, faster the closer it gets. */
                 let speed = MAGNET_SPEED_MPS * (1.0 + (MAGNET_RADIUS_M - dist));
@@ -185,21 +190,6 @@ pub fn update(dt: f32, p: &mut PlayerCtrl) {
             }
         }
     });
-}
-
-fn try_collect(p: &mut PlayerCtrl, item: ItemId, count: u16) -> bool {
-    if let Some(b) = items::to_block(item) {
-        /* Blocks stack into the hotbar one by one; bail (and keep the
-         * drop) if the hotbar is full for this type. */
-        for k in 0..count {
-            if !inventory::add(&mut p.inventory, b) {
-                return k > 0; /* partial pickups keep it simple: all-or-first */
-            }
-        }
-        true
-    } else {
-        p.bag.add(item, count) == 0
-    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -474,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn resources_route_to_the_bag_and_drops_despawn() {
+    fn resources_route_to_the_hotbar_first_and_drops_despawn() {
         init();
         let mut p = PlayerCtrl::default();
         inventory::init_empty(&mut p.inventory);
@@ -482,7 +472,11 @@ mod tests {
         p.basis.up = dvec3_make(1.0, 0.0, 0.0);
         spawn_at(dvec3_make(100.5, 0.0, 0.0), dvec3_make(1.0, 0.0, 0.0), items::COAL, 3);
         update(1.0 / 60.0, &mut p);
-        assert_eq!(p.bag.count_of(items::COAL), 3, "coal went to the bag");
+        /* Resources are NOT bag-only any more: they fill the hotbar first,
+         * just like blocks (the user's hotbar-first rule). */
+        assert_eq!(p.inventory.slots[0].item, items::COAL, "coal landed on the hotbar");
+        assert_eq!(p.inventory.slots[0].count, 3, "all 3 coal on the hotbar");
+        assert_eq!(p.bag.count_of(items::COAL), 0, "nothing spilled to the bag");
         assert_eq!(count(), 0);
 
         /* Far away: never collected, despawns after DESPAWN_S. */

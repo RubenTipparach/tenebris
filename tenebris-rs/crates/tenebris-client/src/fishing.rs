@@ -258,7 +258,9 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
             if roll < cfg::config().bonus_catch_chance {
                 n += 1;
             }
-            p.bag.add(item, n);
+            /* Landed catch is an item award to the player - hotbar first, then
+             * the bag (same routing as pickups + crafts). */
+            crate::bag::give(&mut p.inventory, &mut p.bag, item, n);
             HUD_LINE.with(|l| {
                 let name = caught_species.display_name();
                 *l.borrow_mut() = if n > 1 {

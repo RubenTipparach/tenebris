@@ -185,7 +185,10 @@ pub fn tick_craft(player: &PlayerHandle, dt: f32) {
             }
             let (item, count) = (ac.output, ac.count);
             p.crafting = None;
-            p.bag.add(item, count);
+            /* Finished craft lands on the HOTBAR first, then the bag - the
+             * same hotbar-first routing pickups use (bag::give). */
+            let pc = &mut *p;
+            bag::give(&mut pc.inventory, &mut pc.bag, item, count);
         }
     }
     /* Idle: start the next queued recipe. Its inputs were RESERVED when it
@@ -679,7 +682,11 @@ in: plank 2
         assert!(p.borrow().crafting.is_some(), "a craft is running");
         // Tick past the craft time -> the planks land in the bag.
         tick_craft(&p, 999.0);
-        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        {
+            /* Output lands hotbar-first now, so assert the TOTAL on hand. */
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 4);
+        }
         assert!(p.borrow().crafting.is_none());
     }
 
@@ -696,7 +703,11 @@ in: plank 2
         // inputs UP FRONT -> rejected (the queue is a real reservation).
         assert!(!craft_row(0));
         tick_craft(&p, 999.0);
-        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        {
+            /* Output lands hotbar-first now, so assert the TOTAL on hand. */
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 4);
+        }
         assert!(p.borrow().crafting.is_none());
     }
 
@@ -718,10 +729,17 @@ in: plank 2
         assert_eq!(p.borrow().bag.count_of(log), 1, "cancelled craft refunds its input");
         // One craft active + one still queued; run them out.
         tick_craft(&p, 999.0); // active finishes (4 planks), queued starts
-        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        {
+            /* Output lands hotbar-first now, so assert the TOTAL on hand. */
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 4);
+        }
         assert!(p.borrow().crafting.is_some(), "the surviving queued craft runs");
         tick_craft(&p, 999.0);
-        assert_eq!(p.borrow().bag.count_of(PLANK), 8);
+        {
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 8);
+        }
         assert!(p.borrow().crafting.is_none());
         clear_queue();
     }
@@ -736,11 +754,18 @@ in: plank 2
         // First finishes; the queued one starts immediately, paying its
         // inputs at its turn (consumes log 2).
         tick_craft(&p, 999.0);
-        assert_eq!(p.borrow().bag.count_of(PLANK), 4);
+        {
+            /* Output lands hotbar-first now, so assert the TOTAL on hand. */
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 4);
+        }
         assert!(p.borrow().crafting.is_some(), "queued craft now running");
         assert_eq!(p.borrow().inventory.slots[1].count, 0, "second log spent");
         tick_craft(&p, 999.0);
-        assert_eq!(p.borrow().bag.count_of(PLANK), 8);
+        {
+            let pb = p.borrow();
+            assert_eq!(bag::available(&pb.inventory, &pb.bag, PLANK), 8);
+        }
         assert!(p.borrow().crafting.is_none());
         // Queue is transient: nothing left behind.
         clear_queue();

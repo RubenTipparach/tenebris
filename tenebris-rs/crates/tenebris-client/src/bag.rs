@@ -194,20 +194,73 @@ fn hotbar_take(inv: &mut Inventory, item: ItemId, mut n: u32) -> u32 {
     n
 }
 
+/// Deposit `n` of `item` into the HOTBAR - topping up an existing matching
+/// stack, else the first empty slot. Returns the remainder that didn't fit
+/// (only nonzero when every slot is occupied by a different item).
+///
+/// Hotbar stacks are UNBOUNDED (matching the old block-only `inventory::add`
+/// and the creative "9999 = infinite" markers) - this changes only the
+/// ROUTING (all items land here first), never the per-slot stacking. The bag
+/// keeps its own stack caps.
+fn hotbar_add(inv: &mut Inventory, item: ItemId, n: u16) -> u16 {
+    for s in inv.slots.iter_mut() {
+        if s.item == item && s.count > 0 {
+            s.count += n as i32;
+            return 0;
+        }
+    }
+    for s in inv.slots.iter_mut() {
+        if s.count <= 0 || s.item == Block::Air as u16 {
+            s.item = item;
+            s.count = n as i32;
+            s.dur = 0; /* fresh: an item deposited here carries no wear */
+            return 0;
+        }
+    }
+    n /* hotbar full of other items */
+}
+
+/// Give `n` of `item` to the player, filling the HOTBAR first (the
+/// quick-access slots), then the bag. Returns the remainder that fit nowhere.
+///
+/// This is the SINGLE collection path for BOTH pickups and crafted output -
+/// the standing rule that new items land on the hotbar until it is full, then
+/// spill into the bag. Route every "item goes to the player" site through
+/// here so the behaviour can't drift between pickup and craft.
+pub fn give(inv: &mut Inventory, bag: &mut Bag, item: ItemId, n: u16) -> u16 {
+    let rem = hotbar_add(inv, item, n);
+    if rem == 0 {
+        return 0;
+    }
+    bag.add(item, rem)
+}
+
+/// True if `n` of `item` would fully fit across hotbar + bag, matching
+/// [`give`]'s hotbar-first routing (used for the atomic craft room check).
+/// The hotbar stacks unbounded, so ONE matching-or-empty slot holds any `n`;
+/// only when every slot is a different item does the bag's cap matter.
+pub fn room_for(inv: &Inventory, bag: &Bag, item: ItemId, n: u16) -> bool {
+    let hotbar_has_room = inv.slots.iter().any(|s| {
+        (s.count > 0 && s.item == item) || s.count <= 0 || s.item == Block::Air as u16
+    });
+    hotbar_has_room || bag.room_for(item, n)
+}
+
 /// Available count of `item` across hotbar + bag.
 pub fn available(inv: &Inventory, bag: &Bag, item: ItemId) -> u32 {
     hotbar_count(inv, item) + bag.count_of(item)
 }
 
-/// True if every input is on hand and the output fits the bag.
+/// True if every input is on hand and the output fits (hotbar + bag).
 pub fn can_craft(inv: &Inventory, bag: &Bag, r: &Recipe) -> bool {
     r.inputs.iter().all(|ing| available(inv, bag, ing.item) >= ing.count as u32)
-        && bag.room_for(r.output.item, r.output.count)
+        && room_for(inv, bag, r.output.item, r.output.count)
 }
 
 /// Craft one batch of `r`. Atomic: returns false and mutates nothing if
 /// the inputs aren't on hand or the output won't fit. Inputs drain from
-/// the bag first, then the hotbar; the output lands in the bag.
+/// the bag first, then the hotbar; the output lands on the HOTBAR first,
+/// then the bag (via [`give`]).
 pub fn try_craft(inv: &mut Inventory, bag: &mut Bag, r: &Recipe) -> bool {
     if !can_craft(inv, bag, r) {
         return false;
@@ -219,7 +272,7 @@ pub fn try_craft(inv: &mut Inventory, bag: &mut Bag, r: &Recipe) -> bool {
             debug_assert_eq!(rem, 0, "can_craft lied about availability");
         }
     }
-    let leftover = bag.add(r.output.item, r.output.count);
+    let leftover = give(inv, bag, r.output.item, r.output.count);
     debug_assert_eq!(leftover, 0, "can_craft lied about room");
     true
 }
@@ -362,7 +415,7 @@ in: stick 2
     }
 
     #[test]
-    fn craft_pulls_logs_from_hotbar_into_bag() {
+    fn craft_pulls_logs_from_hotbar_output_lands_hotbar_first() {
         let mut inv = Inventory::default();
         inventory::init_empty(&mut inv);
         // 5 logs in a hotbar slot (as Wood blocks, like a tree chop)
@@ -371,7 +424,11 @@ in: stick 2
 
         assert!(try_craft(&mut inv, &mut bag, &recipe("planks")));
         assert_eq!(inv.slots[1].count, 4, "one log consumed from hotbar");
-        assert_eq!(bag.count_of(PLANK), 4, "planks land in the bag");
+        // Output lands on the HOTBAR first (slot 0 is the first empty), not
+        // the bag - the hotbar-first rule.
+        assert_eq!(inv.slots[0].item, PLANK, "planks land on the hotbar");
+        assert_eq!(inv.slots[0].count, 4);
+        assert_eq!(bag.count_of(PLANK), 0, "nothing spilled to the bag");
     }
 
     #[test]
@@ -381,19 +438,22 @@ in: stick 2
         inv.slots[1] = crate::inventory::InvSlot::block(Block::Wood, 8);
         let mut bag = Bag::default();
 
+        /* Outputs now land on the hotbar first, so assert the TOTAL on hand
+         * (available = hotbar + bag) - routing-agnostic, verifies the craft
+         * math either way. */
         // 2 logs -> 8 planks
         assert!(try_craft(&mut inv, &mut bag, &recipe("planks")));
         assert!(try_craft(&mut inv, &mut bag, &recipe("planks")));
-        assert_eq!(bag.count_of(PLANK), 8);
+        assert_eq!(available(&inv, &bag, PLANK), 8);
         // 1 batch sticks: 2 planks -> 4 sticks
         assert!(try_craft(&mut inv, &mut bag, &recipe("sticks")));
-        assert_eq!(bag.count_of(PLANK), 6);
-        assert_eq!(bag.count_of(STICK), 4);
+        assert_eq!(available(&inv, &bag, PLANK), 6);
+        assert_eq!(available(&inv, &bag, STICK), 4);
         // pickaxe: 3 planks + 2 sticks -> 1 tool
         assert!(try_craft(&mut inv, &mut bag, &recipe("flint-pickaxe")));
-        assert_eq!(bag.count_of(PLANK), 3);
-        assert_eq!(bag.count_of(STICK), 2);
-        assert_eq!(bag.count_of(WOOD_PICKAXE), 1);
+        assert_eq!(available(&inv, &bag, PLANK), 3);
+        assert_eq!(available(&inv, &bag, STICK), 2);
+        assert_eq!(available(&inv, &bag, WOOD_PICKAXE), 1);
     }
 
     #[test]
@@ -417,5 +477,59 @@ in: stick 2
         let mut bag = Bag::default();
         bag.add(wood_id(), 2); // a log can also sit in the bag
         assert_eq!(available(&inv, &bag, wood_id()), 5);
+    }
+
+    /// The user's hotbar-first rule: a fresh item lands on the hotbar, not the
+    /// bag, while the hotbar has room.
+    #[test]
+    fn give_fills_hotbar_before_bag() {
+        let mut inv = Inventory::default();
+        inventory::init_empty(&mut inv);
+        let mut bag = Bag::default();
+        assert_eq!(give(&mut inv, &mut bag, PLANK, 5), 0);
+        assert_eq!(inv.slots[0].item, PLANK);
+        assert_eq!(inv.slots[0].count, 5);
+        assert_eq!(bag.count_of(PLANK), 0, "hotbar first - nothing in the bag yet");
+    }
+
+    /// A matching hotbar stack tops up before any empty slot / the bag.
+    #[test]
+    fn give_tops_up_a_matching_hotbar_stack() {
+        let mut inv = Inventory::default();
+        inventory::init_empty(&mut inv);
+        inv.slots[2] = crate::inventory::InvSlot::of(PLANK, 1);
+        let mut bag = Bag::default();
+        assert_eq!(give(&mut inv, &mut bag, PLANK, 3), 0);
+        assert_eq!(inv.slots[2].count, 4, "topped up the existing hotbar stack");
+        assert_eq!(bag.count_of(PLANK), 0);
+    }
+
+    /// Only when the hotbar can't take an item does it spill into the bag.
+    #[test]
+    fn give_spills_to_bag_when_hotbar_full() {
+        let mut inv = Inventory::default();
+        inventory::init_empty(&mut inv);
+        let mut bag = Bag::default();
+        /* Every hotbar slot holds a NON-matching, non-stackable tool, so PLANK
+         * finds neither a matching stack nor an empty slot. */
+        for s in inv.slots.iter_mut() {
+            *s = crate::inventory::InvSlot::of(WOOD_PICKAXE, 1);
+        }
+        assert_eq!(give(&mut inv, &mut bag, PLANK, 3), 0);
+        assert_eq!(bag.count_of(PLANK), 3, "spilled to the bag");
+    }
+
+    /// room_for spans hotbar + bag (matches give's routing).
+    #[test]
+    fn room_for_counts_hotbar_and_bag() {
+        let mut inv = Inventory::default();
+        inventory::init_empty(&mut inv);
+        let bag = Bag::default();
+        assert!(room_for(&inv, &bag, PLANK, 1), "empty hotbar has room");
+        let mut full = inv;
+        for s in full.slots.iter_mut() {
+            *s = crate::inventory::InvSlot::of(WOOD_PICKAXE, 1);
+        }
+        assert!(room_for(&full, &bag, PLANK, 1), "hotbar full but the bag has room");
     }
 }
