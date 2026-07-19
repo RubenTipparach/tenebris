@@ -7013,6 +7013,9 @@ fn frame_inner(app: &mut App) {
             let ride_view = crate::falling_stage::StageView {
                 center,
                 axis: p.basis.up,
+                /* Roll the mesh with the ship: fwd is the roll reference so
+                 * Q/E visibly spin the model, not just the attitude arrows. */
+                roll_ref: p.basis.fwd,
                 flow: p.velocity,
                 parts,
                 heat: 0.0,
@@ -7055,6 +7058,9 @@ fn frame_inner(app: &mut App) {
                 let parked_view = crate::falling_stage::StageView {
                     center,
                     axis,
+                    /* Parked ship: roll not tracked in the park state yet, use
+                     * the derived frame (zero reference). */
+                    roll_ref: dvec3_make(0.0, 0.0, 0.0),
                     flow: dvec3_make(0.0, 0.0, 0.0),
                     parts,
                     heat: 0.0,
@@ -7225,7 +7231,12 @@ fn frame_inner(app: &mut App) {
      * up: the hotbar's sdtx slot digits flush on top of ALL geometry
      * including egui, so the bar - numbers and all - must vanish together
      * instead of the digits bleeding through the panel. */
-    if !menu::pause_active() && !screens::any_open() {
+    /* The solar map is a "screen", but it is still FLIGHT mode - the flight
+     * instruments (navball, rocket HUD) must stay up over the chart. So the HUD
+     * block also runs when riding with only the map open; the on-foot HUD
+     * inside is gated on !flying and stays hidden either way. */
+    let map_flying = rocket_ride::is_riding() && solar_map::is_open();
+    if !menu::pause_active() && (!screens::any_open() || map_flying) {
         /* Flying a rocket is its own mode: the whole block-interaction HUD
          * (hotbar, mining bar, and every "[E] do this to the thing you're
          * aiming at" prompt) is meaningless from a cockpit, and interact
@@ -7708,7 +7719,7 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
              * handles. The HUD text line carries the required-vs-available dv. */
             ui.label(
                 egui::RichText::new(
-                    "hold Space: throttle   WASD: steer   Q/R: roll\n\
+                    "hold Space: throttle   WASD: steer   Q/E: roll\n\
                      drag LMB: orbit camera   wheel: zoom   O: system map\n\
                      click orbit line: plan a node   drag its center: slide it   RMB center: clear",
                 )
@@ -7903,8 +7914,12 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
      * -> smelting). Checked before the inventory toggle so the block is
      * the in-world entry point; Shift+E stays the inventory binding, and
      * a non-station target falls through to the normal E behaviour. */
+    /* Interact (inventory / board / open machine) is disabled while the solar
+     * map is open - there you are flying and the key would just pop the
+     * inventory over the chart. */
     let interact_pressed = e._type == sapp::EventType::KeyDown
-        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact);
+        && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact)
+        && !solar_map::is_open();
     /* Re-board a ship parked in the world: on foot within reach of a ship
      * you climbed out of (it did NOT despawn), Interact straps you back in
      * and flies it from where it floats. Checked before the block-target

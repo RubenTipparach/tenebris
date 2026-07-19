@@ -40,6 +40,11 @@ thread_local! {
 pub struct StageView {
     pub center: DVec3,
     pub axis: DVec3,
+    /// Roll reference: the ship's forward direction, so the mesh's box faces
+    /// rotate with roll input instead of sitting in a derived frame that only
+    /// tracks the nose. Zero = no reference (fall back to a derived frame; used
+    /// by tumbling jettisoned stages, which have no meaningful roll).
+    pub roll_ref: DVec3,
     pub flow: DVec3,
     pub parts: Vec<u16>,
     pub heat: f32,
@@ -150,6 +155,8 @@ pub fn views() -> Vec<StageView> {
             .map(|s| StageView {
                 center: s.pos,
                 axis: s.axis,
+                /* Tumbling jettisoned stage: no meaningful roll, derived frame. */
+                roll_ref: dvec3_make(0.0, 0.0, 0.0),
                 flow: s.vel,
                 parts: s.parts.clone(),
                 heat: if force { s.heat.max(1.2) } else { s.heat },

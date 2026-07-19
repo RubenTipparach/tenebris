@@ -234,8 +234,8 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (V, Action::Eat),
         (T, Action::Plant),
         (Q, Action::RollLeft),
-        (R, Action::RollRight),
-        (E, Action::Interact),
+        (E, Action::RollRight),
+        (Tab, Action::Interact),
         (X, Action::Stage),
         /* Beside X so the rocket keys cluster. Not V (the JS's exit key) -
          * V is Eat here, and the bindings are the player's muscle memory,
@@ -386,27 +386,27 @@ mod tests {
     fn defaults_bind_the_core_scheme() {
         set_bindings(default_bindings());
         assert_eq!(action_for_key(Keycode::W), Some(Action::MoveForward));
-        assert_eq!(action_for_key(Keycode::E), Some(Action::Interact));
+        assert_eq!(action_for_key(Keycode::Tab), Some(Action::Interact));
         assert_eq!(action_for_key(Keycode::Q), Some(Action::RollLeft));
-        assert_eq!(action_for_key(Keycode::R), Some(Action::RollRight));
+        assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
         assert_eq!(action_for_key(Keycode::Num1), Some(Action::Hotbar(0)));
         assert_eq!(action_for_key(Keycode::Num0), Some(Action::Hotbar(9)));
-        /* Roll moved off E; E is Interact now. */
-        assert_ne!(action_for_key(Keycode::E), Some(Action::RollRight));
+        /* Roll is Q/E; inventory/interact moved to Tab so E frees up for roll. */
+        assert_ne!(action_for_key(Keycode::E), Some(Action::Interact));
     }
 
     #[test]
     fn prompt_label_follows_the_binding() {
         set_bindings(default_bindings());
-        assert_eq!(action_label(Action::Interact), "E");
+        assert_eq!(action_label(Action::Interact), "Tab");
+        /* E is roll-right in the default scheme, not interact. */
+        assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
         /* Rebinding interact moves the prompt with it. */
         let (b, warn) = parse("interact: F\n");
         assert!(warn.is_empty(), "{warn:?}");
         set_bindings(b);
         assert_eq!(action_label(Action::Interact), "F");
         assert_eq!(action_for_key(Keycode::F), Some(Action::Interact));
-        /* E no longer interacts once re-bound away. */
-        assert_eq!(action_for_key(Keycode::E), None);
     }
 
     #[test]

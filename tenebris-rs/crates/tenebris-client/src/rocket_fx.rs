@@ -23,7 +23,7 @@ use std::cell::RefCell;
 use sokol::gl as sgl;
 
 use tenebris_core::math::{
-    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, DVec3,
+    dvec3_add, dvec3_cross, dvec3_dot, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3,
 };
 use tenebris_core::rocket::{part_role, PartRole};
 use tenebris_core::world::{World, WORLD_MAX_DEPTH};
@@ -182,6 +182,26 @@ fn basis_up(up: DVec3) -> [f32; 16] {
     };
     let right = dvec3_normalize(dvec3_cross(reference, up));
     let fwd = dvec3_cross(up, right);
+    [
+        right.x as f32, right.y as f32, right.z as f32, 0.0,
+        up.x as f32, up.y as f32, up.z as f32, 0.0,
+        fwd.x as f32, fwd.y as f32, fwd.z as f32, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+/// Model basis oriented with a ROLL REFERENCE: `up` is the nose, `fwd_ref` the
+/// ship's forward direction, so the mesh's box faces roll with the ship instead
+/// of sitting in a nose-only derived frame (which never shows roll). Falls back
+/// to [`basis_up`] when `fwd_ref` is zero or parallel to `up`.
+fn basis_up_fwd(up: DVec3, fwd_ref: DVec3) -> [f32; 16] {
+    let up = dvec3_normalize(up);
+    let mut fwd = dvec3_sub(fwd_ref, dvec3_scale(up, dvec3_dot(fwd_ref, up)));
+    if dvec3_dot(fwd, fwd) < 1e-9 {
+        return basis_up(up); /* no usable roll reference */
+    }
+    fwd = dvec3_normalize(fwd);
+    let right = dvec3_cross(fwd, up);
     [
         right.x as f32, right.y as f32, right.z as f32, 0.0,
         up.x as f32, up.y as f32, up.z as f32, 0.0,
@@ -649,7 +669,9 @@ pub fn draw_falling(view: Mat4, proj: Mat4, world: &World, stages: &[crate::fall
         let Some(models) = mb.as_ref() else { return };
         for s in stages {
             let axis = dvec3_normalize(s.axis);
-            let basis = basis_up(axis);
+            /* Roll-aware frame: the ship's fwd reference rolls the mesh with the
+             * roll keys; tumbling stages (zero ref) fall back to the derived. */
+            let basis = basis_up_fwd(axis, s.roll_ref);
             let total_h = s.parts.len() as f32 * PART_HEIGHT * ROCKET_SCALE;
             let lit = renderer::entity_sun_brightness(s.center).clamp(0.15, 1.5);
             /* Base = half a stack down the axis from the centre; the shared

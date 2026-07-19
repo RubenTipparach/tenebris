@@ -1082,12 +1082,11 @@ mod tests {
         /* Roll is Q (left) / R (right) - E is the interact/inventory key now
          * and no longer rolls (controls.yaml default scheme). */
         handle_event(&key(EventType::KeyDown, Keycode::Q));
-        handle_event(&key(EventType::KeyDown, Keycode::R));
-        assert!(state().phys.roll_left && state().phys.roll_right);
-        /* E maps to Interact, which is handled at the high level, so it must
-         * NOT drive roll here. */
-        handle_event(&key(EventType::KeyUp, Keycode::R));
         handle_event(&key(EventType::KeyDown, Keycode::E));
+        assert!(state().phys.roll_left && state().phys.roll_right);
+        /* Roll-right moved to E; R is unbound now, so it must NOT drive roll. */
+        handle_event(&key(EventType::KeyUp, Keycode::E));
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(!state().phys.roll_right);
     }
 

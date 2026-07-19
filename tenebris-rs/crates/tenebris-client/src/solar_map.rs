@@ -79,6 +79,9 @@ struct MapScreen {
     pitch: f32,
     /// Camera distance from the focus, metres.
     dist_m: f64,
+    /// Whether the SYSTEM BODIES list panel is shown (toggled by a button so
+    /// it can be hidden to clear the chart).
+    bodies_panel: bool,
 }
 
 thread_local! {
@@ -91,6 +94,7 @@ thread_local! {
             yaw: 0.7,
             pitch: 0.55,
             dist_m: 0.0, /* 0 = "apply default on open" */
+            bodies_panel: true,
         })
     };
 }
@@ -264,6 +268,7 @@ pub fn camera(aspect: f32) -> Option<(Mat4, Mat4, DVec3)> {
             yaw,
             pitch,
             dist_m: dist,
+            bodies_panel: true,
         },
         t,
     );
@@ -368,24 +373,35 @@ pub fn egui_ui(ctx: &egui::Context) {
     if !is_open() {
         return;
     }
-    let (focus, dist) = G.with(|c| {
+    let (focus, dist, bodies_panel) = G.with(|c| {
         let g = c.borrow();
-        (g.focus, g.dist_m)
+        (g.focus, g.dist_m, g.bodies_panel)
     });
 
-    /* ---- Fly-out body panel (right edge, slides in with the mode). ---- */
-    egui::SidePanel::right("solar-bodies")
-        .exact_width(panel_w())
-        .resizable(false)
-        .show_animated(ctx, true, |ui| {
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("SYSTEM BODIES")
-                    .small()
-                    .color(egui::Color32::from_rgb(0x8a, 0x94, 0xa8)),
-            );
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    /* ---- Body list: a bounded, TOGGLEABLE window on the right (not a full-
+     * height SidePanel, which swallowed the whole edge). Capped height with an
+     * inner scroll so it never runs off the screen, and hidden entirely when
+     * the pilot toggles it off to clear the chart. ---- */
+    if bodies_panel {
+        egui::Window::new("SYSTEM BODIES")
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 44.0))
+            .fixed_size(egui::vec2(panel_w(), 0.0))
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ctx, |ui| {
+                ui.set_width(panel_w());
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("SYSTEM BODIES")
+                        .small()
+                        .color(egui::Color32::from_rgb(0x8a, 0x94, 0xa8)),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(340.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
                 ship_card(ui, focus);
                 ui.add_space(2.0);
                 /* The orbital station rides Tenebris orbit - list it right
@@ -407,8 +423,9 @@ pub fn egui_ui(ctx: &egui::Context) {
                 for id in asteroids() {
                     body_card(ui, id, focus, 0.0);
                 }
+                    });
             });
-        });
+    }
 
     /* ---- HUD strip: focus / distance / target + hints. ---- */
     egui::Area::new(egui::Id::new("solar-hud"))
@@ -424,14 +441,24 @@ pub fn egui_ui(ctx: &egui::Context) {
                         Focus::Body(id) => planet::get(id).name,
                         Focus::Station => "Orbital Station",
                     };
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "MAP - focus: {}  -  {}",
-                            focus_name,
-                            fmt_dist(dist)
-                        ))
-                        .color(egui::Color32::from_rgb(0xd8, 0xde, 0xe8)),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "MAP - focus: {}  -  {}",
+                                focus_name,
+                                fmt_dist(dist)
+                            ))
+                            .color(egui::Color32::from_rgb(0xd8, 0xde, 0xe8)),
+                        );
+                        /* Show / hide the SYSTEM BODIES list to clear the chart. */
+                        let label = if bodies_panel { "Bodies [hide]" } else { "Bodies [show]" };
+                        if ui.small_button(egui::RichText::new(label).color(TGT_COL)).clicked() {
+                            G.with(|c| {
+                                let mut g = c.borrow_mut();
+                                g.bodies_panel = !g.bodies_panel;
+                            });
+                        }
+                    });
                     let tname = nav_ui::target_name();
                     if tname != "none" {
                         if ui
