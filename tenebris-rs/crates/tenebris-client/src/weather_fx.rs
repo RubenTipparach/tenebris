@@ -175,8 +175,12 @@ fn land_alt(w: &World, dir: DVec3) -> f64 {
 }
 
 /// Push one billboarded streak quad (top -> down `len` along `up`, width from
-/// the camera `right`). Colour must be set by the caller.
-fn push_streak(top: DVec3, up: DVec3, right: DVec3, len: f64, half_w: f64) {
+/// the camera `right`). Colour must be set by the caller. `cam` is the
+/// absolute camera: the streak is baked at `top - cam` so its f32 vertices
+/// stay near the origin (paired with the eye-at-origin scene view), which
+/// stops the ~150 km heliocentric jitter.
+fn push_streak(top: DVec3, up: DVec3, right: DVec3, len: f64, half_w: f64, cam: DVec3) {
+    let top = dvec3_sub(top, cam);
     let bot = dvec3_sub(top, dvec3_scale(up, len));
     let hr = dvec3_scale(right, half_w);
     let (tl, tr, bl, br) = (
@@ -343,6 +347,9 @@ fn draw_near_shower(
     let (rain_fall, rain_len, rain_w, rain_col, rain_a) = style(false);
     let (snow_fall, snow_len, snow_w, snow_col, snow_a) = style(true);
 
+    /* Floating origin: rebase every streak by the absolute camera (the caller
+     * draws with the eye-at-origin scene view). */
+    let cam = renderer::camera_world_d();
     for i in 0..n as u32 {
         let a = hashf(i, 1) * std::f64::consts::TAU;
         let rad = hashf(i, 2).sqrt() * DISK_R_M;
@@ -382,7 +389,7 @@ fn draw_near_shower(
         };
         let top = dvec3_add(dvec3_add(base_pt, dvec3_scale(up, h)), sway);
         sgl::c4f(col[0], col[1], col[2], alpha);
-        push_streak(top, up, right, streak_len, half_w);
+        push_streak(top, up, right, streak_len, half_w, cam);
     }
     let _ = view;
 }
@@ -409,6 +416,10 @@ fn draw_distant_shafts(
     }
     let wcfg = weather::config();
     let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    /* Floating origin: rebase every shaft/sheet by the absolute camera (the
+     * caller draws with the eye-at-origin scene view) so f32 vertices stay
+     * near the origin at heliocentric scale. */
+    let cam = renderer::camera_world_d();
 
     /* Same drifting sample frame as the clouds so shafts sit under the puffs
      * they fall from. */
@@ -557,8 +568,11 @@ fn draw_distant_shafts(
                 };
                 let a = alpha * wcfg.rain_impostor_alpha * t_imp;
                 let half_w = ccfg.cell_m as f64 * 0.5;
-                let b0 = dvec3_add(base_pt, dvec3_scale(right, -half_w));
-                let b1 = dvec3_add(base_pt, dvec3_scale(right, half_w));
+                /* Rebased base so the impostor sheet's f32 vertices stay near
+                 * the origin (see `cam` above). */
+                let base_draw = dvec3_sub(base_pt, cam);
+                let b0 = dvec3_add(base_draw, dvec3_scale(right, -half_w));
+                let b1 = dvec3_add(base_draw, dvec3_scale(right, half_w));
                 let u0 = dvec3_add(b0, dvec3_scale(up, col_h));
                 let u1 = dvec3_add(b1, dvec3_scale(up, col_h));
                 sgl::c4f(wcol[0], wcol[1], wcol[2], a);
@@ -644,7 +658,7 @@ fn draw_distant_shafts(
                 let seg = streak_cfg.min(col_h);
                 let top = dvec3_add(dvec3_add(base_pt, off), dvec3_scale(up, top_h));
                 sgl::c4f(wcol[0], wcol[1], wcol[2], alpha * life as f32);
-                push_streak(top, up, right, seg.min(top_h).max(0.0), wwidth);
+                push_streak(top, up, right, seg.min(top_h).max(0.0), wwidth, cam);
                 drawn += 1;
             }
         }

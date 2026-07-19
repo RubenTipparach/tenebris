@@ -353,6 +353,13 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
                 let d = dvec3_sub(pos, anchor);
                 d.x * d.x + d.y * d.y + d.z * d.z
             };
+            /* Floating origin: `pos` stays ABSOLUTE for lighting + the LOD
+             * distance above, but the puff GEOMETRY is baked around a centre
+             * rebased by the camera (`anchor` = camera_world_d) so the f32
+             * vertices stay near the origin. Paired with the eye-at-origin
+             * scene view the caller now passes, this stops the ~150 km
+             * heliocentric jitter. */
+            let pos_draw = dvec3_sub(pos, anchor);
 
             /* Local frame + day/night lit colour (moonlit floor). Rain
              * clouds darken their base a touch. */
@@ -381,10 +388,10 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
             let hw = cfg.puff_w_m as f64 * sz;
             let hh = cfg.puff_h_m as f64 * sz * if cell.raining { 1.7 } else { 1.0 };
             if d2 > detail2 {
-                push_puff_box(pos, up, t1, t2, hw, hh * 1.4, hw * 0.8, col);
+                push_puff_box(pos_draw, up, t1, t2, hw, hh * 1.4, hw * 0.8, col);
                 continue;
             }
-            push_puff_box(pos, up, t1, t2, hw, hh, hw * 0.8, col);
+            push_puff_box(pos_draw, up, t1, t2, hw, hh, hw * 0.8, col);
             /* Mature clouds grow a cluster of lumps AROUND the slab - not
              * just stacked on top - so the underside is bumpy cumulus when
              * you look straight up, instead of a flat floating plate. Each
@@ -408,7 +415,7 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, _p: &PlayerCtrl, time_s: f64) {
                         ),
                         dvec3_scale(up, voff),
                     );
-                    let lc = dvec3_add(pos, off);
+                    let lc = dvec3_add(pos_draw, off);
                     let ls = 0.4 + 0.35 * hash3(ti, pj.wrapping_add(7 * l), SALT_SIZE) as f64;
                     push_puff_box(lc, up, t1, t2, hw * ls, hh * ls * 1.3, hw * ls * 0.95, col);
                 }
@@ -579,6 +586,12 @@ fn draw_cloud_shell(
 
     let du = (drift_ang / std::f64::consts::TAU) as f32;
     let night_min = cfg.night_min;
+    /* Floating origin: rebase the shell vertices by the absolute camera so
+     * the f32 positions stay near the origin (the caller draws with the
+     * eye-at-origin scene view) - both the ~150 km heliocentric jitter AND
+     * the depth test against the rebased distant planet need this. Lighting
+     * still samples the ABSOLUTE shell point. */
+    let cam = renderer::camera_world_d();
     /* One vertex: grid (i,j) in [0..LON]x[0..LAT] -> world pos on the
      * shell + scrolled UV + day/night-lit colour. UV comes straight from
      * the grid index (not atan2) so quads never straddle the u seam. */
@@ -591,13 +604,14 @@ fn draw_cloud_shell(
         let d = dvec3_make(cl * lon.cos(), lat.sin(), cl * lon.sin());
         let pos_w = dvec3_add(center, dvec3_scale(d, shell_r));
         let lit = renderer::entity_sun_brightness(pos_w).max(night_min);
+        let pos_draw = dvec3_sub(pos_w, cam);
         let r = cfg.color[0] * lit;
         let g = cfg.color[1] * lit;
         let b = cfg.color[2] * lit;
         sgl::v3f_t2f_c4f(
-            pos_w.x as f32,
-            pos_w.y as f32,
-            pos_w.z as f32,
+            pos_draw.x as f32,
+            pos_draw.y as f32,
+            pos_draw.z as f32,
             ug as f32 + du,
             vg as f32,
             r,

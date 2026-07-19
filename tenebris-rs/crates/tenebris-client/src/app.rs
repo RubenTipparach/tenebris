@@ -7241,11 +7241,11 @@ fn frame_inner(app: &mut App) {
         let w = phys_world.borrow();
         let p = app.player.borrow();
         profiler::begin("draw-clouds");
-        clouds::draw(view, proj, &w, &p, sim_t);
+        clouds::draw(view_scene, proj, &w, &p, sim_t);
         profiler::end("draw-clouds");
         /* Rain / snow around the player when their column is precipitating. */
         profiler::begin("draw-weather");
-        weather_fx::draw(view, proj, &w, &p, sim_t);
+        weather_fx::draw(view_scene, proj, &w, &p, sim_t);
         profiler::end("draw-weather");
     }
 
