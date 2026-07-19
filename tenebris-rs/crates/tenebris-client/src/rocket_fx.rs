@@ -219,7 +219,7 @@ fn draw_model(model: &RocketModel, base: DVec3, basis: &[f32; 16], scale: f32, l
         sokol::gfx::Sampler { id: renderer::rocket_sampler_id() },
     );
     sgl::push_matrix();
-    sgl::translate(base.x as f32, base.y as f32, base.z as f32);
+    renderer::sgl_translate_scene(base);
     sgl::mult_matrix(&basis[0]);
     sgl::scale(scale, scale, scale);
     sgl::begin_triangles();

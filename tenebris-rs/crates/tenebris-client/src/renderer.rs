@@ -2226,6 +2226,17 @@ pub fn sgl_world_end() {
     sgl::set_context(sgl::default_context());
 }
 
+/// `sgl::translate` to a WORLD position, floating-origin rebased to the camera
+/// (`pos - camera_world_d` in f64, then the small f32). Props (animals, the
+/// rocket, crops, dropped items ...) draw at absolute world positions; paired
+/// with the eye-at-origin scene view this keeps them precise at any world scale
+/// instead of jittering at ~150 km (the f32 `view * translate(abs_pos)`
+/// catastrophic-cancellation the heliocentric move exposed).
+pub fn sgl_translate_scene(pos: DVec3) {
+    let cam = R.with(|c| c.borrow().env.camera_world_d);
+    sgl::translate((pos.x - cam.x) as f32, (pos.y - cam.y) as f32, (pos.z - cam.z) as f32);
+}
+
 /// Route sgl recording into the DEFAULT (swapchain) context for TRANSPARENT
 /// atmospheric FX (rain, reentry plasma). Unlike [`sgl_world_begin`] - which
 /// records into the offscreen context that flushes BEFORE the water pass - the

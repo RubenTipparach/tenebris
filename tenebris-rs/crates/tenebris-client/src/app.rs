@@ -6922,8 +6922,8 @@ fn frame_inner(app: &mut App) {
      * crops / drops / bonfires); clouds and weather get their own scopes
      * below since storms are the usual suspects. */
     profiler::begin("draw-entities");
-    animals::draw(view, proj, renderer::time_seconds());
-    crate::rocket_fx::draw(view, proj, &app.world.borrow());
+    animals::draw(view_scene, proj, renderer::time_seconds());
+    crate::rocket_fx::draw(view_scene, proj, &app.world.borrow());
     /* Orbital trading station drum, sweeping its on-rails track (full drum
      * near, a glint quad from afar - station.yaml lod_full_range_m). */
     profiler::begin("draw-station");
@@ -7029,7 +7029,7 @@ fn frame_inner(app: &mut App) {
             let (nozzle, ride_up) = (p.position, p.basis.up);
             drop(p);
             crate::rocket_fx::draw_falling(
-                view,
+                view_scene,
                 proj,
                 &app.world.borrow(),
                 std::slice::from_ref(&ride_view),
@@ -7072,7 +7072,7 @@ fn frame_inner(app: &mut App) {
                     heat: 0.0,
                 };
                 crate::rocket_fx::draw_falling(
-                    view,
+                    view_scene,
                     proj,
                     &app.world.borrow(),
                     std::slice::from_ref(&parked_view),
@@ -7086,7 +7086,7 @@ fn frame_inner(app: &mut App) {
     {
         let views = crate::falling_stage::views();
         if !views.is_empty() {
-            crate::rocket_fx::draw_falling(view, proj, &app.world.borrow(), &views);
+            crate::rocket_fx::draw_falling(view_scene, proj, &app.world.borrow(), &views);
             let p = app.player.borrow();
             let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
             let shells: Vec<crate::reentry_fx::ShellStage> = views
@@ -7116,8 +7116,8 @@ fn frame_inner(app: &mut App) {
         crate::reentry_fx::draw(view, proj, eye, p.velocity, p.basis.fwd, p.basis.up);
     }
     fishing::draw(view, proj, &app.player.borrow());
-    crops::draw(view, proj);
-    drops::draw(view, proj, renderer::time_seconds());
+    crops::draw(view_scene, proj);
+    drops::draw(view_scene, proj, renderer::time_seconds());
     {
         let w = app.world.borrow();
         bonfire_fx::draw(&w, view, proj, renderer::time_seconds());

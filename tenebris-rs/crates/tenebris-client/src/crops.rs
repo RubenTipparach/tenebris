@@ -713,7 +713,7 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
     let g = growth.clamp(0.05, 1.0);
 
     sgl::push_matrix();
-    sgl::translate(pos.x as f32, pos.y as f32, pos.z as f32);
+    crate::renderer::sgl_translate_scene(pos);
     sgl::mult_matrix(&basis[0]);
 
     match kind {

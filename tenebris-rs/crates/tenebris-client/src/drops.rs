@@ -216,6 +216,10 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
     if list.is_empty() {
         return;
     }
+    /* Floating-origin: the view is the eye-at-origin scene view, so drop
+     * positions are rebased to the camera (pos - cam) before their vertices
+     * are built - otherwise they jitter at ~150 km. */
+    let cam = renderer::camera_world_d();
 
     renderer::sgl_world_begin();
     sgl::defaults();
@@ -265,7 +269,7 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             None => fallback_block(d.item),
         };
         let bob = (time_s * BOB_RATE + d.phase).sin() as f64 * BOB_AMPL_M;
-        let pos = dvec3_add(d.pos, dvec3_scale(d.up, bob));
+        let pos = dvec3_sub(dvec3_add(d.pos, dvec3_scale(d.up, bob)), cam);
         let spin = time_s * SPIN_RATE + d.phase;
         let lit = renderer::entity_sun_brightness(d.pos);
         draw_hex(pos, d.up, spin, block, lit);
@@ -307,7 +311,7 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
         }
         let Some([u0, v0, u1, v1]) = crate::ui_icons::uv(d.item) else { continue };
         let bob = (time_s * BOB_RATE + d.phase).sin() as f64 * BOB_AMPL_M;
-        let pos = dvec3_add(d.pos, dvec3_scale(d.up, bob));
+        let pos = dvec3_sub(dvec3_add(d.pos, dvec3_scale(d.up, bob)), cam);
         let lit = renderer::entity_sun_brightness(d.pos);
         sgl::c4f(lit, lit, lit, 1.0);
         let r = dvec3_scale(cam_right, ICON_HALF_M);

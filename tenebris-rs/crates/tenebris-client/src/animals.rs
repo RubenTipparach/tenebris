@@ -752,7 +752,7 @@ fn draw_kind(
     let sc = kind.scale();
 
     sgl::push_matrix();
-    sgl::translate(pos.x as f32, pos.y as f32, pos.z as f32);
+    crate::renderer::sgl_translate_scene(pos);
     sgl::mult_matrix(&basis[0]);
     sgl::scale(sc, sc, sc);
 
@@ -1337,7 +1337,7 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
             let lit = entity_lit(corpse.pos, center);
             let basis = orient_basis(up, corpse.heading);
             sgl::push_matrix();
-            sgl::translate(corpse.pos.x as f32, corpse.pos.y as f32, corpse.pos.z as f32);
+            crate::renderer::sgl_translate_scene(corpse.pos);
             sgl::mult_matrix(&basis[0]);
             let sc = corpse.kind.scale();
             sgl::scale(sc, sc, sc);
