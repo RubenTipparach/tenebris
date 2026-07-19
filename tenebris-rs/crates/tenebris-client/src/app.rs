@@ -1328,16 +1328,22 @@ fn dev_maybe_place(app: &mut App) {
             if let Some(ride) = RocketRide::from_stack(&stack, &cfg) {
                 crate::rocket_ride::begin(ride, stack.to_vec(), -1, -1, pos, up);
             }
-            /* Level prograde attitude for a clean navball demo: nose along
-             * prograde, radial-out at screen-top (roll ~0), so the pitch
-             * ladder reads horizontally like an ADI. */
+            /* Level attitude for a clean navball demo, built against the
+             * navball's OWN up-pole (navball_up, which can be sun-based past
+             * the SOI) so pitch AND roll read 0: nose = prograde projected
+             * onto the horizon plane (perp to ball-up -> pitch 0), ball-up at
+             * screen-top (-fwd -> roll 0). */
             {
+                use tenebris_core::math::{dvec3_cross, dvec3_dot, dvec3_normalize, dvec3_scale, dvec3_sub};
                 let mut p = app.player.borrow_mut();
-                let nose = tenebris_core::math::dvec3_normalize(vel);
-                let fwd = tenebris_core::math::dvec3_scale(up, -1.0);
-                let right = tenebris_core::math::dvec3_normalize(
-                    tenebris_core::math::dvec3_cross(nose, fwd),
-                );
+                let sim_t = tenebris_core::world_time::seconds();
+                let active_id = p.body.unwrap_or(app.body).id;
+                let sun_dir = tenebris_core::orbit::sun_direction(active_id, sim_t);
+                let ball_up = crate::nav_ui::navball_up(crate::rocket_fx::ride_center(pos, up), sun_dir);
+                let pg = dvec3_normalize(vel);
+                let nose = dvec3_normalize(dvec3_sub(pg, dvec3_scale(ball_up, dvec3_dot(pg, ball_up))));
+                let fwd = dvec3_scale(ball_up, -1.0);
+                let right = dvec3_normalize(dvec3_cross(fwd, nose));
                 p.basis.up = nose;
                 p.basis.fwd = fwd;
                 p.basis.right = right;
@@ -1359,12 +1365,7 @@ fn dev_maybe_place(app: &mut App) {
             /* Zoom the chase cam out so the whole orbit + the node gizmo fit
              * the frame (the node sits ~a third of the way round). */
             crate::rocket_cam::set_distance(4000.0);
-            /* Engage the prograde autopilot: the PID swings the nose down to
-             * the horizon (prograde is ~tangential), so the navball shows the
-             * mid pitch band with its degree numbers - and it demos the
-             * rotate-to-symbol autopilot at the same time. */
-            crate::nav_ui::toggle_autopilot(crate::nav_ui::AttMode::Prograde);
-            println!("[dev] planner showcase: circular orbit + prograde node 6 m/s + SAS prograde");
+            println!("[dev] planner showcase: circular orbit + prograde node 6 m/s (level navball)");
         }
         2 => {
             /* Ore + tech-block showcase: the centre tile becomes the
