@@ -6837,7 +6837,13 @@ fn frame_inner(app: &mut App) {
     let cam_world = Vec3::default();
     /* Spin the starfield with the planet's rotation so the sky wheels
      * overhead with the day, matching the sun + moons. */
-    env.star_spin_angle = orbit::spin_angle(active_body.id, sim_t) as f32;
+    /* Stars wheel with the day on a surface, but stay fixed in space / on the
+     * map (same fixed-frame rule as the sun + bodies above). */
+    env.star_spin_angle = if app.player.borrow().is_in_space || map_open {
+        0.0
+    } else {
+        orbit::spin_angle(active_body.id, sim_t) as f32
+    };
 
     renderer::begin_frame(sapp::width(), sapp::height(), env);
     /* Opaque scene -> offscreen colour + depth attachments. */
