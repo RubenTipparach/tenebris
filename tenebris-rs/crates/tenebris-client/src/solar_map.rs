@@ -378,11 +378,32 @@ pub fn egui_ui(ctx: &egui::Context) {
         (g.focus, g.dist_m, g.bodies_panel)
     });
 
+    /* ---- Bodies toggle: its own chip in the UPPER-RIGHT corner (matches the
+     * MAP chip shown when the map is closed), so it stays put whether the list
+     * is open or hidden. ---- */
+    egui::Area::new(egui::Id::new("solar-bodies-toggle"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-10.0, 10.0))
+        .show(ctx, |ui| {
+            let label = if bodies_panel { "BODIES [hide]" } else { "BODIES [show]" };
+            let btn = egui::Button::new(egui::RichText::new(label).color(TGT_COL))
+                .fill(egui::Color32::from_rgba_unmultiplied(0x10, 0x14, 0x1c, 220));
+            if ui.add(btn).clicked() {
+                G.with(|c| {
+                    let mut g = c.borrow_mut();
+                    g.bodies_panel = !g.bodies_panel;
+                });
+            }
+        });
+
     /* ---- Body list: a bounded, TOGGLEABLE window on the right (not a full-
-     * height SidePanel, which swallowed the whole edge). Capped height with an
-     * inner scroll so it never runs off the screen, and hidden entirely when
-     * the pilot toggles it off to clear the chart. ---- */
+     * height SidePanel, which swallowed the whole edge). Height tracks at least
+     * half the screen with an inner scroll so a big system never runs off the
+     * bottom, and hidden entirely when the pilot toggles it off. Anchored below
+     * the BODIES chip in the top-right corner. ---- */
     if bodies_panel {
+        /* At LEAST half the viewport tall (the chip + header ride above the
+         * scroll region, so the whole panel is a touch over half). */
+        let list_h = (ctx.content_rect().height() * 0.5).max(300.0);
         egui::Window::new("SYSTEM BODIES")
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 44.0))
             .fixed_size(egui::vec2(panel_w(), 0.0))
@@ -399,7 +420,7 @@ pub fn egui_ui(ctx: &egui::Context) {
                 );
                 ui.separator();
                 egui::ScrollArea::vertical()
-                    .max_height(340.0)
+                    .max_height(list_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                 ship_card(ui, focus);
@@ -441,24 +462,14 @@ pub fn egui_ui(ctx: &egui::Context) {
                         Focus::Body(id) => planet::get(id).name,
                         Focus::Station => "Orbital Station",
                     };
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "MAP - focus: {}  -  {}",
-                                focus_name,
-                                fmt_dist(dist)
-                            ))
-                            .color(egui::Color32::from_rgb(0xd8, 0xde, 0xe8)),
-                        );
-                        /* Show / hide the SYSTEM BODIES list to clear the chart. */
-                        let label = if bodies_panel { "Bodies [hide]" } else { "Bodies [show]" };
-                        if ui.small_button(egui::RichText::new(label).color(TGT_COL)).clicked() {
-                            G.with(|c| {
-                                let mut g = c.borrow_mut();
-                                g.bodies_panel = !g.bodies_panel;
-                            });
-                        }
-                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "MAP - focus: {}  -  {}",
+                            focus_name,
+                            fmt_dist(dist)
+                        ))
+                        .color(egui::Color32::from_rgb(0xd8, 0xde, 0xe8)),
+                    );
                     let tname = nav_ui::target_name();
                     if tname != "none" {
                         if ui
