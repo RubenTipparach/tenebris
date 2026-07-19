@@ -455,8 +455,16 @@ pub fn egui_ui(ctx: &egui::Context) {
     /* ---- Drag-orbit + wheel zoom over the 3D view. ---- */
     let pointer_over_ui = ctx.wants_pointer_input() && ctx.is_pointer_over_area();
     if !pointer_over_ui {
+        /* A maneuver-node drag owns the primary button (place / slide / pull a
+         * handle) - don't ALSO orbit the map camera while the pilot is dragging
+         * the node, or the whole system would swing under the cursor. */
+        let node_drag = crate::nav_ui::gizmo_dragging();
         let (drag, scroll) = ctx.input(|i| {
-            let drag = if i.pointer.primary_down() { i.pointer.delta() } else { egui::Vec2::ZERO };
+            let drag = if i.pointer.primary_down() && !node_drag {
+                i.pointer.delta()
+            } else {
+                egui::Vec2::ZERO
+            };
             /* Sum this frame's RAW wheel events, not smooth_scroll_delta:
              * the zoom is a discrete multiplicative step per notch, and
              * egui spreads a smoothed delta across several frames - which

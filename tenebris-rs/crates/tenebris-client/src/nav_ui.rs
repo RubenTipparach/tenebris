@@ -859,6 +859,9 @@ pub fn draw_map_orbits(
     active: BodyId,
     ship_pos: DVec3,
     ship_vel: DVec3,
+    right: DVec3,
+    fwd: DVec3,
+    nose: DVec3,
     riding: bool,
     sim_t: f64,
 ) {
@@ -943,9 +946,25 @@ pub fn draw_map_orbits(
                 cross_marker(ap, 25.0, col);
             }
         }
+        /* Attitude arrows at the ship, sized to the map zoom so the pilot can
+         * see + steer the nose in the map view (nose = crosshair yellow, its
+         * negative dim; fwd green, right red - the WASD steering axes). */
+        let len = cam_d * 0.12;
+        arrow(ship_pos, nose, len * 1.4, NOSE_COL);
+        arrow(ship_pos, dvec3_scale(nose, -1.0), len, [NOSE_COL[0], NOSE_COL[1], NOSE_COL[2], 0.35]);
+        arrow(ship_pos, fwd, len, [0.3, 0.9, 0.35, 0.9]);
+        arrow(ship_pos, dvec3_scale(fwd, -1.0), len, [0.3, 0.9, 0.35, 0.35]);
+        arrow(ship_pos, right, len, [0.95, 0.35, 0.3, 0.9]);
+        arrow(ship_pos, dvec3_scale(right, -1.0), len, [0.95, 0.35, 0.3, 0.35]);
         /* Planned maneuver: same predicted-orbit + node draw as the flight
          * view, so a burn planned in either place shows in both. */
-        draw_node(ship_pos, ship_vel, cam_d, crate::gfx_math::mat4_mul(proj, view));
+        let vp = crate::gfx_math::mat4_mul(proj, view);
+        draw_node(ship_pos, ship_vel, cam_d, vp);
+        /* The orbit line is the click surface for placing / dragging the node
+         * here too, so the map view can plan maneuvers with the mouse. */
+        cache_orbit_pick(ship_pos, ship_vel, vp);
+    } else {
+        clear_orbit_pick();
     }
 
     renderer::sgl_overlay_end();

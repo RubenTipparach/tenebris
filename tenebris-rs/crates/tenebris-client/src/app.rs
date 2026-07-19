@@ -6970,6 +6970,9 @@ fn frame_inner(app: &mut App) {
                 active_body.id,
                 crate::rocket_fx::ride_center(p.position, p.basis.up),
                 p.velocity,
+                p.basis.right,
+                p.basis.fwd,
+                p.basis.up,
                 rocket_ride::is_riding(),
                 sim_t,
             );
