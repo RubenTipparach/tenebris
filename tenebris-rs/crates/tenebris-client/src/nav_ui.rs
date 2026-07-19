@@ -86,8 +86,6 @@ const H_CENTER: [f32; 4] = [1.0, 0.90, 0.35, 1.0];
 /// The purple divergent curve = the trajectory the planned burn produces.
 const NODE_PATH_COL: [f32; 4] = [0.72, 0.38, 0.95, 0.9];
 
-/// Master switch for the maneuver-planner egui controls ([`egui_maneuver`]).
-pub const MANEUVER_ENABLED: bool = true;
 /// The in-world 3D maneuver gizmo ([`draw_node`]): burn handles at the node
 /// oriented to the orbital plane + the divergent purple trajectory. ON now -
 /// it is NaN-guarded (a diverged conic draws nothing) and draws UNDER the
@@ -205,6 +203,17 @@ pub fn clear_node() {
     NODE.with(|c| c.set(None));
 }
 
+/// Place (or move) the node at a specific lead time `dt` (seconds ahead on the
+/// orbit), keeping any burn already dialed in. The click-on-orbit placer's
+/// entry point: unlike [`toggle_node`] it never toggles off, so clicking the
+/// trajectory line always leaves a node there to edit.
+pub fn place_node(dt: f64) {
+    NODE.with(|c| {
+        let (pro, nrm, rad) = c.get().map_or((0.0, 0.0, 0.0), |n| (n.pro, n.nrm, n.rad));
+        c.set(Some(Node { dt: dt.max(0.0), pro, nrm, rad }));
+    });
+}
+
 /// The node's edit state (time-to-node s, prograde, normal, radial m/s), or
 /// `None` when no node is planned. For the egui editor.
 pub fn node_params() -> Option<(f64, f64, f64, f64)> {
@@ -240,7 +249,12 @@ thread_local! {
     /// PID state, reset whenever the mode changes so the integral doesn't
     /// carry across targets.
     static AP_PID: std::cell::RefCell<nav::AttPidState> =
-        std::cell::RefCell::new(nav::AttPidState { integ: ZERO_V, prev_err: ZERO_V, have_prev: false });
+        std::cell::RefCell::new(nav::AttPidState {
+            integ: ZERO_V,
+            prev_err: ZERO_V,
+            have_prev: false,
+            settled: false,
+        });
 }
 
 const ZERO_V: DVec3 = DVec3 { x: 0.0, y: 0.0, z: 0.0 };
@@ -302,6 +316,7 @@ pub fn autopilot_omega(
         ki: f.att_ki as f64,
         kd: f.att_kd as f64,
         max_rate: f.steer_rate_rads as f64,
+        deadband: f.att_deadband_rad as f64,
     };
     Some(AP_PID.with(|p| nav::attitude_pid_step(g, &mut p.borrow_mut(), err, dt)))
 }
@@ -491,7 +506,6 @@ thread_local! {
 /// Grab radius (px) and drag sensitivities. Tunable feel; not physics.
 const GIZMO_GRAB_PX: f32 = 24.0;
 const GIZMO_DV_PER_PX: f64 = 0.12; /* m/s of delta-v per pixel pulled */
-const GIZMO_DT_PER_PX: f64 = 2.5; /* seconds of time-to-node per pixel */
 
 /// Project a world point to window pixels through `vp` (= proj*view). `None`
 /// behind the camera. The nav eye-shell remap moves lines ALONG their eye ray,
@@ -584,19 +598,142 @@ pub fn gizmo_release() {
     GIZMO_DRAG.with(|c| c.set(None));
 }
 
-/// Apply a mouse move (dx,dy px) to the active drag: pull a handle along its
-/// on-screen axis to grow that delta-v, or slide the center -> time-to-node.
-pub fn gizmo_drag(dx: f32, dy: f32) {
+/* ---- click-on-orbit node placement (screen-space line pick) ---- */
+
+thread_local! {
+    /// The current orbit line projected to screen as `(px, py, dt)` vertices,
+    /// refreshed each frame by [`cache_orbit_pick`] from the flight / map draw
+    /// pass. The click-on-orbit node placer reads it to map a cursor position
+    /// to a time-to-node. Empty when no pickable orbit line is on screen.
+    static ORBIT_SCREEN: std::cell::RefCell<Vec<(f32, f32, f64)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Timed samples of the orbit for the pick cache. Coarser than the drawn line
+/// (`ORBIT_SEGS`) - plenty for closest-point, cheaper to reproject each frame.
+const ORBIT_PICK_SEGS: usize = 256;
+/// How close (px) the cursor must be to the drawn orbit line to grab it.
+const LINE_PICK_PX: f32 = 14.0;
+
+/// Cache the current orbit as a screen-space timed polyline for click-picking.
+/// Call from the draw pass that draws the orbit line, with the SAME view-
+/// projection, so the cached pixels coincide with the visible line (the eye-
+/// shell remap moves points along their eye ray, preserving screen position).
+/// Clears the cache when there is no orbit to pick.
+pub fn cache_orbit_pick(pos: DVec3, vel: DVec3, vp: Mat4) {
+    let (sw, sh) = (sokol::app::widthf(), sokol::app::heightf());
+    let focus = nav::dominant_body(pos);
+    let pts = Conic::from_state(&focus, pos, vel)
+        .map(|c| c.sample_timed(ORBIT_PICK_SEGS, HYPERBOLA_CLIP_M))
+        .unwrap_or_default();
+    ORBIT_SCREEN.with(|c| {
+        let mut v = c.borrow_mut();
+        v.clear();
+        for (dt, p) in pts {
+            if let Some((sx, sy)) = project(&vp, p, sw, sh) {
+                v.push((sx, sy, dt));
+            }
+        }
+    });
+}
+
+/// Forget the cached orbit line (no pickable line on screen this frame).
+pub fn clear_orbit_pick() {
+    ORBIT_SCREEN.with(|c| c.borrow_mut().clear());
+}
+
+/// The time-to-node at the point on the cached orbit line closest to the
+/// cursor, or `None` when the cursor is farther than [`LINE_PICK_PX`] from the
+/// line. Screen-space closest-point over the polyline segments, `dt` lerped
+/// along the winning segment.
+fn closest_orbit_dt(mx: f32, my: f32) -> Option<f64> {
+    ORBIT_SCREEN.with(|c| {
+        let v = c.borrow();
+        if v.len() < 2 {
+            return None;
+        }
+        let mut best: Option<(f32, f64)> = None; /* (dist^2 px, dt) */
+        for w in v.windows(2) {
+            let (ax, ay, adt) = w[0];
+            let (bx, by, bdt) = w[1];
+            let (ex, ey) = (bx - ax, by - ay);
+            let len2 = ex * ex + ey * ey;
+            let t = if len2 > 1e-6 {
+                (((mx - ax) * ex + (my - ay) * ey) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let (px, py) = (ax + ex * t, ay + ey * t);
+            let d2 = (mx - px) * (mx - px) + (my - py) * (my - py);
+            if best.map_or(true, |b| d2 < b.0) {
+                best = Some((d2, adt + (bdt - adt) * t as f64));
+            }
+        }
+        match best {
+            Some((d2, dt)) if d2 <= LINE_PICK_PX * LINE_PICK_PX => Some(dt),
+            _ => None,
+        }
+    })
+}
+
+/// LMB on the trajectory line: drop the maneuver node at the clicked point
+/// (or relocate the existing one there, keeping its burn) and begin a center-
+/// drag so a click-and-drag slides it along the line. Returns true when the
+/// line was grabbed. The "click anywhere on the trajectory to spawn a node"
+/// entry point; call after the gizmo-handle pick so grabbing a handle wins.
+pub fn trajectory_pick(mx: f32, my: f32) -> bool {
+    if !NODE_OVERLAY_ENABLED {
+        return false;
+    }
+    let Some(dt) = closest_orbit_dt(mx, my) else {
+        return false;
+    };
+    place_node(dt);
+    GIZMO_DRAG.with(|c| c.set(Some((3, 0.0)))); /* center slide follows the drag */
+    true
+}
+
+/// Slide the node to the point on the orbit line closest to the cursor - the
+/// center-drag behaviour. A no-op when the cursor is off the line, so the node
+/// stays put rather than jumping when you drag past the line's end.
+pub fn node_slide_to(mx: f32, my: f32) {
+    if let (Some(dt), Some((_, pro, nrm, rad))) = (closest_orbit_dt(mx, my), node_params()) {
+        set_node_params(dt, pro, nrm, rad);
+    }
+}
+
+/// RMB on the node center: drop the node. The in-world replacement for the
+/// old "Clear node" button now that planning lives on the orbit line. Returns
+/// true when a node was cleared (so the caller swallows the click).
+pub fn node_delete_pick(mx: f32, my: f32) -> bool {
+    if !node_active() {
+        return false;
+    }
+    let Some(g) = GIZMO_SCREEN.with(|c| c.get()) else {
+        return false;
+    };
+    let r2 = GIZMO_GRAB_PX * GIZMO_GRAB_PX;
+    if (mx - g.node.0).powi(2) + (my - g.node.1).powi(2) < r2 {
+        clear_node();
+        return true;
+    }
+    false
+}
+
+/// Apply a mouse move to the active drag. The center (axis 3) slides the node
+/// to the orbit point nearest the cursor; a delta-v handle is pulled along its
+/// on-screen axis (dx,dy px) to grow that burn component.
+pub fn gizmo_drag(mx: f32, my: f32, dx: f32, dy: f32) {
     let Some((axis, sign)) = GIZMO_DRAG.with(|c| c.get()) else {
         return;
     };
+    if axis == 3 {
+        node_slide_to(mx, my); /* center -> closest point on the line */
+        return;
+    }
     let Some((dt, pro, nrm, rad)) = node_params() else {
         return;
     };
-    if axis == 3 {
-        set_node_params((dt + dx as f64 * GIZMO_DT_PER_PX).max(0.0), pro, nrm, rad);
-        return;
-    }
     /* Pull along the handle's CURRENT screen direction (recomputed each move
      * so it tracks the arrow as it grows). */
     let Some(g) = GIZMO_SCREEN.with(|c| c.get()) else {
@@ -685,128 +822,6 @@ fn draw_node(pos: DVec3, vel: DVec3, cam_d: f64, vp: Mat4) {
     GIZMO_SCREEN.with(|c| c.set(Some(GizmoScreen { node: node_screen, handles: screen })));
 }
 
-/// The maneuver-planner widget: a self-contained egui panel with a top-down
-/// `egui_plot` orbit chart (current orbit, predicted post-burn orbit, the
-/// node, the ship, the focus body) plus the burn controls and the
-/// required-vs-available delta-v. Replaces the old on-canvas 3D overlay, so it
-/// can never paint over the flight HUD; every plotted series is NaN-filtered
-/// so a diverged conic draws nothing instead of a garbage blob. Call from the
-/// Flight panel's Maneuver section while riding.
-pub fn egui_maneuver(ui: &mut egui::Ui, pos: DVec3, vel: DVec3) {
-    let focus = nav::dominant_body(pos);
-    let Some(current) = Conic::from_state(&focus, pos, vel) else {
-        ui.label("no orbit to plan from yet");
-        return;
-    };
-
-    /* Burn controls. */
-    match node_params() {
-        None => {
-            if ui.button("Plan node").clicked() {
-                toggle_node(current.period_s);
-            }
-        }
-        Some((mut dt, mut pro, mut nrm, mut rad)) => {
-            egui::Grid::new("mnvr-node").num_columns(2).show(ui, |ui| {
-                ui.label("time to node (s)");
-                ui.add(egui::DragValue::new(&mut dt).speed(5.0).range(0.0..=1e8));
-                ui.end_row();
-                ui.label("prograde (m/s)");
-                ui.add(egui::DragValue::new(&mut pro).speed(1.0));
-                ui.end_row();
-                ui.label("normal (m/s)");
-                ui.add(egui::DragValue::new(&mut nrm).speed(1.0));
-                ui.end_row();
-                ui.label("radial (m/s)");
-                ui.add(egui::DragValue::new(&mut rad).speed(1.0));
-                ui.end_row();
-            });
-            set_node_params(dt, pro, nrm, rad);
-            if ui.button("Clear node").clicked() {
-                clear_node();
-            }
-        }
-    }
-
-    /* Required vs available delta-v + the resulting orbit. */
-    let plan = node_plan(pos, vel);
-    if let Some(p) = &plan {
-        let avail = crate::rocket_ride::delta_v_mps() as f64;
-        let col = if p.dv_total <= avail {
-            egui::Color32::from_rgb(120, 230, 140)
-        } else {
-            egui::Color32::from_rgb(240, 120, 110)
-        };
-        ui.colored_label(col, format!("need {:.1} m/s    have {:.1} m/s", p.dv_total, avail));
-        if let Some(after) = &p.after {
-            let r = focus.radius_m;
-            if after.e < 1.0 {
-                ui.label(format!(
-                    "-> Ap {:.0} m   Pe {:.0} m   T {:.0} s",
-                    after.apoapsis_m - r,
-                    after.periapsis_m - r,
-                    after.period_s
-                ));
-            } else {
-                ui.label(format!("-> ESCAPE   Pe {:.0} m   e {:.2}", after.periapsis_m - r, after.e));
-            }
-        }
-    }
-
-    /* Top-down orbit chart, centred on the focus body: world (x,z) -> plot
-     * (x,y). Every series is NaN-filtered so a diverged/hyperbolic conic can
-     * never poison the plot (the old overlay's black-blob failure mode). */
-    let (fx, fz) = (current.focus.x, current.focus.z);
-    let proj = |q: DVec3| -> [f64; 2] { [q.x - fx, q.z - fz] };
-    let finite = |v: Vec<[f64; 2]>| -> Vec<[f64; 2]> {
-        v.into_iter().filter(|q| q[0].is_finite() && q[1].is_finite()).collect()
-    };
-    let cur_pts = finite(current.sample(256, HYPERBOLA_CLIP_M).into_iter().map(proj).collect());
-    let burn_pts = plan.as_ref().and_then(|p| p.after.as_ref()).map(|after| {
-        finite(after.sample(256, HYPERBOLA_CLIP_M).into_iter().map(proj).collect())
-    });
-    let node_xy = plan.as_ref().map(|p| proj(p.node_pos)).filter(|q| q[0].is_finite() && q[1].is_finite());
-    let ship_xy = proj(pos);
-
-    egui_plot::Plot::new("mnvr-plot")
-        .data_aspect(1.0)
-        .height(190.0)
-        .show_axes(false)
-        .show_grid(true)
-        .show(ui, |pu| {
-            pu.points(
-                egui_plot::Points::new("body", vec![[0.0, 0.0]])
-                    .radius(5.0)
-                    .color(egui::Color32::from_rgb(120, 170, 255)),
-            );
-            pu.line(
-                egui_plot::Line::new("orbit", cur_pts)
-                    .color(egui::Color32::from_rgb(90, 220, 235))
-                    .width(1.5),
-            );
-            if let Some(bp) = burn_pts {
-                pu.line(
-                    egui_plot::Line::new("burn", bp)
-                        .color(egui::Color32::from_rgb(240, 120, 230))
-                        .width(1.5),
-                );
-            }
-            if ship_xy[0].is_finite() && ship_xy[1].is_finite() {
-                pu.points(
-                    egui_plot::Points::new("ship", vec![ship_xy])
-                        .radius(3.5)
-                        .color(egui::Color32::WHITE),
-                );
-            }
-            if let Some(np) = node_xy {
-                pu.points(
-                    egui_plot::Points::new("node", vec![np])
-                        .radius(5.0)
-                        .color(egui::Color32::from_rgb(255, 80, 220)),
-                );
-            }
-        });
-}
 
 /// Display name for the HUD ("none" when nothing is targeted).
 pub fn target_name() -> &'static str {
@@ -1158,6 +1173,7 @@ pub fn draw_world(
     sim_t: f64,
 ) {
     if !riding || !in_space {
+        clear_orbit_pick();
         return;
     }
     /* Far enough from the active body to show the whole system chart? The
@@ -1265,6 +1281,7 @@ pub fn draw_world(
      * (nav::dominant_body = the SOI). Hidden on final approach to the
      * station - within a couple of dock radii the line is noise over the
      * thing you're docking with. */
+    let vp = crate::gfx_math::mat4_mul(proj, view);
     let near_station =
         dvec3_length(dvec3_sub(pos, st_pos)) < station::config().dock_radius_m as f64 * STATION_SOI_DOCK_RADII;
     if !near_station {
@@ -1281,6 +1298,11 @@ pub fn draw_world(
                 cross_marker(ap, 25.0, col);
             }
         }
+        /* The visible orbit line is the click surface for the node placer. */
+        cache_orbit_pick(pos, vel, vp);
+    } else {
+        /* Line hidden on final approach - nothing to click. */
+        clear_orbit_pick();
     }
 
     /* Attitude gizmo: past close-chase range the rocket is subpixel, so
@@ -1292,7 +1314,7 @@ pub fn draw_world(
     /* Planned maneuver drawn FIRST, so the ship's attitude arrows below
      * render ON TOP of it and are never obscured (the "something is
      * covering my directional arrows" bug). */
-    draw_node(pos, vel, cam_d, crate::gfx_math::mat4_mul(proj, view));
+    draw_node(pos, vel, cam_d, vp);
 
     if cam_d > tenebris_core::rocket::config().camera.zoom_far_m as f64 {
         /* All axes the SAME length so the gizmo reads as a uniform cross;

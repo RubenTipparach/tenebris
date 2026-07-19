@@ -176,6 +176,11 @@ pub struct FlightConstants {
     pub att_kp: f32,
     pub att_ki: f32,
     pub att_kd: f32,
+    /// Autopilot deadband, radians: once the nose is within this angle of the
+    /// target the controller HALTS (commands zero) and clears its memory,
+    /// instead of chasing the sub-degree jitter of a live target forever -
+    /// the "constant sine flipping" the deadband exists to kill.
+    pub att_deadband_rad: f32,
 }
 
 /// Reentry-FX thresholds (client visual; `[reentry]` in rocket.yaml).
@@ -319,6 +324,10 @@ pub const DEFAULT_ROCKET_CONFIG: RocketConfig = RocketConfig {
         att_kp: 4.0,
         att_ki: 0.0,
         att_kd: 1.2,
+        /* ~1.1 deg. Below this the nose is "on target" and the autopilot
+         * stops correcting - kills the endgame hunt without being so wide
+         * you can see the aim is off. Tunable in rocket.yaml. */
+        att_deadband_rad: 0.02,
     },
     reentry: ReentryConstants { min_speed_mps: 45.0, full_speed_mps: 95.0, max_alt_m: 120.0 },
     salvage: SalvageConstants {
@@ -419,6 +428,7 @@ pub fn parse_rocket_config(src: &str) -> RocketConfig {
             ("flight", "att_kp") => c.flight.att_kp = val,
             ("flight", "att_ki") => c.flight.att_ki = val,
             ("flight", "att_kd") => c.flight.att_kd = val,
+            ("flight", "att_deadband_rad") => c.flight.att_deadband_rad = val,
             ("engine", "thrust_n") => c.engine.thrust_n = val,
             ("engine", "fuel_per_sec") => c.engine.fuel_per_sec = val,
             ("engine", "mass_kg") => c.engine.mass_kg = val,

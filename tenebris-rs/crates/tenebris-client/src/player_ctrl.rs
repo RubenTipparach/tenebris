@@ -324,6 +324,43 @@ fn orthonormalise_basis(b: &mut TangentBasis) {
     b.right = dvec3_normalize(dvec3_cross(b.fwd, b.up));
 }
 
+/* ---- quaternion-backed free-flight attitude (no gimbal lock) ----------- */
+/* Per the "all rotational orientation must be quaternion-backed" repo rule,
+ * a free-flying body integrates its attitude as a glam::DQuat and DERIVES the
+ * TangentBasis from it, instead of rotating three basis vectors and re-
+ * orthonormalizing from an authoritative `up` (which snaps ~180 deg at the
+ * pole and loses roll). The quaternion carries the full orientation with no
+ * privileged axis and no singularity. Body-axis convention, shared by seed
+ * and derive so the physical rotation is convention-independent:
+ *   body X = right,  body Y = fwd,  body Z = up (the nose).
+ * `cross(fwd, up) == right`, so the derived basis is right-handed. */
+
+fn glam_v(v: DVec3) -> glam::DVec3 {
+    glam::DVec3::new(v.x, v.y, v.z)
+}
+
+fn tang_v(v: glam::DVec3) -> DVec3 {
+    dvec3_make(v.x, v.y, v.z)
+}
+
+/// Quaternion for the orientation the basis represents. The basis is
+/// orthonormal (derived from a normalized quat, or freshly orthonormalized),
+/// so the columns form a valid rotation matrix.
+fn quat_from_basis(b: &TangentBasis) -> glam::DQuat {
+    let m = glam::DMat3::from_cols(glam_v(b.right), glam_v(b.fwd), glam_v(b.up));
+    glam::DQuat::from_mat3(&m).normalize()
+}
+
+/// Basis derived from a (unit) quaternion: each body axis mapped to world.
+/// Exactly orthonormal by construction - no re-orthonormalize, no pole.
+fn basis_from_quat(q: glam::DQuat) -> TangentBasis {
+    TangentBasis {
+        right: tang_v(q * glam::DVec3::X),
+        fwd: tang_v(q * glam::DVec3::Y),
+        up: tang_v(q * glam::DVec3::Z),
+    }
+}
+
 /// Maximum per-frame parallel-transport rotation in
 /// sync_basis_to_planet. Anything larger means the player has been
 /// teleported tangentially in a single frame (lag-spike + velocity*dt
@@ -1529,32 +1566,39 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             if inp.phys.roll_left {
                 roll -= roll_rate;
             }
+            /* Quaternion-backed attitude (no gimbal singularity; see the
+             * "rotational orientation must be quaternion-backed" repo rule).
+             * Seed the quat from the current basis, integrate this frame's
+             * BODY-frame stick input as intrinsic rotations (q = q * delta, so
+             * each axis is the ship's current one - pitch about right, then yaw
+             * about the NEW fwd, then roll about the NEW nose, matching the old
+             * sequential basis rotations exactly), then DERIVE the basis back.
+             * No orthonormalise, no pole, roll never lost. */
+            let mut q = quat_from_basis(&p.basis);
             if pitch != 0.0 {
-                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.right, pitch);
-                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.right, pitch);
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::X, pitch); /* about right */
             }
             if yaw != 0.0 {
-                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.fwd, yaw);
-                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.fwd, yaw);
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::Y, yaw); /* about fwd */
             }
             if roll != 0.0 {
-                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, roll);
-                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, roll);
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::Z, roll); /* about nose */
             }
             /* Autopilot: when no manual input, the PID points the nose at the
-             * engaged navball symbol. Its commanded angular velocity rotates
-             * the whole basis about one world axis (nose = basis.up). */
+             * engaged navball symbol. Its commanded angular velocity is
+             * WORLD-frame, so it LEFT-multiplies the orientation. */
             if !manual_att {
                 let sim_t = tenebris_core::world_time::seconds();
                 let sun_dir = p
                     .body
                     .map(|b| tenebris_core::orbit::sun_direction(b.id, sim_t))
                     .unwrap_or(dvec3_make(0.0, 1.0, 0.0));
-                let ship_pos = crate::rocket_fx::ride_center(p.position, p.basis.up);
+                let nose = tang_v(q * glam::DVec3::Z);
+                let ship_pos = crate::rocket_fx::ride_center(p.position, nose);
                 if let Some(omega) = crate::nav_ui::autopilot_omega(
                     ship_pos,
                     p.velocity,
-                    p.basis.up,
+                    nose,
                     sun_dir,
                     sim_t,
                     dt as f64,
@@ -1563,13 +1607,11 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                     let ang = mag * dt as f64;
                     if ang > 1e-9 {
                         let axis = dvec3_scale(omega, 1.0 / mag);
-                        p.basis.up = rotate_axis_angle(p.basis.up, axis, ang);
-                        p.basis.fwd = rotate_axis_angle(p.basis.fwd, axis, ang);
-                        p.basis.right = rotate_axis_angle(p.basis.right, axis, ang);
+                        q = glam::DQuat::from_axis_angle(glam_v(axis), ang) * q;
                     }
                 }
             }
-            orthonormalise_basis(&mut p.basis);
+            p.basis = basis_from_quat(q.normalize());
         } else if station_field {
             /* ON THE STATION DECK the mouse look is PLANET-STYLE: scalar
              * yaw/pitch layered over the basis (compute_look), with the
@@ -1603,17 +1645,11 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             if p.yaw != 0.0 || p.pitch != 0.0 {
                 bake_yaw_pitch_into_basis(p);
             }
-            if yaw_delta != 0.0 {
-                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.up, -yaw_delta);
-                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.up, -yaw_delta);
-            }
-            if pitch_delta != 0.0 {
-                p.basis.fwd = rotate_axis_angle(p.basis.fwd, p.basis.right, pitch_delta);
-                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.right, pitch_delta);
-            }
-            /* Roll Q/E around basis.fwd. fwd x up = +right, so +theta tilts
-             * up toward +right - the camera banks RIGHT. Q (roll left) is a
-             * negative theta; E (roll right) positive. */
+            /* Quaternion-backed, same as the rocket path (repo rule: no gimbal
+             * lock). Intrinsic body-frame rotations in the original order - yaw
+             * about the nose-up (Z), pitch about right (X), roll about the look
+             * axis fwd (Y) - reproduce the old sequential basis rotations with
+             * no pole and no lost roll. */
             let mut roll_delta = 0.0f64;
             if inp.phys.roll_left {
                 roll_delta -= l.space_roll_speed as f64 * dt as f64;
@@ -1621,11 +1657,19 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             if inp.phys.roll_right {
                 roll_delta += l.space_roll_speed as f64 * dt as f64;
             }
-            if roll_delta != 0.0 {
-                p.basis.up = rotate_axis_angle(p.basis.up, p.basis.fwd, roll_delta);
-                p.basis.right = rotate_axis_angle(p.basis.right, p.basis.fwd, roll_delta);
+            let mut q = quat_from_basis(&p.basis);
+            if yaw_delta != 0.0 {
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::Z, -yaw_delta); /* about up */
             }
-            orthonormalise_basis(&mut p.basis);
+            if pitch_delta != 0.0 {
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::X, pitch_delta); /* about right */
+            }
+            /* Roll Q/E about basis.fwd. fwd x up = +right, so +theta tilts up
+             * toward +right - banks RIGHT. Q (roll left) negative, E positive. */
+            if roll_delta != 0.0 {
+                q *= glam::DQuat::from_axis_angle(glam::DVec3::Y, roll_delta); /* about fwd */
+            }
+            p.basis = basis_from_quat(q.normalize());
         }
 
         /* ============================================================ */
@@ -3808,5 +3852,60 @@ mod tests {
         input::state_mut(|s| s.wheel_dy = 5.0);
         update(&mut p, Some(&w), DT);
         assert_eq!(p.inventory.selected, 0, "4.8 accum steps back 4 slots");
+    }
+
+    /// Quaternion-backed attitude round-trips through the basis and survives a
+    /// full pitch loop through the pole with NO gimbal flip: the basis stays
+    /// orthonormal, every step turns by only the small commanded angle (never a
+    /// ~180 deg jump), pitch injects no roll, and 2*pi returns to the start.
+    /// The regression guard for "the ship's rotation flips randomly when I
+    /// rotate my ship" - the old up-authoritative re-orthonormalize snapped
+    /// here; the quaternion path must not.
+    #[test]
+    fn quaternion_attitude_has_no_gimbal_flip_through_a_loop() {
+        fn ortho_ok(b: &TangentBasis) -> bool {
+            let unit = |v: DVec3| (dvec3_length(v) - 1.0).abs() < 1e-9;
+            let perp = |a: DVec3, c: DVec3| dvec3_dot(a, c).abs() < 1e-9;
+            /* right == cross(fwd, up): the right-handed basis invariant. */
+            let handed = dvec3_length(dvec3_sub(b.right, dvec3_cross(b.fwd, b.up))) < 1e-9;
+            unit(b.up) && unit(b.fwd) && unit(b.right)
+                && perp(b.up, b.fwd) && perp(b.up, b.right) && perp(b.fwd, b.right)
+                && handed
+        }
+
+        /* A generic (non-identity) starting attitude, built from a quaternion
+         * so it is guaranteed orthonormal + right-handed. */
+        let q0 = glam::DQuat::from_axis_angle(glam::DVec3::Y, 0.7)
+            * glam::DQuat::from_axis_angle(glam::DVec3::X, 0.4)
+            * glam::DQuat::from_axis_angle(glam::DVec3::Z, 1.1);
+        let start = basis_from_quat(q0.normalize());
+        assert!(ortho_ok(&start));
+
+        /* seed -> derive is an exact round trip. */
+        let rt = basis_from_quat(quat_from_basis(&start));
+        assert!(dvec3_length(dvec3_sub(rt.up, start.up)) < 1e-12);
+        assert!(dvec3_length(dvec3_sub(rt.fwd, start.fwd)) < 1e-12);
+        assert!(dvec3_length(dvec3_sub(rt.right, start.right)) < 1e-12);
+
+        /* Pitch (about right = body X) a full turn in small steps, re-seeding
+         * from the basis each step exactly as the flight loop does. */
+        let steps = 720;
+        let step = std::f64::consts::TAU / steps as f64;
+        let mut b = start;
+        let mut prev_up = b.up;
+        for _ in 0..steps {
+            let q = quat_from_basis(&b) * glam::DQuat::from_axis_angle(glam::DVec3::X, step);
+            b = basis_from_quat(q.normalize());
+            assert!(ortho_ok(&b), "basis left the rotation manifold");
+            /* Continuity: `up` turns by ~step each frame - a flip would be ~pi. */
+            let turned = dvec3_dot(prev_up, b.up).clamp(-1.0, 1.0).acos();
+            assert!(turned < step * 3.0, "gimbal flip: up jumped {turned} rad in one step");
+            prev_up = b.up;
+            /* Pitch about right injects no roll: world-space right is fixed. */
+            assert!(dvec3_length(dvec3_sub(b.right, start.right)) < 1e-9, "roll leaked into pitch");
+        }
+        /* A full 2*pi loop returns to the start attitude. */
+        assert!(dvec3_length(dvec3_sub(b.up, start.up)) < 1e-6, "loop did not close");
+        assert!(dvec3_length(dvec3_sub(b.fwd, start.fwd)) < 1e-6);
     }
 }

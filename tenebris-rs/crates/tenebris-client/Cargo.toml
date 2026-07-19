@@ -29,8 +29,12 @@ futures-util = "0.3"
 # (GL) thread keeps ownership of all sokol_gfx buffer uploads.
 rayon = "1"
 egui = "0.34.3"
-# 2D plotting widget for the maneuver planner's orbit chart (self-contained
-# egui window - replaces the old on-canvas overlay that fought the HUD).
-egui_plot = "0.35"
+
+# Quaternion math for free-flight orientation. Per the "all rotational
+# orientation must be quaternion-backed" repo rule, the ship's flight
+# attitude is integrated as a glam::DQuat (no gimbal singularity) and the
+# TangentBasis is derived from it each frame. f64 (DQuat/DVec3/DMat3) to
+# match the core math's DVec3 precision.
+glam = "0.29"
 
 [dev-dependencies]

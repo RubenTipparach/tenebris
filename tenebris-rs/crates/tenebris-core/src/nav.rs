@@ -285,6 +285,79 @@ impl Conic {
         }
         Some((pos, vel))
     }
+
+    /// Seconds from this conic's epoch (`nu0`) forward to true anomaly `nu`.
+    /// Forward Kepler (nu -> eccentric / hyperbolic anomaly -> mean anomaly ->
+    /// time) - the closed-form inverse of [`Conic::state_at`]'s time->nu solve.
+    /// `None` for a degenerate orbit or a hyperbolic anomaly past the
+    /// asymptote. The ellipse value can be negative (a point "behind" the
+    /// epoch); callers that want a lead time wrap it into `[0, period)`.
+    fn time_from_nu(&self, nu: f64) -> Option<f64> {
+        let e = self.e;
+        if e < 1.0 {
+            if !(self.period_s.is_finite() && self.period_s > 0.0) {
+                return None;
+            }
+            let n = std::f64::consts::TAU / self.period_s; /* mean motion */
+            let mean_at = |v: f64| {
+                let ea = 2.0
+                    * ((1.0 - e).sqrt() * (v * 0.5).sin()).atan2((1.0 + e).sqrt() * (v * 0.5).cos());
+                ea - e * ea.sin()
+            };
+            Some((mean_at(nu) - mean_at(self.nu0)) / n)
+        } else {
+            let a_abs = self.a.abs();
+            if !a_abs.is_finite() || a_abs <= 0.0 {
+                return None;
+            }
+            let n = (self.mu / (a_abs * a_abs * a_abs)).sqrt();
+            let k = ((e - 1.0) / (e + 1.0)).sqrt();
+            let mean_at = |v: f64| -> Option<f64> {
+                let t = k * (v * 0.5).tan();
+                if t.abs() >= 1.0 {
+                    return None; /* past the asymptote - no finite anomaly */
+                }
+                let h = 2.0 * t.atanh();
+                Some(e * h.sinh() - h)
+            };
+            Some((mean_at(nu)? - mean_at(self.nu0)?) / n)
+        }
+    }
+
+    /// Sample the conic into `n` `(dt, world_pos)` pairs: the SAME curve
+    /// [`Conic::sample`] traces, but each vertex tagged with the seconds-from-
+    /// now it occurs, monotonically increasing along the polyline. The
+    /// maneuver planner maps a click on the drawn orbit back to a time-to-node
+    /// through this. Ellipse: one full period `[0, period]`. Hyperbola: the
+    /// arc clipped at `r_max`, timed symmetric about periapsis. Empty when the
+    /// orbit can't be propagated.
+    pub fn sample_timed(&self, n: usize, r_max: f64) -> Vec<(f64, DVec3)> {
+        let n = n.max(8);
+        let mut out = Vec::with_capacity(n + 1);
+        let (t0, t1) = if self.e < 1.0 {
+            if !(self.period_s.is_finite() && self.period_s > 0.0) {
+                return out;
+            }
+            (0.0, self.period_s)
+        } else {
+            /* Time window = the dt at the anomalies where r hits r_max, so the
+             * timed polyline covers exactly the drawn (clipped) escape arc. */
+            let p = self.periapsis_m * (1.0 + self.e);
+            let c = ((p / r_max - 1.0) / self.e).clamp(-1.0, 1.0);
+            let th_max = c.acos();
+            match (self.time_from_nu(-th_max), self.time_from_nu(th_max)) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return out,
+            }
+        };
+        for i in 0..=n {
+            let dt = t0 + i as f64 / n as f64 * (t1 - t0);
+            if let Some((p, _)) = self.state_at(dt) {
+                out.push((dt, p));
+            }
+        }
+        out
+    }
 }
 
 /// Prograde / orbit-normal / radial-out unit basis at a state - the axes a
@@ -375,6 +448,9 @@ pub struct AttGains {
     /// Hard cap on |omega| (rad/s), so the ship can't spin faster than its
     /// manual steer rate.
     pub max_rate: f64,
+    /// Deadband, radians: once the attitude error is under this angle the
+    /// controller halts (commands zero) and holds. Zero disables it.
+    pub deadband: f64,
 }
 
 /// Mutable PID state carried between frames by the caller.
@@ -383,6 +459,10 @@ pub struct AttPidState {
     pub integ: DVec3,
     pub prev_err: DVec3,
     pub have_prev: bool,
+    /// True once the nose has settled inside the deadband. Held with
+    /// hysteresis so the controller stays quiet instead of chattering on the
+    /// band boundary - the "constant sine flipping" the deadband kills.
+    pub settled: bool,
 }
 
 impl AttPidState {
@@ -419,6 +499,29 @@ pub fn attitude_error(nose: DVec3, target: DVec3) -> DVec3 {
 /// updating the integral + previous-error state in place. |omega| is clamped
 /// to `g.max_rate`. `dt` in seconds.
 pub fn attitude_pid_step(g: AttGains, st: &mut AttPidState, err: DVec3, dt: f64) -> DVec3 {
+    let zero = dvec3_make(0.0, 0.0, 0.0);
+    /* Deadband with hysteresis. Once the nose is within `deadband` of the
+     * target, HALT (command zero) and clear the PID memory: a kinematic ship
+     * has no angular momentum to null, so holding still IS holding heading.
+     * Without this the derivative term chases the sub-degree, per-frame
+     * jitter of a live target (prograde / maneuver direction recomputed every
+     * frame) and the nose oscillates forever - the reported "sine flipping".
+     * Once settled, stay halted until the error grows past DEADBAND_EXIT x the
+     * band, so drifting across the boundary can't chatter the controller. */
+    const DEADBAND_EXIT: f64 = 2.0;
+    if g.deadband > 0.0 {
+        let err_ang = dvec3_length(err);
+        if st.settled {
+            if err_ang < g.deadband * DEADBAND_EXIT {
+                return zero; /* hold, memory already cleared */
+            }
+            st.settled = false; /* error grew - resume control (no deriv kick:
+                                 * have_prev was cleared on settling) */
+        } else if err_ang <= g.deadband {
+            *st = AttPidState { settled: true, ..AttPidState::default() };
+            return zero;
+        }
+    }
     /* Integral with anti-windup clamp (per component). */
     st.integ = dvec3_add(st.integ, dvec3_scale(err, dt));
     let imax = 0.5;
@@ -472,7 +575,7 @@ mod tests {
     /// settles there without running away.
     #[test]
     fn attitude_pid_converges_and_holds() {
-        let g = AttGains { kp: 4.0, ki: 0.0, kd: 1.2, max_rate: 0.9 };
+        let g = AttGains { kp: 4.0, ki: 0.0, kd: 1.2, max_rate: 0.9, deadband: 0.02 };
         let mut st = AttPidState::default();
         let mut nose = dvec3_make(1.0, 0.0, 0.0);
         let target = dvec3_normalize(dvec3_make(0.1, 1.0, 0.2));
@@ -499,6 +602,36 @@ mod tests {
         assert!(dvec3_dot(nose, target) > 0.995, "cos={}", dvec3_dot(nose, target));
     }
 
+    /// Once inside the deadband the controller HALTS - it outputs exactly zero
+    /// even when the target keeps jittering sub-deadband frame to frame. This
+    /// is the regression guard for the "constant sine flipping": a live target
+    /// that wiggles under the band must NOT keep re-exciting the nose.
+    #[test]
+    fn attitude_pid_halts_inside_the_deadband() {
+        let deadband = 0.02;
+        let g = AttGains { kp: 4.0, ki: 0.0, kd: 1.2, max_rate: 0.9, deadband };
+        let mut st = AttPidState::default();
+        let dt = 1.0 / 60.0;
+        let nose = dvec3_make(1.0, 0.0, 0.0);
+        /* A target that stays well inside the deadband but jitters each frame -
+         * exactly what a per-frame-recomputed prograde/maneuver dir does. The
+         * derivative term would seize on this wiggle without the deadband. */
+        let jitter = [0.004_f64, -0.006, 0.003, -0.005, 0.006, -0.004];
+        let mut settled_and_zero = 0;
+        for (i, &j) in jitter.iter().cycle().take(300).enumerate() {
+            let target = dvec3_normalize(dvec3_make(1.0, j, -j * 0.5));
+            /* Sanity: the target really is inside the band. */
+            assert!(dvec3_length(attitude_error(nose, target)) < deadband);
+            let omega = attitude_pid_step(g, &mut st, attitude_error(nose, target), dt);
+            /* After the first frame settles, every later frame is dead quiet. */
+            if i > 0 {
+                assert!(dvec3_length(omega) < 1e-12, "omega leaked inside deadband: {:?}", omega);
+                settled_and_zero += 1;
+            }
+        }
+        assert!(settled_and_zero > 200, "expected a long quiet hold, got {settled_and_zero}");
+    }
+
     /// Propagating zero seconds returns the state the conic was built from -
     /// the epoch round-trips through nu0.
     #[test]
@@ -515,6 +648,44 @@ mod tests {
             dvec3_length(dvec3_sub(v0, vel)) < 1e-3 * dvec3_length(vel),
             "vel round-trip"
         );
+    }
+
+    /// The timed sampler tags each vertex with a monotonically increasing
+    /// lead time spanning one period, and a click-to-time round trip recovers
+    /// the point's time - the mapping the click-on-orbit node placer relies on.
+    #[test]
+    fn sample_timed_is_monotonic_and_round_trips_a_point() {
+        let b = tenebris();
+        let r = 9_000.0;
+        /* Purely tangential, 1.12x circular -> a clean bound ellipse (e~0.25),
+         * start at periapsis. An out-of-plane component here would swamp the
+         * small circular speed at this radius and go hyperbolic. */
+        let v = 1.12 * (mu(&b) / r).sqrt();
+        let pos = dvec3_make(r, 0.0, 0.0);
+        let vel = dvec3_make(0.0, 0.0, v);
+        let c = Conic::from_state(&b, pos, vel).unwrap();
+        assert!(c.e < 1.0 && c.period_s.is_finite(), "test needs a bound orbit, got e={}", c.e);
+        let samples = c.sample_timed(256, 40_000.0);
+        assert!(samples.len() > 200, "timed sample too sparse: {}", samples.len());
+        /* dt climbs monotonically from ~0 to ~period. */
+        assert!(samples[0].0.abs() < 1.0);
+        assert!((samples.last().unwrap().0 - c.period_s).abs() < c.period_s * 0.02);
+        for w in samples.windows(2) {
+            assert!(w[1].0 >= w[0].0, "dt not monotonic: {} then {}", w[0].0, w[1].0);
+        }
+        /* Pick the true point at t = 0.4 * period, find the nearest sampled
+         * vertex, and confirm its tagged dt matches - closest-point -> time. */
+        let want_dt = c.period_s * 0.4;
+        let (want_pos, _) = c.state_at(want_dt).unwrap();
+        let best = samples
+            .iter()
+            .min_by(|a, x| {
+                dvec3_length(dvec3_sub(a.1, want_pos))
+                    .partial_cmp(&dvec3_length(dvec3_sub(x.1, want_pos)))
+                    .unwrap()
+            })
+            .unwrap();
+        assert!((best.0 - want_dt).abs() < c.period_s / 256.0 * 2.0, "recovered {} want {want_dt}", best.0);
     }
 
     /// Half a period around a circle lands on the antipode with the velocity

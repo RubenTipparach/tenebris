@@ -181,6 +181,45 @@ like walking on a planet:
   elevators, asteroids on rails): if the player stands on it, they
   live in ITS frame; the world moves around them.
 
+## All rotational orientation must be quaternion-backed (no gimbal lock)
+
+**Standing instruction from the user (engrained).** Every rotational
+basis - the ship's flight attitude, and any future free-rotating body
+(turrets, docking arms, tumbling debris, moving platforms that rotate) -
+must be **integrated as a quaternion**, not as three separately-rotated
+basis vectors re-orthonormalized from one authoritative axis.
+
+The trap this rule kills: the tangent-basis representation
+(`TangentBasis { up, fwd, right }`) rebuilds `right = cross(fwd, up)`
+every frame with `up` as the boss, and snaps `fwd` to a world axis when
+it nears `up`. That is a **gimbal singularity** - cross the pole and the
+orientation flips ~180 deg, and roll is silently discarded. It is the
+right model ONLY for a body glued to a surface (walking, station deck),
+where `up = radial-out` genuinely is authoritative and roll doesn't
+exist. A free-flying / free-rotating body has no privileged axis, so it
+MUST carry a full quaternion.
+
+- **Source of truth is a `glam::DQuat`.** Integrate body-frame input as
+  `q = q * DQuat::from_axis_angle(local_axis, angle)` and world-frame
+  angular velocity as `q = DQuat::from_axis_angle(world_axis, ang) * q`,
+  then `q = q.normalize()` once. No `orthonormalise_basis`, no singular
+  fallback - those are the gimbal.
+- **Derive the basis from the quaternion** each frame
+  (`right = q * X`, `fwd = q * Y`, `up = q * Z`) so every consumer
+  (render, chase cam, navball, autopilot error, saves) keeps reading a
+  `TangentBasis` unchanged. The quaternion is the authority; the basis
+  is a derived view.
+- **Surface / station stays basis-authoritative** (that up-authority is
+  correct there and is not a gimbal). Only free-rotating bodies move to
+  the quaternion.
+- **Claude cannot verify rotation feel alone** - the flip only shows in
+  the running game. After any change here, ask the user to fly and roll
+  the ship through the poles and confirm no flip. Keep the strongest
+  regression test (a full pitch loop / pole crossing that must preserve
+  roll and never jump), but green tests are not proof.
+
+This rule stays in force until the user says otherwise.
+
 ## ONGOING UNRESOLVED BUG: falling through the world at trees
 
 **Status: OPEN. Do not assume this is fixed.** The player clips/sinks

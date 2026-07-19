@@ -49,6 +49,12 @@ steer_rate_rads: 0.9
 att_kp: 4.0
 att_ki: 0.0
 att_kd: 1.2
+# Deadband, radians: once the nose is within this angle of the target the
+# autopilot HALTS (commands zero) instead of forever chasing the sub-degree
+# jitter of a live prograde/maneuver direction - that endless chase is the
+# "constant sine flipping" this kills. ~0.02 rad = ~1.1 deg. Widen it if the
+# nose still hunts; narrow it for a tighter (but twitchier) hold.
+att_deadband_rad: 0.02
 
 # Third-person chase camera (client). Ported from the JS RocketCamera
 # (src/rocket/RocketCamera.ts + ROCKET_CONFIG.CAMERA). The camera orbits the

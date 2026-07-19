@@ -7650,22 +7650,15 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
                     solar_map::toggle();
                 }
             });
-            /* Maneuver planner: a self-contained egui_plot orbit chart + burn
-             * controls (nav_ui::egui_maneuver). Replaces the old on-canvas 3D
-             * overlay that drew NaN geometry over the attitude gizmo; the
-             * widget is NaN-filtered and can't touch the flight HUD. */
-            if nav_ui::MANEUVER_ENABLED {
-                ui.separator();
-                egui::CollapsingHeader::new("Maneuver")
-                    .default_open(std::env::var("TENEBRIS_DEV_PLANNER").is_ok())
-                    .show(ui, |ui| {
-                        nav_ui::egui_maneuver(ui, pos, vel);
-                    });
-            }
+            /* Maneuver planning is now entirely in-world: click the orbit line
+             * to drop a node, drag its center along the line, pull the delta-v
+             * handles, right-click the center to clear. No egui planner panel -
+             * the HUD text line carries the required-vs-available dv readout. */
             ui.label(
                 egui::RichText::new(
                     "hold Space: throttle   WASD: steer   Q/R: roll\n\
-                     drag LMB: orbit camera   wheel: zoom   O: system map",
+                     drag LMB: orbit camera   wheel: zoom   O: system map\n\
+                     click orbit line: plan a node   drag its center: slide it   RMB center: clear",
                 )
                 .weak()
                 .size(11.0),
@@ -7756,15 +7749,25 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
         match e._type {
             sapp::EventType::MouseDown if e.mouse_button == sapp::Mousebutton::Left => {
-                /* Priority: a rotate-to-symbol button (2D HUD, topmost), then
-                 * a maneuver-gizmo handle, else start a chase-camera orbit. */
+                /* Priority: a rotate-to-symbol button (2D HUD, topmost), then a
+                 * maneuver-gizmo handle / node center, then the orbit LINE
+                 * itself (click to drop a node there), else a chase-camera
+                 * orbit. The line pick is last so grabbing an existing handle
+                 * always wins over placing a fresh node. */
                 if crate::nav_ui::autopilot_button_pick(e.mouse_x, e.mouse_y) {
                     app.rocket_cam_drag = false;
                 } else if crate::nav_ui::gizmo_pick(e.mouse_x, e.mouse_y) {
                     app.rocket_cam_drag = false;
+                } else if crate::nav_ui::trajectory_pick(e.mouse_x, e.mouse_y) {
+                    app.rocket_cam_drag = false;
                 } else {
                     app.rocket_cam_drag = true;
                 }
+            }
+            sapp::EventType::MouseDown if e.mouse_button == sapp::Mousebutton::Right => {
+                /* Right-click the node center clears it (the in-world stand-in
+                 * for the removed "Clear node" button). */
+                crate::nav_ui::node_delete_pick(e.mouse_x, e.mouse_y);
             }
             sapp::EventType::MouseUp if e.mouse_button == sapp::Mousebutton::Left => {
                 crate::nav_ui::gizmo_release();
@@ -7775,7 +7778,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
                  * + tooltip). */
                 crate::nav_ui::set_ap_hover(crate::nav_ui::ap_hover(e.mouse_x, e.mouse_y));
                 if crate::nav_ui::gizmo_dragging() {
-                    crate::nav_ui::gizmo_drag(e.mouse_dx, e.mouse_dy);
+                    crate::nav_ui::gizmo_drag(e.mouse_x, e.mouse_y, e.mouse_dx, e.mouse_dy);
                 } else {
                     /* Light up the maneuver-gizmo handle under the cursor. */
                     crate::nav_ui::gizmo_hover(e.mouse_x, e.mouse_y);
