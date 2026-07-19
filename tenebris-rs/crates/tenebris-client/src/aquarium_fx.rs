@@ -71,6 +71,9 @@ struct GlassCell {
     side: [bool; MAX_VERTS_PER_TILE],
     /// Aquarium extras.
     is_aquarium: bool,
+    /// This tank holds water (its glass sides + floor are tinted blue so
+    /// the cell reads as full of water, not an empty box).
+    filled: bool,
     /// Draw the water surface (filled, and no filled tank directly above).
     water_surface: bool,
     /// Species wire ids of the fish inside.
@@ -153,6 +156,7 @@ fn cells(w: &World) -> Vec<GlassCell> {
             bottom: depth > 0 && !culled(b, below),
             side,
             is_aquarium,
+            filled,
             water_surface,
             fish,
             fish_count,
@@ -188,6 +192,32 @@ fn quad(a: DVec3, b: DVec3, c: DVec3, d: DVec3) {
     for &p in &[a, c, b, a, d, c] {
         v(p);
     }
+}
+
+/// A side quad with a vertical colour GRADIENT: the two bottom corners
+/// (`ba`, `bb`) get `cbot`, the two top corners (`tb`, `ta`) get `ctop`.
+/// Used to shade a filled tank's walls from a lighter blue near the water
+/// surface down to a deeper blue at the floor, so the cell reads as a body
+/// of water. Double-sided like [`quad`].
+fn quad_grad(ba: DVec3, bb: DVec3, tb: DVec3, ta: DVec3, cbot: [f32; 4], ctop: [f32; 4]) {
+    let vc = |p: DVec3, col: [f32; 4]| {
+        sgl::c4f(col[0], col[1], col[2], col[3]);
+        v(p);
+    };
+    /* Front winding. */
+    vc(ba, cbot);
+    vc(bb, cbot);
+    vc(tb, ctop);
+    vc(ba, cbot);
+    vc(tb, ctop);
+    vc(ta, ctop);
+    /* Back winding (shell is double-sided). */
+    vc(ba, cbot);
+    vc(tb, ctop);
+    vc(bb, cbot);
+    vc(ba, cbot);
+    vc(ta, ctop);
+    vc(tb, ctop);
 }
 
 pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
@@ -286,7 +316,13 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
             }
         }
         if c.bottom {
-            sgl::c4f(0.60 * l, 0.72 * l, 0.80 * l, 0.24);
+            /* A filled tank's floor sits under water -> deep blue; an empty
+             * glass box keeps the pale glass tint. */
+            if c.filled {
+                sgl::c4f(0.10 * l, 0.30 * l, 0.52 * l, 0.62);
+            } else {
+                sgl::c4f(0.60 * l, 0.72 * l, 0.80 * l, 0.24);
+            }
             for k in 1..c.n - 1 {
                 v(corner_bot(0));
                 v(corner_bot(k + 1));
@@ -296,13 +332,37 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
                 v(corner_bot(k + 1));
             }
         }
-        sgl::c4f(0.70 * l, 0.83 * l, 0.90 * l, 0.20);
-        for k in 0..c.n {
-            if !c.side[k] {
-                continue;
+        /* Side walls. A FILLED tank shades them blue with a top-to-bottom
+         * depth gradient (lighter near the surface, deeper at the floor) so
+         * the cell reads as a body of blue water held behind the glass;
+         * empty glass keeps the near-clear pale tint. Fish were drawn first,
+         * so they show through the tinted walls. */
+        if c.filled {
+            let ctop = [0.30 * l, 0.58 * l, 0.80 * l, 0.42];
+            let cbot = [0.11 * l, 0.34 * l, 0.58 * l, 0.56];
+            for k in 0..c.n {
+                if !c.side[k] {
+                    continue;
+                }
+                let k1 = (k + 1) % c.n;
+                quad_grad(
+                    corner_bot(k),
+                    corner_bot(k1),
+                    corner_top(k1),
+                    corner_top(k),
+                    cbot,
+                    ctop,
+                );
             }
-            let k1 = (k + 1) % c.n;
-            quad(corner_bot(k), corner_bot(k1), corner_top(k1), corner_top(k));
+        } else {
+            sgl::c4f(0.70 * l, 0.83 * l, 0.90 * l, 0.20);
+            for k in 0..c.n {
+                if !c.side[k] {
+                    continue;
+                }
+                let k1 = (k + 1) % c.n;
+                quad(corner_bot(k), corner_bot(k1), corner_top(k1), corner_top(k));
+            }
         }
 
         /* Aquarium water surface: one hex cap just below the glass top.
