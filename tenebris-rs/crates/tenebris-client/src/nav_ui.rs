@@ -1763,56 +1763,80 @@ pub fn draw_hud(
     let cx = screen_w * 0.5;
     let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
 
-    /* Ball body: a clean sky cap + ground cap split by the horizon (the great
-     * circle perpendicular to `up`). The front hemisphere is an orthographic
-     * disc; along each radial spoke at screen angle theta the horizon sits at
-     * exactly ONE radius, solved in closed form, so the seam is a crisp curve
-     * instead of a stair-stepped mesh boundary.
-     *
-     * A spoke point at radius r has ball coords (r cos, r sin) and depth
-     * bz = sqrt(1-r^2), so dot(d,up) = r*P + sqrt(1-r^2)*W with
-     * P(theta) = cos*RU - sin*FU and W = dot(nose,up) = sin(pitch). That is
-     * zero at r_h = |W| / hypot(P, W), and only when P and W have opposite
-     * signs (otherwise the whole spoke is one hemisphere). Centre colour is
-     * set by W (r=0 -> d = nose), rim colour by P (r=1 -> on the horizon
-     * plane's silhouette). */
-    let ru = dvec3_dot(right, up) as f32;
-    let fu = dvec3_dot(fwd, up) as f32;
-    let w = dvec3_dot(nose, up) as f32;
-    let center_col = if w >= 0.0 { SKY } else { GROUND };
-    let spoke = |theta: f32| -> (f32, [f32; 4]) {
-        let p = theta.cos() * ru - theta.sin() * fu;
-        let split = if p * w >= 0.0 { 0.0 } else { w.abs() / p.hypot(w) };
-        (split, if p >= 0.0 { SKY } else { GROUND })
+    /* Navball body as a two-tone SPHERE you roll with the attitude, like a
+     * real ADI: poles along `up`, the top hemisphere sky and the bottom
+     * ground, so the equator IS the horizon. We orient it through the craft
+     * basis (screen x = dot(d,right), screen y = -dot(d,fwd), depth =
+     * dot(d,nose)) and draw only the front hemisphere, clipped at the
+     * silhouette. Because the seam rides the equator latitude ring, no
+     * triangle ever straddles sky and ground - the horizon stays a clean great
+     * circle at any pitch/roll, no stair-steps. `lat_segs` is even so lat 0 is
+     * a ring boundary. */
+    let seed = if up.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
+    let e1 = dvec3_normalize(dvec3_cross(up, seed));
+    let e2 = dvec3_cross(up, e1);
+    let dir = |lat: f64, lon: f64| {
+        let (sl, cl) = (lat.sin(), lat.cos());
+        dvec3_add(
+            dvec3_scale(up, sl),
+            dvec3_scale(dvec3_add(dvec3_scale(e1, lon.cos()), dvec3_scale(e2, lon.sin())), cl),
+        )
     };
-    let pt = |theta: f32, r: f32| {
-        (cx + r * theta.cos() * BALL_RADIUS_PX, cy - r * theta.sin() * BALL_RADIUS_PX)
+    /* World dir -> (screen x, screen y, depth). */
+    let sd = |d: DVec3| {
+        let (bx, by, bz) = ball_coords(d, right, fwd, nose);
+        (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX, bz)
     };
-    let emit = |x: f32, y: f32, c: [f32; 4]| {
-        sgl::c4f(c[0], c[1], c[2], c[3]);
-        sgl::v2f(x, y);
+    /* Clip a screen triangle (each vertex carries its depth) to the front
+     * half-space depth >= 0 (Sutherland-Hodgman) and fan-fill it. Verts on
+     * the silhouette land ~on the rim; the rim ring drawn next hides the
+     * chord approximation. */
+    let emit_clipped = |tri: &[(f32, f32, f32); 3], col: [f32; 4]| {
+        let mut poly = [(0.0f32, 0.0f32); 4];
+        let mut n = 0usize;
+        for i in 0..3 {
+            let cur = tri[i];
+            let nxt = tri[(i + 1) % 3];
+            if cur.2 >= 0.0 {
+                poly[n] = (cur.0, cur.1);
+                n += 1;
+            }
+            if (cur.2 >= 0.0) != (nxt.2 >= 0.0) {
+                let t = cur.2 / (cur.2 - nxt.2);
+                poly[n] = (cur.0 + t * (nxt.0 - cur.0), cur.1 + t * (nxt.1 - cur.1));
+                n += 1;
+            }
+        }
+        if n < 3 {
+            return;
+        }
+        sgl::c4f(col[0], col[1], col[2], col[3]);
+        for i in 1..n - 1 {
+            sgl::v2f(poly[0].0, poly[0].1);
+            sgl::v2f(poly[i].0, poly[i].1);
+            sgl::v2f(poly[i + 1].0, poly[i + 1].1);
+        }
     };
+    let lat_segs = 18usize;
+    let lon_segs = 64usize;
+    let half = std::f64::consts::FRAC_PI_2;
     sgl::begin_triangles();
-    for i in 0..BALL_SEGS {
-        let t0 = i as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-        let t1 = (i + 1) as f32 / BALL_SEGS as f32 * std::f32::consts::TAU;
-        let (s0, rc0) = spoke(t0);
-        let (s1, rc1) = spoke(t1);
-        let a0 = pt(t0, s0);
-        let a1 = pt(t1, s1);
-        /* Inner cap (from centre to the horizon), centre-hemisphere colour. */
-        emit(cx, cy, center_col);
-        emit(a0.0, a0.1, center_col);
-        emit(a1.0, a1.1, center_col);
-        /* Outer band (horizon to rim), rim-hemisphere colour per spoke. */
-        let b0 = pt(t0, 1.0);
-        let b1 = pt(t1, 1.0);
-        emit(a0.0, a0.1, rc0);
-        emit(b0.0, b0.1, rc0);
-        emit(b1.0, b1.1, rc1);
-        emit(a0.0, a0.1, rc0);
-        emit(b1.0, b1.1, rc1);
-        emit(a1.0, a1.1, rc1);
+    for la in 0..lat_segs {
+        let lat0 = -half + la as f64 / lat_segs as f64 * std::f64::consts::PI;
+        let lat1 = -half + (la + 1) as f64 / lat_segs as f64 * std::f64::consts::PI;
+        let col = if lat0 >= -1e-9 { SKY } else { GROUND };
+        for lo in 0..lon_segs {
+            let lon0 = lo as f64 / lon_segs as f64 * std::f64::consts::TAU;
+            let lon1 = (lo + 1) as f64 / lon_segs as f64 * std::f64::consts::TAU;
+            let q = [
+                sd(dir(lat0, lon0)),
+                sd(dir(lat1, lon0)),
+                sd(dir(lat1, lon1)),
+                sd(dir(lat0, lon1)),
+            ];
+            emit_clipped(&[q[0], q[1], q[2]], col);
+            emit_clipped(&[q[0], q[2], q[3]], col);
+        }
     }
     sgl::end();
 
