@@ -5871,10 +5871,19 @@ pub fn draw_world(
                  * hysteresis radius, because a reload is a multi-second
                  * full remesh. Result cached in chunked_now so the moons /
                  * water mirrors agree by construction. */
-                let anchor =
-                    LOD_ANCHOR.with(|c| c.get()).unwrap_or(camera_world);
-                let lod_dist =
-                    vec3_length(vec3_sub(r.bodies[bi].world_pos, anchor)).max(1.0);
+                /* Distance from the LOD anchor (the player, ABSOLUTE world pos)
+                 * to the body's ABSOLUTE centre (world_pos_d), NOT the floating-
+                 * origin-rebased render world_pos - mixing the rebased body pos
+                 * (camera-relative, ~0) with the absolute anchor read every body
+                 * as ~150 km away once the world went heliocentric, unloading
+                 * the near chunk mesh into the distant impostor (the "LOD
+                 * failure"). Falls back to the absolute camera when unset. */
+                let anchor = LOD_ANCHOR
+                    .with(|c| c.get())
+                    .map(|a| DVec3 { x: a.x as f64, y: a.y as f64, z: a.z as f64 })
+                    .unwrap_or(r.env.camera_world_d);
+                let bwp = r.bodies[bi].world_pos_d;
+                let lod_dist = (dvec3_length(dvec3_sub(bwp, anchor)) as f32).max(1.0);
                 let want = if r.bodies[bi].meshed {
                     is_active && lod_dist <= MAX_DETAIL_DIST_M * DETAIL_UNLOAD_FACTOR
                 } else {
