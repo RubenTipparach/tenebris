@@ -55,12 +55,6 @@ const MARKER_R_PX: f32 = 6.0;
 /// Beyond this many body radii the ground hemisphere swings from the planet
 /// to the star (the "brown points at the SOI, sun if heliocentric" rule).
 const SOI_RADII: f64 = 60.0;
-/// Pitch-ladder tick colours: major (10 deg, with a number) brighter than the
-/// minor (5 deg) ticks, both faint enough that markers stay legible.
-const LADDER_MAJOR: [f32; 4] = [0.90, 0.94, 1.0, 0.7];
-const LADDER_MINOR: [f32; 4] = [0.80, 0.86, 0.95, 0.4];
-const SKY: [f32; 4] = [0.18, 0.42, 0.72, 0.92];
-const GROUND: [f32; 4] = [0.52, 0.33, 0.16, 0.95];
 const RIM: [f32; 4] = [0.85, 0.88, 0.95, 0.9];
 const NOSE_COL: [f32; 4] = [1.0, 0.85, 0.2, 1.0];
 const PROGRADE: [f32; 4] = [0.75, 0.95, 0.3, 1.0];
@@ -341,10 +335,6 @@ thread_local! {
     /// Tooltip label anchor (screen px) + mode, set while hovering so the text
     /// pass can print the label over the panel drawn on the ball pass.
     static AP_TIP: Cell<Option<(f32, f32, AttMode)>> = const { Cell::new(None) };
-    /// Pitch-ladder major-tick number anchors (screen px) + value, filled by
-    /// the ball pass and printed by the sdtx text pass.
-    static LADDER_NUMS: std::cell::RefCell<Vec<(f32, f32, i32)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 const BTN_PX: f32 = 26.0;
@@ -1633,98 +1623,6 @@ fn marker(cx: f32, cy: f32, bx: f32, by: f32, bz: f32, mode: AttMode, col: [f32;
     draw_glyph(mode, x, y, MARKER_R_PX, [col[0], col[1], col[2], alpha]);
 }
 
-/// Pitch ladder, ADI-style: a short horizontal tick at each pitch line up the
-/// ball's vertical meridian, from -90 to +90. Minor ticks every 5 deg, longer
-/// major ticks every 10 deg, and the major ticks carry a degree NUMBER
-/// (stashed for the sdtx text pass). Each tick is drawn at the front point of
-/// its constant-elevation circle where that circle crosses the vertical
-/// meridian, oriented along the circle's tangent so it tilts correctly with
-/// roll. The horizon (0 deg) is also the sky/ground seam.
-fn draw_pitch_ladder(cx: f32, cy: f32, up: DVec3, right: DVec3, fwd: DVec3, nose: DVec3) {
-    /* Ladder direction is the ATTITUDE-vertical, the plane of {up, nose}, so
-     * it tilts with roll (KSP ADI) instead of the screen vertical. `w` is the
-     * horizon-ward axis (component of the nose perpendicular to up); a
-     * direction at elevation deg is d = sin*up + cos*w, which sits on the
-     * front face for every |deg| < 90. */
-    let nu = dvec3_dot(nose, up);
-    let w = dvec3_sub(nose, dvec3_scale(up, nu));
-    let wl = dvec3_length(w);
-    if wl < 1e-3 {
-        return; /* nose at the zenith/nadir pole: no meaningful pitch line */
-    }
-    let w = dvec3_scale(w, 1.0 / wl);
-    let mut nums: Vec<(f32, f32, i32)> = Vec::new();
-    let mut last_num: Option<(f32, f32)> = None;
-    for deg in (-85..=85).step_by(5) {
-        let major = deg % 10 == 0;
-        let (s, c) = ((deg as f64).to_radians().sin(), (deg as f64).to_radians().cos());
-        let d0 = dvec3_add(dvec3_scale(up, s), dvec3_scale(w, c));
-        let (bx, by, bz) = ball_coords(d0, right, fwd, nose);
-        if bz <= 0.0 {
-            continue;
-        }
-        let p0 = (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX);
-        /* Screen tangent along the elevation circle (perp to up and d0), so
-         * the tick is horizontal-on-the-ball and rolls with the ship. */
-        let tan3 = dvec3_cross(up, d0);
-        if dvec3_dot(tan3, tan3) < 1e-9 {
-            continue;
-        }
-        let d1 = dvec3_normalize(dvec3_add(d0, dvec3_scale(dvec3_normalize(tan3), 0.03)));
-        let (tx, ty, _) = ball_coords(d1, right, fwd, nose);
-        let (mut dx, mut dy) =
-            ((tx - bx) * BALL_RADIUS_PX, -(ty - by) * BALL_RADIUS_PX);
-        let dl = (dx * dx + dy * dy).sqrt().max(1e-3);
-        dx /= dl;
-        dy /= dl;
-        let half = if major { 30.0 } else { 13.0 };
-        let col = if major { LADDER_MAJOR } else { LADDER_MINOR };
-        sgl::begin_lines();
-        sgl::c4f(col[0], col[1], col[2], col[3]);
-        sgl::v2f(p0.0 - dx * half, p0.1 - dy * half);
-        sgl::v2f(p0.0 + dx * half, p0.1 + dy * half);
-        sgl::end();
-        if major {
-            /* Number just past the right end of the tick (signed pitch).
-             * Skip if it would collide with the last one placed - near the
-             * poles the pitch lines compress, so labelling every 10 deg there
-             * would overlap; drop those and keep the readable central band. */
-            let (nx, ny) = (p0.0 + dx * (half + 10.0), p0.1 + dy * (half + 10.0));
-            let ok = last_num.map_or(true, |(lx, ly)| (nx - lx).hypot(ny - ly) > 16.0);
-            if ok {
-                nums.push((nx, ny, deg as i32));
-                last_num = Some((nx, ny));
-            }
-        }
-    }
-    LADDER_NUMS.with(|c| *c.borrow_mut() = nums);
-}
-
-/// Print the pitch-ladder degree numbers collected by [`draw_pitch_ladder`].
-/// Separate text pass (sdtx) since the ladder ticks draw on the sgl ball
-/// pass. Only points that landed inside the ball are printed.
-pub fn draw_navball_degrees_text(screen_w: f32, screen_h: f32) {
-    let nums = LADDER_NUMS.with(|c| c.borrow().clone());
-    if nums.is_empty() {
-        return;
-    }
-    let cx = screen_w * 0.5;
-    let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
-    let cell = 8.0f32;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::font(1);
-    sdtx::color3b(0xe8, 0xec, 0xf4);
-    for (x, y, v) in nums {
-        /* Keep labels on/near the ball so they don't spill onto the buttons. */
-        if (x - cx).hypot(y - cy) > BALL_RADIUS_PX + 4.0 {
-            continue;
-        }
-        let s = format!("{v}");
-        sdtx::pos((x - s.len() as f32 * cell * 0.5) / cell, (y - 4.0) / cell);
-        sdtx::puts(&s);
-    }
-}
-
 /// The navball "up" (radial-out): toward the sky, away from the ground
 /// hemisphere. Near a planet that's away from the body centre; once we're
 /// past its influence the primary is the star, so up flips to away-from-sun
@@ -1786,82 +1684,97 @@ pub fn draw_hud(
     let cx = screen_w * 0.5;
     let cy = screen_h - BALL_MARGIN_PX - BALL_RADIUS_PX;
 
-    /* Navball body as a two-tone SPHERE you roll with the attitude, like a
-     * real ADI: poles along `up`, the top hemisphere sky and the bottom
-     * ground, so the equator IS the horizon. We orient it through the craft
+    /* Navball body as a TEXTURED SPHERE you roll with the attitude, like a
+     * real ADI: poles along `up`, equator = horizon, with the whole grid -
+     * sky/ground, pitch ladder + numbers, meridians, heading marks - baked
+     * into an equirectangular texture (assets/textures/navball.png) that
+     * wraps on the surface, so the lines/numbers are ON the ball and occlude
+     * correctly instead of being faked in 2-D. We orient it through the craft
      * basis (screen x = dot(d,right), screen y = -dot(d,fwd), depth =
-     * dot(d,nose)) and draw only the front hemisphere, clipped at the
-     * silhouette. Because the seam rides the equator latitude ring, no
-     * triangle ever straddles sky and ground - the horizon stays a clean great
-     * circle at any pitch/roll, no stair-steps. `lat_segs` is even so lat 0 is
-     * a ring boundary. */
+     * dot(d,nose)), draw only the front hemisphere (clipped at the silhouette),
+     * and sample uv = (lon/2pi, 0.5 - lat/pi). `e1` is the heading-zero
+     * meridian: a stable world reference in the horizon plane, so yaw rotates
+     * the ship relative to a fixed grid. */
     let seed = if up.x.abs() < 0.9 { dvec3_make(1.0, 0.0, 0.0) } else { dvec3_make(0.0, 1.0, 0.0) };
     let e1 = dvec3_normalize(dvec3_cross(up, seed));
     let e2 = dvec3_cross(up, e1);
-    let dir = |lat: f64, lon: f64| {
+    /* One sphere vertex -> (screen x, screen y, depth, u, v). */
+    let vert = |lat: f64, lon: f64| {
         let (sl, cl) = (lat.sin(), lat.cos());
-        dvec3_add(
+        let d = dvec3_add(
             dvec3_scale(up, sl),
             dvec3_scale(dvec3_add(dvec3_scale(e1, lon.cos()), dvec3_scale(e2, lon.sin())), cl),
-        )
-    };
-    /* World dir -> (screen x, screen y, depth). */
-    let sd = |d: DVec3| {
+        );
         let (bx, by, bz) = ball_coords(d, right, fwd, nose);
-        (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX, bz)
+        /* Flip U: the ball_coords projection (x=dot(d,right)) against the
+         * e1/e2 longitude frame is left-handed, so an un-flipped map renders
+         * the baked text mirrored. */
+        let u = (1.0 - lon / std::f64::consts::TAU) as f32;
+        let v = (0.5 - lat / std::f64::consts::PI) as f32;
+        (cx + bx * BALL_RADIUS_PX, cy - by * BALL_RADIUS_PX, bz, u, v)
     };
-    /* Clip a screen triangle (each vertex carries its depth) to the front
-     * half-space depth >= 0 (Sutherland-Hodgman) and fan-fill it. Verts on
-     * the silhouette land ~on the rim; the rim ring drawn next hides the
-     * chord approximation. */
-    let emit_clipped = |tri: &[(f32, f32, f32); 3], col: [f32; 4]| {
-        let mut poly = [(0.0f32, 0.0f32); 4];
+    /* Clip a textured triangle (each vertex = x,y,depth,u,v) to the front
+     * half-space depth >= 0 (Sutherland-Hodgman), interpolating u,v at the
+     * silhouette crossing so texels don't smear at the rim, and fan-fill it.
+     * The rim ring drawn next hides the chord approximation at the edge. */
+    let emit_clipped = |tri: &[(f32, f32, f32, f32, f32); 3]| {
+        let mut poly = [(0.0f32, 0.0f32, 0.0f32, 0.0f32); 4];
         let mut n = 0usize;
         for i in 0..3 {
             let cur = tri[i];
             let nxt = tri[(i + 1) % 3];
             if cur.2 >= 0.0 {
-                poly[n] = (cur.0, cur.1);
+                poly[n] = (cur.0, cur.1, cur.3, cur.4);
                 n += 1;
             }
             if (cur.2 >= 0.0) != (nxt.2 >= 0.0) {
                 let t = cur.2 / (cur.2 - nxt.2);
-                poly[n] = (cur.0 + t * (nxt.0 - cur.0), cur.1 + t * (nxt.1 - cur.1));
+                poly[n] = (
+                    cur.0 + t * (nxt.0 - cur.0),
+                    cur.1 + t * (nxt.1 - cur.1),
+                    cur.3 + t * (nxt.3 - cur.3),
+                    cur.4 + t * (nxt.4 - cur.4),
+                );
                 n += 1;
             }
         }
         if n < 3 {
             return;
         }
-        sgl::c4f(col[0], col[1], col[2], col[3]);
         for i in 1..n - 1 {
-            sgl::v2f(poly[0].0, poly[0].1);
-            sgl::v2f(poly[i].0, poly[i].1);
-            sgl::v2f(poly[i + 1].0, poly[i + 1].1);
+            sgl::v2f_t2f(poly[0].0, poly[0].1, poly[0].2, poly[0].3);
+            sgl::v2f_t2f(poly[i].0, poly[i].1, poly[i].2, poly[i].3);
+            sgl::v2f_t2f(poly[i + 1].0, poly[i + 1].1, poly[i + 1].2, poly[i + 1].3);
         }
     };
-    let lat_segs = 18usize;
+    let lat_segs = 24usize;
     let lon_segs = 64usize;
     let half = std::f64::consts::FRAC_PI_2;
+    sgl::enable_texture();
+    sgl::texture(
+        sg::View { id: renderer::navball_view_id() },
+        sg::Sampler { id: renderer::navball_sampler_id() },
+    );
+    sgl::c4f(1.0, 1.0, 1.0, 1.0); /* raw texture (fragment = texture * color) */
     sgl::begin_triangles();
     for la in 0..lat_segs {
         let lat0 = -half + la as f64 / lat_segs as f64 * std::f64::consts::PI;
         let lat1 = -half + (la + 1) as f64 / lat_segs as f64 * std::f64::consts::PI;
-        let col = if lat0 >= -1e-9 { SKY } else { GROUND };
         for lo in 0..lon_segs {
             let lon0 = lo as f64 / lon_segs as f64 * std::f64::consts::TAU;
             let lon1 = (lo + 1) as f64 / lon_segs as f64 * std::f64::consts::TAU;
             let q = [
-                sd(dir(lat0, lon0)),
-                sd(dir(lat1, lon0)),
-                sd(dir(lat1, lon1)),
-                sd(dir(lat0, lon1)),
+                vert(lat0, lon0),
+                vert(lat1, lon0),
+                vert(lat1, lon1),
+                vert(lat0, lon1),
             ];
-            emit_clipped(&[q[0], q[1], q[2]], col);
-            emit_clipped(&[q[0], q[2], q[3]], col);
+            emit_clipped(&[q[0], q[1], q[2]]);
+            emit_clipped(&[q[0], q[2], q[3]]);
         }
     }
     sgl::end();
+    sgl::disable_texture();
 
     /* Rim ring. */
     sgl::begin_triangles();
@@ -1880,10 +1793,6 @@ pub fn draw_hud(
         sgl::v2f(cx + c1 * rin, cy + s1 * rin);
     }
     sgl::end();
-
-    /* Pitch ladder: constant-elevation rings every 30 deg from the horizon,
-     * so attitude reads in degrees off the ball, not just by feel. */
-    draw_pitch_ladder(cx, cy, up, right, fwd, nose);
 
     /* Direction markers - one distinct glyph per attitude mode, all driven
      * by the same mode_dir() the buttons and autopilot use. KillRot has no

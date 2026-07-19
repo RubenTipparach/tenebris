@@ -1865,6 +1865,11 @@ struct Renderer {
     water_normal_img: sg::Image,
     water_normal_view: sg::View,
     water_normal_smp: sg::Sampler,
+    /// Equirectangular navball texture (sky/ground + pitch ladder + meridians
+    /// + heading marks) wrapped onto the attitude sphere in nav_ui.
+    navball_img: sg::Image,
+    navball_view: sg::View,
+    navball_smp: sg::Sampler,
 
     flow_arrow_img: sg::Image,
     flow_arrow_view: sg::View,
@@ -1971,6 +1976,9 @@ impl Default for Renderer {
             water_normal_img: sg::Image::new(),
             water_normal_view: sg::View::new(),
             water_normal_smp: sg::Sampler::new(),
+            navball_img: sg::Image::new(),
+            navball_view: sg::View::new(),
+            navball_smp: sg::Sampler::new(),
             flow_arrow_img: sg::Image::new(),
             flow_arrow_view: sg::View::new(),
             flow_arrow_smp: sg::Sampler::new(),
@@ -2401,6 +2409,52 @@ fn load_water_normal(r: &mut Renderer) {
         label: c"distant-lod-sampler".as_ptr(),
         ..Default::default()
     });
+}
+
+/// Equirectangular navball texture. Linear filtered, wrapping in U (longitude)
+/// and clamped in V (latitude) - the same convention as the distant-LOD
+/// equirect maps - so the pitch/heading grid wraps cleanly on the sphere.
+fn load_navball(r: &mut Renderer) {
+    const FALLBACK: [u8; 4] = [40, 90, 130, 255];
+    let loaded = load_png_rgba("assets/textures/navball.png", false);
+    let (w, h, pixels): (i32, i32, &[u8]) = match &loaded {
+        Some(img) => (img.w, img.h, &img.rgba),
+        None => {
+            println!("[renderer] WARNING: assets/textures/navball.png missing; navball will be flat");
+            (1, 1, &FALLBACK)
+        }
+    };
+    let mut desc = sg::ImageDesc {
+        width: w,
+        height: h,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"navball".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(pixels);
+    r.navball_img = sg::make_image(&desc);
+    r.navball_view = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: r.navball_img, ..Default::default() },
+        label: c"navball-view".as_ptr(),
+        ..Default::default()
+    });
+    r.navball_smp = sg::make_sampler(&sg::SamplerDesc {
+        min_filter: sg::Filter::Linear,
+        mag_filter: sg::Filter::Linear,
+        wrap_u: sg::Wrap::Repeat,
+        wrap_v: sg::Wrap::ClampToEdge,
+        label: c"navball-sampler".as_ptr(),
+        ..Default::default()
+    });
+}
+
+/// Raw sokol view/sampler ids for the navball texture, so nav_ui can bind it
+/// on the HUD sgl pipeline (mirrors crop_view_id / crop_sampler_id).
+pub fn navball_view_id() -> u32 {
+    R.with(|cell| cell.borrow().navball_view.id)
+}
+pub fn navball_sampler_id() -> u32 {
+    R.with(|cell| cell.borrow().navball_smp.id)
 }
 
 /// Animal texture atlas - one 32x32 unwrap tile per AnimalKind
@@ -3040,6 +3094,7 @@ pub fn init() {
         bake_atlas(&mut r);
         bake_body_gallery(&mut r);
         load_water_normal(&mut r);
+        load_navball(&mut r);
         load_flow_arrow(&mut r);
         load_animal_textures(&mut r);
         load_rocket_textures(&mut r);
@@ -3099,6 +3154,9 @@ pub fn shutdown() {
         sg::destroy_view(r.water_normal_view);
         sg::destroy_image(r.water_normal_img);
         sg::destroy_sampler(r.water_normal_smp);
+        sg::destroy_view(r.navball_view);
+        sg::destroy_image(r.navball_img);
+        sg::destroy_sampler(r.navball_smp);
         if r.distant_lod_smp.id != 0 {
             sg::destroy_sampler(r.distant_lod_smp);
         }

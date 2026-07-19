@@ -7244,9 +7244,7 @@ fn frame_inner(app: &mut App) {
                 sun_dir,
                 sim_t,
             );
-            /* Navball pitch-ladder degree numbers + autopilot-button tooltip
-             * label (text pass over the sgl ball geometry). */
-            nav_ui::draw_navball_degrees_text(sapp::widthf(), sapp::heightf());
+            /* Autopilot-button tooltip label (text pass over the sgl ball). */
             nav_ui::draw_ap_tooltip_text(sapp::widthf(), sapp::heightf());
         }
         /* Credits wallet (top-right). */
