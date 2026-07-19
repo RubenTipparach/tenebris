@@ -364,6 +364,42 @@ extend the original instead.
 
 This rule stays in force until the user says otherwise.
 
+## One code path for any given logic - never two that must agree
+
+**Standing instruction from the user (engrained).** For any piece of
+logic, there must be exactly ONE source of truth and ONE code path.
+Never encode the same fact, rule, or decision in two places that then
+have to be kept in sync by hand - they WILL drift, and the drift is
+invisible until it bites in the running game.
+
+- **The scar that made this a rule:** the keyboard scheme lived in TWO
+  places - the compiled `default_bindings()` in `controls.rs` AND the
+  shipped `assets/config/controls.yaml` (which OVERRIDES the defaults at
+  boot). A remap updated the code defaults (E->roll, Tab->interact) but
+  not the YAML, so the running game kept the OLD scheme (E opened the
+  inventory) while every unit test - which only exercised
+  `default_bindings()` - stayed green. The test suite validated one path;
+  the game ran the other.
+- **When a second representation is unavoidable** (a config file that
+  overrides code defaults, a save format that mirrors a struct, a shader
+  uniform that mirrors a Rust constant), add a test that loads the REAL
+  artifact and asserts it agrees with the code - e.g.
+  `shipped_yaml_matches_the_intended_scheme` parses the actual
+  `controls.yaml` via `include_str!` so the file and the defaults can
+  never silently disagree again. A test that only checks the in-code
+  copy is worthless against drift.
+- **Prefer collapsing to one path over guarding two.** If a manual
+  close-list duplicates what `screens::take_focus` already does, delete
+  the manual list and call the central path - don't "keep them in sync".
+  The redundant copy is always the one that's subtly wrong (missing a
+  case, stale after a rename).
+- This is the same principle as the SP/MP single-path rule and the
+  "never rebuild an existing feature" rule above - stated for LOGIC and
+  DATA, not just features: one authority, one path, everything else
+  derives from it.
+
+This rule stays in force until the user says otherwise.
+
 ## All world edits must persist immediately
 
 Every block placement, every block break, every torch placement,

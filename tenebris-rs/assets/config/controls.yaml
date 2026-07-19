@@ -17,7 +17,9 @@
 #   fly_down        - descend while flying / in space
 #   toggle_fly      - toggle creative fly mode
 #   roll_left / roll_right - roll the view (space flight only)
-#   interact        - open the machine under the reticle, else the inventory
+#   interact        - board a ship / dock the station / open the machine
+#                     under the reticle / pick up a scattered item
+#   inventory       - open / close the player inventory (its own key)
 #   eat             - eat the selected food
 #   plant           - plant a seed / till soil under the reticle
 #   survival_toggle - toggle survival / creative
@@ -38,7 +40,8 @@ move_right:      D
 jump:            Space
 sprint:          LeftShift, RightShift
 fly_down:        LeftControl, RightControl, C
-toggle_fly:      F
+# Creative fly toggle: R (F is now the world-interact key).
+toggle_fly:      R
 survival_toggle: G
 
 # Menus.
@@ -46,14 +49,17 @@ pause:           Escape
 tech_tree:       K
 crafting:        B
 
-# Space flight: roll the view with Q / R (E is free for interact).
+# Space flight: roll the view with Q / E.
 roll_left:       Q
-roll_right:      R
+roll_right:      E
 
-# Context action: aim at a machine (chest, furnace, 3D printer, power
-# generator, rocket pad, ...) and press this to open it; otherwise it
-# toggles the inventory.
-interact:        E
+# World interaction: aim at a machine (chest, furnace, 3D printer, power
+# generator, rocket pad, ...) and press this to open it; also boards a
+# parked ship, docks the station, and picks up scattered items.
+interact:        F
+
+# Inventory: its OWN key, distinct from interact.
+inventory:       Tab
 
 eat:             V
 plant:           T

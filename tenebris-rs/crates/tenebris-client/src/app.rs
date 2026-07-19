@@ -7927,6 +7927,21 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact)
         && !solar_map::is_open();
+    /* Inventory is its OWN key (default Tab), separate from Interact (default
+     * F). Same solar-map gate - the bag must not pop over the orbit chart
+     * while flying. */
+    let inventory_pressed = e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code)
+            == Some(crate::controls::Action::OpenInventory)
+        && !solar_map::is_open();
+    if inventory_pressed {
+        /* toggle() calls screens::take_focus, which is the SINGLE place that
+         * closes every other overlay when one opens - no manual close-list
+         * here (that was the copy-pasted, always-incomplete pattern the
+         * screens roster replaced). */
+        inventory_screen::toggle();
+        return;
+    }
     /* Re-board a ship parked in the world: on foot within reach of a ship
      * you climbed out of (it did NOT despawn), Interact straps you back in
      * and flies it from where it floats. Checked before the block-target
@@ -8103,20 +8118,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
     }
 
-    /* Interact (default E) with no machine under the reticle: toggle the
-     * inventory / crafting overlay. Same everywhere now - roll moved to
-     * Q / R (see controls.yaml), so E no longer doubles as roll-right in
-     * space and needs no shift modifier or space special-case. */
-    if interact_pressed {
-        inventory_screen::toggle();
-        /* Mutually exclusive with the craft panel - only one survival
-         * overlay up at a time so their input + sdtx text never collide. */
-        if inventory_screen::is_open() {
-            crafting_screen::close();
-            rocket_screen::close();
-        }
-        return;
-    }
+    /* Interact (default F) with no machine / ship / pickup under the reticle
+     * now does nothing - the inventory moved to its OWN key (default Tab,
+     * handled at the top of this fn), so Interact no longer doubles as the
+     * inventory toggle. */
     /* K: toggle the tech-tree / progression guide overlay. */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenTechTree)

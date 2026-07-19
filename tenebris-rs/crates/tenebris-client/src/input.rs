@@ -313,6 +313,7 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
          * app.rs::event_inner before events reach this per-frame physics layer,
          * so they do nothing here. */
         Action::Interact
+        | Action::OpenInventory
         | Action::Stage
         | Action::ExitRocket
         | Action::RespawnRocket
@@ -1079,25 +1080,25 @@ mod tests {
         assert!(!state().phys.sprint);
         handle_event(&key(EventType::KeyDown, Keycode::C));
         assert!(state().phys.fly_down);
-        /* Roll is Q (left) / R (right) - E is the interact/inventory key now
-         * and no longer rolls (controls.yaml default scheme). */
+        /* Roll is Q (left) / E (right). F is the world-interact key and R is
+         * the fly toggle, so neither drives roll. */
         handle_event(&key(EventType::KeyDown, Keycode::Q));
         handle_event(&key(EventType::KeyDown, Keycode::E));
         assert!(state().phys.roll_left && state().phys.roll_right);
-        /* Roll-right moved to E; R is unbound now, so it must NOT drive roll. */
+        /* F is interact, not roll: it must NOT drive roll-right. */
         handle_event(&key(EventType::KeyUp, Keycode::E));
-        handle_event(&key(EventType::KeyDown, Keycode::R));
+        handle_event(&key(EventType::KeyDown, Keycode::F));
         assert!(!state().phys.roll_right);
     }
 
     #[test]
-    fn f_toggles_fly_mode_on_down_only() {
+    fn r_toggles_fly_mode_on_down_only() {
         setup();
-        handle_event(&key(EventType::KeyDown, Keycode::F));
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(state().phys.fly_mode);
-        handle_event(&key(EventType::KeyUp, Keycode::F)); /* no-op */
+        handle_event(&key(EventType::KeyUp, Keycode::R)); /* no-op */
         assert!(state().phys.fly_mode);
-        handle_event(&key(EventType::KeyDown, Keycode::F));
+        handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(!state().phys.fly_mode);
         set_fly_mode(true);
         assert!(state().phys.fly_mode);
@@ -1466,7 +1467,7 @@ mod tests {
     fn unfocused_clears_phys_holds_and_sticks() {
         setup();
         handle_event(&key(EventType::KeyDown, Keycode::W));
-        handle_event(&key(EventType::KeyDown, Keycode::F)); /* fly_mode on */
+        handle_event(&key(EventType::KeyDown, Keycode::R)); /* fly_mode on */
         handle_event(&mouse_btn(EventType::MouseDown, Mousebutton::Left));
         handle_event(&touch(EventType::TouchesBegan, &[(1, 600.0, 500.0, true)]));
         js_set_move_stick(0.5, 0.8, true);
