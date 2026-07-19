@@ -50,6 +50,11 @@ solar:
   sun_distance_m: 150000
   sun_visual_dist_m: 18000
   sun_radius_m: 9000
+  # Star gravitational parameter GM (m^3/s^2) in the heliocentric physics
+  # frame - how hard the sun pulls. v_circ = sqrt(gm / r); at Tenebris's
+  # 150 km orbit gm 3.75e8 -> ~50 m/s (period ~5 h). Raise for faster/tighter
+  # solar orbits, lower for lazier transfers. 0 disables solar gravity.
+  sun_gravity_param: 3.75e8
   sun_color_hot: [1.40, 1.25, 0.90]
   sun_color_cool: [1.10, 0.55, 0.16]
   sun_color_spot: [0.55, 0.22, 0.10]

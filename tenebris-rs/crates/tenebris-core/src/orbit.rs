@@ -267,7 +267,7 @@ pub fn moon_track(active: BodyId, moon: BodyId, t: f64, segs: usize) -> Option<V
         return None;
     }
     let c = body_center(active);
-    let spin = spin_angle(active, t);
+    let spin = render_spin(active, t);
     let (si, ci) = e.inclination.sin_cos();
     let r = e.orbit_radius_m;
     let mut out = Vec::with_capacity(segs + 1);
@@ -286,7 +286,7 @@ pub fn moon_track(active: BodyId, moon: BodyId, t: f64, segs: usize) -> Option<V
 /// angular-correct billboard instead; see app.rs).
 pub fn apparent_star_pos(active: BodyId, t: f64) -> DVec3 {
     let rel = dvec3_scale(heliocentric_pos(active, t), -1.0);
-    dvec3_add(body_center(active), rotate_about(rel, SPIN_AXIS, spin_angle(active, t)))
+    dvec3_add(body_center(active), rotate_about(rel, SPIN_AXIS, render_spin(active, t)))
 }
 
 /// Orbit ring of ANY body, in the `active` body's render frame - the
@@ -306,7 +306,7 @@ pub fn body_track(active: BodyId, body: BodyId, t: f64, segs: usize) -> Option<V
     };
     let h_active = heliocentric_pos(active, t);
     let c_active = body_center(active);
-    let spin = spin_angle(active, t);
+    let spin = render_spin(active, t);
     let (si, ci) = e.inclination.sin_cos();
     let mut out = Vec::with_capacity(segs + 1);
     for k in 0..=segs {
@@ -332,6 +332,30 @@ pub fn spin_angle(id: BodyId, t: f64) -> f64 {
     }
 }
 
+/// True while the player is flying in space (set each frame from `is_in_space`).
+/// Gates the RENDER spin below: day/night (the spin that sweeps the sun + other
+/// bodies across the sky) only makes sense standing on a spinning surface. In
+/// space there is no day/night, so the render drops to the FIXED heliocentric
+/// frame - which is what makes the drawn bodies, the sun, and the ship's
+/// (origin-centred) heliocentric conic all share one coordinate system.
+static RENDER_IN_SPACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Set the space/surface render mode (call once per frame before drawing the
+/// sky + orbits). `true` = space (fixed heliocentric frame, no day/night spin).
+pub fn set_render_in_space(in_space: bool) {
+    RENDER_IN_SPACE.store(in_space, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The spin to apply when placing sky bodies / the sun this frame: `spin_angle`
+/// on a surface (day/night), zero in space (fixed heliocentric frame).
+fn render_spin(active: BodyId, t: f64) -> f64 {
+    if RENDER_IN_SPACE.load(std::sync::atomic::Ordering::Relaxed) {
+        0.0
+    } else {
+        spin_angle(active, t)
+    }
+}
+
 /// Unit direction from the active body's surface toward the star, in the
 /// body's rotating frame. As the body spins this vector circles the sky
 /// once per day -> day/night. Its slow orbital drift gives a seasonal
@@ -344,7 +368,7 @@ pub fn sun_direction(active: BodyId, t: f64) -> DVec3 {
     } else {
         dvec3_normalize(DEFAULT_SUN_DIR)
     };
-    rotate_about(to_star, SPIN_AXIS, spin_angle(active, t))
+    rotate_about(to_star, SPIN_AXIS, render_spin(active, t))
 }
 
 /// Absolute render-frame position to draw `body` at, as seen from the
@@ -356,7 +380,7 @@ pub fn apparent_pos(active: BodyId, body: BodyId, t: f64) -> DVec3 {
         return c_active;
     }
     let rel = dvec3_sub(heliocentric_pos(body, t), heliocentric_pos(active, t));
-    let rel_rot = rotate_about(rel, SPIN_AXIS, spin_angle(active, t));
+    let rel_rot = rotate_about(rel, SPIN_AXIS, render_spin(active, t));
     dvec3_add(c_active, rel_rot)
 }
 
@@ -378,7 +402,7 @@ pub fn world_to_heliocentric(active: BodyId, p_world: DVec3, t: f64) -> DVec3 {
     /* apparent_pos rotates helio-relative offsets INTO the render frame by
      * +spin; undo with -spin, then re-anchor at the active body's
      * heliocentric position. */
-    let rel_helio = rotate_about(rel, SPIN_AXIS, -spin_angle(active, t));
+    let rel_helio = rotate_about(rel, SPIN_AXIS, -render_spin(active, t));
     dvec3_add(heliocentric_pos(active, t), rel_helio)
 }
 

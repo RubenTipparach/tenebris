@@ -6692,6 +6692,12 @@ fn frame_inner(app: &mut App) {
      * the real 3D world becomes the orbital chart. Controls stay live. */
     let map_cam = solar_map::camera(aspect);
     let map_open = map_cam.is_some();
+    /* Render the sky + orbits in the FIXED heliocentric frame whenever the
+     * player is in space OR looking at the map - so the drawn bodies, the sun,
+     * and the ship's origin-centred heliocentric conic all share coordinates.
+     * On a planet surface (not in space, not the map) the spin stays, giving
+     * day/night. */
+    orbit::set_render_in_space(app.player.borrow().is_in_space || map_open);
     let (view, proj, cam_eye) = match map_cam {
         Some((mv, mp, me)) => (mv, mp, me),
         None => (view, proj, cam_eye),
