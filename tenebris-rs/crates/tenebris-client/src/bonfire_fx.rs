@@ -230,9 +230,18 @@ fn stick(f: &Frame, ax: f64, au: f64, af: f64, bx: f64, bu: f64, bf: f64, th: f6
 /// Draw all placed bonfires: a stack of crossed sticks (always) + a
 /// flip-book flame billboard (only while lit).
 pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
-    let frames = frames(w);
+    let mut frames = frames(w);
     if frames.is_empty() {
         return;
+    }
+    /* Floating origin: at heliocentric scale the bodies sit ~150 km from the
+     * world origin, so absolute f32 stick/flame vertices jitter. Rebase every
+     * frame's draw base by the absolute camera (the caller hands us the
+     * eye-at-origin scene view to match). The body-local torch-light path
+     * below uses `local_base`, which stays body-local and is untouched. */
+    let cam = renderer::camera_world_d();
+    for f in &mut frames {
+        f.base = dvec3_sub(f.base, cam);
     }
 
     renderer::sgl_world_begin();

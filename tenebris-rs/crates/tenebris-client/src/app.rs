@@ -6911,10 +6911,10 @@ fn frame_inner(app: &mut App) {
     renderer::draw_moons(view_scene, proj, cam_world);
     profiler::end("draw-moons");
     profiler::begin("draw-torches");
-    renderer::draw_torches(view, proj);
+    renderer::draw_torches(view_scene, proj);
     /* Emissive glow points: the far-LOD stand-in for baked torch
      * light, so bases shine from orbit + remote bodies. */
-    renderer::draw_light_glow(view, proj);
+    renderer::draw_light_glow(view_scene, proj);
     profiler::end("draw-torches");
     /* Animals + crops - same offscreen opaque pass so terrain/torches
      * z-sort correctly against them. One profiler scope over the whole
@@ -6928,9 +6928,10 @@ fn frame_inner(app: &mut App) {
      * near, a glint quad from afar - station.yaml lod_full_range_m). */
     profiler::begin("draw-station");
     crate::station_fx::draw(
-        view,
+        /* Floating origin: eye-at-origin scene view; the drum model and the
+         * glint quad are both posed at (anchor - cam) in f64. */
+        view_scene,
         proj,
-        /* Absolute camera (prop path uses the absolute `view`). */
         cam_world_d,
         sim_t,
     );
@@ -7120,7 +7121,7 @@ fn frame_inner(app: &mut App) {
     drops::draw(view_scene, proj, renderer::time_seconds());
     {
         let w = app.world.borrow();
-        bonfire_fx::draw(&w, view, proj, renderer::time_seconds());
+        bonfire_fx::draw(&w, view_scene, proj, renderer::time_seconds());
     }
     profiler::end("draw-entities");
     /* Cloud layer above the surface - same pass, drifts with sim time

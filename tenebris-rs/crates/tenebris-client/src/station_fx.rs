@@ -491,7 +491,7 @@ pub fn flush_baked_glass() {
 /// as a fixed fraction of its distance (constant apparent size), lit by
 /// the same sun term as the full drum. Depth-tested in the world context
 /// so the planet occludes it below the horizon.
-fn draw_glint(view: Mat4, proj: Mat4, anchor: DVec3, dist: f64, glint_frac: f32) {
+fn draw_glint(view: Mat4, proj: Mat4, anchor: DVec3, cam_world: DVec3, dist: f64, glint_frac: f32) {
     thread_local! {
         static PIP_GLINT: std::cell::Cell<sgl::Pipeline> =
             const { std::cell::Cell::new(sgl::Pipeline { id: 0 }) };
@@ -523,10 +523,13 @@ fn draw_glint(view: Mat4, proj: Mat4, anchor: DVec3, dist: f64, glint_frac: f32)
     let up = dvec3_make(view.m[1] as f64, view.m[5] as f64, view.m[9] as f64);
     let h = dist * glint_frac as f64 * 0.5;
     let lit = renderer::entity_sun_brightness(anchor).clamp(0.15, 1.0);
-    let c0 = dvec3_add(anchor, dvec3_scale(dvec3_add(right, up), -h));
-    let c1 = dvec3_add(anchor, dvec3_scale(dvec3_sub(right, up), h));
-    let c2 = dvec3_add(anchor, dvec3_scale(dvec3_add(right, up), h));
-    let c3 = dvec3_add(anchor, dvec3_scale(dvec3_sub(up, right), h));
+    /* Floating origin: light off the absolute anchor, but build the quad
+     * around (anchor - camera) so the f32 vertices stay near the origin. */
+    let base = dvec3_sub(anchor, cam_world);
+    let c0 = dvec3_add(base, dvec3_scale(dvec3_add(right, up), -h));
+    let c1 = dvec3_add(base, dvec3_scale(dvec3_sub(right, up), h));
+    let c2 = dvec3_add(base, dvec3_scale(dvec3_add(right, up), h));
+    let c3 = dvec3_add(base, dvec3_scale(dvec3_sub(up, right), h));
     sgl::begin_triangles();
     sgl::c3f(lit, lit, lit);
     for tri in [[c0, c1, c2], [c0, c2, c3]] {
@@ -554,7 +557,7 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
      * its track across the sky, for two triangles. */
     let dist = dvec3_length(dvec3_sub(cam_world, anchor));
     if dist > cfg.lod_full_range_m as f64 {
-        draw_glint(view, proj, anchor, dist, cfg.lod_glint_frac);
+        draw_glint(view, proj, anchor, cam_world, dist, cfg.lod_glint_frac);
         return;
     }
     let b = planet::get(BodyId::Tenebris);
@@ -582,11 +585,13 @@ pub fn draw(view: Mat4, proj: Mat4, cam_world: DVec3, sim_t: f64) {
      * the renderer's flush hooks draw the prebuilt buffer inside the
      * offscreen pass - opaque before the sgl entities (they depth-test
      * against the drum), glass after (blends over the finished scene). */
+    /* Floating origin: the drum is posed at (anchor - camera) in f64 so its
+     * f32 model stays small; `view` here is the eye-at-origin scene view. */
     let model = mat4_mul(
         mat4_translate(Vec3 {
-            x: anchor.x as f32,
-            y: anchor.y as f32,
-            z: anchor.z as f32,
+            x: (anchor.x - cam_world.x) as f32,
+            y: (anchor.y - cam_world.y) as f32,
+            z: (anchor.z - cam_world.z) as f32,
         }),
         Mat4 { m: basis },
     );

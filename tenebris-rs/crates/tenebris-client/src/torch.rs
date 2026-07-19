@@ -749,7 +749,7 @@ pub fn raycast(eye: Vec3, dir: Vec3, max_dist: f32) -> (i32, f32) {
 /// Right + fwd are picked to span the tangent plane; the absolute
 /// choice of which way "right" points doesn't matter for a
 /// radially-symmetric torch.
-fn model_matrix(t: &Torch) -> Mat4 {
+fn model_matrix(t: &Torch, body_offset: Vec3) -> Mat4 {
     let up = t.up;
     /* Reference axis chosen to avoid degeneracy when up is near
      * (1,0,0). When up.x is large, swap to (0,0,1) as the cross
@@ -775,16 +775,24 @@ fn model_matrix(t: &Torch) -> Mat4 {
     m.m[9] = fwd.y;
     m.m[10] = fwd.z;
     m.m[11] = 0.0;
-    m.m[12] = t.position.x;
-    m.m[13] = t.position.y;
-    m.m[14] = t.position.z;
+    /* Torch positions are BODY-LOCAL (base = world - body_center). The
+     * caller passes the active body's floating-origin-rebased centre
+     * (`body.world_pos = world_pos_d - camera_world_d`), so
+     * body-local + rebased-centre = the torch in the render frame, exactly
+     * matching the terrain it sits on (which draws as
+     * translate(body.world_pos) * body_local_vertex). At heliocentric scale
+     * the body sits ~150 km off the world origin; without this term the
+     * torch would render 150 km away from its terrain. */
+    m.m[12] = t.position.x + body_offset.x;
+    m.m[13] = t.position.y + body_offset.y;
+    m.m[14] = t.position.z + body_offset.z;
     m.m[15] = 1.0;
     m
 }
 
 /// Port of `torch_draw()`. Draw all placed torches in one pipeline
 /// pass against the supplied vp + global clock.
-pub fn draw(vp: Mat4, time_seconds: f32) {
+pub fn draw(vp: Mat4, time_seconds: f32, body_offset: Vec3) {
     let (pip, vbuf, ibuf, index_count, torches) = T.with(|t| {
         let t = t.borrow();
         (t.pip, t.vbuf, t.ibuf, t.index_count, t.list.clone())
@@ -800,7 +808,7 @@ pub fn draw(vp: Mat4, time_seconds: f32) {
     sg::apply_bindings(&bind);
 
     for t in torches.iter() {
-        let model = model_matrix(t);
+        let model = model_matrix(t, body_offset);
         let mvp = mat4_mul(vp, model);
 
         let vsp = TorchVsParams {
@@ -1035,7 +1043,7 @@ mod tests {
             tile_idx: 0,
             scale: 1.0,
         };
-        let m = model_matrix(&t);
+        let m = model_matrix(&t, vec3_make(0.0, 0.0, 0.0));
         let want: [f32; 16] = [
             0.0, 0.0, -1.0, 0.0, // col 0 = right
             0.0, 1.0, 0.0, 0.0, // col 1 = up
@@ -1044,6 +1052,16 @@ mod tests {
         ];
         for i in 0..16 {
             assert!((m.m[i] - want[i]).abs() <= EPS, "m[{}]: {} vs {}", i, m.m[i], want[i]);
+        }
+        // Floating-origin body offset shifts ONLY the translation column: a
+        // rebased body centre adds to the body-local torch position.
+        let mo = model_matrix(&t, vec3_make(100.0, -50.0, 7.0));
+        assert!((mo.m[12] - 101.0).abs() <= EPS);
+        assert!((mo.m[13] - (-48.0)).abs() <= EPS);
+        assert!((mo.m[14] - 10.0).abs() <= EPS);
+        // Rotation basis unchanged by the offset.
+        for i in 0..12 {
+            assert!((mo.m[i] - m.m[i]).abs() <= EPS, "basis m[{}] drifted", i);
         }
         // up near +X flips the reference axis to (0,0,1) instead of
         // degenerating: right = up x (0,0,1) = (0,-1,0).
@@ -1054,7 +1072,7 @@ mod tests {
             tile_idx: 0,
             scale: 1.0,
         };
-        let m = model_matrix(&t);
+        let m = model_matrix(&t, vec3_make(0.0, 0.0, 0.0));
         assert!((m.m[0] - 0.0).abs() <= EPS);
         assert!((m.m[1] - (-1.0)).abs() <= EPS);
         assert!((m.m[2] - 0.0).abs() <= EPS);

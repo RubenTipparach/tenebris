@@ -6475,14 +6475,25 @@ pub fn draw_water_flow_debug(view: Mat4, proj: Mat4) {
 }
 
 /// Port of `renderer_draw_torches()`. Offscreen opaque pass alongside
-/// terrain + moons so the water cap can sample torch pixels.
+/// terrain + moons so the water cap can sample torch pixels. Pass the
+/// eye-at-origin scene view (`view_scene`): torch positions are body-local,
+/// and this rebases them by the active body's floating-origin render centre
+/// so they sit on their terrain at any world scale (see torch::model_matrix).
 pub fn draw_torches(view: Mat4, proj: Mat4) {
     if !terrain_visible() {
         return;
     }
-    let time_seconds = R.with(|cell| cell.borrow().time_seconds);
+    let (time_seconds, body_offset) = R.with(|cell| {
+        let r = cell.borrow();
+        let off = if r.active_body_idx >= 0 {
+            r.bodies[r.active_body_idx as usize].world_pos
+        } else {
+            Vec3::default()
+        };
+        (r.time_seconds, off)
+    });
     let vp = mat4_mul(proj, view);
-    torch::draw(vp, time_seconds);
+    torch::draw(vp, time_seconds, body_offset);
 }
 
 /* ----------------------------------------------------------------------- */
