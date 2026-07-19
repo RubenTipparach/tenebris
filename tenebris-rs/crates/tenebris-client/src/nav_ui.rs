@@ -1771,8 +1771,13 @@ pub fn draw_hud(
             sgl::v2f_t2f(poly[i + 1].0, poly[i + 1].1, poly[i + 1].2, poly[i + 1].3);
         }
     };
-    let lat_segs = 24usize;
-    let lon_segs = 64usize;
+    /* Dense tessellation: the ball is projected to 2-D and drawn with sgl's
+     * AFFINE (screen-linear) texture interpolation, which can't follow the
+     * sphere's curvature through depth inside a triangle - a coarse mesh
+     * facets/warps the texture, worst near the rim. Small triangles keep the
+     * affine pieces close to the true curve, so the wrap reads smooth. */
+    let lat_segs = 64usize;
+    let lon_segs = 160usize;
     let half = std::f64::consts::FRAC_PI_2;
     sgl::enable_texture();
     sgl::texture(
