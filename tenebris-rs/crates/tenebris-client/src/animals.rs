@@ -597,6 +597,25 @@ pub fn raycast(eye: Vec3, dir: Vec3, max_dist: f32) -> (i32, f32) {
     })
 }
 
+/// Net catch: if the animal at `idx` is a water species, remove it from
+/// the herd and return its kind (the caller turns that into the species'
+/// fish item). Returns `None` for a land / air animal or a stale index -
+/// you can only net fish. No corpse, no meat: it swam into the net.
+pub fn net_catch(idx: i32) -> Option<AnimalKind> {
+    S.with(|c| {
+        let s = &mut *c.borrow_mut();
+        if idx < 0 || idx as usize >= s.list.len() {
+            return None;
+        }
+        let kind = s.list[idx as usize].kind;
+        if kind.habitat() != tenebris_core::fauna::Habitat::Water {
+            return None;
+        }
+        s.list.swap_remove(idx as usize);
+        Some(kind)
+    })
+}
+
 /// Damage the animal at `idx` from world point `from`. Returns the meat
 /// count to award when it dies this hit (0 while it's still alive), and
 /// removes the corpse.
@@ -737,6 +756,7 @@ fn draw_box(
 /// with per-kind silhouettes and palettes so each species reads at a
 /// glance: puffy white sheep, tiny pecking chicken, patched cow, slim
 /// grey cat, flapping bird, finned fish, squat green frog.
+#[allow(clippy::too_many_arguments)]
 fn draw_kind(
     kind: AnimalKind,
     pos: DVec3,
@@ -746,10 +766,11 @@ fn draw_kind(
     moving: bool,
     lit: f32,
     tint: [f32; 3],
+    size_mul: f32,
 ) {
     let basis = orient_basis(up, heading);
     let swing = if moving { phase.sin() * 0.5 } else { 0.0 };
-    let sc = kind.scale();
+    let sc = kind.scale() * size_mul;
 
     sgl::push_matrix();
     crate::renderer::sgl_translate_scene(pos);
@@ -1255,6 +1276,46 @@ fn entity_lit(pos: DVec3, center: DVec3) -> f32 {
     (sun + torch * l.torch_intensity).min(1.5)
 }
 
+/// One fish swimming inside an aquarium: (species, world pos, radial up,
+/// heading, animation phase, lit brightness, size multiplier).
+pub type TankFish = (AnimalKind, DVec3, DVec3, DVec3, f32, f32, f32);
+
+/// Draw a batch of fish confined to aquariums (client::aquarium_fx). Reuses
+/// the herd's procedural bodies + the shared animal atlas, so a tanked
+/// minnow looks exactly like a wild one, only smaller (the caller passes a
+/// size multiplier so it fits the glass box). Call inside a world sgl pass
+/// (renderer::sgl_world_begin) with the view/proj matrices already loaded;
+/// this sets its own pipeline + texture and restores nothing, so draw it
+/// last among the fish-atlas geometry.
+pub fn draw_tank_fish(fish: &[TankFish]) {
+    if fish.is_empty() {
+        return;
+    }
+    let mut pip = PIP3D.with(|p| p.get());
+    if pip.id == 0 {
+        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+            depth: sokol::gfx::DepthState {
+                write_enabled: true,
+                compare: sokol::gfx::CompareFunc::Less,
+                ..Default::default()
+            },
+            cull_mode: sokol::gfx::CullMode::None,
+            ..Default::default()
+        });
+        PIP3D.with(|p| p.set(pip));
+    }
+    sgl::load_pipeline(pip);
+    sgl::enable_texture();
+    sgl::texture(
+        sokol::gfx::View { id: renderer::animal_view_id() },
+        sokol::gfx::Sampler { id: renderer::animal_sampler_id() },
+    );
+    for &(kind, pos, up, heading, phase, lit, size_mul) in fish {
+        draw_kind(kind, pos, up, heading, phase, true, lit, [1.0, 1.0, 1.0], size_mul);
+    }
+    sgl::disable_texture();
+}
+
 pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
     let (list, corpses, center) = S.with(|c| {
         let s = c.borrow();
@@ -1324,6 +1385,7 @@ pub fn draw(view: Mat4, proj: Mat4, _time_s: f32) {
             a.state != AnimalState::Idle,
             lit,
             tint,
+            1.0,
         );
     }
     sgl::disable_texture();

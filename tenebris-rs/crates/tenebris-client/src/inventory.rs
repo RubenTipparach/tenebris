@@ -178,6 +178,19 @@ pub fn selected(inv: &Inventory) -> Block {
     inv.slots[inv.selected as usize].block_type()
 }
 
+/// Swap the item id of the currently-selected slot from `from` to `to`,
+/// keeping the same slot + count. No-op if the selected slot isn't
+/// holding `from`. Used for in-place tool state changes (bucket <->
+/// water-bucket) that must stay in the held slot.
+pub fn swap_selected(inv: &mut Inventory, from: items::ItemId, to: items::ItemId) {
+    let sel = inv.selected as usize;
+    if let Some(s) = inv.slots.get_mut(sel) {
+        if s.item == from && s.count > 0 {
+            s.item = to;
+        }
+    }
+}
+
 /// Take one off the selected slot. Empties the slot when count drops
 /// to 0. Survival-only: creative placement is free, so the interact
 /// call sites gate this on `p.survival_mode`.

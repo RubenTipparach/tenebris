@@ -168,6 +168,21 @@ pub enum Block {
     SeqMycelium = 53,
     /// dusty-rose giant mushroom cap (canopy-like)
     SeqShroomCap = 54,
+
+    /// Clear glass - smelted from sand (sand + coal in a furnace). A
+    /// translucent building / window block. Rendered as a cube by the
+    /// dedicated glass/aquarium pass (client::aquarium_fx), NOT a hex prism,
+    /// so it needs no terrain-atlas tile; a wall of glass culls its shared
+    /// faces so it reads as one continuous pane. Rust-port-only, appended
+    /// past the palette.
+    Glass = 55,
+    /// Aquarium - a glass tank. Empty it shows just the glass; fill it with
+    /// a water bucket (right-click) and it draws a single top water surface
+    /// (the water is held against the glass, so there are no water SIDE
+    /// faces); drop caught fish in (right-click with a fish equipped) and
+    /// they swim inside. Carries an `AquariumState` block-entity (water flag
+    /// + the fish it holds). Rendered by the same dedicated pass.
+    Aquarium = 56,
 }
 
 /// Mirrors C's `BLOCK_COUNT` (the implicit trailing enum member). The
@@ -175,7 +190,7 @@ pub enum Block {
 /// biome sods (JungleGrass / DryGrass), and the station / casino set
 /// (StationHull 45 .. CardTable 52) past the C palette - the native
 /// port is the canonical target now, so the palette can grow here.
-pub const BLOCK_COUNT: u8 = 55;
+pub const BLOCK_COUNT: u8 = 57;
 
 impl Block {
     /// Fallible conversion from the raw byte stored in voxel arrays /
@@ -245,6 +260,27 @@ pub fn is_transparent(b: Block) -> bool {
         || b == Block::Leaves
         || b == Block::SeqLeaves
         || b == Block::SeqShroomCap
+        || b == Block::Glass
+        || b == Block::Aquarium
+}
+
+/// The glass-family blocks: translucent cubes drawn by the dedicated
+/// glass/aquarium pass (client::aquarium_fx), not the hex mesher. Faces
+/// between two same-kind glassy blocks are culled so a run of them reads
+/// as one shell - the same "no internal walls" rule the ice fix applies.
+pub fn is_glassy(b: Block) -> bool {
+    matches!(b, Block::Glass | Block::Aquarium)
+}
+
+/// Blocks that hide the shared face against an IDENTICAL neighbour - the
+/// "solid translucent shell" rule. A run of ice / glass / aquarium draws
+/// only its outer surface, never the internal walls between two adjacent
+/// same-kind cells. This is the fix for ice showing internal walls through
+/// its own transparency, and it makes a bank of aquariums read as one tank.
+/// The mesher (ice) and the aquarium pass (glass / aquarium) both consult
+/// it so the rule stays in one place.
+pub fn culls_same_kind(b: Block) -> bool {
+    matches!(b, Block::Ice | Block::Glass | Block::Aquarium)
 }
 
 /// Port of `block_is_unbreakable()`. Bedrock cannot be broken by
@@ -288,6 +324,12 @@ pub fn is_walk_through_raw(b: u8) -> bool {
 /// this voxel's face is visible.
 pub fn covers_face(b: Block) -> bool {
     if b == Block::Air || b == Block::Water || b == Block::Ice {
+        return false;
+    }
+    /* Glass + aquarium are translucent cubes drawn by their own pass, so
+     * like the tech-block cubes they must NOT occlude the terrain beside /
+     * under them - you see through them. */
+    if is_glassy(b) {
         return false;
     }
     /* Wood and leaves are partial-width — they don't fully cover the
@@ -510,7 +552,20 @@ mod tests {
         assert_eq!(Block::CardTable as u8, 52);
         assert_eq!(Block::SeqMycelium as u8, 53);
         assert_eq!(Block::SeqShroomCap as u8, 54);
-        assert_eq!(BLOCK_COUNT, 55);
+        assert_eq!(Block::Glass as u8, 55);
+        assert_eq!(Block::Aquarium as u8, 56);
+        assert_eq!(BLOCK_COUNT, 57);
+    }
+
+    #[test]
+    fn glass_family_is_translucent_and_non_occluding() {
+        for b in [Block::Glass, Block::Aquarium] {
+            assert!(is_glassy(b), "{b:?} is glassy");
+            assert!(is_solid(b), "{b:?} still blocks movement + raycasts + mining");
+            assert!(is_transparent(b), "{b:?} lets neighbour faces draw");
+            assert!(!covers_face(b), "{b:?} is a cube pass - must not occlude terrain");
+            assert!(!is_unbreakable(b));
+        }
     }
 
     #[test]

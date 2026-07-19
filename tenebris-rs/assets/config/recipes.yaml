@@ -73,12 +73,22 @@ in: flint 2
 in: stick 2
 
 # Fishing rod: casts a bobber onto water (LMB with the rod selected).
-# Hook the bite, reel in, eat or cook the catch.
+# Hook the bite, reel in, eat or cook the catch (a random species by the
+# fishing.yaml weights).
 [fishing-rod]
 tier: 0
 out: fishing-rod 1
 in: plank 1
 in: stick 3
+
+# Fishing net: a framed mesh for scooping fish by hand. Swim up to a fish
+# and left-click it with the net equipped to catch THAT exact species -
+# the way to target a specific fish instead of the random rod roll.
+[net]
+tier: 0
+out: net 1
+in: stick 4
+in: plank 2
 
 # Bread: bake 3 harvested wheat into the best plant food (hunger restore
 # tuned in farming.yaml as bread_hunger_restore).
@@ -109,6 +119,15 @@ in: stick 2
 tier: 1
 out: bucket 1
 in: iron-ingot 3
+
+# Aquarium: a glass tank you fill with a water bucket, then stock with
+# caught fish (right-click a fish onto it) to watch them swim. Built from
+# glass - smelt sand in a furnace to make it (sand -> glass, like ore ->
+# ingot).
+[aquarium]
+tier: 1
+out: aquarium 1
+in: glass 5
 
 # The furnace: a placeable crafting station built from stone. Interact
 # (E) on it to open the smelting screen. Hand-crafted at the bench.

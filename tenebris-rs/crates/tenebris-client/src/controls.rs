@@ -242,6 +242,8 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (G, Action::SurvivalToggle),
         (V, Action::Eat),
         (T, Action::Plant),
+        /* Roll on Q / E (the classic left/right pair); E is reserved for
+         * roll, so Interact moved to F. */
         (Q, Action::RollLeft),
         (E, Action::RollRight),
         /* World interaction (board / dock / open machine / pickup) on F;

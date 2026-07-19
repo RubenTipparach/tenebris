@@ -3938,6 +3938,9 @@ fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool
             hex_mesher::build_tile(&mut c.mesh, w, i);
             hex_mesher::build_scatter(&mut c.mesh, w, i);
             hex_mesher::build_water(&mut c.water_mesh, w, i);
+            /* Aquarium surfaces render through the water shader too (they
+             * can sit on any body, so this is unconditional). */
+            hex_mesher::build_aquarium_water(&mut c.water_mesh, w, i);
             if has_water {
                 hex_mesher::build_water_voxels(&mut c.water_mesh, w, i);
             }
@@ -3955,6 +3958,7 @@ fn build_chunk_mesh(c: &mut MeshChunk, w: &World, tiles: &[i32], has_water: bool
                 hex_mesher::build_tile(&mut mesh, w, i);
                 hex_mesher::build_scatter(&mut mesh, w, i);
                 hex_mesher::build_water(&mut water, w, i);
+                hex_mesher::build_aquarium_water(&mut water, w, i);
                 if has_water {
                     hex_mesher::build_water_voxels(&mut water, w, i);
                 }
@@ -4147,6 +4151,9 @@ fn body_full_mesh(r: &mut Renderer, bi: usize) {
                         hex_mesher::build_water(&mut c.water_mesh, w_ref, i);
                         hex_mesher::build_water_voxels(&mut c.water_mesh, w_ref, i);
                     }
+                    /* Aquarium surfaces can sit on any body - emit even where
+                     * the body itself has no ocean. */
+                    hex_mesher::build_aquarium_water(&mut c.water_mesh, w_ref, i);
                 }
             });
     }

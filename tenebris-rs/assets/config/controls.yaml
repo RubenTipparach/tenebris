@@ -49,13 +49,14 @@ pause:           Escape
 tech_tree:       K
 crafting:        B
 
-# Space flight: roll the view with Q / E.
+# Space flight: roll the view with Q / E (the classic left/right roll
+# pair). E is RESERVED for roll - interact lives on F.
 roll_left:       Q
 roll_right:      E
 
 # World interaction: aim at a machine (chest, furnace, 3D printer, power
-# generator, rocket pad, ...) and press this to open it; also boards a
-# parked ship, docks the station, and picks up scattered items.
+# generator, rocket pad, aquarium, ...) and press this to open it; also
+# boards a parked ship, docks the station, and picks up scattered items.
 interact:        F
 
 # Inventory: its OWN key, distinct from interact.

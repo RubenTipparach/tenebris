@@ -1094,6 +1094,7 @@ mod tests {
     #[test]
     fn r_toggles_fly_mode_on_down_only() {
         setup();
+        /* Toggle-fly moved to R (F is Interact now, E is roll). */
         handle_event(&key(EventType::KeyDown, Keycode::R));
         assert!(state().phys.fly_mode);
         handle_event(&key(EventType::KeyUp, Keycode::R)); /* no-op */
