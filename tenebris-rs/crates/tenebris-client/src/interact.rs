@@ -376,6 +376,29 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
         s.mining_tile = -1;
         s.mining_depth = -1;
         if input::state().left_click {
+            /* Net equipped: scoop the fish into the bag instead of
+             * hitting it. Unlike the random fishing roll, the net targets
+             * a SPECIFIC fish - swim up and click the one you want. Only
+             * water species can be netted; on anything else it falls
+             * through to the normal melee. Capture the id BEFORE the local
+             * catch (swap_remove shuffles indices). */
+            if inventory::selected_item(&p.inventory) == Some(items::NET) {
+                let animal_id = crate::animals::id_at(animal_hit);
+                if let Some(kind) = crate::animals::net_catch(animal_hit) {
+                    if let Some(item) = kind.fish_item() {
+                        p.bag.add(item, 1);
+                    }
+                    /* MP: the server owns the herd, so tell it to drop
+                     * this entity (a lethal hit removes it server-side);
+                     * we already took the fish, so ignore its meat echo. */
+                    if menu::state() == menu::GameState::InGameMp {
+                        if let Some(id) = animal_id {
+                            net_client::send_animal_hit(w.body.id as u32, id, 9999.0);
+                        }
+                    }
+                    return;
+                }
+            }
             /* MP: the server owns the herd - send the swing, and let its
              * kill credit (AnimalState.killed_by) award the meat. The
              * local hit still runs for the instant flee reaction; its
@@ -632,6 +655,57 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     }
 
     if inp.right_click {
+        /* Aquarium USE comes first: right-clicking the tank with a water
+         * bucket or a fish equipped USES that item on the tank rather than
+         * placing / foraging. (The tank is a solid block, so the block
+         * raycast set s.hit_tile/depth to it.) */
+        if s.has_target
+            && !s.is_torch_target
+            && w.get(s.hit_tile, s.hit_depth) == Block::Aquarium
+        {
+            let held = inventory::selected_item(&p.inventory);
+            /* Water bucket -> fill the tank (empties the bucket in place). */
+            if held == Some(items::WATER_BUCKET) {
+                let filled = {
+                    let aq = w.block_entities.entry(s.hit_tile, s.hit_depth).aquarium_mut();
+                    if aq.water {
+                        false
+                    } else {
+                        aq.water = true;
+                        true
+                    }
+                };
+                if filled {
+                    inventory::swap_selected(
+                        &mut p.inventory,
+                        items::WATER_BUCKET,
+                        items::BUCKET,
+                    );
+                    /* World state (tank contents) - persist same-frame; MP
+                     * picks it up via the periodic block-entity diff. */
+                    sp_save_tile_after_edit(w, s.hit_tile);
+                }
+                return;
+            }
+            /* A live fish -> drop it in. Needs water first (a dry glass box
+             * can't hold a fish) and room in the tank; consumes one fish. */
+            if let Some(kind) =
+                held.and_then(tenebris_core::fauna::AnimalKind::from_fish_item)
+            {
+                let added = {
+                    let aq = w.block_entities.entry(s.hit_tile, s.hit_depth).aquarium_mut();
+                    aq.water && aq.add_fish(kind.to_u8())
+                };
+                if added {
+                    inventory::consume(&mut p.inventory);
+                    sp_save_tile_after_edit(w, s.hit_tile);
+                }
+                return;
+            }
+            /* Any OTHER held item (a placeable block, etc.) falls through to
+             * the normal placement path below, so you can still build up
+             * against a tank (e.g. extend a glass wall from an aquarium). */
+        }
         /* Forage first: an empty (non-placeable) hand right-clicking a
          * grassy / rocky / leafy surface gathers loose grass / flint /
          * sticks off the ground without disturbing the terrain. Only in
@@ -797,7 +871,10 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                  * the cube renders turned toward the player who placed it
                  * (mirrors the JS placement). Recorded right next to the
                  * world_set, same frame as the tile save. */
-                if tenebris_core::blocks::is_tech_block(to_place) || to_place == Block::Bonfire {
+                if tenebris_core::blocks::is_tech_block(to_place)
+                    || to_place == Block::Bonfire
+                    || to_place == Block::Aquarium
+                {
                     let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
                     let e = w.block_entities.entry(s.place_tile, s.place_depth);
                     e.facing = facing;

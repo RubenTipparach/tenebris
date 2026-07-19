@@ -6,6 +6,7 @@ mod fishing;
 mod app;
 mod bag;
 mod baked_model;
+mod aquarium_fx;
 mod bonfire_fx;
 mod bonfire_screen;
 mod chat;

@@ -35,6 +35,8 @@ const ICONS: &[(u16, &str)] = &[
     (Block::Bonfire as u16, "assets/textures/items/bonfire.png"),
     (Block::Water as u16, "assets/textures/water.png"),
     (Block::Ice as u16, "assets/textures/ice.png"),
+    (Block::Glass as u16, "assets/textures/glass.png"),
+    (Block::Aquarium as u16, "assets/textures/aquarium.png"),
     /* Leaves have no source PNG (the terrain atlas tints them
      * procedurally); the grass texture is the closest green stand-in. */
     (Block::Leaves as u16, "assets/textures/grass.png"),
@@ -83,6 +85,14 @@ const ICONS: &[(u16, &str)] = &[
     (items::FISHING_ROD, "assets/textures/items/fishing_rod.png"),
     (items::RAW_FISH, "assets/textures/items/raw_fish.png"),
     (items::COOKED_FISH, "assets/textures/items/cooked_fish.png"),
+    /* Live fish - one icon per catchable / aquarium species. */
+    (items::FISH_MINNOW, "assets/textures/items/fish_minnow.png"),
+    (items::FISH_REEF, "assets/textures/items/fish_reef.png"),
+    (items::FISH_EEL, "assets/textures/items/fish_eel.png"),
+    (items::FISH_RAY, "assets/textures/items/fish_ray.png"),
+    (items::FISH_TURTLE, "assets/textures/items/fish_turtle.png"),
+    (items::FISH_SERPENT, "assets/textures/items/fish_serpent.png"),
+    (items::NET, "assets/textures/items/net.png"),
     // --- farming ---
     (items::SEEDS, "assets/textures/items/seeds.png"),
     (items::WHEAT_SEEDS, "assets/textures/items/wheat_seeds.png"),

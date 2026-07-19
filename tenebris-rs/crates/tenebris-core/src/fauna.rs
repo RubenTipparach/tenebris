@@ -244,6 +244,38 @@ impl AnimalKind {
         }
     }
 
+    /// The live-fish inventory item for this species, or `None` for a
+    /// non-water creature. Fishing / netting a fish hands back THIS item,
+    /// and it's what an aquarium stores; each has its own sprite.
+    pub fn fish_item(self) -> Option<crate::items::ItemId> {
+        use crate::items;
+        Some(match self {
+            AnimalKind::Fish => items::FISH_MINNOW,
+            AnimalKind::LargeFish => items::FISH_REEF,
+            AnimalKind::LongFish => items::FISH_EEL,
+            AnimalKind::FlatFish => items::FISH_RAY,
+            AnimalKind::Turtle => items::FISH_TURTLE,
+            AnimalKind::SerpentFish => items::FISH_SERPENT,
+            _ => return None,
+        })
+    }
+
+    /// The water species a live-fish item denotes (inverse of
+    /// [`fish_item`]), or `None` for a non-fish item. Used to turn a fish
+    /// dropped into an aquarium back into the species that swims there.
+    pub fn from_fish_item(id: crate::items::ItemId) -> Option<AnimalKind> {
+        use crate::items;
+        Some(match id {
+            _ if id == items::FISH_MINNOW => AnimalKind::Fish,
+            _ if id == items::FISH_REEF => AnimalKind::LargeFish,
+            _ if id == items::FISH_EEL => AnimalKind::LongFish,
+            _ if id == items::FISH_RAY => AnimalKind::FlatFish,
+            _ if id == items::FISH_TURTLE => AnimalKind::Turtle,
+            _ if id == items::FISH_SERPENT => AnimalKind::SerpentFish,
+            _ => return None,
+        })
+    }
+
     /// True for the catchable water species (the fishing table). The
     /// swimming turtle rides the water habitat but is NOT a fish - it
     /// isn't on the hook.
@@ -274,9 +306,12 @@ impl AnimalKind {
         }
     }
 
-    /// Relative chance this species is the one that bites (weights,
-    /// not probabilities - normalised by the caller). Stronger fish
-    /// are rarer. 0 = never on the hook.
+    /// Compiled-in default relative chance this species is the one that
+    /// bites (weights, not probabilities - normalised by the caller).
+    /// Stronger fish are rarer. 0 = never on the hook. These are the
+    /// defaults `fishing.yaml`'s `weight_*` knobs override, read at roll
+    /// time via [`roll_fishing_species`] - so a designer can retune the
+    /// per-species odds without recompiling (CLAUDE.md tunables rule).
     pub fn fishing_weight(self) -> u32 {
         match self {
             AnimalKind::Fish => 50,
@@ -324,24 +359,43 @@ impl AnimalKind {
         AnimalKind::LargeFish,
     ];
 
-    /// Pick which fish bites, weighted by [`fishing_weight`]. `roll` is
-    /// a uniform [0, 1). Deterministic, so SP and MP agree. The sea
-    /// serpent is Sequoia-only fauna - off Sequoia its table row is
-    /// skipped entirely (`sequoia` = fishing in Sequoia water).
+    /// Pick which fish bites, weighted by the per-species odds in
+    /// `fishing.yaml` (defaulting to [`fishing_weight`] when a knob is
+    /// left at 0). `roll` is a uniform [0, 1). Deterministic given the
+    /// same config, so SP and MP agree. The sea serpent is Sequoia-only
+    /// fauna - off Sequoia its table row is skipped entirely (`sequoia` =
+    /// fishing in Sequoia water).
     pub fn roll_fishing_species(roll: f32, sequoia: bool) -> AnimalKind {
+        Self::roll_fishing_species_with(&crate::fishing::config(), roll, sequoia)
+    }
+
+    /// [`roll_fishing_species`] against an explicit weight config (the
+    /// parameterless version reads the global `fishing::config()`). Pure -
+    /// no global state - so tests can drive it deterministically.
+    pub fn roll_fishing_species_with(
+        cfg: &crate::fishing::FishingConfig,
+        roll: f32,
+        sequoia: bool,
+    ) -> AnimalKind {
+        let weight = |k: AnimalKind| cfg.weight_for(k);
         let on_line = |k: &AnimalKind| sequoia || *k != AnimalKind::SerpentFish;
         let total: u32 = Self::FISHING_TABLE
             .iter()
             .filter(|k| on_line(k))
-            .map(|k| k.fishing_weight())
+            .map(|k| weight(*k))
             .sum();
+        /* A zero-weight table (every species knobbed off) can't roll -
+         * fall back to the common minnow rather than dividing by zero. */
+        if total == 0 {
+            return AnimalKind::Fish;
+        }
         let mut acc = 0u32;
         let target = (roll.clamp(0.0, 0.9999) * total as f32) as u32;
         for k in Self::FISHING_TABLE {
             if !on_line(&k) {
                 continue;
             }
-            acc += k.fishing_weight();
+            acc += weight(k);
             if target < acc {
                 return k;
             }
@@ -1408,23 +1462,74 @@ mod tests {
         /* Strength strictly increases across the table (weakest first). */
         let s: Vec<u8> = AnimalKind::FISHING_TABLE.iter().map(|k| k.fish_strength()).collect();
         assert!(s.windows(2).all(|w| w[0] < w[1]), "strength ascends: {s:?}");
-        /* Weighted roll: the low end lands the common minnow, the top
-         * of the range lands the rare reef fish. */
-        assert_eq!(AnimalKind::roll_fishing_species(0.0, true), AnimalKind::Fish);
-        assert_eq!(AnimalKind::roll_fishing_species(0.999, true), AnimalKind::LargeFish);
+        /* Weighted roll (against the compiled-in default weights, so this
+         * is independent of any global config another test may set): the
+         * low end lands the common minnow, the top the rare reef fish. */
+        let def = crate::fishing::FishingConfig::DEFAULT;
+        assert_eq!(AnimalKind::roll_fishing_species_with(&def, 0.0, true), AnimalKind::Fish);
+        assert_eq!(AnimalKind::roll_fishing_species_with(&def, 0.999, true), AnimalKind::LargeFish);
         /* The sea serpent is Sequoia-only: off Sequoia no roll value
          * can land it. */
         for i in 0..100 {
-            let k = AnimalKind::roll_fishing_species(i as f32 / 100.0, false);
+            let k = AnimalKind::roll_fishing_species_with(&def, i as f32 / 100.0, false);
             assert_ne!(k, AnimalKind::SerpentFish, "serpent hooked off Sequoia");
         }
         assert!(
             (0..100).any(|i| {
-                AnimalKind::roll_fishing_species(i as f32 / 100.0, true)
+                AnimalKind::roll_fishing_species_with(&def, i as f32 / 100.0, true)
                     == AnimalKind::SerpentFish
             }),
             "serpent must be catchable on Sequoia"
         );
+    }
+
+    #[test]
+    fn fish_items_round_trip_and_only_water_species_have_them() {
+        use crate::items;
+        /* Every water species maps to its own live-fish item and back. */
+        for k in [
+            AnimalKind::Fish,
+            AnimalKind::LargeFish,
+            AnimalKind::LongFish,
+            AnimalKind::FlatFish,
+            AnimalKind::Turtle,
+            AnimalKind::SerpentFish,
+        ] {
+            let item = k.fish_item().expect("water species has a fish item");
+            assert!(items::is_fish_item(item));
+            assert_eq!(AnimalKind::from_fish_item(item), Some(k), "{k:?} round-trips");
+        }
+        /* Land / air species have no fish item. */
+        for k in [AnimalKind::Cow, AnimalKind::Bird, AnimalKind::Sparkit] {
+            assert_eq!(k.fish_item(), None, "{k:?} is not a fish");
+        }
+        assert_eq!(AnimalKind::from_fish_item(items::RAW_MEAT), None);
+    }
+
+    #[test]
+    fn fishing_weights_follow_config() {
+        use crate::fishing::FishingConfig;
+        /* Zeroing every species but the reef fish forces every roll to
+         * land the reef fish - the config drives the odds. Pure (local
+         * config), so it can't race the global other tests read. */
+        let reef_only = FishingConfig {
+            weight_minnow: 0,
+            weight_ray: 0,
+            weight_eel: 0,
+            weight_serpent: 0,
+            weight_reef: 100,
+            ..FishingConfig::DEFAULT
+        };
+        for i in 0..50 {
+            assert_eq!(
+                AnimalKind::roll_fishing_species_with(&reef_only, i as f32 / 50.0, true),
+                AnimalKind::LargeFish,
+                "reef-only config always lands the reef fish"
+            );
+        }
+        /* All-zero weights fall back to the common minnow, never panic. */
+        let none = FishingConfig { weight_reef: 0, ..reef_only };
+        assert_eq!(AnimalKind::roll_fishing_species_with(&none, 0.5, true), AnimalKind::Fish);
     }
 
     #[test]

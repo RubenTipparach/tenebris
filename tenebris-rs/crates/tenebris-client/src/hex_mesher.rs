@@ -217,6 +217,28 @@ fn is_solid_raw(raw: u8) -> bool {
     raw != Block::Air.raw() && raw != Block::Water.raw()
 }
 
+/* Same-kind translucent cull: a run of ice (and, in the aquarium pass,
+ * glass) draws only its OUTER shell - never the internal faces between two
+ * adjacent same-kind cells. This is the fix for ice showing its own
+ * internal walls through its transparency (`covers_face(Ice)` is false, so
+ * without this every ice-vs-ice boundary drew a doubled, see-through
+ * quad). Deliberately NARROW - it fires ONLY when the identical
+ * self-culling block sits across the face - so every other block's mesh,
+ * and the golden pins, stay byte-for-byte unchanged. */
+#[inline]
+fn same_kind_culled(self_b: Block, neighbour: Block) -> bool {
+    blocks::culls_same_kind(self_b) && neighbour == self_b
+}
+
+/// [`same_kind_culled`] for a raw neighbour byte.
+#[inline]
+fn same_kind_culled_raw(self_b: Block, neighbour_raw: u8) -> bool {
+    match Block::from_raw(neighbour_raw) {
+        Some(nb) => same_kind_culled(self_b, nb),
+        None => false,
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 /* Sky-light bake. Counts solid voxels stacked above a given depth in
  * the column, returning a 0..1 attenuation: full sun above an open
@@ -1882,6 +1904,14 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             continue;
         }
 
+        /* Glass + aquarium are translucent cubes with an interior water
+         * surface + swimming fish - drawn by the dedicated pass
+         * (client::aquarium_fx), not the hex mesher. Skip like the
+         * bonfire. */
+        if blocks::is_glassy(b) {
+            continue;
+        }
+
         /* Cables / copper pipes are the modular wiring network: render as a
          * thin node + connector arms toward each linked cell, not a hex
          * prism. Cable is the slimmer of the two; copper pipe is fatter. */
@@ -1913,18 +1943,20 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
         } else {
             Block::Air.raw()
         };
-        if !covers_face_raw(above) {
+        if !covers_face_raw(above) && !same_kind_culled_raw(b, above) {
             /* Top cap is wet when the cell directly above is water -
              * looking down through that cell hits this face through
              * water, which is exactly what should trigger the
-             * Beer-Lambert dimming. */
+             * Beer-Lambert dimming. (Same-kind ice above hides this cap -
+             * see same_kind_culled_raw - so stacked ice shows no internal
+             * horizontal plane.) */
             let top_wet = if above == Block::Water.raw() { 1.0 } else { 0.0 };
             emit_cap(out, t, w, tile_idx, d, b, true, width, 0.0, true, top_wet);
         }
 
         if d > 0 {
             let below = w.blocks[col_base + (d - 1) as usize];
-            if !covers_face_raw(below) {
+            if !covers_face_raw(below) && !same_kind_culled_raw(b, below) {
                 /* Bottom cap rarely matters (most solid blocks sit on
                  * solid), but the same rule applies: wet only when
                  * the cell below is water. */
@@ -1962,6 +1994,14 @@ pub fn build_tile(out: &mut HexMesh, w: &World, tile_idx: i32) {
             } else {
                 Block::Air
             };
+            /* Cull the shared face between two adjacent same-kind ice
+             * cells - the "solid translucent shell" rule that stops ice
+             * from drawing internal walls through itself. Every other
+             * pairing keeps the JS "emit all exposed sides" behaviour, so
+             * opaque terrain (and the golden pins) is unchanged. */
+            if same_kind_culled(b, nb_b) {
+                continue;
+            }
             let side_wet = if nb_b == Block::Water { 1.0 } else { 0.0 };
             emit_side_quad(
                 out, t, w, tile_idx, d, k, next, r_bot, r_top, b, width, side_wet,

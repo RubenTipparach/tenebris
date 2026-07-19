@@ -229,13 +229,15 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (LeftControl, Action::FlyDown),
         (RightControl, Action::FlyDown),
         (C, Action::FlyDown),
-        (F, Action::ToggleFly),
+        (R, Action::ToggleFly),
         (G, Action::SurvivalToggle),
         (V, Action::Eat),
         (T, Action::Plant),
+        /* Roll on Q / E (the classic left/right pair); E is reserved for
+         * roll, so Interact moved to F. */
         (Q, Action::RollLeft),
         (E, Action::RollRight),
-        (Tab, Action::Interact),
+        (F, Action::Interact),
         (X, Action::Stage),
         /* Beside X so the rocket keys cluster. Not V (the JS's exit key) -
          * V is Eat here, and the bindings are the player's muscle memory,
@@ -386,27 +388,30 @@ mod tests {
     fn defaults_bind_the_core_scheme() {
         set_bindings(default_bindings());
         assert_eq!(action_for_key(Keycode::W), Some(Action::MoveForward));
-        assert_eq!(action_for_key(Keycode::Tab), Some(Action::Interact));
+        /* Interact is F; E is reserved for roll-right (the Q/E roll pair);
+         * toggle-fly moved to R. */
+        assert_eq!(action_for_key(Keycode::F), Some(Action::Interact));
         assert_eq!(action_for_key(Keycode::Q), Some(Action::RollLeft));
         assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
+        assert_eq!(action_for_key(Keycode::R), Some(Action::ToggleFly));
         assert_eq!(action_for_key(Keycode::Num1), Some(Action::Hotbar(0)));
         assert_eq!(action_for_key(Keycode::Num0), Some(Action::Hotbar(9)));
-        /* Roll is Q/E; inventory/interact moved to Tab so E frees up for roll. */
+        /* E is roll, never interact. */
         assert_ne!(action_for_key(Keycode::E), Some(Action::Interact));
     }
 
     #[test]
     fn prompt_label_follows_the_binding() {
         set_bindings(default_bindings());
-        assert_eq!(action_label(Action::Interact), "Tab");
-        /* E is roll-right in the default scheme, not interact. */
+        /* Default: interact on F, E reserved for roll-right. */
+        assert_eq!(action_label(Action::Interact), "F");
         assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
         /* Rebinding interact moves the prompt with it. */
-        let (b, warn) = parse("interact: F\n");
+        let (b, warn) = parse("interact: Tab\n");
         assert!(warn.is_empty(), "{warn:?}");
         set_bindings(b);
-        assert_eq!(action_label(Action::Interact), "F");
-        assert_eq!(action_for_key(Keycode::F), Some(Action::Interact));
+        assert_eq!(action_label(Action::Interact), "Tab");
+        assert_eq!(action_for_key(Keycode::Tab), Some(Action::Interact));
     }
 
     #[test]

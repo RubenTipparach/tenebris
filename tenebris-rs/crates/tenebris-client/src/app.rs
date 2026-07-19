@@ -58,6 +58,7 @@ use crate::chest_screen;
 use crate::screens;
 use crate::slot_screen;
 use crate::station_screen;
+use crate::aquarium_fx;
 use crate::bonfire_fx;
 use crate::bonfire_screen;
 use crate::egui_layer;
@@ -3444,14 +3445,7 @@ fn swap_selected_item(
     from: tenebris_core::items::ItemId,
     to: tenebris_core::items::ItemId,
 ) {
-    let sel = p.inventory.selected as usize;
-    if sel >= p.inventory.slots.len() {
-        return;
-    }
-    let s = &mut p.inventory.slots[sel];
-    if s.item == from && s.count > 0 {
-        s.item = to;
-    }
+    inventory::swap_selected(&mut p.inventory, from, to);
 }
 
 /// Farming ground hint: with a hoe on hand, dirt/grass under the reticle
@@ -4919,6 +4913,8 @@ fn block_name(b: Block) -> &'static str {
         Block::CardTable => "CARD_TABLE",
         Block::SeqMycelium => "SEQ_MYCELIUM",
         Block::SeqShroomCap => "SEQ_SHROOM_CAP",
+        Block::Glass => "GLASS",
+        Block::Aquarium => "AQUARIUM",
     }
 }
 
@@ -4970,6 +4966,8 @@ fn block_glyph(b: Block) -> char {
         | Block::CasinoSign
         | Block::SlotMachine
         | Block::CardTable => 'C',
+        Block::Glass => 'G',
+        Block::Aquarium => 'Q',
     }
 }
 
@@ -6170,6 +6168,15 @@ fn frame_inner(app: &mut App) {
                 } else if p.bag.count_of(tenebris_core::items::RAW_FISH) > 0 {
                     p.bag.take(tenebris_core::items::RAW_FISH, 1);
                     12.0
+                } else if let Some(fish) = tenebris_core::items::FISH_ITEMS
+                    .iter()
+                    .copied()
+                    .find(|&f| p.bag.count_of(f) > 0)
+                {
+                    /* A live fish eaten raw restores the same as raw fish;
+                     * cook it (furnace) for the better cooked-fish meal. */
+                    p.bag.take(fish, 1);
+                    12.0
                 } else if p.bag.count_of(tenebris_core::items::BERRIES) > 0 {
                     p.bag.take(tenebris_core::items::BERRIES, 1);
                     fcfg.berry_hunger_restore
@@ -7104,6 +7111,10 @@ fn frame_inner(app: &mut App) {
     {
         let w = app.world.borrow();
         bonfire_fx::draw(&w, view, proj, renderer::time_seconds());
+        /* Glass + aquariums (translucent shells, water surface, swimming
+         * fish) - drawn after the opaque entities, before the water/cloud
+         * passes, so the tank blends over the fish inside it. */
+        aquarium_fx::draw(&w, view, proj, renderer::time_seconds());
     }
     profiler::end("draw-entities");
     /* Cloud layer above the surface - same pass, drifts with sim time

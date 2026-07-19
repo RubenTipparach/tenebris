@@ -247,19 +247,25 @@ pub fn update(w: &World, p: &mut PlayerCtrl, dt: f32) {
     if done {
         S.with(|s| *s.borrow_mut() = None);
         if caught {
-            /* Reward scales with the fish's strength: a strength-1
-             * minnow lands 1 raw fish, the strength-5 reef fish lands
-             * 5, plus the bonus-catch roll. */
-            let strength = caught_species.fish_strength().max(1) as u16;
-            let mut n = strength;
+            /* The catch is that species' OWN live-fish item (its own
+             * sprite): eat it, cook it, or drop it in an aquarium. You
+             * land one fish, plus the bonus-catch roll for a second -
+             * live fish don't stack into a "5 reef fish" haul the way the
+             * old generic raw-fish reward did. */
+            let item = caught_species.fish_item().unwrap_or(items::RAW_FISH);
+            let mut n = 1u16;
             let roll = hash2(p.last_tile, 0x53);
             if roll < cfg::config().bonus_catch_chance {
                 n += 1;
             }
-            p.bag.add(items::RAW_FISH, n);
+            p.bag.add(item, n);
             HUD_LINE.with(|l| {
-                *l.borrow_mut() =
-                    format!("landed {} - {} raw fish!", caught_species.display_name(), n);
+                let name = caught_species.display_name();
+                *l.borrow_mut() = if n > 1 {
+                    format!("landed {n} {name}!")
+                } else {
+                    format!("landed a {name}!")
+                };
             });
             CAUGHT_FLASH_T.with(|c| c.set(1.8));
         }
