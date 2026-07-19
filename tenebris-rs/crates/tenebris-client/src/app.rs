@@ -3576,6 +3576,53 @@ fn machine_label(b: Block) -> Option<&'static str> {
     })
 }
 
+/// Draw a reticle / walk-up interaction prompt (e.g. `"[F] open chest"`)
+/// centred just below the crosshair. Shared by every "[F] ..." prompt so
+/// they read consistently, and styled for legibility:
+///   - GREEN, so the prompt pops against any terrain;
+///   - a black OUTLINE (8 offset copies behind the text) so it stays
+///     readable over bright ground / water / sky;
+///   - LARGER than the plain HUD text (the old 8px prompt was cramped and
+///     clipped longer machine names).
+fn draw_interact_prompt(msg: &str, screen_w: f32, screen_h: f32) {
+    /* Shrink the sdtx canvas so each 8px glyph maps to SCALE screen px. */
+    const SCALE: f32 = 2.0;
+    let per = SCALE * 8.0; /* screen px per character */
+    let cols_total = (screen_w / per).max(1.0);
+    /* Centre horizontally; never start off the left edge (clip guard). */
+    let col = (cols_total * 0.5 - msg.len() as f32 * 0.5).max(0.5);
+    let row = (screen_h * 0.5 + 28.0) / per; /* just below the reticle */
+
+    sdtx::canvas((screen_w / SCALE).max(1.0), (screen_h / SCALE).max(1.0));
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+
+    /* Black outline: draw the text at 8 small offsets behind the fill. */
+    const O: f32 = 0.16; /* outline reach, in character cells */
+    sdtx::color3b(0x00, 0x00, 0x00);
+    for (dx, dy) in [
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ] {
+        sdtx::pos(col + dx * O, row + dy * O);
+        sdtx::puts(msg);
+    }
+
+    /* Green fill on top. */
+    sdtx::color3b(0x54, 0xf0, 0x60);
+    sdtx::pos(col, row);
+    sdtx::puts(msg);
+
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Dock prompt: shown while flying within dock range of the orbital
 /// trading station. Docking is a rendezvous - inside the radius but too
 /// fast, the prompt shows the velocity gap the rocket still has to close
@@ -3600,17 +3647,7 @@ fn draw_station_hint(app: &App, screen_w: f32, screen_h: f32) {
     } else {
         format!("match velocity to dock - {:.1} m/s off", rel)
     };
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::origin(0.0, 0.0);
-    sdtx::font(1);
-    sdtx::pos(x, y);
-    sdtx::color3b(0x90, 0xd0, 0xf0);
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
+    draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
 /// Prompt shown when on foot within reach of a ship you climbed out of:
@@ -3633,17 +3670,7 @@ fn draw_board_ship_hint(app: &App, screen_w: f32, screen_h: f32) {
     }
     let key = crate::controls::action_label(crate::controls::Action::Interact);
     let msg = format!("[{}] board ship", key);
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::origin(0.0, 0.0);
-    sdtx::font(1);
-    sdtx::pos(x, y);
-    sdtx::color3b(0x90, 0xf0, 0xa0);
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
+    draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
 /// Walk-up prompt shown on foot next to a station slot cabinet:
@@ -3667,17 +3694,7 @@ fn draw_slot_hint(app: &App, screen_w: f32, screen_h: f32) {
     }
     let key = crate::controls::action_label(crate::controls::Action::Interact);
     let msg = format!("[{}] play slots", key);
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::origin(0.0, 0.0);
-    sdtx::font(1);
-    sdtx::pos(x, y);
-    sdtx::color3b(0xf0, 0x90, 0xe0);
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
+    draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
 /// Reticle prompt shown when aiming at an openable machine: `"[E] open chest"`.
@@ -3696,17 +3713,7 @@ fn draw_machine_hint(app: &App, screen_w: f32, screen_h: f32) {
     };
     let key = crate::controls::action_label(crate::controls::Action::Interact);
     let msg = format!("[{}] open {}", key, name);
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::font(1);
-    sdtx::origin(x, y);
-    sdtx::color3b(0x90, 0xd0, 0xf0);
-    sdtx::home();
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
+    draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
 /// Reticle prompt shown when aiming at a loose scatter object you can gather:
@@ -3725,17 +3732,7 @@ fn draw_pickup_hint(app: &App, screen_w: f32, screen_h: f32) {
     };
     let key = crate::controls::action_label(crate::controls::Action::Interact);
     let msg = format!("[{}] pick up {}", key, name);
-    let cell = 8.0f32;
-    let x = (screen_w * 0.5 - (msg.len() as f32 * cell) * 0.5) / cell;
-    let y = (screen_h * 0.5 + 24.0) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    sdtx::font(1);
-    sdtx::origin(x, y);
-    sdtx::color3b(0x90, 0xd0, 0xf0);
-    sdtx::home();
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
+    draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
 /// Credits readout (top-right): the space-era wallet. Only shown in survival /
