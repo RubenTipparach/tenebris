@@ -2258,50 +2258,92 @@ pub fn sgl_overlay_end() {
     sgl::set_context(sgl::default_context());
 }
 
-/// Day/night brightness for the sgl entity renderers (critters / crops /
-/// item drops): the terrain's sun-terminator curve reduced to a single
-/// scalar - 1.0 in daylight, easing down to a 0.16 night floor so
-/// entities darken with the world instead of glowing fullbright at night.
+/// Day/night SUN brightness for the sgl entity renderers (critters / crops /
+/// item drops / props): the same sun-terminator curve the terrain uses,
+/// reduced to a single scalar - 1.0 in full daylight, easing down to the
+/// configurable `lighting.yaml night_ambient_floor` on the night side so
+/// entities darken WITH the world instead of glowing fullbright at night.
+///
+/// This is the ambient + direct-sun environment term ONLY. Other light
+/// sources (torches / bonfires) are an INDEPENDENT contribution the callers
+/// add on top of this (see `animals::entity_lit`), so the layering is:
+/// surface-normal sun factor -> ambient floor -> then local lights.
 pub fn entity_sun_brightness(world_pos: DVec3) -> f32 {
     R.with(|cell| {
         let r = cell.borrow();
+        let lc = tenebris_core::config::lighting();
+        /* FLOATING ORIGIN: `atmo_planet_center` is the REBASED body centre
+         * (center - camera_world_d), so rebase the entity by the SAME camera
+         * before differencing. Mixing the absolute `world_pos` against the
+         * rebased centre folded the ~150 km origin offset into the direction
+         * vector and wrecked the day/night dot at heliocentric scale - the
+         * "animals glow through the night" bug. `rel` is the entity's
+         * body-relative position (its radial IS its ground normal). */
+        let cam = r.env.camera_world_d;
         let c = r.env.atmo_planet_center;
-        let px = world_pos.x as f32 - c.x;
-        let py = world_pos.y as f32 - c.y;
-        let pz = world_pos.z as f32 - c.z;
-        let len = (px * px + py * py + pz * pz).sqrt();
-        if len < 1e-3 {
-            return 1.0;
-        }
-        let d = (px * r.env.sun_dir.x + py * r.env.sun_dir.y + pz * r.env.sun_dir.z) / len;
-        /* SURFACE term: day/night by which side of the planet the entity
-         * is over, with a soft terminator band (~sunset). Right for
-         * animals / crops / torch glows standing ON the ground. */
-        let t = ((d + 0.10) / 0.22).clamp(0.0, 1.0);
-        let surface = 0.16 + 0.84 * t;
-        /* SPACE term: sunlight is DIRECT regardless of which hemisphere
-         * the entity floats over - a rocket above the night side is still
-         * in full sun. The only darkness up there is the planet's own
-         * shadow: behind the terminator plane (along < 0) AND inside the
-         * shadow cylinder (perpendicular distance to the sun axis under
-         * the planet radius), with a soft penumbra edge. Without this the
-         * ridden rocket went near-black in space whenever its ground
-         * track crossed the night side. */
-        let rad = r.env.atmo_planet_radius.max(1.0);
-        let along = d * len;
-        let perp = (len * len - along * along).max(0.0).sqrt();
-        let umbra = if along < 0.0 {
-            ((rad - perp) / (0.15 * rad)).clamp(0.0, 1.0)
-        } else {
-            0.0
+        let rel = Vec3 {
+            x: (world_pos.x - cam.x) as f32 - c.x,
+            y: (world_pos.y - cam.y) as f32 - c.y,
+            z: (world_pos.z - cam.z) as f32 - c.z,
         };
-        let space = 0.16 + 0.84 * (1.0 - umbra);
-        /* Blend surface -> space across half a radius of altitude, so
-         * ground entities keep the sunset look and orbital ones get the
-         * umbra model. */
-        let alt01 = ((len - rad) / (0.5 * rad)).clamp(0.0, 1.0);
-        surface + (space - surface) * alt01
+        sun_brightness_rel(
+            rel,
+            r.env.sun_dir,
+            r.env.atmo_planet_radius.max(1.0),
+            lc.terminator_lo,
+            lc.terminator_hi,
+            lc.night_ambient_floor,
+        )
     })
+}
+
+/// Pure day/night + umbra sun factor for an entity at body-relative position
+/// `rel` (entity_world - body_center), on the terminator band + ambient floor
+/// from lighting.yaml (`lo`/`hi`/`floor`). Split out of
+/// [`entity_sun_brightness`] so the curve is unit-testable without the
+/// renderer's thread-local state - and it is inherently floating-origin
+/// independent because it takes the body-relative position, never an absolute
+/// one against a rebased centre.
+fn sun_brightness_rel(rel: Vec3, sun_dir: Vec3, radius: f32, lo: f32, hi: f32, floor: f32) -> f32 {
+    /* Hermite smoothstep, matching the terrain terminator's GLSL smoothstep
+     * so an animal and its ground share one dawn/dusk curve. */
+    fn smoothstep(lo: f32, hi: f32, x: f32) -> f32 {
+        let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+    let floor = floor.clamp(0.0, 1.0);
+    let hi = hi.max(lo + 1e-3);
+    let rad = radius.max(1.0);
+    let len = (rel.x * rel.x + rel.y * rel.y + rel.z * rel.z).sqrt();
+    if len < 1e-3 {
+        return 1.0;
+    }
+    /* Surface-normal . sun: the radial direction at the entity IS its ground
+     * normal, and its dot with the sun direction is how much sunlight the spot
+     * receives. */
+    let d = (rel.x * sun_dir.x + rel.y * sun_dir.y + rel.z * sun_dir.z) / len;
+    /* SURFACE term: day/night on the SAME terminator band + ambient floor the
+     * terrain uses, so ground entities and the ground darken together. */
+    let day = smoothstep(lo, hi, d);
+    let surface = floor + (1.0 - floor) * day;
+    /* SPACE term: sunlight is DIRECT regardless of which hemisphere the entity
+     * floats over - a rocket above the night side is still in full sun. The
+     * only darkness up there is the planet's own shadow: behind the terminator
+     * plane (along < 0) AND inside the shadow cylinder (perpendicular distance
+     * to the sun axis under the planet radius), with a soft penumbra edge,
+     * easing to the same ambient floor. */
+    let along = d * len;
+    let perp = (len * len - along * along).max(0.0).sqrt();
+    let umbra = if along < 0.0 {
+        ((rad - perp) / (0.15 * rad)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let space = floor + (1.0 - floor) * (1.0 - umbra);
+    /* Blend surface -> space across half a radius of altitude, so ground
+     * entities keep the sunset look and orbital ones get the umbra model. */
+    let alt01 = ((len - rad) / (0.5 * rad)).clamp(0.0, 1.0);
+    surface + (space - surface) * alt01
 }
 
 /* ----------------------------------------------------------------------- */
@@ -6884,6 +6926,40 @@ mod tests {
     use tenebris_core::planet::{self, BodyId};
 
     const EPS: f32 = 1e-6;
+
+    /* --------------------------------------------------------------- */
+    /* Entity day/night lighting.                                        */
+
+    /// Night side eases to the ambient floor, the sub-solar point is full sun,
+    /// the terminator is twilight, and the floor is the configurable ambient.
+    /// Takes a body-RELATIVE position, so it is floating-origin independent -
+    /// the guard against the "animals glow through the night" regression, where
+    /// an absolute position differenced against a rebased centre folded the
+    /// ~150 km origin offset into the day/night dot.
+    #[test]
+    fn entity_sun_brightness_darkens_on_the_night_side() {
+        let sun = vec3_make(1.0, 0.0, 0.0);
+        let radius = 1000.0f32;
+        let (lo, hi, floor) = (-0.10f32, 0.30f32, 0.20f32);
+        /* Surface, sub-solar point (radial along +sun) = full daylight. */
+        let day = sun_brightness_rel(vec3_make(radius, 0.0, 0.0), sun, radius, lo, hi, floor);
+        assert!((day - 1.0).abs() < 1e-4, "sub-solar should be full sun, got {day}");
+        /* Surface, anti-solar point = the ambient floor, NOT fullbright. */
+        let night = sun_brightness_rel(vec3_make(-radius, 0.0, 0.0), sun, radius, lo, hi, floor);
+        assert!((night - floor).abs() < 1e-4, "night side should sit at the floor, got {night}");
+        /* Terminator (radial perpendicular to the sun, d = 0) is twilight. */
+        let dusk = sun_brightness_rel(vec3_make(0.0, radius, 0.0), sun, radius, lo, hi, floor);
+        assert!(dusk > floor && dusk < 1.0, "terminator should be twilight, got {dusk}");
+        /* The floor IS the configurable ambient: a higher floor lifts the
+         * night side by exactly that much. */
+        let night2 = sun_brightness_rel(vec3_make(-radius, 0.0, 0.0), sun, radius, lo, hi, 0.5);
+        assert!((night2 - 0.5).abs() < 1e-4, "floor is the configurable ambient, got {night2}");
+        /* Same body-relative position -> same brightness no matter the world
+         * scale (nothing here reads an absolute coordinate). */
+        let a = sun_brightness_rel(vec3_make(-radius, 0.0, 0.0), sun, radius, lo, hi, floor);
+        let b = sun_brightness_rel(vec3_make(-radius, 0.0, 0.0), sun, radius, lo, hi, floor);
+        assert_eq!(a, b);
+    }
 
     /* --------------------------------------------------------------- */
     /* Chunk anchors + tile classification.                              */
