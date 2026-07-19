@@ -873,8 +873,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                  * world_set, same frame as the tile save. */
                 if tenebris_core::blocks::is_tech_block(to_place)
                     || to_place == Block::Bonfire
-                    || to_place == Block::Aquarium
+                    || tenebris_core::blocks::is_glassy(to_place)
                 {
+                    /* Glass + aquarium are drawn by aquarium_fx, which
+                     * enumerates block_entities - so BOTH need an entity on
+                     * placement or they render invisibly. Glass carries just
+                     * a facing (its state stays None); the aquarium gets its
+                     * AquariumState via init_machine_state below. */
                     let facing = w.facing_toward(s.place_tile, s.place_depth, p.position);
                     let e = w.block_entities.entry(s.place_tile, s.place_depth);
                     e.facing = facing;

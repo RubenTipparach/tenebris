@@ -490,7 +490,7 @@ fn dev_maybe_place(app: &mut App) {
      * half-generated disk finds no ocean and falls back to a surface
      * float. Re-arm until the body the player is on is fully generated.
      * (17 fish, 14 lineup, 21 dive - all scan the capture-world.) */
-    if matches!(dev_mode, 17 | 14 | 21) && !dev_capture_world(app).borrow().gen_complete() {
+    if matches!(dev_mode, 17 | 14 | 21 | 26) && !dev_capture_world(app).borrow().gen_complete() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(10));
         return;
     }
@@ -657,6 +657,106 @@ fn dev_maybe_place(app: &mut App) {
                 }
             } else if let Some(mid) = animals::herd_center() {
                 dev_aim_at(app, mid);
+            }
+        }
+        26 => {
+            /* Aquarium showcase (TENEBRIS_DEV_AQUARIUM): build a little
+             * wall of filled glass tanks ahead of the player, each stocked
+             * with a few fish, then aim at it - the screenshot scene for
+             * the aquarium pass (glass shell + top water surface + swimming
+             * fish, and the "bank reads as one shell" cull). */
+            let (ppos, fwd, right, last_tile) = {
+                let p = app.player.borrow();
+                (p.position, p.basis.fwd, p.basis.right, p.last_tile)
+            };
+            use tenebris_core::fauna::AnimalKind;
+            let species = [
+                AnimalKind::Fish,
+                AnimalKind::LargeFish,
+                AnimalKind::LongFish,
+                AnimalKind::FlatFish,
+                AnimalKind::Turtle,
+                AnimalKind::SerpentFish,
+            ];
+            let mut center_world = None;
+            {
+                let mut w = app.world.borrow_mut();
+                let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+                let local = dvec3_sub(ppos, bc);
+                let cap = tenebris_core::world::WORLD_MAX_DEPTH - 2;
+                /* Level the wall at the player's OWN ground height: a
+                 * per-column top-scan staggers the tanks on any slope (and
+                 * lands them on trees). Instead lay a flat dirt platform at
+                 * the player's feet depth, clear anything above it, and rest
+                 * the tanks on that - a clean row on any terrain. */
+                let feet_r = dvec3_length(local);
+                let base = w.radius_to_depth(feet_r).clamp(1, cap - 3);
+                let mut si = 0usize;
+                let mut placed = 0;
+                for (ci, side) in [-1.05f64, 0.0, 1.05].into_iter().enumerate() {
+                    let point = dvec3_add(
+                        local,
+                        dvec3_add(dvec3_scale(fwd, 3.8), dvec3_scale(right, side)),
+                    );
+                    let tile = w.grid.find_tile(dvec3_normalize(point), last_tile);
+                    if tile < 0 {
+                        continue;
+                    }
+                    /* Dirt floor at the player's level, and clear the column
+                     * above the tanks so nothing (hill / tree) floats over. */
+                    w.set(tile, base, Block::Dirt);
+                    for d in (base + 3)..=(base + 7).min(cap) {
+                        w.set(tile, d, Block::Air);
+                    }
+                    /* Aim at the middle column's lower tank (computed before
+                     * the block-entity borrow so w stays freely borrowable). */
+                    if ci == 1 {
+                        let r = w.depth_to_radius_m(base + 1) + 0.5;
+                        center_world =
+                            Some(dvec3_add(bc, dvec3_scale(dvec3_normalize(point), r)));
+                    }
+                    for d in (base + 1)..=(base + 2) {
+                        w.set(tile, d, Block::Aquarium);
+                        let e = w.block_entities.entry(tile, d);
+                        tenebris_core::block_entity::init_machine_state(e, Block::Aquarium);
+                        let aq = e.aquarium_mut();
+                        aq.water = true;
+                        for _ in 0..3 {
+                            aq.add_fish(species[si % species.len()].to_u8());
+                            si += 1;
+                        }
+                        placed += 1;
+                    }
+                }
+                println!("[dev] aquarium wall: {placed} filled tank(s) ahead");
+            }
+            if let Some(t) = center_world {
+                /* Elevated 3/4 view: perch the camera above + behind the
+                 * wall and PIN it (DEV_FISH_CAM) so gravity can't drop it,
+                 * re-solving the aim each frame (DEV_AIM_TARGET) against the
+                 * live basis - a one-shot aim uses the stale post-teleport
+                 * basis and stares off-centre. */
+                let bc = {
+                    let w = app.world.borrow();
+                    dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z)
+                };
+                let up = dvec3_normalize(dvec3_sub(t, bc));
+                let to_player = dvec3_sub(ppos, t);
+                let mut back = dvec3_sub(to_player, dvec3_scale(up, dvec3_dot(to_player, up)));
+                if dvec3_length(back) < 1e-4 {
+                    back = right;
+                }
+                let back = dvec3_normalize(back);
+                let cam =
+                    dvec3_add(t, dvec3_add(dvec3_scale(up, 1.5), dvec3_scale(back, 3.6)));
+                {
+                    let mut p = app.player.borrow_mut();
+                    p.position = cam;
+                    p.velocity = tenebris_core::math::DVec3::default();
+                }
+                DEV_FISH_CAM.with(|c| c.set(Some(cam)));
+                DEV_AIM_TARGET.with(|c| c.set(Some(t)));
+                dev_aim_at(app, t);
             }
         }
         14 => {
@@ -2636,6 +2736,9 @@ extern "C" fn init() {
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_FISH").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(17));
+        DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
+    } else if std::env::var("TENEBRIS_DEV_AQUARIUM").is_ok() {
+        DEV_PLACE_MODE.with(|c| c.set(26));
         DEV_PLACE_COUNTDOWN.with(|c| c.set(15));
     } else if std::env::var("TENEBRIS_DEV_DIVE").is_ok() {
         DEV_PLACE_MODE.with(|c| c.set(21));

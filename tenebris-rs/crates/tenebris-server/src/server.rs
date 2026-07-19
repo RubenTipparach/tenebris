@@ -2013,16 +2013,22 @@ impl Server {
         let center = dvec3_make(body.pos_x, body.pos_y, body.pos_z);
         let ab = &mut self.rooms[ri].animals[ai];
         let Some(idx) = ab.list.iter().position(|a| a.id == m.animal_id) else { return };
-        /* Sanity-cap the damage; the client's swing is ATTACK_DAMAGE=5. */
+        /* Sanity-cap the damage; the client's swing is ATTACK_DAMAGE=5. A
+         * NET catch sends a large sentinel (9999) so the server drops the
+         * fish entity WITHOUT crediting meat - the client already banked the
+         * live-fish item, so a meat award on top would double-reward
+         * (fish + raw meat). Detect the sentinel before the clamp. */
+        let net_catch = m.dmg > 20.0;
         let dmg = m.dmg.clamp(0.0, 20.0);
         let kind_meat = ab.list[idx].kind.meat();
         let up = dvec3_normalize(dvec3_sub(ab.list[idx].pos, center));
         fauna::hit(&mut ab.list[idx], dmg, from, up);
         if !ab.list[idx].is_alive() {
-            /* Same per-kind meat roll the SP client uses. */
+            /* Same per-kind meat roll the SP client uses (suppressed for a
+             * net catch - the fish item is the reward there). */
             let meat = kind_meat + (rng::hash2(idx as i32 * 31, 5) * 2.0) as u16;
             ab.list.swap_remove(idx);
-            ab.pending_kill = Some((player_id, meat));
+            ab.pending_kill = if net_catch { None } else { Some((player_id, meat)) };
         }
     }
 
