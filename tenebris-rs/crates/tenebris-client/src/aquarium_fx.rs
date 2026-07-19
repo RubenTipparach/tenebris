@@ -31,10 +31,11 @@ use sokol::gfx as sg;
 use sokol::gl as sgl;
 
 use tenebris_core::blocks::{self, Block};
+use tenebris_core::config;
 use tenebris_core::fauna::AnimalKind;
 use tenebris_core::goldberg::MAX_VERTS_PER_TILE;
 use tenebris_core::math::{
-    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, DVec3,
+    dvec3_add, dvec3_cross, dvec3_make, dvec3_normalize, dvec3_scale, DVec3, Vec3,
 };
 use tenebris_core::world::World;
 
@@ -71,9 +72,15 @@ struct GlassCell {
     side: [bool; MAX_VERTS_PER_TILE],
     /// Aquarium extras.
     is_aquarium: bool,
-    /// This tank holds water (its glass sides + floor are tinted blue so
-    /// the cell reads as full of water, not an empty box).
+    /// This tank holds water (its glass sides + floor are tinted with the
+    /// planet's water colour so the cell reads as full of water).
     filled: bool,
+    /// Radius of the WATER SURFACE for this cell's whole column (the top of
+    /// the topmost filled tank in the stack, minus the surface drop). The
+    /// side shading grades by depth BELOW this - shared by every cell in a
+    /// stacked column, so the column reads as one body of water with no
+    /// per-cell seam.
+    surface_r: f64,
     /// Draw the water surface (filled, and no filled tank directly above).
     water_surface: bool,
     /// Species wire ids of the fish inside.
@@ -88,17 +95,19 @@ fn culled(self_b: Block, nb: Block) -> bool {
     blocks::culls_same_kind(self_b) && nb == self_b
 }
 
+/// Is the cell `(tile, depth)` a WATER-FILLED aquarium?
+fn filled_water_at(w: &World, tile: i32, depth: i32) -> bool {
+    w.get(tile, depth) == Block::Aquarium
+        && w.block_entities
+            .get(tile, depth)
+            .and_then(|e| e.aquarium().map(|a| a.water))
+            .unwrap_or(false)
+}
+
 /// Is the cell above `(tile, depth)` a filled aquarium? (Used so a stacked
 /// column of tanks shows one water surface at the very top.)
 fn filled_tank_above(w: &World, tile: i32, depth: i32) -> bool {
-    let above = depth + 1;
-    if w.get(tile, above) != Block::Aquarium {
-        return false;
-    }
-    w.block_entities
-        .get(tile, above)
-        .and_then(|e| e.aquarium().map(|a| a.water))
-        .unwrap_or(false)
+    filled_water_at(w, tile, depth + 1)
 }
 
 /// Enumerate the glass / aquarium cells to draw this frame.
@@ -133,6 +142,19 @@ fn cells(w: &World) -> Vec<GlassCell> {
         let is_aquarium = b == Block::Aquarium;
         let filled = aq.map(|a| a.water).unwrap_or(false);
         let water_surface = filled && !filled_tank_above(w, tile, depth);
+        /* Water surface radius for the WHOLE column: scan up while the cell
+         * above is another filled tank, so a stacked column shares one
+         * surface and its side shading grades continuously (no per-cell
+         * seam). */
+        let surface_r = if filled {
+            let mut top = depth;
+            while filled_water_at(w, tile, top + 1) {
+                top += 1;
+            }
+            w.depth_to_radius_m(top + 1) - WATER_DROP_M
+        } else {
+            0.0
+        };
         let mut fish = [0u8; 8];
         let mut fish_count = 0;
         if let Some(a) = aq {
@@ -157,6 +179,7 @@ fn cells(w: &World) -> Vec<GlassCell> {
             side,
             is_aquarium,
             filled,
+            surface_r,
             water_surface,
             fish,
             fish_count,
@@ -218,6 +241,49 @@ fn quad_grad(ba: DVec3, bb: DVec3, tb: DVec3, ta: DVec3, cbot: [f32; 4], ctop: [
     vc(ba, cbot);
     vc(ta, ctop);
     vc(tb, ctop);
+}
+
+/// The planet's water palette (from `lod.yaml`, the same values the water
+/// block reads): the near-surface colour, the deep colour it grades to, and
+/// the e-folding depth (m) over which it does so.
+struct WaterPalette {
+    surface: Vec3,
+    deep: Vec3,
+    full_depth_m: f64,
+}
+
+impl WaterPalette {
+    /// Resolve the palette for the body's tileset.
+    fn for_body(w: &World) -> WaterPalette {
+        let ts = (w.body.tileset as usize).min(4);
+        let lod = config::lod();
+        let surface = lod.tileset_water_color[ts];
+        let mut deep = lod.tileset_water_deep_color[ts];
+        /* {0,0,0} deep colour = "use a sane default": a darkened surface
+         * colour, matching the water shader's own fallback intent. */
+        if deep.x == 0.0 && deep.y == 0.0 && deep.z == 0.0 {
+            deep = Vec3 { x: surface.x * 0.30, y: surface.y * 0.34, z: surface.z * 0.42 };
+        }
+        let full = lod.tileset_water_full_depth_m[ts];
+        WaterPalette { surface, deep, full_depth_m: if full > 0.0 { full as f64 } else { 2.5 } }
+    }
+
+    /// Beer-Lambert-ish colour at `depth_below` metres under the surface:
+    /// the surface colour near the top grading to the deep colour with
+    /// depth (`1 - exp(-d/full)`), pre-multiplied by the lit factor. Alpha
+    /// climbs a little with depth so deep water reads more solid. Because
+    /// this keys off ABSOLUTE depth below the shared column surface, a
+    /// stacked column grades as one continuous body.
+    fn color(&self, depth_below: f64, l: f32) -> [f32; 4] {
+        let t = (1.0 - (-(depth_below.max(0.0)) / self.full_depth_m).exp()) as f32;
+        let mix = |a: f32, b: f32| (a + (b - a) * t) * l;
+        [
+            mix(self.surface.x, self.deep.x),
+            mix(self.surface.y, self.deep.y),
+            mix(self.surface.z, self.deep.z),
+            0.46 + 0.30 * t,
+        ]
+    }
 }
 
 pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
@@ -295,31 +361,36 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
     sgl::load_pipeline(pip);
     sgl::begin_triangles();
 
+    /* The planet's water palette (lod.yaml) - the same colours the water
+     * block reads - so a filled tank matches the ocean of the world it's on
+     * (Tenebris blue, Sequoia green). */
+    let water = WaterPalette::for_body(w);
+
     for c in &cells {
         let l = c.lit;
-        /* Glass: pale cyan, quite transparent; a hair brighter on the top
-         * cap than the sides for a little form. */
         let corner_top = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.r_top));
         let corner_bot = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.r_bot));
 
-        if c.top {
-            sgl::c4f(0.80 * l, 0.90 * l, 0.96 * l, 0.24);
-            /* Fan the top hex from vertex 0. */
+        /* Top glass lid: only on an EMPTY glass box (a filled tank shows
+         * its water surface instead, drawn below). Pale, near-clear glass. */
+        if c.top && !c.filled {
+            sgl::c4f(0.80 * l, 0.90 * l, 0.96 * l, 0.22);
             for k in 1..c.n - 1 {
                 v(corner_top(0));
                 v(corner_top(k));
                 v(corner_top(k + 1));
-                /* back winding too */
                 v(corner_top(0));
                 v(corner_top(k + 1));
                 v(corner_top(k));
             }
         }
         if c.bottom {
-            /* A filled tank's floor sits under water -> deep blue; an empty
-             * glass box keeps the pale glass tint. */
+            /* A filled tank's floor sits at the bottom of the water column
+             * -> the deep water colour; an empty glass box keeps the pale
+             * glass tint. */
             if c.filled {
-                sgl::c4f(0.10 * l, 0.30 * l, 0.52 * l, 0.62);
+                let [r, g, b, a] = water.color(c.surface_r - c.r_bot, l);
+                sgl::c4f(r, g, b, a);
             } else {
                 sgl::c4f(0.60 * l, 0.72 * l, 0.80 * l, 0.24);
             }
@@ -332,14 +403,15 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
                 v(corner_bot(k + 1));
             }
         }
-        /* Side walls. A FILLED tank shades them blue with a top-to-bottom
-         * depth gradient (lighter near the surface, deeper at the floor) so
-         * the cell reads as a body of blue water held behind the glass;
-         * empty glass keeps the near-clear pale tint. Fish were drawn first,
-         * so they show through the tinted walls. */
+        /* Side walls (flat - the water is held against the glass, so no
+         * waves). A FILLED tank shades them by DEPTH BELOW THE COLUMN'S
+         * SURFACE using the planet's water palette, so a stacked column
+         * reads as one continuous body of water (no per-cell seam) and
+         * matches the ocean's colour. Empty glass keeps the near-clear
+         * tint. Fish were drawn first, so they show through the walls. */
         if c.filled {
-            let ctop = [0.30 * l, 0.58 * l, 0.80 * l, 0.42];
-            let cbot = [0.11 * l, 0.34 * l, 0.58 * l, 0.56];
+            let ctop = water.color(c.surface_r - c.r_top, l);
+            let cbot = water.color(c.surface_r - c.r_bot, l);
             for k in 0..c.n {
                 if !c.side[k] {
                     continue;
@@ -365,12 +437,19 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
             }
         }
 
-        /* Aquarium water surface: one hex cap just below the glass top.
-         * No side faces - the glass holds the water against the walls. */
+        /* Water surface: one flat hex cap at the column's surface radius.
+         * No side faces - the glass holds the water against the walls. The
+         * surface reads a touch brighter than the body (a nod to the sky
+         * the real water mirrors). */
         if c.is_aquarium && c.water_surface {
-            let wr = c.r_top - WATER_DROP_M;
-            let corner_w = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], wr));
-            sgl::c4f(0.24 * l, 0.52 * l, 0.74 * l, 0.62);
+            let corner_w = |k: usize| dvec3_add(body_c, dvec3_scale(c.corners[k], c.surface_r));
+            let s = water.surface;
+            sgl::c4f(
+                (s.x * 1.15 * l).min(1.0),
+                (s.y * 1.15 * l).min(1.0),
+                (s.z * 1.15 * l).min(1.0),
+                0.66,
+            );
             for k in 1..c.n - 1 {
                 v(corner_w(0));
                 v(corner_w(k));
