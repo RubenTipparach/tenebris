@@ -854,8 +854,10 @@ pub fn draw_map_orbits(
     sim_t: f64,
 ) {
     /* Shell scales with the zoom (eye->ship distance) so the rings never
-     * clip against the map's distance-scaled near plane. */
-    set_remap(eye, dvec3_length(dvec3_sub(ship_pos, eye)));
+     * clip against the map's distance-scaled near plane, and stays inside the
+     * far plane (zfar = m14 / (m10 + 1)) so it can't sit on the far clip. */
+    let zfar = (proj.m[14] / (proj.m[10] + 1.0)) as f64;
+    set_remap(eye, dvec3_length(dvec3_sub(ship_pos, eye)), zfar);
     renderer::sgl_overlay_begin();
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -1024,6 +1026,13 @@ thread_local! {
 }
 /// Fallback / floor shell radius when no camera distance is set.
 const SHELL_DIST_M: f64 = 500.0;
+/// Keep the shell this fraction inside the pass's far plane. At max zoom-out
+/// the chase distance equals zfar (both 20 km), so an un-capped shell put
+/// every remapped vertex EXACTLY on the far plane - degenerate clip/precision
+/// that showed as a ragged clump where the attitude arrows converge. Pulling
+/// the shell to 0.85*zfar is invisible (the remap is pinhole-invariant) and
+/// moves the geometry off the clip boundary.
+const SHELL_FAR_FRAC: f64 = 0.85;
 
 /// Seed the eye-shell remap for this pass. The shell radius scales with the
 /// camera distance so it always lands between the near and far planes: the
@@ -1034,9 +1043,13 @@ const SHELL_DIST_M: f64 = 500.0;
 /// changes depth only, never screen position - a poor-man's log depth that
 /// works within sokol_gl's fixed pipeline, where a real log-z shader can't
 /// be injected).
-fn set_remap(eye: DVec3, cam_dist: f64) {
+/// `far_plane` is the pass's zfar (metres): the shell is clamped to stay a
+/// safe fraction inside it so the remapped geometry never lands on the far
+/// clip boundary (the max-zoom "clump at the arrow centre" bug).
+fn set_remap(eye: DVec3, cam_dist: f64, far_plane: f64) {
     REMAP_EYE.with(|c| c.set(eye));
-    REMAP_SHELL.with(|c| c.set(cam_dist.max(SHELL_DIST_M * 0.02)));
+    let shell = cam_dist.min(far_plane * SHELL_FAR_FRAC).max(SHELL_DIST_M * 0.02);
+    REMAP_SHELL.with(|c| c.set(shell));
 }
 
 /// Emit a world-space nav vertex via the eye-shell remap.
@@ -1156,8 +1169,10 @@ pub fn draw_world(
     /* Seed the eye-shell remap (see vtx): all line geometry this frame
      * collapses onto a shell around the CAMERA (radius scaled to the
      * eye->ship distance) so neither the near nor far plane can clip the
-     * orbit tracks however far the camera zooms. */
-    set_remap(eye, dvec3_length(dvec3_sub(pos, eye)));
+     * orbit tracks however far the camera zooms. zfar recovered from the
+     * projection = m14 / (m10 + 1). */
+    let zfar = (proj.m[14] / (proj.m[10] + 1.0)) as f64;
+    set_remap(eye, dvec3_length(dvec3_sub(pos, eye)), zfar);
 
     /* OVERLAY context, not the world context: the world scene gets the
      * fog / atmosphere composite and then the WATER pass painted over it,
