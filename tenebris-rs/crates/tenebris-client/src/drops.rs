@@ -28,7 +28,7 @@ use tenebris_core::world::World;
 
 use crate::bag;
 use crate::gfx_math::Mat4;
-use crate::hex_mesher::HEX_ATLAS_U_STEP;
+use crate::hex_mesher::HEX_ATLAS_TILES_PHYS;
 use crate::player_ctrl::PlayerCtrl;
 use crate::renderer;
 
@@ -364,9 +364,17 @@ fn draw_hex(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
         }
     };
 
+    /* Atlas U per face. The block face_tile is a LOGICAL column (/93), but
+     * the physical atlas is HEX_ATLAS_TILES_PHYS (108) wide; the terrain hex
+     * FS rescales mesh-u by 93/108 to land on the right physical column. This
+     * prism draws through a plain textured pipeline (no hex FS), so bake the
+     * PHYSICAL step (1/108) directly - otherwise it samples col/93 on a
+     * 108-wide atlas and shows a neighbouring tile's texture (the "drops use a
+     * random atlas texture" bug). */
+    let phys_step = 1.0 / HEX_ATLAS_TILES_PHYS as f32;
     let col_u = |cap: FaceCap| {
-        let col = face_tile(block, cap) as i32;
-        (col as f32 * HEX_ATLAS_U_STEP, (col + 1) as f32 * HEX_ATLAS_U_STEP)
+        let col = face_tile(block, cap) as f32;
+        (col * phys_step, (col + 1.0) * phys_step)
     };
     let (tu0, tu1) = col_u(FaceCap::Top);
     let (bu0, bu1) = col_u(FaceCap::Bottom);
