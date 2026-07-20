@@ -1546,6 +1546,37 @@ impl World {
             .unwrap_or(Block::Air)
     }
 
+    /// True when open sky is directly above `body_local_pos` - no solid
+    /// ceiling anywhere in the column overhead. This is the shelter gate for
+    /// precipitation FX: a roofed player (in a cave, under a rock overhang)
+    /// gets no rain on the camera lens and no falling streaks. Shared by the
+    /// falling-precipitation pass AND the composite lens / wet-terrain pass so
+    /// the two can never disagree on "am I in the rain?".
+    ///
+    /// Uses the same solid-ceiling definition as the vertical integrator
+    /// ([`ceiling_above`]): walk-through props (a bonfire / torch above you)
+    /// don't count as a roof.
+    pub fn sky_exposed_at(&self, body_local_pos: Vec3) -> bool {
+        let r = ((body_local_pos.x as f64).powi(2)
+            + (body_local_pos.y as f64).powi(2)
+            + (body_local_pos.z as f64).powi(2))
+        .sqrt();
+        if r <= 0.0 {
+            return true;
+        }
+        let inv = 1.0 / r;
+        let dir = DVec3 {
+            x: body_local_pos.x as f64 * inv,
+            y: body_local_pos.y as f64 * inv,
+            z: body_local_pos.z as f64 * inv,
+        };
+        let tile = self.grid.find_tile(dir, -1);
+        if tile < 0 {
+            return true; /* off the grid - treat as open */
+        }
+        self.ceiling_above(tile, r) >= 1e30
+    }
+
     /// Convenience wrapper preserving the C call shape
     /// `world_light_rebuild(w->light, w)` - splits the `light` /
     /// `blocks` / `grid` borrows so callers don't have to.

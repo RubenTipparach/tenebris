@@ -4973,11 +4973,19 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             };
             let cloud_deck = tenebris_core::clouds::config().altitude_m;
             let in_weather_layer = cam_alt < cloud_deck;
+            /* Sheltered from the sky (cave / overhang): no rain-on-glass lens
+             * droplets and no wet terrain - you're protected. Same predicate
+             * (World::sky_exposed_at) the falling-precipitation pass uses, so
+             * the streaks and the lens/wet FX can't disagree. */
+            let sky_exposed = {
+                let world = ab.world.borrow();
+                world.sky_exposed_at(vec3_sub(r.env.camera_world, body_center))
+            };
             /* Wet terrain while it's raining at the camera: a strong base
              * wetness the moment precipitation starts, deepening a touch
              * under heavier overcast. Dry (0) otherwise, and never on the
-             * lens from above the cloud deck / in space. */
-            let wet_target = if wx_precip && wx_is_rain && in_weather_layer {
+             * lens from above the cloud deck / in space, or when sheltered. */
+            let wet_target = if wx_precip && wx_is_rain && in_weather_layer && sky_exposed {
                 (0.55 + 0.45 * wx_overcast).min(1.0)
             } else {
                 0.0

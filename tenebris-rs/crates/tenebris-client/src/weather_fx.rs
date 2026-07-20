@@ -216,6 +216,13 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
         return;
     }
     let up = dvec3_scale(local, 1.0 / r);
+    /* Sheltered from the sky (cave / rock overhang): no rain reaches you, so
+     * draw no precipitation - falling streaks must not show through a solid
+     * ceiling. Same shelter gate the composite lens / wet-terrain pass uses,
+     * so "am I in the rain?" is decided in exactly one place (World). */
+    if !w.sky_exposed_at(dvec3_to_vec3(local)) {
+        return;
+    }
     let planet_r = w.body.radius_m as f64;
 
     /* Altitude LOD: individual rain / snow streaks are sub-pixel from a few
