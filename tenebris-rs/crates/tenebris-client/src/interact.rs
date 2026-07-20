@@ -537,7 +537,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                 );
             }
             if p.survival_mode {
-                inventory::add(&mut p.inventory, Block::Torch);
+                /* Recover the torch. Route through bag::give (hotbar-first,
+                 * then spill to the bag) - the same single collection path
+                 * block / animal pickups use - so a FULL hotbar never
+                 * silently eats the broken torch (the old inventory::add
+                 * dropped it on the floor of a full hotbar). */
+                let torch_item = tenebris_core::items::from_block(Block::Torch);
+                crate::bag::give(&mut p.inventory, &mut p.bag, torch_item, 1);
             }
             /* Index is now invalid (swap-removed); clear it so the
              * HUD doesn't print stale state for the rest of this
