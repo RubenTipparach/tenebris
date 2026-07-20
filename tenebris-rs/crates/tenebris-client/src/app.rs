@@ -8148,11 +8148,18 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     /* E is the context key. On FOOT it interacts / opens the inventory; while
      * RIDING it rolls the rocket (physics layer), so gate the interact edge on
      * NOT riding - that's what keeps roll and interact from overlapping. Also
-     * gated off the solar map (there E would pop the bag over the chart). */
+     * gated off the solar map (there E would pop the bag over the chart), and
+     * off the JETPACK-roll combo: Shift+E while flying rolls the view (see
+     * player_ctrl), so it must NOT also fire interact/inventory. */
+    let jetpack_roll = {
+        let phys = crate::input::state().phys;
+        phys.fly_mode && phys.sprint
+    };
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact)
         && !rocket_ride::is_riding()
-        && !solar_map::is_open();
+        && !solar_map::is_open()
+        && !jetpack_roll;
     /* Inventory is its OWN key (default Tab), always available. Same solar-map
      * gate - the bag must not pop over the orbit chart while flying. */
     let inventory_pressed = e._type == sapp::EventType::KeyDown

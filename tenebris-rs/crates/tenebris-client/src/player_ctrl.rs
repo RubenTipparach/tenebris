@@ -123,6 +123,11 @@ pub struct PlayerCtrl {
     pub velocity: DVec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// Jetpack VIEW roll (radians) about the look axis, driven by Shift+Q /
+    /// Shift+E while in fly mode. Purely a camera tilt - the surface-locked
+    /// movement basis is untouched - and it eases back to level when not
+    /// flying. Zero on foot / while walking.
+    pub view_roll: f32,
     pub grounded: bool,
     /* True when the player is outside every body's gravity-falloff
      * radius. Drives 6DOF mouse-look + thrust-and-drag movement
@@ -633,6 +638,17 @@ fn slerp_basis_to_up(b: &mut TangentBasis, target_up: DVec3, factor: f32) {
 
 /* ----------------------------------------------------------------------- */
 
+/// Rotate `v` about the unit `axis` by `ang` radians (Rodrigues' formula).
+fn rotate_about_axis(v: DVec3, axis: DVec3, ang: f64) -> DVec3 {
+    let (s, c) = ang.sin_cos();
+    let cross = dvec3_cross(axis, v);
+    let dot = dvec3_dot(axis, v);
+    dvec3_add(
+        dvec3_add(dvec3_scale(v, c), dvec3_scale(cross, s)),
+        dvec3_scale(axis, dot * (1.0 - c)),
+    )
+}
+
 fn compute_look(p: &PlayerCtrl) -> (DVec3, DVec3) {
     let b = &p.basis;
     let cy = (p.yaw as f64).cos();
@@ -640,8 +656,16 @@ fn compute_look(p: &PlayerCtrl) -> (DVec3, DVec3) {
     let cp = (p.pitch as f64).cos();
     let sp = (p.pitch as f64).sin();
     let fwd = dvec3_add(dvec3_scale(b.fwd, cy), dvec3_scale(b.right, sy));
-    let look = dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b.up, sp));
-    (dvec3_normalize(look), b.up)
+    let look = dvec3_normalize(dvec3_add(dvec3_scale(fwd, cp), dvec3_scale(b.up, sp)));
+    /* Jetpack VIEW roll: tilt the camera up around the look axis (Shift+Q / E
+     * in fly mode). Purely visual - the surface-locked basis that drives
+     * movement is untouched. */
+    let up = if p.view_roll != 0.0 {
+        rotate_about_axis(b.up, look, p.view_roll as f64)
+    } else {
+        b.up
+    };
+    (look, up)
 }
 
 fn walk_wish(p: &PlayerCtrl, inp: &PhysInput) -> DVec3 {
@@ -1865,6 +1889,31 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
     /* PLANET MODE - basis locked to planet up; walking + gravity.    */
     /* ============================================================== */
 
+    /* Jetpack VIEW roll: while flying (fly mode, on foot), Shift (sprint) +
+     * Q / E rolls the camera about the look axis. Purely a view tilt - the
+     * surface-locked movement basis is untouched, so walking/collision are
+     * unaffected. Holds the bank while flying; eases back to level once fly
+     * mode is off, so you never land banked. Never active while riding (the
+     * rocket owns E for its own roll). */
+    if inp.phys.fly_mode && !riding {
+        let roll_rate = l.space_roll_speed as f32;
+        if inp.phys.sprint && inp.phys.roll_left {
+            p.view_roll -= roll_rate * dt;
+        }
+        if inp.phys.sprint && inp.phys.roll_right {
+            p.view_roll += roll_rate * dt;
+        }
+        /* Keep it in [-pi, pi] so a long hold can't wind the float up. */
+        use std::f32::consts::{PI, TAU};
+        p.view_roll = (p.view_roll + PI).rem_euclid(TAU) - PI;
+    } else if p.view_roll != 0.0 {
+        let k = 1.0 - (-8.0 * dt).exp();
+        p.view_roll *= 1.0 - k;
+        if p.view_roll.abs() < 1e-3 {
+            p.view_roll = 0.0;
+        }
+    }
+
     /* Bring basis into sync with the current radial up. Either via
      * the slerp (transition_timer counting down) or direct
      * parallel-transport (steady state on the planet). SKIPPED while riding:
@@ -2797,6 +2846,7 @@ pub fn rebuild_basis(p: &mut PlayerCtrl) {
     p.basis_ready = true;
     p.yaw = 0.0;
     p.pitch = 0.0;
+    p.view_roll = 0.0; /* a fresh basis is level - drop any jetpack bank */
 }
 
 /// Port of `player_set_body()`. Switch the player's frame of reference
@@ -2965,6 +3015,9 @@ pub fn teleport_ride_to_station(p: &mut PlayerCtrl) {
     p.transition_timer_s = config::lod().roll_slerp_duration_s;
     p.yaw = 0.0;
     p.pitch = 0.0;
+    /* Drop any jetpack view-roll: space is 6DOF (roll lives in the basis
+     * there), and the planet-mode auto-level can't run to unwind it. */
+    p.view_roll = 0.0;
 }
 
 /// Port of `player_view()`.
@@ -3839,6 +3892,31 @@ mod tests {
             "bake preserves look dir (dot = {})",
             dvec3_dot(look_before, look_after)
         );
+    }
+
+    /* -- jetpack view roll ------------------------------------------------- */
+    #[test]
+    fn view_roll_tilts_up_not_look() {
+        let mut p = PlayerCtrl::default();
+        /* Orthonormal basis up=+Y, fwd=+Z, right=+X; yaw/pitch 0 so look=fwd. */
+        p.basis.up = dvec3_make(0.0, 1.0, 0.0);
+        p.basis.fwd = dvec3_make(0.0, 0.0, 1.0);
+        p.basis.right = dvec3_make(1.0, 0.0, 0.0);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+
+        let (look0, up0) = compute_look(&p);
+        assert!(dvec3_dot(up0, dvec3_make(0.0, 1.0, 0.0)) > 1.0 - 1e-9, "no roll: up is +Y");
+
+        /* Roll 90 deg about the look axis. */
+        p.view_roll = std::f32::consts::FRAC_PI_2;
+        let (look1, up1) = compute_look(&p);
+        /* Look direction is UNCHANGED by a view roll (roll is about it). */
+        assert!(dvec3_dot(look0, look1) > 1.0 - 1e-9, "look unchanged by roll");
+        /* Up rotated off +Y, stays perpendicular to look, lands on -X. */
+        assert!(dvec3_dot(up1, dvec3_make(0.0, 1.0, 0.0)).abs() < 1e-6, "up rolled off +Y");
+        assert!(dvec3_dot(up1, look1).abs() < 1e-6, "up stays perpendicular to look");
+        assert!(dvec3_dot(up1, dvec3_make(-1.0, 0.0, 0.0)) > 1.0 - 1e-6, "up -> -X");
     }
 
     /* -- hotbar: key select + wheel cycling with wrap ----------------------- */

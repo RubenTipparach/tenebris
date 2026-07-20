@@ -55,7 +55,9 @@ crafting:        B
 
 # Rocket roll: Q rolls left. Roll RIGHT is folded into the E context key
 # below (E rolls the rocket right WHILE RIDING), so roll_right is left
-# unbound here.
+# unbound here. In JETPACK (fly mode) hold Shift with Q / E to roll the
+# camera view (Shift is the sprint key, doubling as the roll modifier);
+# releasing keeps the bank, leaving fly mode eases it back to level.
 roll_left:       Q
 
 # E is the CONTEXT key. WHILE RIDING a rocket it rolls right. ON FOOT it
