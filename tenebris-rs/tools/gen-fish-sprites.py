@@ -204,17 +204,25 @@ NET = [
 # (The world block is drawn flat-shaded by aquarium_fx; this is the
 # inventory icon only.) Built procedurally - cleaner than hand rows. ---
 def glass_pixels():
-    frame = (150, 196, 212, 175)
-    fill = (176, 214, 226, 140)
-    shine = (232, 245, 249, 200)
+    # Proper item ICON: a framed glass pane on a TRANSPARENT field. The old
+    # art tiled edge-to-edge with a uniform translucent teal and NO
+    # transparent background, so on a camera-facing item-drop billboard it
+    # painted the whole quad teal - the "teal square around the flame" bug.
+    # A 2px clear margin + a near-opaque frame make it read as a pane, while
+    # the interior stays translucent (it IS glass) with a bright glint.
+    frame = (200, 232, 244, 240)   # bright, near-opaque pane edge
+    fill = (176, 214, 226, 115)    # translucent glass interior
+    shine = (245, 252, 255, 235)   # opaque diagonal glint
     px = []
     for y in range(16):
         row = []
         for x in range(16):
-            if x == 0 or y == 0 or x == 15 or y == 15:
-                row.append(frame)
-            elif x - y in (3, 4) or x - y in (-9, -8):
-                row.append(shine)  # two diagonal glints
+            if x < 2 or y < 2 or x > 13 or y > 13:
+                row.append(CLEAR)               # transparent margin frames it
+            elif x == 2 or y == 2 or x == 13 or y == 13:
+                row.append(frame)               # 1px opaque pane frame
+            elif (x - y) in (2, 3) or (x - y) in (-7, -6):
+                row.append(shine)               # two diagonal glints
             else:
                 row.append(fill)
         px.append(row)
@@ -225,8 +233,8 @@ def glass_pixels():
 AQ_PAL = {
     ".": CLEAR,
     "F": (150, 196, 212, 255),  # glass frame
-    "w": (70, 150, 210, 215),   # water
-    "W": (120, 188, 228, 215),  # water highlight
+    "w": (70, 150, 210, 244),   # water (near-opaque so the icon reads solid)
+    "W": (120, 188, 228, 244),  # water highlight
     "o": (232, 150, 60, 255),   # fish body
     "e": (20, 22, 26, 255),     # fish eye
     "g": (120, 170, 90, 255),   # gravel
