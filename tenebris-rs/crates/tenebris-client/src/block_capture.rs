@@ -856,6 +856,30 @@ mod tests {
         );
     }
 
+    /// Regression: "cannot jump while standing on a tree" (captured in-game).
+    /// The player was perched on the leaf canopy (feet depth 74) held up by
+    /// the voxel-containment resolve, but grounded=false because the
+    /// walkable-floor query skips trees - so jump (which needs grounded) did
+    /// nothing. After the fix (a tree voxel directly under the feet grounds the
+    /// player) the replay must end grounded ON the canopy. Heavy (real subdiv-7
+    /// gen), #[ignore]d for CI; green here is NOT proof - only an in-game jump
+    /// counts.
+    #[test]
+    #[ignore]
+    fn tree_canopy_grounds_so_jump_works() {
+        crate::input::init();
+        const FIXTURE: &str = include_str!("block_capture_testdata/tree_canopy_jump.tenecap");
+        let cap = parse(FIXTURE).expect("parse fixture");
+        let (w, mut p) = rebuild(&cap).expect("rebuild");
+        for _ in 0..180 {
+            crate::player_ctrl::update(&mut p, Some(&w), 1.0 / 60.0);
+        }
+        assert!(
+            p.grounded,
+            "canopy jump NOT fixed: player still ungrounded on the tree top - jump would do nothing"
+        );
+    }
+
     #[test]
     fn bad_header_is_rejected() {
         assert!(parse("not a capture\nfoo 1\n").is_err());

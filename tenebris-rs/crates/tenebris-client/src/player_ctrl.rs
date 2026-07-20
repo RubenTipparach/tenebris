@@ -2608,12 +2608,27 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * support (you don't stand on a trunk voxel), matching the `supported`
          * probe used by the tree cases above. */
         const FEET_SUPPORT_PROBE_M: f64 = 0.15;
-        if p.grounded {
+        {
             let fd = w.radius_to_depth(r - FEET_SUPPORT_PROBE_M);
             if fd >= 0 && fd < WORLD_MAX_DEPTH {
                 let below = w.get(cur_tile, fd);
-                let supported = blocks::is_solid(below) && !is_tree_raw(below.raw());
-                if !supported {
+                /* Trees COUNT as support now: the player stands on tree tops /
+                 * the leaf canopy (design choice). A solid voxel (incl. a tree)
+                 * directly under the feet holds them up. This only ever grabs
+                 * the TOP of a solid run - the SIDE of a trunk has solid above
+                 * it, so the feet cell there is not passable (see the SET arm
+                 * below), and the trunk's horizontal wall keeps the player off
+                 * its flank. */
+                let supported = blocks::is_solid(below);
+                let below_tree = supported && is_tree_raw(below.raw());
+                let feet_solid = {
+                    let feet_d = w.radius_to_depth(r);
+                    feet_d >= 0 && feet_d < WORLD_MAX_DEPTH && blocks::is_solid(w.get(cur_tile, feet_d))
+                };
+                if p.grounded && !supported {
+                    /* Anti-float: you cannot be grounded standing in air (dig
+                     * the block out from under yourself and hover). Only ever
+                     * CLEARS grounded, so it can't cause a fall-through. */
                     p.grounded = false;
                     let logged = S_FLOAT_LOGGED.with(|c| c.get());
                     if logged < 8 {
@@ -2626,6 +2641,26 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                             below, cur_tile, r, gr, fd, logged + 1
                         );
                     }
+                } else if !p.grounded && below_tree && !feet_solid && vy <= 0.0 {
+                    /* Resting on TOP of a TREE (canopy / tree-top): ground the
+                     * player so gravity stops holding them a hair above the
+                     * surface and JUMP works. This is the "cannot jump while
+                     * standing on a tree" fix - the canopy holds the player via
+                     * the voxel-containment resolve above, but the walkable-floor
+                     * query SKIPS trees, so nothing grounded them.
+                     *
+                     * Scoped to TREES on purpose: normal solids (dirt/stone) are
+                     * already grounded by the walkable-floor snap at its tighter
+                     * 0.05 m tolerance, so grounding them here at the 0.15 m probe
+                     * would settle them a hair high and shift every pinned landing
+                     * trajectory. Only trees fall through the snap, so only trees
+                     * need this. `feet_solid` excludes the embedded case (that's
+                     * the containment resolve's job); vy<=0 so it never grabs a
+                     * jump's ascent. */
+                    p.grounded = !eyes_in_water;
+                    vy = 0.0;
+                    let up = p.basis.up;
+                    p.velocity = dvec3_sub(p.velocity, dvec3_scale(up, dvec3_dot(p.velocity, up)));
                 }
             }
         }
