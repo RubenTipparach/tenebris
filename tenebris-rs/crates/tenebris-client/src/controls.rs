@@ -74,7 +74,9 @@ pub enum Action {
     ToggleProfiler,
     /// Toggle the pixel-art UI demo panel.
     PixelUiDemo,
-    /// Print a block snapshot of the aimed column to the console (debug).
+    /// Block capture (debug): print the feet-column snapshot to the console
+    /// AND write a replayable `.tenecap` file of the collision neighbourhood.
+    /// Also fires on Shift+P (fixed chord). See `block_capture`.
     BlockSnapshot,
     /// Toggle the water-flow debug overlay (debug).
     FlowDebug,
@@ -113,7 +115,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Debug", "Players panel", Action::PlayersPanel),
     ("Debug", "Profiler", Action::ToggleProfiler),
     ("Debug", "Pixel UI demo", Action::PixelUiDemo),
-    ("Debug", "Block snapshot", Action::BlockSnapshot),
+    ("Debug", "Block capture (Shift+P)", Action::BlockSnapshot),
     ("Debug", "Flow debug", Action::FlowDebug),
     ("Debug", "Hide terrain", Action::ToggleTerrain),
     ("Debug", "Hide water", Action::ToggleWater),

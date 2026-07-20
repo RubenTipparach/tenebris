@@ -31,7 +31,9 @@
 #   players_panel   - toggle the multiplayer players roster
 #   profiler        - toggle the frame profiler overlay
 #   pixel_ui_demo   - toggle the pixel-art UI demo panel
-#   block_snapshot  - dump the aimed column to the console (debug)
+#   block_snapshot  - block capture: console snapshot + write a replayable
+#                     .tenecap file of the collision neighbourhood (debug).
+#                     Also fires on Shift+P. TENEBRIS_CAPTURE_DIR sets the dir.
 #   flow_debug      - toggle the water-flow debug overlay (debug)
 #   hotbar_1 .. hotbar_10 - select a hotbar slot
 

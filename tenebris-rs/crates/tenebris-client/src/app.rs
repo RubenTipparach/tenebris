@@ -41,6 +41,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::animals;
+use crate::block_capture;
 use crate::client_kv;
 use crate::clouds;
 use crate::weather_fx;
@@ -5148,119 +5149,16 @@ fn verify_inventory_saved(world: &str, inv: &inventory::Inventory, bag: &crate::
 /* F4 block snapshot (console diagnostic)                                  */
 /* --------------------------------------------------------------------- */
 
+/* block_name / block_glyph moved to core `blocks::name` / `blocks::glyph`
+ * (single source of truth so the console snapshot and the .tenecap capture
+ * file's ASCII layout can't drift). These thin wrappers keep the local call
+ * sites unchanged. */
 fn block_name(b: Block) -> &'static str {
-    match b {
-        Block::Air => "AIR",
-        Block::Water => "WATER",
-        Block::Sand => "SAND",
-        Block::Dirt => "DIRT",
-        Block::Grass => "GRASS",
-        Block::Stone => "STONE",
-        Block::Ice => "ICE",
-        Block::Snow => "SNOW",
-        Block::DirtGrass => "DIRT_GRASS",
-        Block::DirtSnow => "DIRT_SNOW",
-        Block::Torch => "TORCH",
-        Block::Moon => "MOON",
-        Block::SeqGrass => "SEQ_GRASS",
-        Block::SeqDirt => "SEQ_DIRT",
-        Block::SeqDirtGrass => "SEQ_DIRT_GRASS",
-        Block::SeqSand => "SEQ_SAND",
-        Block::SeqSnow => "SEQ_SNOW",
-        Block::SeqDirtSnow => "SEQ_DIRT_SNOW",
-        Block::CragRock => "CRAG_ROCK",
-        Block::FrostIce => "FROST_ICE",
-        Block::AsteroidRock => "ASTEROID_ROCK",
-        Block::Wood => "WOOD",
-        Block::Leaves => "LEAVES",
-        Block::Bedrock => "BEDROCK",
-        Block::SeqLeaves => "SEQ_LEAVES",
-        Block::CoalOre => "COAL_ORE",
-        Block::CopperOre => "COPPER_ORE",
-        Block::TinOre => "TIN_ORE",
-        Block::IronOre => "IRON_ORE",
-        Block::LaunchPad => "LAUNCH_PAD",
-        Block::Furnace => "FURNACE",
-        Block::ElectricFurnace => "ELECTRIC_FURNACE",
-        Block::Printer3D => "3D_PRINTER",
-        Block::Computer => "COMPUTER",
-        Block::ElectronicsWorkbench => "ELECTRONICS_WORKBENCH",
-        Block::HydroGenerator => "HYDRO_GENERATOR",
-        Block::SteamEngine => "STEAM_ENGINE",
-        Block::StorageChest => "STORAGE_CHEST",
-        Block::LaunchTower => "LAUNCH_TOWER",
-        Block::Cable => "CABLE",
-        Block::CopperPipe => "COPPER_PIPE",
-        Block::Farmland => "FARMLAND",
-        Block::JungleGrass => "JUNGLE_GRASS",
-        Block::DryGrass => "DRY_GRASS",
-        Block::Bonfire => "BONFIRE",
-        Block::StationHull => "STATION_HULL",
-        Block::StationFloor => "STATION_FLOOR",
-        Block::CasinoCarpet => "CASINO_CARPET",
-        Block::CasinoWall => "CASINO_WALL",
-        Block::NeonTrim => "NEON_TRIM",
-        Block::CasinoSign => "CASINO_SIGN",
-        Block::SlotMachine => "SLOT_MACHINE",
-        Block::CardTable => "CARD_TABLE",
-        Block::SeqMycelium => "SEQ_MYCELIUM",
-        Block::SeqShroomCap => "SEQ_SHROOM_CAP",
-        Block::Glass => "GLASS",
-        Block::Aquarium => "AQUARIUM",
-    }
+    tenebris_core::blocks::name(b)
 }
 
-/// One-letter glyph per block for the ASCII column dump (devtools
-/// console only - not player-facing text).
 fn block_glyph(b: Block) -> char {
-    match b {
-        Block::Air => 'a',
-        Block::Water => 'w',
-        Block::Sand | Block::SeqSand => 'S',
-        Block::Dirt | Block::SeqDirt => 'd',
-        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass => 'g',
-        Block::SeqMycelium => 'm',
-        Block::SeqShroomCap => 'M',
-        Block::Stone | Block::CragRock | Block::AsteroidRock => '#',
-        Block::Ice | Block::FrostIce => 'i',
-        Block::Snow | Block::SeqSnow => 's',
-        Block::DirtGrass | Block::DirtSnow | Block::SeqDirtGrass | Block::SeqDirtSnow => 'D',
-        Block::Farmland => 'f',
-        Block::Torch => 'T',
-        Block::Moon => 'm',
-        Block::Wood => 'W',
-        Block::Leaves | Block::SeqLeaves => 'L',
-        Block::Bedrock => 'b',
-        Block::CoalOre => 'c',
-        Block::CopperOre => 'o',
-        Block::TinOre => 't',
-        Block::IronOre => 'r',
-        Block::LaunchPad => 'P',
-        Block::Furnace => 'F',
-        /* Ported tech blocks share one glyph in the devtools dump. */
-        Block::ElectricFurnace
-        | Block::Printer3D
-        | Block::Computer
-        | Block::ElectronicsWorkbench
-        | Block::HydroGenerator
-        | Block::SteamEngine
-        | Block::StorageChest
-        | Block::LaunchTower
-        | Block::Cable
-        | Block::CopperPipe => 'E',
-        Block::Bonfire => 'B',
-        /* Station / casino set shares one glyph in the devtools dump. */
-        Block::StationHull
-        | Block::StationFloor
-        | Block::CasinoCarpet
-        | Block::CasinoWall
-        | Block::NeonTrim
-        | Block::CasinoSign
-        | Block::SlotMachine
-        | Block::CardTable => 'C',
-        Block::Glass => 'G',
-        Block::Aquarium => 'Q',
-    }
+    tenebris_core::blocks::glyph(b)
 }
 
 /// Glyph for water-simulator state in the snapshot grid: O = ocean /
@@ -5282,6 +5180,24 @@ fn water_glyph(w: &World, tile: i32, depth: i32) -> char {
 
 /// F4-bound: dump the player's tile + 6 hex neighbours, 9 depths each,
 /// to stdout. Same diagnostic shape as the Tenebris-JS tool.
+/// Block capture: print the human-readable console snapshot AND write a
+/// replayable `.tenecap` file of the collision neighbourhood (feet tile +
+/// neighbour columns + pose). The file rebuilds the exact world+pose in a
+/// headless test - the way an in-game "stuck floating in a cave" / tree
+/// fall-through repro becomes a regression fixture (CLAUDE.md standing bug).
+/// Wired to the BlockSnapshot action (default F4) and Shift+P.
+fn capture_block_scenario(app: &App) {
+    /* Console visual first (its own short-lived borrows). */
+    print_block_snapshot(app);
+    let p = app.player.borrow();
+    let w_rc = world_for_body(app, p.body.as_ref()).unwrap_or_else(|| app.world.clone());
+    let w = w_rc.borrow();
+    match block_capture::write_file(&w, &p) {
+        Ok(path) => println!("[capture] wrote {}", path.display()),
+        Err(e) => println!("[capture] not written: {e}"),
+    }
+}
+
 fn print_block_snapshot(app: &App) {
     let p = app.player.borrow();
     let w_rc = world_for_body(app, p.body.as_ref()).unwrap_or_else(|| app.world.clone());
@@ -8230,8 +8146,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         rocket_cam::toggle_frame();
         return;
     }
-    /* Respawn rocket (default P). */
+    /* Respawn rocket (default P). Shift+P is the block-capture chord (handled
+     * above), so a held shift must not also fire respawn. */
     if e._type == sapp::EventType::KeyDown
+        && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
         && crate::controls::action_for_key(e.key_code)
             == Some(crate::controls::Action::RespawnRocket)
         && crate::rocket_ride::can_respawn()
@@ -8579,8 +8497,19 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::BlockSnapshot)
     {
-        /* Block snapshot to the console. Not gated on the debug master. */
-        print_block_snapshot(app);
+        /* Block capture. Not gated on the debug master. */
+        capture_block_scenario(app);
+        return;
+    }
+    /* Shift+P: fixed convenience chord for the block capture (JS/C screenshot
+     * muscle memory), alongside the rebindable BlockSnapshot action above.
+     * Both fire the same one capture path. Checked BEFORE RespawnRocket (also
+     * on P) so the shift chord captures instead of respawning the rocket. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::P
+        && (e.modifiers & sapp::MODIFIER_SHIFT) != 0
+    {
+        capture_block_scenario(app);
         return;
     }
     if e._type == sapp::EventType::KeyDown

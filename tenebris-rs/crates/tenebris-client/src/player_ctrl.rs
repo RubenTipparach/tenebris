@@ -2680,7 +2680,24 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
                     let f = w.walkable_floor_near(tile, r_now, 0.0);
                     /* Crossed this frame: at/above it last frame, within a step
                      * of it now (land or small step-up, never a teleport). */
-                    if f > -1e8 && r_was + 0.05 >= f && r_now <= f + sh && f > best {
+                    /* ...and never LIFT the player onto a neighbour ledge that
+                     * sits above their OWN tile's reachable floor. When cur_tile
+                     * has a valid floor gr below the feet - a cave whose edge
+                     * neighbours have solid ledges at the player's exact height -
+                     * the player must fall to gr, not latch onto the higher
+                     * neighbour ledge and hang there. That neighbour-ledge latch
+                     * IS the "stuck floating in a cave, gravity never pulls me
+                     * down" bug (reproduced from a .tenecap capture). The tree
+                     * fall-through this catch exists for is the opposite shape -
+                     * gr is the unreachable canopy top ABOVE the feet, so the
+                     * real ground f is <= gr and stays eligible. */
+                    let above_own_floor = gr > -1e8 && f > gr + sh;
+                    if f > -1e8
+                        && r_was + 0.05 >= f
+                        && r_now <= f + sh
+                        && f > best
+                        && !above_own_floor
+                    {
                         best = f;
                     }
                 }
