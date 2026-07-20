@@ -156,6 +156,21 @@ pub fn recipes_for_station(station: Option<ItemId>) -> Vec<Recipe> {
         .collect()
 }
 
+/// Smelt time (seconds) the placed furnace takes to produce `output_item`,
+/// read from the matching `station: furnace` recipe's `time:` field in
+/// recipes.yaml. Returns `None` when no furnace recipe makes it (the caller
+/// falls back to a compiled-in default). This is what makes the smelt / cook
+/// time designer-tunable per item, not a single hard-coded constant.
+pub fn smelt_time_s(output_item: ItemId) -> Option<f32> {
+    let furnace = items::from_block(crate::blocks::Block::Furnace);
+    S_RECIPES
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.station == Some(furnace) && r.output.item == output_item)
+        .map(|r| r.time_s)
+}
+
 /// Load + parse the recipe table from disk (native). Returns an empty
 /// table if the file is missing, mirroring the `config::load_*` pattern.
 pub fn load_recipes(path: &str) -> Vec<Recipe> {

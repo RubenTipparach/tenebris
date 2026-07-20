@@ -586,7 +586,11 @@ pub fn electric_furnace_tick(e: &mut ElectricFurnaceState, dt: f32) -> bool {
     if !out_ok {
         return false;
     }
-    e.progress += dt / ELEC_SMELT_TIME_S;
+    /* Same per-item recipe time as the coal furnace, kept 5x faster (the
+     * ELEC/COAL ratio) so both stay configurable from one recipes.yaml time. */
+    let base_s = crate::crafting::smelt_time_s(out_item).unwrap_or(FURNACE_SMELT_TIME_S);
+    let elec_s = (base_s * ELEC_SMELT_TIME_S / FURNACE_SMELT_TIME_S).max(0.1);
+    e.progress += dt / elec_s;
     if e.progress >= 1.0 {
         e.progress = 0.0;
         e.input.count -= 1;
@@ -637,7 +641,11 @@ pub fn furnace_tick(f: &mut FurnaceState, dt: f32) -> bool {
             return false;
         }
     }
-    f.progress += dt / FURNACE_SMELT_TIME_S;
+    /* Per-item smelt time from the recipe's `time:` (recipes.yaml), so iron
+     * (10 s), cooked fish, glass, etc. are each tunable; falls back to the
+     * compiled-in default for an item with no furnace recipe. */
+    let smelt_s = crate::crafting::smelt_time_s(out_item).unwrap_or(FURNACE_SMELT_TIME_S).max(0.1);
+    f.progress += dt / smelt_s;
     if f.progress >= 1.0 {
         f.progress = 0.0;
         f.input.count -= 1;

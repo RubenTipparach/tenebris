@@ -6840,6 +6840,12 @@ fn frame_inner(app: &mut App) {
         app.water_accum_s += dt;
         let sp = menu::state() == GameState::InGameSp;
         if sp && app.water_accum_s >= period_s {
+            /* Machines advance by the REAL time elapsed since the last tick
+             * (the accumulated period), NOT the single-frame `dt` - passing dt
+             * here ran the furnace at dt/period_s of real speed, so a 10 s
+             * smelt took 30 s+ ("way too extremely long"). Capture before the
+             * reset below. */
+            let machine_dt = app.water_accum_s;
             app.water_accum_s = 0.0;
             /* Water steps synchronously on the main (GL) thread, so a
              * heavy step shows up directly as a frame spike. Profile it
@@ -6866,7 +6872,7 @@ fn frame_inner(app: &mut App) {
                  * completes (a durable output change). In MP the SERVER
                  * ticks machines and broadcasts progress (BentityDiff);
                  * ticking locally too would fight those updates. */
-                let machines_changed = if mp_active { false } else { w.tick_machines(dt) };
+                let machines_changed = if mp_active { false } else { w.tick_machines(machine_dt) };
                 if machines_changed && !sp_world.is_empty() {
                     persistence::save_block_entities(&sp_world, w.body.id as u32, &w.block_entities);
                 }
