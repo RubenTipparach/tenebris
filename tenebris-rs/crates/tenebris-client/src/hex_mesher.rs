@@ -625,11 +625,22 @@ fn emit_cap(
         }
     }
 
-    let center_torch = if bake_lighting {
+    let mut center_torch = if bake_lighting {
         torch_light_at(dvec3_to_vec3(center_pos))
     } else {
         0.0
     };
+    /* Water is only torch-lit where the SKY reaches it. A torch must not
+     * light a sky-occluded (roofed / cave) water cap out of the near-black
+     * night sea into a lone teal patch - the "the torch spawns a small
+     * water quad in front of it" bug: the sea is invisible-dark under a
+     * roof, and the torch's bake was the ONLY thing lifting a sub-6 m disc
+     * of it into view. Scaling by sky-exposure keeps the warm torch circle
+     * on OPEN water (sky ~1) while roofed water (sky ~0) stays dark like the
+     * rest of the unlit sea. Non-water faces are unaffected. */
+    if block == Block::Water {
+        center_torch *= center_sky;
+    }
     push_vertex(out, center_pos, normal, uc, vc, center_sky, center_torch, wet);
 
     for k in 0..n {
@@ -654,11 +665,14 @@ fn emit_cap(
             );
         }
 
-        let corner_torch = if bake_lighting {
+        let mut corner_torch = if bake_lighting {
             torch_light_at(dvec3_to_vec3(corner))
         } else {
             0.0
         };
+        if block == Block::Water {
+            corner_torch *= corner_sky; /* see the center-vertex note above */
+        }
         push_vertex(out, corner, normal, u, v, corner_sky, corner_torch, wet);
     }
 
@@ -1147,10 +1161,21 @@ fn emit_side_quad(
     }
     /* Torch contribution is the per-vertex proximity sum on every
      * path - additive layer, no BFS, no occlusion. */
-    let t_ia = torch_light_at(dvec3_to_vec3(inner_a));
-    let t_ib = torch_light_at(dvec3_to_vec3(inner_b));
-    let t_oa = torch_light_at(dvec3_to_vec3(outer_a));
-    let t_ob = torch_light_at(dvec3_to_vec3(outer_b));
+    let mut t_ia = torch_light_at(dvec3_to_vec3(inner_a));
+    let mut t_ib = torch_light_at(dvec3_to_vec3(inner_b));
+    let mut t_oa = torch_light_at(dvec3_to_vec3(outer_a));
+    let mut t_ob = torch_light_at(dvec3_to_vec3(outer_b));
+    /* Same sky-gate as the water caps (see emit_cap): a torch must not
+     * light a sky-occluded (roofed / cave) water WALL out of the dark into
+     * a teal panel. Open water keeps its torch glint; roofed water stays
+     * dark. Per-corner so a partly-covered wall grades correctly. Non-water
+     * side faces (terrain walls) are unaffected. */
+    if block == Block::Water {
+        t_ia *= sky_bot_a;
+        t_ib *= sky_bot_b;
+        t_oa *= sky_top_a;
+        t_ob *= sky_top_b;
+    }
 
     push_vertex(out, inner_a, normal, u0, 0.0, sky_bot_a, t_ia, wet);
     push_vertex(out, inner_b, normal, u1, 0.0, sky_bot_b, t_ib, wet);
