@@ -932,18 +932,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
 /// rock" instead of naming what it yields (the leafy mound gives sticks, but
 /// "pick up stick" over a mossy rock reads like a bug). ASCII, no underscores
 /// (CLAUDE.md in-game-text rule).
-fn scatter_pickup_named(w: &World, tile_idx: i32) -> Option<(items::ItemId, &'static str)> {
+fn scatter_pickup_named(w: &World, tile_idx: i32) -> Option<(&'static [items::ItemId], &'static str)> {
     if crate::hex_mesher::tile_has_rock(w, tile_idx) {
-        return Some((items::FLINT, "flint"));
+        return Some((&[items::FLINT], "flint"));
     }
     if crate::hex_mesher::tile_has_bush(w, tile_idx) {
-        return Some((items::STICK, "mossy rock"));
+        /* The mossy rock yields BOTH its moss and the rock underneath. */
+        return Some((&[items::MOSS, items::ROCK], "mossy rock"));
     }
     None
 }
 
-fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
-    scatter_pickup_named(w, tile_idx).map(|(item, _)| item)
+fn scatter_pickup_items(w: &World, tile_idx: i32) -> Option<&'static [items::ItemId]> {
+    scatter_pickup_named(w, tile_idx).map(|(items, _)| items)
 }
 
 /// What the E-key pickup would gather from the tile under the reticle, if
@@ -955,7 +956,7 @@ pub fn pickup_target(
     s: &InteractState,
     w: &World,
     p: &PlayerCtrl,
-) -> Option<(items::ItemId, &'static str)> {
+) -> Option<(&'static [items::ItemId], &'static str)> {
     if !p.survival_mode || !s.has_target || s.is_torch_target {
         return None;
     }
@@ -974,14 +975,16 @@ pub fn pickup_target(
 /// underfoot, so foraging those on E would swallow the inventory binding.
 pub fn try_pickup_scatter(s: &InteractState, w: &mut World, p: &PlayerCtrl) -> bool {
     match pickup_target(s, w, p) {
-        Some((item, _)) => {
+        Some((items_out, _)) => {
             /* Spawn in the AIR cell above the surface, not inside the solid
              * ground block the ray hit: the drop's magnet pulls from the
              * player, and a pickup buried half a block under the floor starts
              * further away than it looks. Mining can spawn at hit_depth
              * because it has just turned that cell to air; foraging has not. */
             let air_depth = (s.hit_depth + 1).min(WORLD_MAX_DEPTH - 1);
-            crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
+            for &item in items_out {
+                crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
+            }
             /* CONSUME the object: one pebble = one flint, ever. The taken
              * bit hides it from the prompt/pickup immediately and the
              * remesh (take_scatter dirties the tile) removes the visual.
@@ -1009,8 +1012,10 @@ fn forage_surface(s: &InteractState, w: &mut World) -> bool {
      * same-frame save) - one pebble is one flint, not an infinite well.
      * The bare-surface forage below stays unlimited by design (grass
      * fields, stone faces). */
-    if let Some(item) = scatter_pickup_item(w, s.hit_tile) {
-        crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+    if let Some(items_out) = scatter_pickup_items(w, s.hit_tile) {
+        for &item in items_out {
+            crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+        }
         w.take_scatter(s.hit_tile);
         sp_save_scatter_after_change(w);
         return true;

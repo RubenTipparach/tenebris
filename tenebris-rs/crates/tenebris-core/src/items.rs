@@ -161,6 +161,13 @@ pub const STONE_SHOVEL: ItemId = ITEM_BASE + 58; // 158
 pub const IRON_AXE: ItemId = ITEM_BASE + 59; // 159
 pub const IRON_SHOVEL: ItemId = ITEM_BASE + 60; // 160
 
+/// Moss + rock - foraged as a pair from the "mossy rock" surface scatter
+/// (a mossy stone sitting on grass). Moss is a soft green resource; rock is
+/// the raw stone chip. No crafting use YET (placeholder resources) - both
+/// just stack in the bag for now.
+pub const MOSS: ItemId = ITEM_BASE + 61; // 161
+pub const ROCK: ItemId = ITEM_BASE + 62; // 162
+
 /// The six live-fish items, ordered to match `fauna::AnimalKind`'s water
 /// species. `is_fish_item` gates the raw-eat / aquarium-drop paths.
 pub const FISH_ITEMS: [ItemId; 6] =
@@ -265,6 +272,8 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: COOKED_FISH, name: "cooked-fish", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: FLINT, name: "flint", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: CHARCOAL, name: "charcoal", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: MOSS, name: "moss", kind: ItemKind::Resource, stack: 64 },
+    ItemDef { id: ROCK, name: "rock", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: APPLE, name: "apple", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: ORANGE, name: "orange", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: WATERMELON, name: "watermelon", kind: ItemKind::Resource, stack: 64 },
