@@ -505,6 +505,26 @@ fn draw_distant_shafts(
                 continue;
             }
 
+            /* Rain INTENSITY fade. A cell near the on/off threshold draws FAINT
+             * rain, not full-alpha. The distant shafts/sheets gated on the
+             * BINARY `raining` flag at full opacity, so a cell POPPED from
+             * opaque to gone the frame its cover crossed rain_cover_min as the
+             * clouds drifted - the "distant rain blinking out in the distance"
+             * artifact. The near shower already fades by intensity; this brings
+             * the distant curtains in line. Keyed to the SAME rain_cover_min the
+             * flag flips at, so intensity reaches 0 exactly where the cell stops
+             * raining and the transition is a fade, not a pop. A forced storm
+             * rains at full intensity everywhere (no marginal cells). */
+            let intensity = if forced.is_some() {
+                1.0f32
+            } else {
+                ((cell.cover - wcfg.rain_cover_min) / (1.0 - wcfg.rain_cover_min).max(1e-3))
+                    .clamp(0.0, 1.0)
+            };
+            if intensity <= 0.0 {
+                continue;
+            }
+
             /* Column geometry: from the cloud base down to the surface top. */
             let base_alt = land_alt(w, dir_w);
             let base_r = planet_r + base_alt;
@@ -525,7 +545,11 @@ fn draw_distant_shafts(
              * Opacity ramps rain_alpha_far -> rain_alpha_near (weather.yaml). */
             let d = d2.sqrt();
             let fade = (1.0 - (d / SHAFT_RANGE_M)).clamp(0.0, 1.0) as f32;
-            let alpha = wcfg.rain_alpha_far + (wcfg.rain_alpha_near - wcfg.rain_alpha_far) * fade;
+            /* Distance fade times the rain-intensity fade above: both the near
+             * curtains and the far impostor sheets ride this alpha, so a
+             * marginal cell is faint everywhere instead of popping. */
+            let alpha = (wcfg.rain_alpha_far + (wcfg.rain_alpha_near - wcfg.rain_alpha_far) * fade)
+                * intensity;
 
             let up = dir_w;
             let mut right = dvec3_sub(right_ref, dvec3_scale(up, dvec3_dot(right_ref, up)));
