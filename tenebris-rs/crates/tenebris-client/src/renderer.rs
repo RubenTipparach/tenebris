@@ -2297,6 +2297,30 @@ pub fn entity_sun_brightness(world_pos: DVec3) -> f32 {
     })
 }
 
+/// Gather radius for entity torch light, as a multiple of `LIGHT_RANGE_M`:
+/// a bonfire publishes 2.0, so nothing past this can reach the entity.
+const ENTITY_LIGHT_REACH_SCALE: f32 = 2.0;
+
+/// The FULL light on an sgl entity: the day/night SUN factor
+/// ([`entity_sun_brightness`]) PLUS the nearby torch / bonfire contribution,
+/// through the same falloff and the same `lighting.yaml torch_intensity` the
+/// terrain uses. This is the SINGLE lighting path for every ground entity -
+/// animals, crops, fruit trees, dropped items - so an entity and the ground
+/// it stands on warm up together under a torch (the "why is the apple tree
+/// dark next to a lit ground" divergence: crops used to sample sun ONLY).
+///
+/// `world_pos` is absolute; `body_center` is the body centre - torch lights
+/// are stored BODY-LOCAL, so both are needed.
+pub fn entity_lit(world_pos: DVec3, body_center: DVec3) -> f32 {
+    let sun = entity_sun_brightness(world_pos);
+    let local = dvec3_to_vec3(dvec3_sub(world_pos, body_center));
+    let lights =
+        crate::torch::lights_near(local, crate::torch::LIGHT_RANGE_M * ENTITY_LIGHT_REACH_SCALE);
+    let torch = crate::hex_mesher::torch_light_from(&lights, local);
+    let l = tenebris_core::config::lighting();
+    (sun + torch * l.torch_intensity).min(1.5)
+}
+
 /// Pure day/night + umbra sun factor for an entity at body-relative position
 /// `rel` (entity_world - body_center), on the terminator band + ambient floor
 /// from lighting.yaml (`lo`/`hi`/`floor`). Split out of

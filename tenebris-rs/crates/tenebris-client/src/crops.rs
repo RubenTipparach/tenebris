@@ -37,9 +37,34 @@ const REACH_M: f32 = 8.0;
 /// Seconds of holding the mine button to break one plant. Snappy foraging
 /// per the design ("1 second per thing"); mass-harvest tooling comes later.
 pub const CROP_BREAK_S: f32 = 1.0;
-/// Bounding-sphere radius + centre height for the harvest raycast.
+/// Bounding-sphere radius + centre height for the harvest raycast (small
+/// crops - berry / wheat / carrot / melon / kiwi).
 const HIT_RADIUS_M: f32 = 0.5;
 const HIT_CENTRE_UP_M: f64 = 0.35;
+
+/// Full-size fruit tree (apple / orange) dimensions at growth `g`:
+/// (trunk height, crown radius param), metres. SHARED by the renderer
+/// (`draw_crop`) and the harvest-pick bounds (`hit_bounds`) so the pick
+/// sphere can never drift from the drawn tree - the "can't mine the apple
+/// tree" bug was a 0.5 m pick at 0.35 m that never reached the ~2 m canopy.
+fn fruit_tree_dims(g: f32) -> (f32, f32) {
+    (0.22 + 1.00 * g, 0.16 + 0.26 * g)
+}
+
+/// Harvest-pick bounding sphere (radius, centre height above the base) for a
+/// crop. Small crops use the compact default; the full-size fruit trees get a
+/// sphere sized to their whole canopy so aiming at the leaves harvests them.
+fn hit_bounds(kind: CropKind, growth: f32) -> (f32, f64) {
+    match kind {
+        CropKind::Apple | CropKind::Orange => {
+            let (trunk_h, cr) = fruit_tree_dims(growth.clamp(0.05, 1.0));
+            let total_h = trunk_h + cr * 1.85; /* base -> top of crown */
+            let radius = total_h * 0.5 + cr; /* reach the top + canopy width */
+            (radius, (total_h * 0.5) as f64)
+        }
+        _ => (HIT_RADIUS_M, HIT_CENTRE_UP_M),
+    }
+}
 
 /// What a plant/harvest attempt did, so the caller can update the bag,
 /// persist the change, and (in MP) tell the server. The payload is the
@@ -297,14 +322,15 @@ fn raycast_list(list: &[Crop], center: DVec3, eye: Vec3, dir: Vec3, max_dist: f3
     let mut best_t = max_dist;
     for (i, crop) in list.iter().enumerate() {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
-        let cen = dvec3_add(crop.pos, dvec3_scale(up, HIT_CENTRE_UP_M));
+        let (radius, centre_up) = hit_bounds(crop.kind, crop.growth);
+        let cen = dvec3_add(crop.pos, dvec3_scale(up, centre_up));
         let oc = Vec3 {
             x: eye.x - cen.x as f32,
             y: eye.y - cen.y as f32,
             z: eye.z - cen.z as f32,
         };
         let b = oc.x * dir.x + oc.y * dir.y + oc.z * dir.z;
-        let cc = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - HIT_RADIUS_M * HIT_RADIUS_M;
+        let cc = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - radius * radius;
         let disc = b * b - cc;
         if disc < 0.0 {
             continue;
@@ -788,10 +814,10 @@ fn draw_crop(pos: DVec3, up: DVec3, growth: f32, kind: CropKind, lit: f32) {
             // fruit studding the canopy surface when ripe.
             let leaf_mat = if kind == CropKind::Apple { MAT_APPLE_LEAF } else { MAT_ORANGE_LEAF };
             let fruit_mat = if kind == CropKind::Apple { MAT_APPLE_FRUIT } else { MAT_ORANGE_FRUIT };
-            let trunk_h = 0.22 + 1.00 * g;
+            /* trunk + crown dims shared with the harvest-pick bounds. */
+            let (trunk_h, cr) = fruit_tree_dims(g);
             let trunk_w = 0.05 + 0.03 * g;
             draw_box(0.0, trunk_h * 0.5, 0.0, trunk_w, trunk_h * 0.5, trunk_w, MAT_BARK, lit);
-            let cr = 0.16 + 0.26 * g;
             draw_box(0.0, trunk_h + cr * 0.15, 0.0, cr * 0.9, cr * 0.5, cr * 0.9, leaf_mat, lit);
             draw_box(0.0, trunk_h + cr * 0.7, 0.0, cr, cr * 0.85, cr, leaf_mat, lit);
             draw_box(0.0, trunk_h + cr * 1.35, 0.0, cr * 0.68, cr * 0.5, cr * 0.68, leaf_mat, lit);
@@ -862,7 +888,9 @@ pub fn draw(view: Mat4, proj: Mat4) {
     );
     for crop in &list {
         let up = dvec3_normalize(dvec3_sub(crop.pos, center));
-        let lit = renderer::entity_sun_brightness(crop.pos);
+        /* Sun + nearby torch/bonfire light, the SAME path animals use, so a
+         * fruit tree lit by a torch warms up like the ground beside it. */
+        let lit = renderer::entity_lit(crop.pos, center);
         draw_crop(crop.pos, up, crop.growth, crop.kind, lit);
     }
     sgl::disable_texture();

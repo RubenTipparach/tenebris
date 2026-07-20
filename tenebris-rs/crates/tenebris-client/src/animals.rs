@@ -1246,34 +1246,12 @@ fn draw_kind(
 /// Draw every animal + lingering corpse. Called in the offscreen opaque
 /// pass next to torches. `time_s` drives the idle clip (the fauna sim
 /// only advances `anim_phase` while moving).
-/// The brightest per-source reach any light can have, as a multiple of
-/// `LIGHT_RANGE_M`. A torch is 1.0; a bonfire publishes 2.0. Used as the
-/// gather radius: past this nothing can reach the entity, so it bounds how
-/// far an animal ever has to look.
-const MAX_LIGHT_REACH_SCALE: f32 = 2.0;
-
-/// Every light that can reach `body_local` - a few blocks around the
-/// entity, never a world-wide scan. Backed by the torch spatial grid, so
-/// the cost tracks LOCAL light density rather than the planet's total.
-fn lights_reaching(body_local: Vec3) -> Vec<crate::torch::Torch> {
-    crate::torch::lights_near(body_local, crate::torch::LIGHT_RANGE_M * MAX_LIGHT_REACH_SCALE)
-}
-
-/// Entity light level: day/night sun brightness lifted by nearby torches
-/// and bonfires, through the same falloff and the same
-/// `lighting.yaml torch_intensity` knob as the terrain - so an animal and
-/// the ground it stands on warm up together.
-///
-/// `pos` is absolute; `center` is the body's centre. Both are needed
-/// because lights are stored BODY-LOCAL (see `torch::Torch::position`) -
-/// comparing an absolute entity position against them only happens to line
-/// up on a body sitting at the world origin.
+/// Entity light level: sun day/night lifted by nearby torches / bonfires.
+/// Delegates to the SHARED [`renderer::entity_lit`] - the single lighting
+/// path every ground entity uses (animals, crops, fruit trees, drops) so
+/// they can't drift apart.
 fn entity_lit(pos: DVec3, center: DVec3) -> f32 {
-    let sun = renderer::entity_sun_brightness(pos);
-    let local = tenebris_core::math::dvec3_to_vec3(dvec3_sub(pos, center));
-    let torch = crate::hex_mesher::torch_light_from(&lights_reaching(local), local);
-    let l = tenebris_core::config::lighting();
-    (sun + torch * l.torch_intensity).min(1.5)
+    renderer::entity_lit(pos, center)
 }
 
 /// One fish swimming inside an aquarium: (species, world pos, radial up,
