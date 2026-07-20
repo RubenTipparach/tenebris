@@ -244,20 +244,27 @@ pub fn egui_ui(ctx: &egui::Context) {
                 }
             };
 
-            /* Hotbar row (the quick-access 9), tinted so it reads as its own
-             * band, then the 3 bag rows below. */
-            egui::Grid::new("furnace-hotbar").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
-                for (i, s) in hotbar.iter().enumerate() {
-                    inv_slot(ui, Addr::Hot(i), s.item, s.count.clamp(0, u16::MAX as i32) as u16, s.dur);
-                }
-            });
-            ui.add_space(3.0);
+            /* Inventory bag rows on TOP, then a divider, then the hotbar row at
+             * the BOTTOM - the same layout as the HUD and the main inventory
+             * screen (inventory_screen.rs: bag grid, gap, hotbar_row), so the
+             * quick-access hotbar sits where the player expects it. Mixing the
+             * hotbar into the top of the bag read as confusing. */
             egui::Grid::new("furnace-bag").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
                 for (i, &(item, count, dur)) in bag_rows.iter().enumerate() {
                     inv_slot(ui, Addr::Bag(i), item, count, dur);
                     if (i + 1) % 9 == 0 {
                         ui.end_row();
                     }
+                }
+            });
+            ui.add_space(6.0);
+            ui.separator(); /* divider between the bag and the hotbar */
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new("Hotbar").small().weak());
+            ui.add_space(2.0);
+            egui::Grid::new("furnace-hotbar").spacing(egui::vec2(3.0, 3.0)).show(ui, |ui| {
+                for (i, s) in hotbar.iter().enumerate() {
+                    inv_slot(ui, Addr::Hot(i), s.item, s.count.clamp(0, u16::MAX as i32) as u16, s.dur);
                 }
             });
             ui.add_space(4.0);
