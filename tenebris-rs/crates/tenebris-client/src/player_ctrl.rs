@@ -84,6 +84,8 @@ pub const EYE_HEIGHT: f32 = 1.6;
 
 /// Full hunger. Survival drains from here; food refills toward it.
 pub const MAX_HUNGER: f32 = 100.0;
+/// Full health (PLACEHOLDER - the HUD bar reads it; no damage/regen yet).
+pub const MAX_HEALTH: f32 = 100.0;
 /// Hunger lost per second in survival.
 pub const HUNGER_DRAIN_PER_S: f32 = 0.9;
 
@@ -179,6 +181,10 @@ pub struct PlayerCtrl {
      * eating food (cooked meat best) refills it. `Default` zeroes it, so
      * the spawn / mode-entry path stamps it full - see `refill_hunger`. */
     pub hunger: f32,
+    /* Survival health, 0..MAX_HEALTH. PLACEHOLDER for now: the HUD bar reads
+     * this, but nothing damages or regenerates it yet (mode-entry stamps it
+     * full alongside hunger). Damage / regen mechanics plug in here later. */
+    pub health: f32,
     /* Fractional accumulator for mouse-wheel hotbar cycling. Trackpad
      * scrolls send small per-frame deltas; we only step a slot per
      * unit of accumulated scroll so high-resolution input doesn't

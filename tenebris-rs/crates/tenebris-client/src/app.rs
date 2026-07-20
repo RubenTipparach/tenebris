@@ -3360,12 +3360,39 @@ fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
     /* sdtx flush is centralised at frame end. */
 }
 
-/// Survival hunger meter, top-left. Fill runs green (full) -> red
-/// (empty); an eat hint shows while it's low.
+/// Draw `s` with a fake black 8-way outline, then the fill colour on top, at
+/// character-cell position (`col`, `row`). sdtx has no native outline, so we
+/// stamp the string in black at 1px offsets around the centre first. Leaves
+/// the sdtx colour reset to white.
+fn sdtx_outlined(col: f32, row: f32, r: u8, g: u8, b: u8, s: &str) {
+    const O: f32 = 0.16; /* ~1px at the 8px cell */
+    sdtx::color3b(0x00, 0x00, 0x00);
+    for (dc, dr) in [
+        (-O, 0.0), (O, 0.0), (0.0, -O), (0.0, O),
+        (-O, -O), (O, -O), (-O, O), (O, O),
+    ] {
+        sdtx::pos(col + dc, row + dr);
+        sdtx::puts(s);
+    }
+    sdtx::color3b(r, g, b);
+    sdtx::pos(col, row);
+    sdtx::puts(s);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Survival status HUD, top-left: a HEALTH bar, the HUNGER bar under it, and
+/// the credits readout under that (with a black outline). Health is a
+/// PLACEHOLDER (always full) until damage mechanics land; hunger drains and
+/// shows an eat hint when low.
 fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
-    let (survival, pct) = {
+    let (survival, hunger_pct, health_pct, credits) = {
         let p = app.player.borrow();
-        (p.survival_mode, (p.hunger / player_ctrl::MAX_HUNGER).clamp(0.0, 1.0))
+        (
+            p.survival_mode,
+            (p.hunger / player_ctrl::MAX_HUNGER).clamp(0.0, 1.0),
+            (p.health / player_ctrl::MAX_HEALTH).clamp(0.0, 1.0),
+            p.wallet.credits(),
+        )
     };
     if !survival {
         return;
@@ -3375,8 +3402,9 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     let bar_h = 14.0f32;
     let pad = 3.0f32;
     let bx = 18.0f32;
-    let by = 18.0f32;
-    let fill_w = bar_w * pct;
+    let gap = 8.0f32; /* vertical gap between the two bars */
+    let health_y = 18.0f32;
+    let hunger_y = health_y + bar_h + gap;
 
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -3392,41 +3420,58 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
         sgl::v2f(x1, y1);
         sgl::v2f(x0, y1);
     };
-
-    /* Track. */
-    sgl::begin_quads();
-    sgl::c4f(0.04, 0.06, 0.10, 0.85);
-    quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
-    sgl::end();
-
-    /* Fill - lerp green (full) to red (empty). */
-    let fr = 0.90 - 0.50 * pct;
-    let fg = 0.20 + 0.60 * pct;
-    sgl::begin_quads();
-    sgl::c4f(fr, fg, 0.20, 1.0);
-    quad(bx, by, bx + fill_w, by + bar_h);
-    sgl::end();
-
-    /* Label + eat hint (the key label tracks the Eat binding). */
-    let eat_key = crate::controls::action_label(crate::controls::Action::Eat);
-    let buf = if pct <= 0.0 {
-        format!("STARVING - eat! [{}]", eat_key)
-    } else if pct < 0.3 {
-        format!("HUNGER {}%  [{}] eat", (pct * 100.0) as i32, eat_key)
-    } else {
-        format!("HUNGER {}%", (pct * 100.0) as i32)
+    /* One meter: dark track + a coloured fill scaled by `pct`. */
+    let bar = |by: f32, pct: f32, fr: f32, fg: f32, fb: f32| {
+        sgl::begin_quads();
+        sgl::c4f(0.04, 0.06, 0.10, 0.85);
+        quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
+        sgl::end();
+        sgl::begin_quads();
+        sgl::c4f(fr, fg, fb, 1.0);
+        quad(bx, by, bx + bar_w * pct, by + bar_h);
+        sgl::end();
     };
+
+    /* HEALTH (top): red bar. Placeholder - full for now. */
+    bar(health_y, health_pct, 0.85, 0.22, 0.24);
+    /* HUNGER (below): green (full) -> red (empty). */
+    let fr = 0.90 - 0.50 * hunger_pct;
+    let fg = 0.20 + 0.60 * hunger_pct;
+    bar(hunger_y, hunger_pct, fr, fg, 0.20);
+
+    /* Labels (sdtx) to the right of each bar, and the money readout right
+     * under the hunger bar. */
     let cell = 8.0f32;
+    let label_col = (bx + bar_w + pad + 6.0) / cell;
     sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
     sdtx::font(1);
-    sdtx::origin(bx / cell, (by + bar_h + 4.0) / cell);
-    if pct < 0.3 {
+
+    sdtx::color3b(0xe6, 0xb0, 0xb0);
+    sdtx::pos(label_col, (health_y + 3.0) / cell);
+    sdtx::puts(&format!("HP {}%", (health_pct * 100.0) as i32));
+
+    let eat_key = crate::controls::action_label(crate::controls::Action::Eat);
+    let hunger_txt = if hunger_pct <= 0.0 {
+        format!("STARVING - eat! [{}]", eat_key)
+    } else if hunger_pct < 0.3 {
+        format!("HUNGER {}%  [{}] eat", (hunger_pct * 100.0) as i32, eat_key)
+    } else {
+        format!("HUNGER {}%", (hunger_pct * 100.0) as i32)
+    };
+    if hunger_pct < 0.3 {
         sdtx::color3b(0xff, 0x80, 0x60);
     } else {
         sdtx::color3b(0xd0, 0xe0, 0xd0);
     }
-    sdtx::home();
-    sdtx::puts(&buf);
+    sdtx::pos(label_col, (hunger_y + 3.0) / cell);
+    sdtx::puts(&hunger_txt);
+
+    /* Money: directly under the hunger bar, black-outlined (space-era
+     * wallet). */
+    let money_row = (hunger_y + bar_h + pad + 5.0) / cell;
+    sdtx_outlined(bx / cell, money_row, 0xf0, 0xd8, 0x60, &format!("{} cr", credits));
+
     sdtx::font(0);
     sdtx::color3b(0xff, 0xff, 0xff);
 }
@@ -3845,28 +3890,6 @@ fn draw_pickup_hint(app: &App, screen_w: f32, screen_h: f32) {
     draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
-/// Credits readout (top-right): the space-era wallet. Only shown in survival /
-/// space worlds - creative has no economy.
-fn draw_credits_hud(app: &App, screen_w: f32, screen_h: f32) {
-    let p = app.player.borrow();
-    if !p.survival_mode {
-        return;
-    }
-    let msg = format!("{} cr", p.wallet.credits());
-    drop(p);
-    let cell = 8.0f32;
-    let x = (screen_w - (msg.len() as f32 + 1.5) * cell) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    /* Reset the origin - earlier HUD draws (hints) leave it shifted, which
-     * pushed this readout off-canvas. */
-    sdtx::origin(0.0, 0.0);
-    sdtx::font(1);
-    sdtx::pos(x, 1.0);
-    sdtx::color3b(0xf0, 0xd8, 0x60);
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
-}
 
 /// Rocket flight HUD (top-centre) shown while the player is riding a rocket:
 /// active engine kind, stages left, active-stage fuel %, TWR, and speed, plus
@@ -6418,6 +6441,9 @@ fn frame_inner(app: &mut App) {
         let mut p = app.player.borrow_mut();
         if p.survival_mode {
             p.hunger = (p.hunger - player_ctrl::HUNGER_DRAIN_PER_S * dt).max(0.0);
+            /* Health is a PLACEHOLDER for now - no damage or regen yet, so
+             * pin it full each frame. Real health mechanics replace this. */
+            p.health = player_ctrl::MAX_HEALTH;
             if input::consume_eat() {
                 /* Best food first: cooked meat > bread > raw meat >
                  * berries > carrot (restore order). */
@@ -7578,8 +7604,7 @@ fn frame_inner(app: &mut App) {
             /* Autopilot-button tooltip label (text pass over the sgl ball). */
             nav_ui::draw_ap_tooltip_text(sapp::widthf(), sapp::heightf());
         }
-        /* Credits wallet (top-right). */
-        draw_credits_hud(app, sapp::widthf(), sapp::heightf());
+        /* Credits now render under the hunger bar (draw_hunger_bar). */
         /* Station dock prompt (in space, within range) - the whole point of
          * the flight, so it stays up. */
         draw_station_hint(app, sapp::widthf(), sapp::heightf());
