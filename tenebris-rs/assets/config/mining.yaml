@@ -16,12 +16,12 @@ iron_ore_chance: 0.030
 # The higher pickaxe tiers scale the rock time down.
 #
 #   soft ground (dirt/sand/grass/snow/farmland): 2.5 s shovel, 5.0 s hand
-#   rock + ore:                                  10 s wood pickaxe,
+#   rock + ore:                                  5 s wood pickaxe,
 #                                                7 s stone, 4 s iron
 #   wood:                                        1.5 s axe, 3.0 s hand
 soft_break_s: 2.5
 wood_break_s: 1.5
-rock_break_s: 10.0
+rock_break_s: 5.0
 hand_penalty_mult: 2.0
 stone_tool_mult: 0.7
 iron_tool_mult: 0.4
