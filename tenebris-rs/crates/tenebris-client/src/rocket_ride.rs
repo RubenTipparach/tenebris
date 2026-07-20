@@ -310,14 +310,30 @@ pub fn respawn() -> Option<(DVec3, DVec3)> {
     pose
 }
 
-/// The pad (tile, depth) of the rocket being flown RIGHT NOW, or `None` when
-/// not riding. The renderer skips this pad's static rocket so it isn't drawn
-/// twice - once on the pad and once around the player.
+/// The origin pad (tile, depth) whose static rocket must stay HIDDEN right
+/// now: the pad a ship launched from, while that ship is away from it -
+/// either riding OR parked (climbed out mid-flight). `None` once nothing has
+/// left that pad, or once the parked ship there has been re-boarded (which
+/// restores ORIGIN and is covered by the riding branch below).
+///
+/// The pad's block entity never clears its `parts` when a rocket launches
+/// (see [`Origin`]'s doc - that's what lets respawn rebuild without
+/// duplicating crafted parts), so without this check the pad's static
+/// rocket reappears the instant `is_riding()` goes false - which now
+/// includes the moment you climb out mid-flight, since exit PARKS the ship
+/// (the despawn fix) instead of discarding it. Miss the parked case here and
+/// you get a ghost rocket sitting on the pad while the real one floats
+/// wherever you exited it - two copies of one ship.
 pub fn in_flight_pad() -> Option<(i32, i32)> {
-    if !is_riding() {
-        return None;
+    if is_riding() {
+        return ORIGIN.with(|o| o.borrow().as_ref().map(|org| (org.tile, org.depth)));
     }
-    ORIGIN.with(|o| o.borrow().as_ref().map(|org| (org.tile, org.depth)))
+    PARKED.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|p| p.origin.as_ref())
+            .map(|org| (org.tile, org.depth))
+    })
 }
 
 /// Is a rocket available to respawn (origin still known)?
@@ -635,15 +651,44 @@ mod tests {
     }
 
     /// While riding, the origin pad is reported so the renderer can hide its
-    /// static rocket (else the rocket draws twice).
+    /// static rocket (else the rocket draws twice). A hard `clear()` (full
+    /// discard, not the normal exit path) forgets everything, so the pad
+    /// correctly shows its rocket again.
     #[test]
-    fn in_flight_pad_tracks_the_origin_only_while_riding() {
+    fn in_flight_pad_tracks_the_origin_while_riding() {
         clear();
         assert_eq!(in_flight_pad(), None, "not riding -> nothing to hide");
         board();
         assert_eq!(in_flight_pad(), Some((7, 3)));
         clear();
-        assert_eq!(in_flight_pad(), None, "after exit the pad shows its rocket again");
+        assert_eq!(in_flight_pad(), None, "a hard clear forgets the ship entirely");
+    }
+
+    /// THE regression this session's bug report was: climbing out mid-flight
+    /// PARKS the ship (see `park`'s doc), not `clear()`s it, so `is_riding()`
+    /// goes false while the ship is very much still away from its pad. The
+    /// origin pad must stay hidden the whole time it's parked, or the pad's
+    /// never-cleared static rocket reappears as a ghost duplicate of the
+    /// ship now floating wherever the player climbed out - exactly the "two
+    /// rockets" bug this test pins.
+    #[test]
+    fn origin_pad_stays_hidden_while_parked_away_from_it() {
+        clear();
+        let (pos, up) = board();
+        assert_eq!(in_flight_pad(), Some((7, 3)), "hidden while riding");
+
+        park(pos, up, dvec3_make(15.0, 0.0, 2.0));
+        assert!(!is_riding(), "climbed out");
+        assert_eq!(
+            in_flight_pad(),
+            Some((7, 3)),
+            "STILL hidden while parked - the ship hasn't returned to the pad"
+        );
+
+        /* Re-board: back to riding, still (correctly) hidden. */
+        board_parked().expect("re-board the parked ship");
+        assert_eq!(in_flight_pad(), Some((7, 3)), "hidden again once riding resumes");
+        clear();
     }
 
     /// Exiting forgets the origin, so respawn can't yank a rocket the player
