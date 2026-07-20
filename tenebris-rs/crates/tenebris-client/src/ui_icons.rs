@@ -75,6 +75,10 @@ const ICONS: &[(u16, &str)] = &[
     (items::WOOD_SHOVEL, "assets/textures/items/wood_shovel.png"),
     (items::STONE_PICKAXE, "assets/textures/items/stone_pickaxe.png"),
     (items::IRON_PICKAXE, "assets/textures/items/iron_pickaxe.png"),
+    (items::STONE_AXE, "assets/textures/items/stone_axe.png"),
+    (items::STONE_SHOVEL, "assets/textures/items/stone_shovel.png"),
+    (items::IRON_AXE, "assets/textures/items/iron_axe.png"),
+    (items::IRON_SHOVEL, "assets/textures/items/iron_shovel.png"),
     (items::HOE, "assets/textures/items/hoe.png"),
     // --- food ---
     (items::RAW_MEAT, "assets/textures/items/raw_meat.png"),

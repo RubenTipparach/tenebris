@@ -151,6 +151,16 @@ pub const FISH_SERPENT: ItemId = ITEM_BASE + 55; // 155
 /// to scoop that exact species into the bag.
 pub const NET: ItemId = ITEM_BASE + 56; // 156
 
+/// Higher-tier axes + shovels that complete the stone and iron tool sets
+/// (the flint tier already carries pickaxe / axe / shovel / hoe). Same
+/// access as their flint counterparts - the tier only buys mining speed
+/// and durability (see core::mining). Ids append-only past the net (156);
+/// never renumber, saved bags key off these.
+pub const STONE_AXE: ItemId = ITEM_BASE + 57; // 157
+pub const STONE_SHOVEL: ItemId = ITEM_BASE + 58; // 158
+pub const IRON_AXE: ItemId = ITEM_BASE + 59; // 159
+pub const IRON_SHOVEL: ItemId = ITEM_BASE + 60; // 160
+
 /// The six live-fish items, ordered to match `fauna::AnimalKind`'s water
 /// species. `is_fish_item` gates the raw-eat / aquarium-drop paths.
 pub const FISH_ITEMS: [ItemId; 6] =
@@ -237,6 +247,10 @@ const ITEMS: &[ItemDef] = &[
     ItemDef { id: WOOD_SHOVEL, name: "flint-shovel", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: STONE_PICKAXE, name: "stone-pickaxe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: IRON_PICKAXE, name: "iron-pickaxe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: STONE_AXE, name: "stone-axe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: STONE_SHOVEL, name: "stone-shovel", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: IRON_AXE, name: "iron-axe", kind: ItemKind::Tool, stack: 1 },
+    ItemDef { id: IRON_SHOVEL, name: "iron-shovel", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: HOE, name: "hoe", kind: ItemKind::Tool, stack: 1 },
     ItemDef { id: RAW_MEAT, name: "raw-meat", kind: ItemKind::Resource, stack: 64 },
     ItemDef { id: COOKED_MEAT, name: "cooked-meat", kind: ItemKind::Resource, stack: 64 },

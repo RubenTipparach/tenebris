@@ -112,6 +112,34 @@ out: iron-pickaxe 1
 in: iron-ingot 3
 in: stick 2
 
+# Higher axe + shovel tiers - complete the stone and iron tool sets so
+# the whole toolkit tiers up, not just the pickaxe. Same recipe shape as
+# the flint axe / shovel; the tier only buys mining speed + durability.
+# Iron stays furnace-gated through its ingot input.
+[stone-axe]
+tier: 1
+out: stone-axe 1
+in: stone 2
+in: stick 2
+
+[stone-shovel]
+tier: 1
+out: stone-shovel 1
+in: stone 1
+in: stick 2
+
+[iron-axe]
+tier: 1
+out: iron-axe 1
+in: iron-ingot 2
+in: stick 2
+
+[iron-shovel]
+tier: 1
+out: iron-shovel 1
+in: iron-ingot 1
+in: stick 2
+
 # Bucket: scoop water (use an empty bucket aimed at water) then pour it on
 # a crop to speed its growth ("water plants"). Iron-tier so it comes online
 # once smelting is up; rain waters crops for free before then.

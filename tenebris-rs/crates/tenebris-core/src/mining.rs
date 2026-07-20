@@ -64,8 +64,8 @@ pub enum ToolKind {
 pub fn tool_kind(item: ItemId) -> ToolKind {
     match item {
         items::WOOD_PICKAXE | items::STONE_PICKAXE | items::IRON_PICKAXE => ToolKind::Pick,
-        items::WOOD_AXE => ToolKind::Axe,
-        items::WOOD_SHOVEL => ToolKind::Shovel,
+        items::WOOD_AXE | items::STONE_AXE | items::IRON_AXE => ToolKind::Axe,
+        items::WOOD_SHOVEL | items::STONE_SHOVEL | items::IRON_SHOVEL => ToolKind::Shovel,
         _ => ToolKind::None,
     }
 }
@@ -114,8 +114,12 @@ pub fn best_tool(block: Block, has: impl Fn(ItemId) -> bool) -> Option<ItemId> {
         ToolKind::Pick => [items::IRON_PICKAXE, items::STONE_PICKAXE, items::WOOD_PICKAXE]
             .into_iter()
             .find(|&id| has(id)),
-        ToolKind::Axe => has(items::WOOD_AXE).then_some(items::WOOD_AXE),
-        ToolKind::Shovel => has(items::WOOD_SHOVEL).then_some(items::WOOD_SHOVEL),
+        ToolKind::Axe => [items::IRON_AXE, items::STONE_AXE, items::WOOD_AXE]
+            .into_iter()
+            .find(|&id| has(id)),
+        ToolKind::Shovel => [items::IRON_SHOVEL, items::STONE_SHOVEL, items::WOOD_SHOVEL]
+            .into_iter()
+            .find(|&id| has(id)),
         ToolKind::None => None,
     }
 }
@@ -125,8 +129,8 @@ pub fn best_tool(block: Block, has: impl Fn(ItemId) -> bool) -> Option<ItemId> {
 /// at the base rate (1.0); the higher pickaxe tiers are faster.
 fn material_mult(cfg: &MiningConfig, tool: ItemId) -> f32 {
     match tool {
-        items::STONE_PICKAXE => cfg.stone_tool_mult,
-        items::IRON_PICKAXE => cfg.iron_tool_mult,
+        items::STONE_PICKAXE | items::STONE_AXE | items::STONE_SHOVEL => cfg.stone_tool_mult,
+        items::IRON_PICKAXE | items::IRON_AXE | items::IRON_SHOVEL => cfg.iron_tool_mult,
         _ => 1.0,
     }
 }
@@ -146,8 +150,8 @@ fn material_mult(cfg: &MiningConfig, tool: ItemId) -> f32 {
 pub fn tool_max_uses(cfg: &MiningConfig, item: ItemId) -> Option<u16> {
     match item {
         items::WOOD_PICKAXE | items::WOOD_AXE | items::WOOD_SHOVEL => Some(cfg.flint_tool_uses),
-        items::STONE_PICKAXE => Some(cfg.stone_tool_uses),
-        items::IRON_PICKAXE => Some(cfg.iron_tool_uses),
+        items::STONE_PICKAXE | items::STONE_AXE | items::STONE_SHOVEL => Some(cfg.stone_tool_uses),
+        items::IRON_PICKAXE | items::IRON_AXE | items::IRON_SHOVEL => Some(cfg.iron_tool_uses),
         _ => None,
     }
 }

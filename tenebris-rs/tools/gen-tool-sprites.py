@@ -121,10 +121,17 @@ def recolor(rows, mapping):
     return ["".join(mapping.get(ch, ch) for ch in r) for r in rows]
 
 
-# Higher tool tiers reuse the wood-pickaxe silhouette with a re-skinned
-# head so the three pickaxes read as one family at a glance.
-STONE_PICKAXE = recolor(PICKAXE, {"M": "S", "m": "s", "D": "T"})
-IRON_PICKAXE = recolor(PICKAXE, {"M": "I", "m": "i", "D": "J"})
+# Higher tool tiers reuse the flint silhouette with a re-skinned head so
+# each tier reads as one family (pickaxe/axe/shovel) at a glance. Stone
+# uses the S/s/T palette, iron the I/i/J palette.
+STONE_MAP = {"M": "S", "m": "s", "D": "T"}
+IRON_MAP = {"M": "I", "m": "i", "D": "J"}
+STONE_PICKAXE = recolor(PICKAXE, STONE_MAP)
+IRON_PICKAXE = recolor(PICKAXE, IRON_MAP)
+STONE_AXE = recolor(AXE, STONE_MAP)
+IRON_AXE = recolor(AXE, IRON_MAP)
+STONE_SHOVEL = recolor(SHOVEL, STONE_MAP)
+IRON_SHOVEL = recolor(SHOVEL, IRON_MAP)
 
 TOOLS = {
     "wood_pickaxe": PICKAXE,
@@ -132,6 +139,10 @@ TOOLS = {
     "wood_shovel": SHOVEL,
     "stone_pickaxe": STONE_PICKAXE,
     "iron_pickaxe": IRON_PICKAXE,
+    "stone_axe": STONE_AXE,
+    "iron_axe": IRON_AXE,
+    "stone_shovel": STONE_SHOVEL,
+    "iron_shovel": IRON_SHOVEL,
     "hoe": HOE,
 }
 
