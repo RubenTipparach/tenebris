@@ -206,6 +206,9 @@ pub fn update(dt: f32, p: &mut PlayerCtrl) {
 /// ui_icons atlas, so a bonus seed no longer masquerades as a second
 /// block.
 pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
+    if renderer::dev_hidden("drops") {
+        return;
+    }
     let list = S.with(|c| c.borrow().clone());
     if list.is_empty() {
         return;

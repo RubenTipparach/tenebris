@@ -2215,6 +2215,25 @@ fn sgl_world_ctx() -> sgl::Context {
     })
 }
 
+/// Debug isolation switch: `TENEBRIS_DEV_HIDE=water,drops,glow,aquarium,flame`
+/// early-returns the named draw pass, so a mystery on-screen quad can be
+/// bisected to its exact source in ONE build (set the var, run, see if the
+/// quad vanished). Comma-separated; parsed once. Pure diagnostic - no effect
+/// unless the var is set.
+pub fn dev_hidden(what: &str) -> bool {
+    thread_local! {
+        static HIDE: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    HIDE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            *c = Some(std::env::var("TENEBRIS_DEV_HIDE").unwrap_or_default());
+        }
+        c.as_ref().unwrap().split(',').any(|s| s.trim() == what)
+    })
+}
+
 /// Route subsequent sgl recording (and lazy `sgl::make_pipeline` calls)
 /// into the world-entity context. Pair with [`sgl_world_end`].
 pub fn sgl_world_begin() {
@@ -6044,7 +6063,7 @@ pub fn draw_world(
 /// Port of `renderer_draw_water()`. Runs after compose_to_swapchain;
 /// only the active body within the detail cutoff draws its cap.
 pub fn draw_water(view: Mat4, proj: Mat4, camera_world: Vec3) {
-    if !terrain_visible() {
+    if !terrain_visible() || dev_hidden("water") {
         return;
     }
     if !water_visible() {
@@ -6559,7 +6578,7 @@ pub fn draw_water_flow_debug(view: Mat4, proj: Mat4) {
 /// and this rebases them by the active body's floating-origin render centre
 /// so they sit on their terrain at any world scale (see torch::model_matrix).
 pub fn draw_torches(view: Mat4, proj: Mat4) {
-    if !terrain_visible() {
+    if !terrain_visible() || dev_hidden("torch") {
         return;
     }
     let (time_seconds, body_offset) = R.with(|cell| {
@@ -6651,6 +6670,9 @@ fn glow_push_quad(verts: &mut Vec<f32>, c: Vec3, size: f32) {
 /// (after the opaque terrain), additive with depth-test so the planet
 /// occludes lights beyond the horizon.
 pub fn draw_light_glow(view: Mat4, proj: Mat4) {
+    if dev_hidden("glow") {
+        return;
+    }
     let l = config::lighting();
     if l.glow_alpha_day <= 0.0 && l.glow_alpha_night <= 0.0 {
         return;

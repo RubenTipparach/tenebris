@@ -277,6 +277,9 @@ impl WaterPalette {
 }
 
 pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
+    if renderer::dev_hidden("aquarium") {
+        return;
+    }
     let cells = cells(w);
     if cells.is_empty() {
         return;

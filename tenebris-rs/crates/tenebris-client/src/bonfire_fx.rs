@@ -316,7 +316,7 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
      * the sea sat behind it - the "flame not drawing over water" bug. See
      * renderer::sgl_overlay_begin. */
     let (fview, fsmp) = flame_texture();
-    if fview != 0 && frames.iter().any(|f| f.lit) {
+    if fview != 0 && !renderer::dev_hidden("flame") && frames.iter().any(|f| f.lit) {
         renderer::sgl_overlay_begin();
         sgl::defaults();
         sgl::matrix_mode_projection();
