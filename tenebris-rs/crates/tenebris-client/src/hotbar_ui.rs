@@ -47,7 +47,7 @@ use sokol::app as sapp;
 use sokol::debugtext as sdtx;
 use sokol::gfx as sg;
 use sokol::gl as sgl;
-use tenebris_core::blocks::{face_tile, Block, FaceCap};
+use tenebris_core::blocks::{face_tile, icon_in_item_atlas, Block, FaceCap};
 
 use std::cell::Cell;
 
@@ -342,7 +342,10 @@ pub fn draw(inv: &Inventory) {
 
     for i in 0..slots {
         let s = &inv.slots[i];
-        if s.count <= 0 || s.block_type() == Block::Air {
+        /* Skip non-blocks (drawn in pass 2b) AND blocks whose art lives in
+         * the ui_icons atlas, not the terrain atlas (glass / aquarium /
+         * bonfire) - face_tile would sample a foreign tech tile for them. */
+        if s.count <= 0 || s.block_type() == Block::Air || icon_in_item_atlas(s.block_type()) {
             continue;
         }
 
@@ -371,7 +374,12 @@ pub fn draw(inv: &Inventory) {
     );
     for i in 0..slots {
         let s = &inv.slots[i];
-        if s.count <= 0 || s.item == Block::Air as u16 || s.block_type() != Block::Air {
+        /* Non-block items, plus the ui_icons-atlas blocks (glass / aquarium
+         * / bonfire) that pass 2 skipped. A regular terrain block is drawn
+         * in pass 2 and skipped here. */
+        let is_regular_block =
+            s.block_type() != Block::Air && !icon_in_item_atlas(s.block_type());
+        if s.count <= 0 || s.item == Block::Air as u16 || is_regular_block {
             continue;
         }
         let Some([u0, v0, u1, v1]) = crate::ui_icons::uv(s.item) else { continue };

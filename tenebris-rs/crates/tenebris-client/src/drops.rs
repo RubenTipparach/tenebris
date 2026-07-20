@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 
 use sokol::gl as sgl;
 
-use tenebris_core::blocks::{face_tile, Block, FaceCap};
+use tenebris_core::blocks::{face_tile, icon_in_item_atlas, Block, FaceCap};
 use tenebris_core::items::{self, ItemId};
 use tenebris_core::math::{
     dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
@@ -135,7 +135,11 @@ pub fn spawn_at(pos: DVec3, up: DVec3, item: ItemId, count: u16) {
 /// Returns None for items that should billboard.
 fn prism_block(item: ItemId) -> Option<Block> {
     match items::to_block(item) {
-        Some(b) if b != Block::Air => Some(b),
+        /* Glass / aquarium / bonfire have no terrain-atlas tile (they're
+         * drawn by dedicated passes); a mini prism off the terrain atlas
+         * would sample a foreign tech tile. Billboard them off ui_icons
+         * (their real art) like the non-block items instead. */
+        Some(b) if b != Block::Air && !icon_in_item_atlas(b) => Some(b),
         _ => None,
     }
 }

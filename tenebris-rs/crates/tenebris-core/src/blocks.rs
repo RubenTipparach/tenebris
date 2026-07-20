@@ -272,6 +272,18 @@ pub fn is_glassy(b: Block) -> bool {
     matches!(b, Block::Glass | Block::Aquarium)
 }
 
+/// Placeable blocks drawn by a dedicated render pass (glass / aquarium via
+/// the glass pass, the bonfire via the campfire pass) that have NO tile in
+/// the terrain (hex) atlas. `face_tile` falls through to `b as u8` for
+/// these, landing on an unrelated tech-atlas column, so the inventory /
+/// hotbar / floating-drop ICON must sample their real art from the
+/// ui_icons item atlas (glass.png / aquarium.png / bonfire.png) instead of
+/// the terrain atlas. One predicate so the icon paths stay in sync with
+/// what the mesher skips.
+pub fn icon_in_item_atlas(b: Block) -> bool {
+    is_glassy(b) || b == Block::Bonfire
+}
+
 /// Blocks that hide the shared face against an IDENTICAL neighbour - the
 /// "solid translucent shell" rule. A run of ice / glass / aquarium draws
 /// only its outer surface, never the internal walls between two adjacent
