@@ -4939,10 +4939,16 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             p.discovered = persistence::load_tech(&world)
                 .and_then(|blob| crate::tech_tree::Discovered::parse(&blob))
                 .unwrap_or_default();
-            /* In-flight craft + queue are session-scoped - a craft from
-             * world A must not deliver into world B's bag. */
+            /* In-flight craft + queue persist per world (their inputs were
+             * consumed at enqueue, and the bag/hotbar we just restored reflect
+             * that), so a background craft resumes where it left off instead of
+             * vanishing on reload. Clear first so world A's craft can't leak
+             * into world B when B has no saved craft. */
             p.crafting = None;
             crafting_screen::clear_queue();
+            if let Some(blob) = persistence::load_craft(&world) {
+                crafting_screen::restore_state(&mut p, &blob);
+            }
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -5103,6 +5109,21 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
      * re-strap the player. */
     rocket_ride::note_velocity(p.velocity);
     persistence::save_ride(&world, rocket_ride::save_snapshot().as_ref());
+    drop(p);
+    /* Placed-machine state (furnace / bonfire / electric smelt progress + item
+     * slots) rides the same cadence so an in-flight smelt resumes where it
+     * left off on reload. Completions already save same-frame; this captures
+     * the partial progress accumulated between them. */
+    {
+        let w = app.world.borrow();
+        persistence::save_block_entities(&world, w.body.id as u32, &w.block_entities);
+    }
+    /* The crafting queue + the active craft's progress ride the cadence too,
+     * so a background craft resumes instead of vanishing on reload. */
+    {
+        let p = app.player.borrow();
+        persistence::save_craft(&world, &crafting_screen::serialize_state(&p));
+    }
 }
 
 /// Re-read the hotbar + bag blobs just written and log any slot that did
