@@ -6551,6 +6551,31 @@ fn frame_inner(app: &mut App) {
             m.look_stick_y = 0.0;
         });
     }
+    /* A blocking overlay (inventory / crafting / chest / furnace / ...) has
+     * focus: zero the held movement + click state so the player doesn't keep
+     * walking (or the ship keep steering) while the panel is up - and so a
+     * key-UP the egui overlay swallowed can't leave a move key stuck firing
+     * once the panel closes (the "open inventory while holding W and I keep
+     * moving" bug). Preserve the fly-mode TOGGLE so opening the bag mid-flight
+     * doesn't drop you out of the sky. */
+    else if screens::any_open() {
+        input::state_mut(|m| {
+            let fly = m.phys.fly_mode;
+            m.phys = Default::default();
+            m.phys.fly_mode = fly;
+            m.left_held = false;
+            m.right_held = false;
+            m.left_click = false;
+            m.right_click = false;
+            m.middle_click = false;
+            m.stick_active = false;
+            m.stick_x = 0.0;
+            m.stick_y = 0.0;
+            m.look_stick_active = false;
+            m.look_stick_x = 0.0;
+            m.look_stick_y = 0.0;
+        });
+    }
     /* MP join freeze: skip physics until net is READY so the player
      * doesn't fall from a stale pose then snap to the server pose. */
     let mp_loading =
