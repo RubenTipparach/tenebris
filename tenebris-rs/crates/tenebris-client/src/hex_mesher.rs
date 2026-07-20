@@ -1582,11 +1582,10 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
         /* Sea-level row's TOP cap is owned by the planet-wide ocean
          * cap in build_water - emitting it here too would Z-fight
          * with the wave-displaced ocean surface. Side faces + bottom
-         * cap otherwise come from this loop so real held-back / flowing
-         * water shows its walls; the STATIC sea's bare faces into dug
-         * air are suppressed separately (see `static_ocean_cell` below -
-         * a dug pocket in the static sea reads as an opening, not a
-         * suspended teal pane).
+         * cap still come from this loop, otherwise an air pocket
+         * adjacent to the ocean at sea level shows no water walls
+         * (the bug: dig a tunnel right under the shoreline and the
+         * ocean appears to end mid-air against the dirt).
          *
          * At the sea-level row the side faces must end at the SAME
          * radius the ocean cap is drawn at. The cap helper already
@@ -1598,27 +1597,6 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
         if is_sea_level_row {
             cap_offset = surface_off;
         }
-
-        /* A STATIC worldgen ocean cell - sleeping / source water within the
-         * sea band - is part of the planet-wide sea, not a suspended pool.
-         * When a player digs a cave UNDER or BESIDE the ocean, such a cell
-         * ends up with AIR below it (dig under) or an AIR edge neighbour
-         * (dig beside), and the bottom-cap / air side-face paths below would
-         * paint the sea's bare underside or edge as a translucent teal
-         * sheet/panel hanging in the cave. It bakes near-black under a roof,
-         * so it's invisible until a torch lights it - the "teal square/panel
-         * appears when I place a torch in a cave below the water" bug. The
-         * static sea never flows, so a dig into it should read as an opening,
-         * not a suspended pane: gate BOTH the underside cap and the air side
-         * face on this. A GENUINE suspended pool is FLOWING water (state not
-         * sleeping/source) and keeps both, so real held-back pools / streams
-         * are unaffected. */
-        let static_ocean_cell = cap_row >= 0
-            && d <= cap_row
-            && {
-                let st = world_water::get_state(w, tile_idx, d);
-                st == 0 || world_water::state_is_source(st)
-            };
 
         /* ---- Top cap.
          * Skip when the cell above is itself water - the two cells
@@ -1656,7 +1634,7 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * bottom; water-on-water connects through the column. */
         if d > 0 {
             let below = w.blocks[col_base + (d - 1) as usize];
-            if below == Block::Air.raw() && !static_ocean_cell {
+            if below == Block::Air.raw() {
                 emit_cap(
                     out,
                     t,
@@ -1832,19 +1810,7 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
             /* Air (or transparent / non-covering): emit the full side
              * face from r_bot up to our cap (or up to the voxel
              * boundary if the cell one layer up at this edge has
-             * water - r_top_edge folded that case in already).
-             *
-             * BUT a static worldgen ocean cell must NOT wall off dug-out
-             * air: that bare exposed sea wall is the vertical twin of the
-             * suppressed underside cap - the "translucent teal panel where
-             * my cave meets the sea" bug. The planet-wide sea is static
-             * (sleeping) water that never flows, so a dig into it should
-             * read as an opening, not a suspended pane. Only genuine
-             * FLOWING water shows a side wall against air (a real held-back
-             * pool / stream). */
-            if static_ocean_cell {
-                continue;
-            }
+             * water - r_top_edge folded that case in already). */
             emit_side_quad(
                 out,
                 t,
@@ -3125,72 +3091,6 @@ mod tests {
             }
             assert!(caps > 0, "{label}: world has no ocean at all - bad probe seed/subdiv");
         }
-    }
-
-    /// Regression: the STATIC ocean's bare faces must NOT draw into a cave
-    /// dug beneath OR beside it - the "translucent teal square/panel appears
-    /// when I place a torch in a cave below the water" bug (the torch only
-    /// LIT an already-emitted, otherwise-black face). Covers both the
-    /// underside (dig under -> air below) and the side wall (dig beside ->
-    /// air edge neighbour). A genuine FLOWING pool over/against air still
-    /// keeps both faces.
-    #[test]
-    fn static_ocean_bare_faces_hidden_from_dug_cave() {
-        let body = planet::get(BodyId::Tenebris);
-        let mut w = World::create(&body, 4);
-        while !w.gen_complete() {
-            w.stream_gen(10000);
-        }
-        /* An ocean column whose lowest sea-band water cell sits on a SOLID
-         * seabed AND has a WATER edge neighbour there (so digging the seabed
-         * exposes an air-below cell and digging the neighbour exposes a side
-         * face). */
-        let mut found = None;
-        for t in 0..w.tile_count {
-            let Some(cap) = water_cap_row(&w, t) else { continue };
-            let mut d = cap;
-            while d > 0 && w.get(t, d - 1) == Block::Water {
-                d -= 1;
-            }
-            let nb = w.grid.tile(t).map(|tt| tt.edge_neighbours[0]).unwrap_or(-1);
-            if w.get(t, d) == Block::Water
-                && w.get(t, d - 1) != Block::Water
-                && w.get(t, d - 1) != Block::Air
-                && nb >= 0
-                && w.get(nb, d) == Block::Water
-            {
-                found = Some((t, d, nb));
-                break;
-            }
-        }
-        let (tile, d_low, nb) = found.expect("world has an ocean column on a solid seabed");
-
-        let mut m = HexMesh::new();
-        build_water_voxels(&mut m, &w, tile);
-        let before = m.vertices.len();
-
-        /* Dig the seabed out (air below) AND the edge neighbour (air beside):
-         * the SLEEPING ocean cell is now exposed under and to the side. */
-        w.set(tile, d_low - 1, Block::Air);
-        w.set(nb, d_low, Block::Air);
-        m.reset();
-        build_water_voxels(&mut m, &w, tile);
-        let after = m.vertices.len();
-        assert_eq!(
-            after, before,
-            "static ocean drew a bare cap/wall into the dug cave: {before} -> {after} verts"
-        );
-
-        /* Contrast: a FLOWING cell in that same spot DOES show its underside
-         * + side wall (the legit held-back-pool case the gate must not kill). */
-        world_water::set_state(&mut w, tile, d_low, 0x02); /* flow, level 2 */
-        m.reset();
-        build_water_voxels(&mut m, &w, tile);
-        let flowing = m.vertices.len();
-        assert!(
-            flowing > before,
-            "a flowing pool must still draw its bare faces: {flowing} verts"
-        );
     }
 
     fn vertex_bytes(m: &HexMesh) -> Vec<u8> {
