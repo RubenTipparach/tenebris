@@ -16,13 +16,15 @@
 #   sprint          - run
 #   fly_down        - descend while flying / in space
 #   toggle_fly      - toggle creative fly mode
-#   roll_left / roll_right - roll the view (space flight only)
-#   interact        - board a ship / dock the station / open the machine
-#                     under the reticle / pick up a scattered item
-#   inventory       - open / close the player inventory (its own key)
+#   roll_left / roll_right - roll the rocket (roll_right folds into interact)
+#   interact        - CONTEXT key: rolls the rocket right while riding; on
+#                     foot boards a ship / opens the machine under the reticle
+#                     / picks up a scattered item, or opens the inventory when
+#                     there's no target
+#   inventory       - open / close the player inventory (always available)
 #   eat             - eat the selected food
 #   plant           - plant a seed / till soil under the reticle
-#   survival_toggle - toggle survival / creative
+#   survival_toggle - survival/creative on foot; docks the station while riding
 #   pause           - open / close the pause menu
 #   tech_tree       - open / close the tech-tree progression screen
 #   debug_ui        - master toggle for the debug UI
@@ -40,8 +42,10 @@ move_right:      D
 jump:            Space
 sprint:          LeftShift, RightShift
 fly_down:        LeftControl, RightControl, C
-# Creative fly toggle: R (F is now the world-interact key).
+# Creative fly toggle: R (F is intentionally unbound).
 toggle_fly:      R
+# Survival/creative on foot; while RIDING a rocket the same key docks the
+# station instead (context-handled - you never switch modes mid-flight).
 survival_toggle: G
 
 # Menus.
@@ -49,17 +53,20 @@ pause:           Escape
 tech_tree:       K
 crafting:        B
 
-# Space flight: roll the view with Q / E (the classic left/right roll
-# pair). E is RESERVED for roll - interact lives on F.
+# Rocket roll: Q rolls left. Roll RIGHT is folded into the E context key
+# below (E rolls the rocket right WHILE RIDING), so roll_right is left
+# unbound here.
 roll_left:       Q
-roll_right:      E
 
-# World interaction: aim at a machine (chest, furnace, 3D printer, power
-# generator, rocket pad, aquarium, ...) and press this to open it; also
-# boards a parked ship, docks the station, and picks up scattered items.
-interact:        F
+# E is the CONTEXT key. WHILE RIDING a rocket it rolls right. ON FOOT it
+# interacts - aim at a machine (chest, furnace, 3D printer, power generator,
+# rocket pad, aquarium, ...) to open it, board a parked ship, or pick up a
+# scattered item - and with no target it opens the inventory. Roll and
+# inventory never overlap because riding and on-foot are mutually exclusive.
+interact:        E
 
-# Inventory: its OWN key, distinct from interact.
+# Inventory: its OWN key, always available (E also opens it on foot when
+# there's no interact target).
 inventory:       Tab
 
 eat:             V

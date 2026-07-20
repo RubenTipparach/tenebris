@@ -30,12 +30,15 @@ pub enum Action {
     /// Roll the view left / right (space flight only).
     RollLeft,
     RollRight,
-    /// World interaction: board a parked ship, dock the station, or open the
-    /// machine under the reticle / pick up a scattered item. Does NOT open the
-    /// inventory - that is its own action so the two live on separate keys.
+    /// The CONTEXT key (default E). While RIDING a rocket it rolls right (it
+    /// drives `roll_right` through input.rs). On foot it interacts - board a
+    /// parked ship, open the machine under the reticle, pick up a scattered
+    /// item - or, with no target, opens the inventory. Roll and interact never
+    /// overlap because riding and on-foot are mutually exclusive.
     Interact,
-    /// Open / close the player inventory overlay (its own key, distinct from
-    /// [`Action::Interact`]).
+    /// Open / close the player inventory overlay. Its OWN key (default Tab),
+    /// always available; E also opens it on foot when there's no interact
+    /// target.
     OpenInventory,
     /// Jettison the current rocket stage (while flying a staged rocket).
     Stage,
@@ -92,10 +95,9 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Movement", "Sprint", Action::Sprint),
     ("Movement", "Fly down", Action::FlyDown),
     ("Movement", "Toggle fly", Action::ToggleFly),
-    ("Camera", "Roll left", Action::RollLeft),
-    ("Camera", "Roll right", Action::RollRight),
+    ("Camera", "Roll left (rocket)", Action::RollLeft),
     ("Interact", "Inventory", Action::OpenInventory),
-    ("Interact", "Interact / open machine", Action::Interact),
+    ("Interact", "Interact / roll right", Action::Interact),
     ("Interact", "Eat", Action::Eat),
     ("Interact", "Plant / till", Action::Plant),
     ("Rocket", "Stage / jettison", Action::Stage),
@@ -236,19 +238,21 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (LeftControl, Action::FlyDown),
         (RightControl, Action::FlyDown),
         (C, Action::FlyDown),
-        /* Creative fly toggle lives on R now that F is the world-interact key
-         * and E is roll-right (R freed up when roll moved off it). */
+        /* Creative fly toggle on R; F is intentionally unbound. */
         (R, Action::ToggleFly),
+        /* G survival/creative toggle on foot; while RIDING it docks the
+         * station (context handled in app.rs / input.rs). */
         (G, Action::SurvivalToggle),
         (V, Action::Eat),
         (T, Action::Plant),
-        /* Roll on Q / E (the classic left/right pair); E is reserved for
-         * roll, so Interact moved to F. */
+        /* Q rolls the ROCKET left. E is the CONTEXT key: it rolls the rocket
+         * RIGHT while riding, and on foot it interacts (board / machine /
+         * pickup) or, with no target, opens the inventory. Roll and inventory
+         * never overlap because riding and on-foot are mutually exclusive.
+         * (RollRight is left unbound by default - E drives roll_right through
+         * the Interact arm in input.rs; it stays rebindable.) */
         (Q, Action::RollLeft),
-        (E, Action::RollRight),
-        /* World interaction (board / dock / open machine / pickup) on F;
-         * inventory is its OWN key (Tab) so the two never share a binding. */
-        (F, Action::Interact),
+        (E, Action::Interact),
         (Tab, Action::OpenInventory),
         (X, Action::Stage),
         /* Beside X so the rocket keys cluster. Not V (the JS's exit key) -
@@ -400,34 +404,32 @@ mod tests {
     fn defaults_bind_the_core_scheme() {
         set_bindings(default_bindings());
         assert_eq!(action_for_key(Keycode::W), Some(Action::MoveForward));
-        /* Inventory and interact are SEPARATE actions on SEPARATE keys:
-         * Tab = inventory, F = interact. */
+        /* E is the CONTEXT key (Interact): rolls the rocket right while
+         * riding, interacts / opens the inventory on foot. Tab is the
+         * always-available inventory key; F is unbound. */
+        assert_eq!(action_for_key(Keycode::E), Some(Action::Interact));
         assert_eq!(action_for_key(Keycode::Tab), Some(Action::OpenInventory));
-        assert_eq!(action_for_key(Keycode::F), Some(Action::Interact));
+        assert_eq!(action_for_key(Keycode::F), None, "F is intentionally unbound");
         assert_eq!(action_for_key(Keycode::Q), Some(Action::RollLeft));
-        assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
-        /* R is the creative fly toggle (moved off F). */
+        /* R is the creative fly toggle; G is survival/dock. */
         assert_eq!(action_for_key(Keycode::R), Some(Action::ToggleFly));
+        assert_eq!(action_for_key(Keycode::G), Some(Action::SurvivalToggle));
         assert_eq!(action_for_key(Keycode::Num1), Some(Action::Hotbar(0)));
         assert_eq!(action_for_key(Keycode::Num0), Some(Action::Hotbar(9)));
-        /* E is roll, never interact or inventory. */
-        assert_ne!(action_for_key(Keycode::E), Some(Action::Interact));
-        assert_ne!(action_for_key(Keycode::E), Some(Action::OpenInventory));
     }
 
     #[test]
     fn prompt_label_follows_the_binding() {
         set_bindings(default_bindings());
-        assert_eq!(action_label(Action::Interact), "F");
+        /* Interact prompts show E (the context key); Tab is inventory. */
+        assert_eq!(action_label(Action::Interact), "E");
         assert_eq!(action_label(Action::OpenInventory), "Tab");
-        /* E is roll-right in the default scheme, not interact/inventory. */
-        assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight));
         /* Rebinding interact moves the prompt with it. */
-        let (b, warn) = parse("interact: G\n");
+        let (b, warn) = parse("interact: H\n");
         assert!(warn.is_empty(), "{warn:?}");
         set_bindings(b);
-        assert_eq!(action_label(Action::Interact), "G");
-        assert_eq!(action_for_key(Keycode::G), Some(Action::Interact));
+        assert_eq!(action_label(Action::Interact), "H");
+        assert_eq!(action_for_key(Keycode::H), Some(Action::Interact));
     }
 
     /// Anti-drift guard: the SHIPPED assets/config/controls.yaml is what the
@@ -442,19 +444,19 @@ mod tests {
         set_bindings(b);
         assert!(warn.is_empty(), "controls.yaml has warnings: {warn:?}");
         /* The exact scheme the user asked for. */
+        assert_eq!(action_for_key(Keycode::E), Some(Action::Interact), "E -> context/interact");
         assert_eq!(action_for_key(Keycode::Tab), Some(Action::OpenInventory), "Tab -> inventory");
-        assert_eq!(action_for_key(Keycode::F), Some(Action::Interact), "F -> interact");
-        assert_eq!(action_for_key(Keycode::E), Some(Action::RollRight), "E -> roll right");
+        assert_eq!(action_for_key(Keycode::Q), Some(Action::RollLeft), "Q -> roll left");
         assert_eq!(action_for_key(Keycode::R), Some(Action::ToggleFly), "R -> toggle fly");
-        /* E must NOT open the inventory - the exact bug being fixed. */
-        assert_ne!(action_for_key(Keycode::E), Some(Action::OpenInventory));
+        assert_eq!(action_for_key(Keycode::F), None, "F unbound");
         /* And the shipped YAML must agree with the compiled defaults for the
-         * core interaction keys, so a future edit to one without the other
-         * fails here. */
+         * core keys, so a future edit to one without the other fails here. */
         set_bindings(default_bindings());
+        assert_eq!(action_for_key(Keycode::E), Some(Action::Interact));
         assert_eq!(action_for_key(Keycode::Tab), Some(Action::OpenInventory));
-        assert_eq!(action_for_key(Keycode::F), Some(Action::Interact));
+        assert_eq!(action_for_key(Keycode::Q), Some(Action::RollLeft));
         assert_eq!(action_for_key(Keycode::R), Some(Action::ToggleFly));
+        assert_eq!(action_for_key(Keycode::F), None);
     }
 
     #[test]

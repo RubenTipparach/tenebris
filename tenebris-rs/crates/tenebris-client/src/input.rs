@@ -293,7 +293,11 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
             }
         }
         Action::SurvivalToggle => {
-            if down {
+            /* On foot this toggles survival/creative; while RIDING the same
+             * key (G) docks the station instead (handled in app.rs), so
+             * suppress the survival edge in flight - you never switch modes
+             * mid-rocket. */
+            if down && !crate::rocket_ride::is_riding() {
                 s.survival_toggle_edge = true;
             }
         }
@@ -309,11 +313,16 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         }
         Action::RollLeft => s.pub_.phys.roll_left = down,
         Action::RollRight => s.pub_.phys.roll_right = down,
-        /* High-level actions (menus / debug toggles / interact) are resolved in
+        /* The CONTEXT key (default E) drives roll-right in the physics layer -
+         * consumed ONLY when riding a rocket (the flight steer). On foot the
+         * roll is ignored and app.rs::event_inner fires the interact / inventory
+         * edge instead, so E rolls in a rocket and interacts on foot with no
+         * overlap. */
+        Action::Interact => s.pub_.phys.roll_right = down,
+        /* High-level actions (menus / debug toggles / inventory) are resolved in
          * app.rs::event_inner before events reach this per-frame physics layer,
          * so they do nothing here. */
-        Action::Interact
-        | Action::OpenInventory
+        Action::OpenInventory
         | Action::Stage
         | Action::ExitRocket
         | Action::RespawnRocket
@@ -1080,12 +1089,12 @@ mod tests {
         assert!(!state().phys.sprint);
         handle_event(&key(EventType::KeyDown, Keycode::C));
         assert!(state().phys.fly_down);
-        /* Roll is Q (left) / E (right). F is the world-interact key and R is
-         * the fly toggle, so neither drives roll. */
+        /* Rocket roll: Q rolls left; E (the context key) drives roll-right in
+         * the physics layer. Both set here. */
         handle_event(&key(EventType::KeyDown, Keycode::Q));
         handle_event(&key(EventType::KeyDown, Keycode::E));
         assert!(state().phys.roll_left && state().phys.roll_right);
-        /* F is interact, not roll: it must NOT drive roll-right. */
+        /* F is unbound now, so it can't drive roll-right. */
         handle_event(&key(EventType::KeyUp, Keycode::E));
         handle_event(&key(EventType::KeyDown, Keycode::F));
         assert!(!state().phys.roll_right);

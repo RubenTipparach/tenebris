@@ -8145,15 +8145,27 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     /* Interact (inventory / board / open machine) is disabled while the solar
      * map is open - there you are flying and the key would just pop the
      * inventory over the chart. */
+    /* E is the context key. On FOOT it interacts / opens the inventory; while
+     * RIDING it rolls the rocket (physics layer), so gate the interact edge on
+     * NOT riding - that's what keeps roll and interact from overlapping. Also
+     * gated off the solar map (there E would pop the bag over the chart). */
     let interact_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::Interact)
+        && !rocket_ride::is_riding()
         && !solar_map::is_open();
-    /* Inventory is its OWN key (default Tab), separate from Interact (default
-     * F). Same solar-map gate - the bag must not pop over the orbit chart
-     * while flying. */
+    /* Inventory is its OWN key (default Tab), always available. Same solar-map
+     * gate - the bag must not pop over the orbit chart while flying. */
     let inventory_pressed = e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code)
             == Some(crate::controls::Action::OpenInventory)
+        && !solar_map::is_open();
+    /* Dock at the orbital station: the G key (its survival-toggle binding,
+     * repurposed by context) while RIDING. E no longer docks - it rolls in
+     * flight - so docking gets its own key that can't fight the roll. */
+    let dock_pressed = e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code)
+            == Some(crate::controls::Action::SurvivalToggle)
+        && rocket_ride::is_riding()
         && !solar_map::is_open();
     if inventory_pressed {
         /* toggle() calls screens::take_focus, which is the SINGLE place that
@@ -8176,15 +8188,14 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if interact_pressed && !rocket_ride::is_riding() && open_nearest_slot(app) {
         return;
     }
-    /* Dock at the orbital trading station: Interact within dock range
-     * AND with the station's orbital velocity matched (the rendezvous
-     * gate - too fast and the HUD shows the gap instead). The station
-     * flies at 120 m altitude, far above any interact raycast target,
-     * so this can't shadow a machine. */
-    if interact_pressed && rocket_ride::is_riding() {
-        /* Log the rendezvous gate on EVERY E-while-riding so a failed dock
-         * shows WHY in the console (too far / too fast) instead of just
-         * doing nothing - the "start logging, stop guessing" ask. */
+    /* Dock at the orbital trading station: G while riding, within dock range
+     * AND with the station's orbital velocity matched (the rendezvous gate -
+     * too fast and the HUD shows the gap instead). The station flies at 120 m
+     * altitude, far above any interact raycast target. */
+    if dock_pressed {
+        /* Log the rendezvous gate on EVERY dock press so a failed dock shows
+         * WHY in the console (too far / too fast) instead of just doing
+         * nothing - the "start logging, stop guessing" ask. */
         let (pos, vel) = {
             let p = app.player.borrow();
             (p.position, p.velocity)
@@ -8202,7 +8213,7 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             "IN RANGE - opening dock"
         };
         println!(
-            "[dock] E while riding: dist={:.1} m (dock radius {:.1} m), \
+            "[dock] G while riding: dist={:.1} m (dock radius {:.1} m), \
              rel_speed={:.2} m/s (matched={}) -> {}",
             dist, radius, rel, speed_ok, verdict
         );
@@ -8211,10 +8222,8 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
              * sequence is the next build; for now this opens the hub once
              * you're in range + velocity-matched.) */
             station_screen::open(app.player.clone());
-            return;
         }
-        /* Gate failed - fall through; E isn't consumed so other handlers
-         * (none while riding) still get a shot. */
+        return;
     }
     if interact_pressed && app.interact.has_target && !app.interact.is_torch_target {
         let targeted = app
@@ -8339,10 +8348,14 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         }
     }
 
-    /* Interact (default F) with no machine / ship / pickup under the reticle
-     * now does nothing - the inventory moved to its OWN key (default Tab,
-     * handled at the top of this fn), so Interact no longer doubles as the
-     * inventory toggle. */
+    /* E (context key) on foot with NO machine / ship / pickup under the
+     * reticle falls back to the inventory - so E opens the bag when there's
+     * nothing to interact with, matching Tab. (While riding, interact_pressed
+     * is false and E rolls instead, so this never fires in flight.) */
+    if interact_pressed {
+        inventory_screen::toggle();
+        return;
+    }
     /* K: toggle the tech-tree / progression guide overlay. */
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::OpenTechTree)
