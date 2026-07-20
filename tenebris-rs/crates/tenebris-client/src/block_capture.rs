@@ -880,6 +880,38 @@ mod tests {
         );
     }
 
+    /// Regression: "stuck inside a tree block" - walk into a tree at ground
+    /// level and sink into the dirt at the trunk base (CLAUDE.md OPEN repro
+    /// #2). Captured in-game with feet embedded at depth 67 (DIRT). The
+    /// voxel-containment resolve scanned up through the whole trunk + canopy
+    /// (~8 m lift), blew its ~2.4 m cap, and gave up - leaving the player
+    /// embedded. After the fix (the scan stops at the first tree voxel when the
+    /// feet are in NON-tree terrain) the resolve lifts the player onto the
+    /// ground surface at the trunk base. Heavy (real subdiv-7 gen), #[ignore]d
+    /// for CI; green here is NOT proof - only an in-game check counts.
+    #[test]
+    #[ignore]
+    fn tree_base_embedded_lifts_to_surface() {
+        crate::input::init();
+        const FIXTURE: &str = include_str!("block_capture_testdata/tree_base_embedded.tenecap");
+        let cap = parse(FIXTURE).expect("parse fixture");
+        assert_eq!(cap.feet_depth, 67, "fixture captured the player embedded at depth 67");
+        let (w, mut p) = rebuild(&cap).expect("rebuild");
+        let center = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+        for _ in 0..180 {
+            crate::player_ctrl::update(&mut p, Some(&w), 1.0 / 60.0);
+        }
+        let final_depth = w.radius_to_depth(dvec3_length(dvec3_sub(p.position, center)));
+        /* The tree's ground surface (top of the d68 grass) is depth 69. Before
+         * the fix the player stayed stuck at depth 67-68, embedded in the dirt/
+         * grass; after it they are lifted onto the surface. */
+        assert!(
+            final_depth >= 69 && p.grounded,
+            "tree-base embed NOT fixed: player settled at depth {final_depth} grounded={} (want >= 69 grounded, lifted onto the surface)",
+            p.grounded
+        );
+    }
+
     #[test]
     fn bad_header_is_rejected() {
         assert!(parse("not a capture\nfoo 1\n").is_err());

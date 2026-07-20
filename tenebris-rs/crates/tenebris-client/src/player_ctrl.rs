@@ -2311,8 +2311,20 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
             if feet_depth >= 0 && feet_depth < WORLD_MAX_DEPTH {
                 let feet_block = w.get(cur_tile, feet_depth);
                 if blocks::is_solid(feet_block) {
+                    /* When the feet are embedded in NON-tree terrain (the "walk
+                     * into a tree at ground level and sink into the dirt" bug),
+                     * stop the scan at the first tree voxel so the resolve lifts
+                     * the player onto the GROUND surface at the trunk base - not
+                     * up past the whole trunk + canopy (an ~8 m lift that blows
+                     * the cap and leaves them stuck embedded). When the feet are
+                     * IN a tree (standing in the canopy), keep scanning through
+                     * it to the top so the canopy still holds the player up. */
+                    let feet_is_tree = is_tree_raw(feet_block.raw());
                     let mut d = feet_depth;
-                    while d < WORLD_MAX_DEPTH && blocks::is_solid(w.get(cur_tile, d)) {
+                    while d < WORLD_MAX_DEPTH
+                        && blocks::is_solid(w.get(cur_tile, d))
+                        && (feet_is_tree || !is_tree_raw(w.get(cur_tile, d).raw()))
+                    {
                         d += 1;
                     }
                     if d < WORLD_MAX_DEPTH {
