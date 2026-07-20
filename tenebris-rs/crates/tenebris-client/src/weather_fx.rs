@@ -257,6 +257,21 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             depth: sg::DepthState {
                 write_enabled: false,
                 compare: sg::CompareFunc::Less,
+                /* Pull the translucent rain curtains TOWARD the camera in depth
+                 * so they don't Z-FIGHT the terrain they graze at distance. The
+                 * scene runs a 0.3 m..20 km frustum (the sun disc needs the far
+                 * plane), so depth resolution out at the storm shafts is ~0.4 m.
+                 * A distant sheet viewed at a grazing angle is nearly coplanar
+                 * with the ground over its whole face, so fragments trade the
+                 * Less test frame-to-frame and the sheet flickers / blinks out.
+                 * The mined-cell decal hit the same planet-scale precision wall
+                 * (see app.rs draw-world) and was moved in-shader; rain is
+                 * separate geometry, so instead we bias it. Negative = toward
+                 * the camera; slope-scaled so GRAZING (high-slope) faces get the
+                 * most nudge and win the test, while a nearer hill (large depth
+                 * gap) still occludes the rain behind it. */
+                bias: -2.0,
+                bias_slope_scale: -3.0,
                 ..Default::default()
             },
             cull_mode: sg::CullMode::None,
