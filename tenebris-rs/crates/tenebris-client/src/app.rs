@@ -7437,7 +7437,7 @@ fn frame_inner(app: &mut App) {
      * aimed at. Drawn into the world pass for natural depth-test. */
     if app.interact.has_target && !app.interact.is_torch_target && !menu::pause_active() {
         renderer::draw_face_outline(
-            view,
+            view_scene,
             proj,
             &app.world.borrow(),
             app.interact.hit_tile,
@@ -7466,7 +7466,7 @@ fn frame_inner(app: &mut App) {
     renderer::draw_water(view_scene, proj, cam_world);
     /* F5 toggle: yellow arrows on every water cell with non-zero flow
      * direction. */
-    renderer::draw_water_flow_debug(view, proj);
+    renderer::draw_water_flow_debug(view_scene, proj);
     /* Desktop: end the intermediate pass, blit it to the swapchain applying
      * the lens droplets (perf/mobile already drew straight to the swapchain). */
     if !renderer::perf_mode_enabled() {

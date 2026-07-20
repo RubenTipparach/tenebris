@@ -6191,11 +6191,11 @@ pub fn draw_face_outline(
     sgl::load_matrix(&proj.m[0]);
     sgl::matrix_mode_modelview();
     sgl::load_matrix(&view.m[0]);
-    sgl::translate(
-        world.body.pos_x as f32,
-        world.body.pos_y as f32,
-        world.body.pos_z as f32,
-    );
+    /* Floating origin: rebase the body centre by the camera (the caller draws
+     * with the eye-at-origin scene view) so the outline's f32 vertices stay
+     * near the origin. An absolute translate put them ~150 km out at
+     * heliocentric scale - the jittering selection wireframe. */
+    sgl_translate_scene(dvec3_make(world.body.pos_x, world.body.pos_y, world.body.pos_z));
     sgl::load_pipeline(pip);
 
     sgl::begin_lines();
@@ -6523,11 +6523,9 @@ pub fn draw_water_flow_debug(view: Mat4, proj: Mat4) {
         sgl::load_matrix(&proj.m[0]);
         sgl::matrix_mode_modelview();
         sgl::load_matrix(&view.m[0]);
-        sgl::translate(
-            w.body.pos_x as f32,
-            w.body.pos_y as f32,
-            w.body.pos_z as f32,
-        );
+        /* Floating origin: rebase the body centre by the camera (scene view)
+         * so the debug arrows don't jitter at heliocentric scale. */
+        sgl_translate_scene(dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z));
         sgl::load_pipeline(pip);
 
         sgl::begin_lines();
