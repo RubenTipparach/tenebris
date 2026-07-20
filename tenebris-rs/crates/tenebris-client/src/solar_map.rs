@@ -107,8 +107,24 @@ pub fn close() {
     G.with(|c| c.borrow_mut().open = false);
 }
 
+/// Restore the pointer after the map closes: locked for on-foot mouse-look,
+/// but left FREE while flying - flight mode's own convention (see
+/// `rocket_ride::begin`) is a free cursor for the whole ride (the flight
+/// panel is clickable, the camera orbits on drag), never captured. Every
+/// close path (the O/Escape toggle here, `event`'s close branch, a warp's
+/// `end_warp`) goes through this one function - grabbing the pointer
+/// unconditionally from any one of them was the bug: closing the map while
+/// riding re-locked and HID the mouse mid-flight even though nothing about
+/// flying was supposed to change.
+fn restore_cursor_after_close() {
+    if !crate::rocket_ride::is_riding() {
+        crate::screens::grab_pointer();
+    }
+}
+
 /// Toggle map mode (wired to O in app). Releases pointer lock on open so
-/// the fly-out + drag work; re-locks on close.
+/// the fly-out + drag work; re-locks on close (unless flying - see
+/// `restore_cursor_after_close`).
 pub fn toggle() {
     let now_open = G.with(|c| {
         let mut g = c.borrow_mut();
@@ -121,7 +137,7 @@ pub fn toggle() {
     if now_open {
         crate::screens::take_focus(crate::screens::Screen::SolarMap);
     } else {
-        crate::screens::grab_pointer();
+        restore_cursor_after_close();
     }
 }
 
@@ -185,13 +201,11 @@ fn warp_to_station() {
     end_warp();
 }
 
-/// Close the map after a warp and restore the right cursor state: locked
-/// for on-foot mouse-look, free while flying (the flight panel is clickable).
+/// Close the map after a warp (see `restore_cursor_after_close` for the
+/// cursor rule).
 fn end_warp() {
     close();
-    if !crate::rocket_ride::is_riding() {
-        crate::screens::grab_pointer();
-    }
+    restore_cursor_after_close();
 }
 
 /// While open: swallow mouse events (egui + the drag-orbit own the
@@ -210,7 +224,7 @@ pub fn event(e: &sapp::Event) -> bool {
                     == Some(crate::controls::Action::OpenSolarMap);
                 if e.key_code == sapp::Keycode::Escape || toggle_key {
                     g.open = false;
-                    crate::screens::grab_pointer();
+                    restore_cursor_after_close();
                     return true;
                 }
                 false /* flight keys stay live in map view */
