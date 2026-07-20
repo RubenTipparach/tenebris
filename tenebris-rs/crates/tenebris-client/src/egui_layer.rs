@@ -108,6 +108,12 @@ pub fn init() {
     LAYER.with(|c| {
         let ctx = egui::Context::default();
         ctx.set_pixels_per_point(1.0);
+        /* Tooltips appear the instant the pointer is over a widget - no hover
+         * delay (item tooltips in the inventory / crafting grids should be
+         * immediate). */
+        let mut style = (*ctx.global_style()).clone();
+        style.interaction.tooltip_delay = 0.0;
+        ctx.set_global_style(style);
         *c.borrow_mut() = Some(Layer {
             ctx,
             events: Vec::new(),
