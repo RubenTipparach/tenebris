@@ -42,7 +42,7 @@ use tenebris_core::math::{
     dvec3_sub, DVec3,
 };
 use tenebris_core::nav::{self, Conic};
-use tenebris_core::planet::{self, BodyId};
+use tenebris_core::planet::{self, BodyConfig, BodyId};
 use tenebris_core::station;
 
 /* ------------------------------ tunables ------------------------------ */
@@ -90,6 +90,12 @@ const STATION_TRACK_COL: [f32; 4] = [0.4, 0.8, 0.6, 0.55];
 /// dockable target stays the loudest line on the chart.
 const MOON_TRACK_COL: [f32; 4] = [0.7, 0.72, 0.85, 0.45];
 const HYPERBOLA_CLIP_M: f64 = 40_000.0;
+/// Patched-conics preview colour: the heliocentric orbit an escaping
+/// planet/moon trajectory settles into once it clears the SOI (KSP's "next
+/// patch"). Dimmer + a distinct pale-gold hue so it reads as a preview,
+/// never confused with the primary (current-SOI) conic in ELLIPSE_COL /
+/// ESCAPE_COL.
+const HELIO_PREVIEW_COL: [f32; 4] = [0.9, 0.85, 0.4, 0.5];
 /* Inside this many dock radii of the station the rocket's trajectory line
  * hides - the approach/docking UI is what matters there. */
 const STATION_SOI_DOCK_RADII: f64 = 2.0;
@@ -845,6 +851,41 @@ const PLANET_TRACK_COL: [f32; 4] = [0.45, 0.55, 0.75, 0.4];
 /// The asteroid belt band.
 const BELT_TRACK_COL: [f32; 4] = [0.5, 0.5, 0.55, 0.2];
 
+/// Draw a conic's polyline + its periapsis/apoapsis tick marks. Shared by
+/// the primary (current-SOI) conic and the patched-conics heliocentric
+/// preview ([`patched_helio_conic`]) so both draw sites (map + flight view)
+/// stay in lock-step instead of duplicating the polyline+tick logic.
+fn draw_conic_track(conic: &Conic, col: [f32; 4], tick_r: f64) {
+    let pts = conic.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M);
+    line_strip(&pts, col);
+    let pe = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, conic.periapsis_m));
+    cross_marker(pe, tick_r, col);
+    if conic.apoapsis_m.is_finite() {
+        let ap = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, -conic.apoapsis_m));
+        cross_marker(ap, tick_r, col);
+    }
+}
+
+/// The patched-conics preview: while `primary` is an ESCAPE (e >= 1) from a
+/// planet or moon (not the sun itself), also solve the heliocentric conic of
+/// the SAME (pos, vel) state - the orbit around the star this trajectory
+/// settles into once it clears the current body's SOI. `None` while bound
+/// (nothing to escape to), while already heliocentric (nothing to patch
+/// INTO), or before solar gravity is armed (`sun_mu() == 0` - no
+/// heliocentric frame exists yet).
+///
+/// Gravity here is simple Newtonian two-body per focus (see `nav`'s doc), so
+/// the sun-relative conic of the exact same state ALREADY IS that eventual
+/// orbit - this isn't a separate propagation, just evaluating the other
+/// focus now, the same way KSP patches a departure hyperbola onto the
+/// parent body's conic at the SOI boundary.
+fn patched_helio_conic(primary: &Conic, focus_body: &BodyConfig, pos: DVec3, vel: DVec3) -> Option<Conic> {
+    if primary.e < 1.0 || focus_body.name == "Sun" || planet::sun_mu() <= 0.0 {
+        return None;
+    }
+    Conic::from_state(&planet::sun_body(), pos, vel)
+}
+
 /// The 3D map view's orbit layer: every planet's ring about the star,
 /// every moon's ring about its planet, the asteroid belt, the station
 /// track, a halo cage on the maneuver target, and a marker at the SHIP.
@@ -937,13 +978,11 @@ pub fn draw_map_orbits(
         let focus = nav::dominant_body(ship_pos);
         if let Some(conic) = Conic::from_state(&focus, ship_pos, ship_vel) {
             let col = if conic.e < 1.0 { ELLIPSE_COL } else { ESCAPE_COL };
-            let pts = conic.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M);
-            line_strip(&pts, col);
-            let pe = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, conic.periapsis_m));
-            cross_marker(pe, 25.0, col);
-            if conic.apoapsis_m.is_finite() {
-                let ap = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, -conic.apoapsis_m));
-                cross_marker(ap, 25.0, col);
+            draw_conic_track(&conic, col, 25.0);
+            /* Patched conics: escaping a planet/moon also previews the
+             * heliocentric orbit it settles into once clear of the SOI. */
+            if let Some(helio) = patched_helio_conic(&conic, &focus, ship_pos, ship_vel) {
+                draw_conic_track(&helio, HELIO_PREVIEW_COL, 18.0);
             }
         }
         /* Attitude arrows at the ship, sized to the map zoom so the pilot can
@@ -1303,14 +1342,11 @@ pub fn draw_world(
         let focus = nav::dominant_body(pos);
         if let Some(conic) = Conic::from_state(&focus, pos, vel) {
             let col = if conic.e < 1.0 { ELLIPSE_COL } else { ESCAPE_COL };
-            let pts = conic.sample(ORBIT_SEGS, HYPERBOLA_CLIP_M);
-            line_strip(&pts, col);
-            /* Ap/Pe ticks (Pe always exists; Ap only when bound). */
-            let pe = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, conic.periapsis_m));
-            cross_marker(pe, 25.0, col);
-            if conic.apoapsis_m.is_finite() {
-                let ap = dvec3_add(conic.focus, dvec3_scale(conic.p_hat, -conic.apoapsis_m));
-                cross_marker(ap, 25.0, col);
+            draw_conic_track(&conic, col, 25.0);
+            /* Patched conics: escaping a planet/moon also previews the
+             * heliocentric orbit it settles into once clear of the SOI. */
+            if let Some(helio) = patched_helio_conic(&conic, &focus, pos, vel) {
+                draw_conic_track(&helio, HELIO_PREVIEW_COL, 18.0);
             }
         }
         /* The visible orbit line is the click surface for the node placer. */
@@ -1935,6 +1971,23 @@ mod tests {
         assert_eq!(target(), None, "one past the end is none");
         cycle_target();
         assert_eq!(target(), Some(Target::Station), "and it wraps");
+    }
+
+    /// Patched conics: a BOUND orbit (e < 1) has nothing to escape TO, so no
+    /// heliocentric preview - the gate must short-circuit before even
+    /// touching `sun_mu()` (untouched here - a global toggled only by
+    /// `reposition_heliocentric`, which this test must not flip and leave
+    /// dirty for every other test in the binary).
+    #[test]
+    fn patched_helio_conic_is_none_for_a_bound_orbit() {
+        let b = planet::get(BodyId::Tenebris);
+        let r = 5_000.0;
+        let v = (nav::mu(&b) / r).sqrt(); /* circular - well bound */
+        let pos = dvec3_make(r, 0.0, 0.0);
+        let vel = dvec3_make(0.0, 0.0, v);
+        let conic = Conic::from_state(&b, pos, vel).unwrap();
+        assert!(conic.e < 1.0, "circular orbit is bound");
+        assert!(patched_helio_conic(&conic, &b, pos, vel).is_none());
     }
 
     /// The maneuver node pins to a FIXED point on the orbit: node_plan produces

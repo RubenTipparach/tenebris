@@ -58,6 +58,13 @@ pub fn dominant_body(pos: DVec3) -> BodyConfig {
     best
 }
 
+/// Floor on [`Conic::sample`]'s hyperbola clip radius, as a multiple of the
+/// conic's own periapsis - guarantees a visible (non-degenerate) arc
+/// regardless of the focus body's scale, without overriding a caller's
+/// DELIBERATELY tight clip (as long as it's still bigger than periapsis,
+/// which is the only case that can actually be sampled). See `sample`'s doc.
+const HYPERBOLA_CLIP_PERIAPSIS_MULT: f64 = 1.2;
+
 /// A two-body conic section: the orbit the current state implies around
 /// its focus body. Ellipse when bound (e < 1), hyperbola when not.
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +169,16 @@ impl Conic {
     /// Ellipse: the full loop (closed - the last point meets the first).
     /// Hyperbola: the arc around periapsis clipped at `r_max` from the
     /// focus, so an escape trajectory doesn't draw off to infinity.
+    ///
+    /// `r_max` is floored to a multiple of THIS conic's own periapsis, so
+    /// the clip self-scales with the focus body instead of assuming one
+    /// fixed absolute distance. A planetary escape's periapsis is a few km;
+    /// a heliocentric escape's is the planet's whole orbital radius around
+    /// the star (~150 km in this system) - a caller-supplied clip tuned for
+    /// the planetary case (e.g. 40 km) sits INSIDE the heliocentric
+    /// periapsis, so `p / r_max` blows way past 1, clamps to the same
+    /// point every sample, and the hyperbola draws as a single dot (the
+    /// "heliocentric orbit fails to draw once I hit escape velocity" bug).
     pub fn sample(&self, n: usize, r_max: f64) -> Vec<DVec3> {
         let n = n.max(8);
         let p = self.periapsis_m * (1.0 + self.e); /* semi-latus rectum */
@@ -173,6 +190,7 @@ impl Conic {
                 out.push(self.point_at(r, th));
             }
         } else {
+            let r_max = r_max.max(self.periapsis_m * HYPERBOLA_CLIP_PERIAPSIS_MULT);
             /* True anomaly where r hits r_max: cos(th) = (p/r - 1)/e. */
             let c = ((p / r_max - 1.0) / self.e).clamp(-1.0, 1.0);
             let th_max = c.acos();
@@ -811,5 +829,33 @@ mod tests {
             let expect = p / (1.0 + c.e * cos_th);
             assert!((rr - expect).abs() < 1e-6 * rr.max(1.0), "r {} vs conic {}", rr, expect);
         }
+    }
+
+    /// Regression for "the heliocentric orbit fails to draw once I hit
+    /// escape velocity": a hyperbola's sample must not collapse to a single
+    /// point when the CALLER's `r_max` (tuned for a planetary-scale escape,
+    /// e.g. a fixed 40 km) is smaller than the conic's OWN periapsis (a
+    /// heliocentric escape's periapsis is the planet's whole orbital radius
+    /// around the star, ~150 km here - well past a 40 km clip). `sample`
+    /// must floor the clip to the conic's own scale instead of trusting the
+    /// caller's constant blindly.
+    #[test]
+    fn sample_does_not_collapse_when_r_max_is_smaller_than_periapsis() {
+        let b = tenebris();
+        let r = 8_000.0;
+        let v = 1.5 * (2.0 * mu(&b) / r).sqrt(); /* well past escape speed */
+        let c = Conic::from_state(&b, dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 40.0, v)).unwrap();
+        assert!(c.e >= 1.0, "escape trajectory");
+
+        /* A clip well INSIDE the conic's own periapsis - the exact
+         * planetary-clip-vs-larger-focus-scale mismatch that collapsed the
+         * heliocentric hyperbola to a single point. */
+        let r_max = c.periapsis_m * 0.1;
+        let pts = c.sample(64, r_max);
+        let spread = pts
+            .windows(2)
+            .map(|w| dvec3_length(dvec3_sub(w[1], w[0])))
+            .fold(0.0_f64, f64::max);
+        assert!(spread > 1.0, "sample collapsed to a single point (max chord = {spread})");
     }
 }
