@@ -354,8 +354,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     /* Torch raycast - placed-torch entities are NOT in the voxel grid,
      * so they need their own intersection pass. Whichever target sits
      * closer along the look ray wins; the torch path short-circuits
-     * the block path so a torch always takes precedence on a tie. */
-    let eye_f = vec3_make(eye.x as f32, eye.y as f32, eye.z as f32);
+     * the block path so a torch always takes precedence on a tie.
+     *
+     * Torch positions are stored BODY-LOCAL (base = world - body_center;
+     * torch.rs), so the ray ORIGIN must be body-local too. `eye` is a world-
+     * space pose, so subtract the body centre first. This was invisible while
+     * Tenebris sat at the world origin (body-local == world), but bodies now
+     * orbit ~150 km out - passing the world eye put the ray 150 km from the
+     * body-local torch spheres, so `torch::raycast` never hit and you could
+     * not target (or recover) a torch. The direction is translation-invariant,
+     * so it needs no rebase (same fix shape as the planet-local water camera). */
+    let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let eye_local = dvec3_sub(eye, bc);
+    let eye_f = vec3_make(eye_local.x as f32, eye_local.y as f32, eye_local.z as f32);
     let dir_f = vec3_make(dir.x as f32, dir.y as f32, dir.z as f32);
     crate::profiler::begin("interact-targets");
     let (torch_hit, torch_dist_f) = torch::raycast(eye_f, dir_f, MAX_DIST as f32);
