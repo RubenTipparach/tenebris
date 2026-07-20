@@ -607,6 +607,16 @@ const FISH_CLIMB_MPS: f64 = 1.1;
 /// (radians of the anim-phase sine). Small = long slow rise/dive
 /// cycles that read like real cruising.
 const FISH_DEPTH_RATE: f64 = 0.11;
+/// A land animal that fell / spawned into water swims with its body this
+/// far below the surface (head above the waterline, like a swimming dog).
+const SWIM_SUBMERGE_M: f64 = 0.35;
+/// Rate a swimming land animal floats up to the surface, m/s (bounded like
+/// the fish climb so the bob-up is a glide, not a snap).
+const SWIM_FLOAT_MPS: f64 = 2.0;
+/// How far around itself a swimmer probes for the nearest shore, metres.
+const SHORE_PROBE_M: f64 = 4.0;
+/// Directions sampled (around the local up) when hunting the nearest shore.
+const SHORE_SAMPLES: usize = 8;
 
 /// Advance one animal by `dt`. `up` is the surface normal at its position;
 /// `tick_salt` varies the wander RNG over time. Moves `pos` along the
@@ -1082,6 +1092,18 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
             (rand01(a.id, a.anim_phase as u32) as f64 - 0.5) * TURN_JITTER,
         );
     };
+    /* Sea surface radius on this body (0 offset on unraised worlds). Shared
+     * by the water column (fish), the land-animal swim rescue, and the
+     * fall-into-water splash-down. */
+    let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
+        + crate::planet_gen::sea_raise_m(&w.body) as f64;
+    /* Walkable-floor radius (from the body centre) along body-local
+     * direction `d`, or 0 if the column has no floor. */
+    let floor_r_of = |d: DVec3, hint_r: f64| -> f64 {
+        floor_pos(w, d, hint_r, -1)
+            .map(|p| dvec3_length(dvec3_sub(p, center)))
+            .unwrap_or(0.0)
+    };
 
     match a.kind.habitat() {
         Habitat::Air => {
@@ -1107,9 +1129,7 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
              * floor and a per-species surface margin (covers the drawn
              * body so nothing pokes above the water), and refuse the
              * beach (shallow / dry columns). Seeded worlds add their
-             * raised-sea offset. */
-            let sea_r = w.depth_to_radius_m(WORLD_SEA_LEVEL_DEPTH)
-                + crate::planet_gen::sea_raise_m(&w.body) as f64;
+             * raised-sea offset (hoisted `sea_r` above). */
             let top_clear = a.kind.water_top_clearance();
             let swim_band = |floor_r: f64| -> Option<(f64, f64)> {
                 let lo = floor_r + FISH_PAD_M;
@@ -1166,10 +1186,95 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
             return;
         }
         Habitat::Land => {
-            /* Land animals REFUSE water: if this frame's move put the
-             * feet in (or under) a water column, undo it and turn
-             * around. Grounded only - a mid-hop frog clears puddles. */
-            if !a.airborne {
+            /* Grounded land animal + a water body: decide between the
+             * shore refusal (don't WALK into the sea) and the swim rescue
+             * (you FELL in - get out). */
+            if w.body.has_water && !a.airborne {
+                let floor_here = floor_r_of(dir, r);
+                /* Submerged = standing in a column whose floor is below
+                 * the waterline with water over your feet. */
+                let submerged = floor_here > 0.0
+                    && floor_here < sea_r - STEP_EPS_M
+                    && block_at(dvec3_add(center, dvec3_scale(dir, floor_here + 0.5)))
+                        == Block::Water;
+                if submerged {
+                    /* Where were we last frame? If on dry land, this was a
+                     * walk INTO the water - refuse and back onto land (the
+                     * old shoreline behaviour). If we were already in the
+                     * water (fell off a cliff, spawned in), we're trapped:
+                     * swim out instead of spinning in place. */
+                    let prev =
+                        dvec3_sub(a.pos, dvec3_scale(a.heading, state_speed(a) * dt as f64));
+                    let prev_rel = dvec3_sub(prev, center);
+                    let prev_r = dvec3_length(prev_rel);
+                    let prev_submerged = prev_r > 1e-6 && {
+                        let pf = floor_r_of(dvec3_scale(prev_rel, 1.0 / prev_r), prev_r);
+                        pf > 0.0 && pf < sea_r - STEP_EPS_M
+                    };
+                    if !prev_submerged {
+                        refuse(a);
+                        return;
+                    }
+                    /* --- swim to the nearest shore --- */
+                    let up = dir;
+                    let base = reproject_tangent(a.heading, up);
+                    /* Sample around us; steer toward the direction with the
+                     * highest ground (gradient-ascent = uphill = toward
+                     * shore, works even across open water). */
+                    let mut best_dir = base;
+                    let mut best_floor = f64::NEG_INFINITY;
+                    for i in 0..SHORE_SAMPLES {
+                        let ang = (i as f64) / SHORE_SAMPLES as f64 * TAU;
+                        let cand = rotate_about_up(base, up, ang);
+                        let probe = dvec3_add(a.pos, dvec3_scale(cand, SHORE_PROBE_M));
+                        let prel = dvec3_sub(probe, center);
+                        let pr = dvec3_length(prel);
+                        let fr = if pr > 1e-6 {
+                            floor_r_of(dvec3_scale(prel, 1.0 / pr), pr)
+                        } else {
+                            0.0
+                        };
+                        if fr > best_floor {
+                            best_floor = fr;
+                            best_dir = cand;
+                        }
+                    }
+                    a.heading = best_dir;
+                    a.state = AnimalState::Walk; /* keep paddling */
+                    /* Float toward the surface (head above the waterline),
+                     * bounded like the fish so it's a glide, not a snap. */
+                    let target_r = (sea_r - SWIM_SUBMERGE_M).max(floor_here + 0.2);
+                    let max_dv = SWIM_FLOAT_MPS * dt as f64;
+                    let new_r = r + (target_r - r).clamp(-max_dv, max_dv);
+                    a.pos = dvec3_add(center, dvec3_scale(dir, new_r));
+                    /* Shore right ahead and climbable? Arm the stop-then-
+                     * jump so it leaps OUT of the water onto the land (the
+                     * same launch the step logic uses; AIR_CONTROL carries
+                     * the arc forward along the shore heading). */
+                    let ahead = dvec3_add(
+                        a.pos,
+                        dvec3_scale(best_dir, WALL_PAD_M * a.kind.scale() as f64 + 0.6),
+                    );
+                    let arel = dvec3_sub(ahead, center);
+                    let ar = dvec3_length(arel);
+                    let ahead_floor = if ar > 1e-6 {
+                        floor_r_of(dvec3_scale(arel, 1.0 / ar), ar)
+                    } else {
+                        0.0
+                    };
+                    if ahead_floor >= sea_r - STEP_EPS_M
+                        && ahead_floor - new_r > STEP_EPS_M
+                        && ahead_floor - new_r <= STEP_MAX_M
+                        && a.jump_pause_t <= 0.0
+                        && a.jump_dr <= 0.0
+                    {
+                        a.jump_dr = ahead_floor - new_r;
+                        a.jump_pause_t = JUMP_PAUSE_S * 0.25; /* launch promptly */
+                    }
+                    return;
+                }
+                /* Not submerged: the normal shore refusal - a land animal
+                 * won't step its feet into a water column. */
                 if let Some(seated) = floor_pos(w, dir, r, -1) {
                     let probe = dvec3_add(seated, dvec3_scale(dir, 0.3));
                     if block_at(probe) == Block::Water {
@@ -1187,12 +1292,20 @@ pub fn reseat(w: &World, a: &mut Animal, dt: f32) {
         let floor_r = floor_pos(w, dir, r, -1)
             .map(|p| dvec3_length(dvec3_sub(p, center)))
             .unwrap_or(0.0);
-        if a.radial_v <= 0.0 && floor_r > 0.0 && new_r <= floor_r {
+        /* A land animal that falls into water splashes down at the SURFACE,
+         * not the sea floor - then the swim rescue takes over next frame.
+         * On dry land (floor at/above the waterline) this is just floor_r. */
+        let land_r = if w.body.has_water && floor_r > 0.0 && floor_r < sea_r - STEP_EPS_M {
+            (sea_r - SWIM_SUBMERGE_M).max(floor_r)
+        } else {
+            floor_r
+        };
+        if a.radial_v <= 0.0 && land_r > 0.0 && new_r <= land_r {
             /* Touch down. */
             a.airborne = false;
             a.radial_v = 0.0;
             a.jump_dr = 0.0;
-            a.pos = dvec3_add(center, dvec3_scale(dir, floor_r));
+            a.pos = dvec3_add(center, dvec3_scale(dir, land_r));
         } else {
             a.pos = dvec3_add(center, dvec3_scale(dir, new_r));
         }
@@ -1607,6 +1720,82 @@ mod tests {
         assert!(
             moved > 3.0,
             "fish should escape the shallow shelf, moved only {moved:.2} m"
+        );
+    }
+
+    /// Regression: a LAND animal that ends up submerged in open water (fell
+    /// off a cliff, spawned on a shelf that eroded) must SWIM - float to the
+    /// surface and strike out toward shore - not sink to the sea floor and
+    /// spin its heading in place forever (the "animals get stuck in water
+    /// with nowhere to go" bug). Deterministic: fixed seed + id.
+    #[test]
+    fn land_animal_trapped_in_water_swims_out_instead_of_stalling() {
+        use crate::blocks::Block;
+        use crate::planet::{self, BodyId};
+        use crate::world::World;
+
+        let mut body = planet::get(BodyId::Tenebris);
+        body.seed = 0xC0FFEE; /* biomes_active -> raised sea + deep ocean basins */
+        let mut w = World::create(&body, 4);
+        while !w.gen_complete() {
+            w.stream_gen(10000);
+        }
+        assert!(w.body.has_water, "seeded Tenebris has oceans");
+        let center = DVec3 { x: body.pos_x, y: body.pos_y, z: body.pos_z };
+        let sea = crate::world::WORLD_SEA_LEVEL_DEPTH;
+        let water_depth = |t: i32| -> i32 {
+            let mut d = sea;
+            while d > 0 && w.get(t, d - 1) == Block::Water {
+                d -= 1;
+            }
+            sea - d
+        };
+        /* The DEEPEST ocean column - the worst case for a trapped land
+         * animal (furthest to swim up, most surrounded by water). */
+        let tile = (0..w.tile_count)
+            .filter(|&t| w.get(t, sea) == Block::Water)
+            .max_by_key(|&t| water_depth(t))
+            .expect("seeded world has ocean water");
+        assert!(water_depth(tile) >= 3, "need a genuinely deep column to submerge");
+        let t = w.grid.tile(tile).expect("tile");
+        let dir = dvec3_normalize(t.center);
+        let sea_r = w.depth_to_radius_m(sea) + crate::planet_gen::sea_raise_m(&w.body) as f64;
+        /* Drop the cow 3 m under the surface (submerged, above the floor). */
+        let start_r = sea_r - 3.0;
+        let mut a =
+            Animal::new_kind(7, dvec3_add(center, dvec3_scale(dir, start_r)), dir, AnimalKind::Cow);
+        a.state = AnimalState::Walk;
+        a.timer = 1.0e9; /* keep walking - isolate the reseat behaviour */
+
+        /* Accumulate the HORIZONTAL arc length travelled. A stuck animal
+         * (old bug) gets `refuse`d every frame - its per-frame advance is
+         * undone, so the path stays ~0 even though it keeps spinning. A
+         * swimmer racks up real distance whether it curves toward shore or
+         * climbs out and walks. Net displacement is a poor proxy (a quick
+         * escape onto a nearby cliff shore barely moves the endpoint). */
+        let mut path = 0.0;
+        let mut prev = a.pos;
+        for i in 0..600 {
+            let up = dvec3_normalize(dvec3_sub(a.pos, center));
+            tick(&mut a, up, 0.05, i);
+            reseat(&w, &mut a, 0.05);
+            let d = dvec3_sub(a.pos, prev);
+            let horiz = dvec3_sub(d, dvec3_scale(up, dvec3_dot(d, up)));
+            path += dvec3_length(horiz);
+            prev = a.pos;
+        }
+        let final_r = dvec3_length(dvec3_sub(a.pos, center));
+        /* Floated up to (or past, if it reached shore) the waterline instead
+         * of sinking and pinning at the sea floor... */
+        assert!(
+            final_r >= sea_r - SWIM_SUBMERGE_M - 0.75,
+            "swimmer should ride the surface, ended {:.2} m below it",
+            sea_r - final_r
+        );
+        /* ...and actually travelled (swam / climbed out), not spun in place. */
+        assert!(
+            path > 5.0,
+            "trapped land animal should swim out, travelled only {path:.2} m"
         );
     }
 }
