@@ -2215,11 +2215,15 @@ fn sgl_world_ctx() -> sgl::Context {
     })
 }
 
-/// Debug isolation switch: `TENEBRIS_DEV_HIDE=water,drops,glow,aquarium,flame`
-/// early-returns the named draw pass, so a mystery on-screen quad can be
-/// bisected to its exact source in ONE build (set the var, run, see if the
-/// quad vanished). Comma-separated; parsed once. Pure diagnostic - no effect
-/// unless the var is set.
+/// Debug isolation switch: hide a named draw pass so a mystery on-screen
+/// quad can be bisected to its exact source in ONE build (hide the pass,
+/// relaunch, see if the quad vanished). Names: water, torch, glow, drops,
+/// aquarium, flame. Pure diagnostic - no effect unless a pass is listed.
+///
+/// Two sources, unioned and parsed once:
+///   - `assets/config/debug.yaml`'s `hide:` line (the easy one - just edit
+///     the file and relaunch; no env-var wrangling, especially on Windows),
+///   - the `TENEBRIS_DEV_HIDE=water,drops,...` env var.
 pub fn dev_hidden(what: &str) -> bool {
     thread_local! {
         static HIDE: std::cell::RefCell<Option<String>> =
@@ -2228,7 +2232,31 @@ pub fn dev_hidden(what: &str) -> bool {
     HIDE.with(|c| {
         let mut c = c.borrow_mut();
         if c.is_none() {
-            *c = Some(std::env::var("TENEBRIS_DEV_HIDE").unwrap_or_default());
+            /* Start from the env var, then fold in the debug.yaml `hide:`
+             * line. Both feed the same comma-split below, so either works
+             * and they combine. Read once per thread (thread_local cache). */
+            let mut set = std::env::var("TENEBRIS_DEV_HIDE").unwrap_or_default();
+            if let Ok(text) = std::fs::read_to_string("assets/config/debug.yaml") {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(rest) = line.strip_prefix("hide:") {
+                        let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                        for tok in rest.split([',', ' ', '\t']) {
+                            let tok = tok.trim();
+                            if !tok.is_empty() {
+                                if !set.is_empty() {
+                                    set.push(',');
+                                }
+                                set.push_str(tok);
+                            }
+                        }
+                    }
+                }
+            }
+            *c = Some(set);
         }
         c.as_ref().unwrap().split(',').any(|s| s.trim() == what)
     })
