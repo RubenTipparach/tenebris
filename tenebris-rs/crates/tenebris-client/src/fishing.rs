@@ -17,7 +17,8 @@ use tenebris_core::fauna::AnimalKind;
 use tenebris_core::fishing as cfg;
 use tenebris_core::items;
 use tenebris_core::math::{
-    dvec3_add, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub, DVec3, Vec3,
+    dvec3_add, dvec3_cross, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
+    DVec3, Vec3,
 };
 use tenebris_core::rng::hash2;
 use tenebris_core::world::{World, WORLD_SEA_LEVEL_DEPTH};
@@ -76,13 +77,65 @@ fn strength_pips(strength: u8) -> String {
     out
 }
 
-/// Rod-tip anchor: just right of the camera, slightly forward + down.
+/// Rod-tip anchor: just right of the camera, slightly forward + up. The
+/// line pays out from here.
 fn rod_tip(p: &PlayerCtrl) -> DVec3 {
     let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
     dvec3_add(
         dvec3_add(eye, dvec3_scale(p.basis.right, 0.35)),
         dvec3_add(dvec3_scale(p.basis.fwd, 0.4), dvec3_scale(p.basis.up, -0.15)),
     )
+}
+
+/// Rod-grip anchor: the butt of the pole down by the hand, closer in and
+/// lower than the tip so the drawn shaft reads as a held fishing rod.
+fn rod_grip(p: &PlayerCtrl) -> DVec3 {
+    let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
+    dvec3_add(
+        dvec3_add(eye, dvec3_scale(p.basis.right, 0.22)),
+        dvec3_add(dvec3_scale(p.basis.fwd, 0.12), dvec3_scale(p.basis.up, -0.30)),
+    )
+}
+
+/// Emit a tapered oriented box (the rod shaft) from `a` (half-width `ra`)
+/// to `b` (half-width `rb`) as triangles - must be called inside a
+/// begin_triangles batch. `right_ref` seeds the cross-section axes so the
+/// shaft always shows visible width regardless of view angle.
+#[allow(clippy::too_many_arguments)]
+fn shaft_box(a: DVec3, b: DVec3, ra: f64, rb: f64, right_ref: DVec3, r: f32, g: f32, bl: f32, lit: f32) {
+    let axis = dvec3_normalize(dvec3_sub(b, a));
+    let mut u = dvec3_cross(axis, right_ref);
+    if dvec3_length(u) < 1e-4 {
+        u = dvec3_cross(axis, dvec3_make(0.0, 1.0, 0.0));
+    }
+    let u = dvec3_normalize(u);
+    let v = dvec3_normalize(dvec3_cross(axis, u));
+    let ca = |su: f64, sv: f64| {
+        dvec3_add(a, dvec3_add(dvec3_scale(u, su * ra), dvec3_scale(v, sv * ra)))
+    };
+    let cb = |su: f64, sv: f64| {
+        dvec3_add(b, dvec3_add(dvec3_scale(u, su * rb), dvec3_scale(v, sv * rb)))
+    };
+    let a00 = ca(-1.0, -1.0);
+    let a10 = ca(1.0, -1.0);
+    let a11 = ca(1.0, 1.0);
+    let a01 = ca(-1.0, 1.0);
+    let b00 = cb(-1.0, -1.0);
+    let b10 = cb(1.0, -1.0);
+    let b11 = cb(1.0, 1.0);
+    let b01 = cb(-1.0, 1.0);
+    sgl::c3f(r * lit, g * lit, bl * lit);
+    let quad = |p0: DVec3, p1: DVec3, p2: DVec3, p3: DVec3| {
+        for &pt in &[p0, p1, p2, p0, p2, p3] {
+            sgl::v3f(pt.x as f32, pt.y as f32, pt.z as f32);
+        }
+    };
+    quad(a00, a10, b10, b00);
+    quad(a10, a11, b11, b10);
+    quad(a11, a01, b01, b11);
+    quad(a01, a00, b00, b01);
+    quad(a00, a01, a11, a10);
+    quad(b00, b10, b11, b01);
 }
 
 /// True while a line is out (drives the HUD hint + click routing).
@@ -334,6 +387,13 @@ pub fn draw(view: Mat4, proj: Mat4, p: &PlayerCtrl) {
 
     let lit = renderer::entity_sun_brightness(pos).max(0.35);
     let tip = rod_tip(p);
+    let grip = rod_grip(p);
+
+    /* The rod shaft: a tapered wood pole from the grip up to the tip,
+     * so the line visibly pays out of a rod rather than thin air. */
+    sgl::begin_triangles();
+    shaft_box(grip, tip, 0.022, 0.008, p.basis.right, 0.42, 0.26, 0.12, lit);
+    sgl::end();
 
     /* The line. */
     sgl::begin_lines();
