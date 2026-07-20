@@ -1598,6 +1598,26 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
             cap_offset = surface_off;
         }
 
+        /* A STATIC worldgen ocean cell - sleeping / source water within the
+         * sea band - is part of the planet-wide sea, not a suspended pool.
+         * When a player digs a cave directly UNDER the ocean, such a cell
+         * ends up with AIR below it, and the bottom-cap path below would
+         * paint the ocean's bare underside as a translucent teal sheet on
+         * the cave ceiling. It bakes to near-black (no sky light under a
+         * roof), so it's invisible until a torch lights it - the "teal
+         * square appears when I place a torch in a cave below the water"
+         * bug. A GENUINE suspended pool is FLOWING water (state not
+         * sleeping/source), so gate only the underside on this: flowing
+         * pools keep their bottom cap; the bare sea underside does not draw.
+         * Side walls are intentionally left alone (a tunnel beside the shore
+         * still shows the ocean's edge - see the sea-level note above). */
+        let static_ocean_cell = cap_row >= 0
+            && d <= cap_row
+            && {
+                let st = world_water::get_state(w, tile_idx, d);
+                st == 0 || world_water::state_is_source(st)
+            };
+
         /* ---- Top cap.
          * Skip when the cell above is itself water - the two cells
          * connect through the column and the upper cap is what the
@@ -1634,7 +1654,7 @@ pub fn build_water_voxels(out: &mut HexMesh, w: &World, tile_idx: i32) {
          * bottom; water-on-water connects through the column. */
         if d > 0 {
             let below = w.blocks[col_base + (d - 1) as usize];
-            if below == Block::Air.raw() {
+            if below == Block::Air.raw() && !static_ocean_cell {
                 emit_cap(
                     out,
                     t,
@@ -3091,6 +3111,64 @@ mod tests {
             }
             assert!(caps > 0, "{label}: world has no ocean at all - bad probe seed/subdiv");
         }
+    }
+
+    /// Regression: the STATIC ocean's bare underside must NOT draw into a
+    /// cave dug beneath it - the "translucent teal square appears when I
+    /// place a torch in a cave below the water" bug. The torch only LIT an
+    /// already-emitted, otherwise-black bottom cap; the real defect was
+    /// emitting the sleeping ocean's underside over the dug-out air at all.
+    /// A genuine FLOWING suspended pool over air still keeps its underside.
+    #[test]
+    fn static_ocean_underside_not_drawn_over_dug_cave() {
+        let body = planet::get(BodyId::Tenebris);
+        let mut w = World::create(&body, 4);
+        while !w.gen_complete() {
+            w.stream_gen(10000);
+        }
+        /* An ocean column whose lowest sea-band water cell sits on a SOLID
+         * seabed (so digging that seabed exposes an air-below ocean cell). */
+        let mut found = None;
+        for t in 0..w.tile_count {
+            let Some(cap) = water_cap_row(&w, t) else { continue };
+            let mut d = cap;
+            while d > 0 && w.get(t, d - 1) == Block::Water {
+                d -= 1;
+            }
+            if w.get(t, d) == Block::Water
+                && w.get(t, d - 1) != Block::Water
+                && w.get(t, d - 1) != Block::Air
+            {
+                found = Some((t, d));
+                break;
+            }
+        }
+        let (tile, d_low) = found.expect("world has an ocean column on a solid seabed");
+
+        let mut m = HexMesh::new();
+        build_water_voxels(&mut m, &w, tile);
+        let before = m.vertices.len();
+
+        /* Dig the seabed out: the SLEEPING ocean cell now has air below it. */
+        w.set(tile, d_low - 1, Block::Air);
+        m.reset();
+        build_water_voxels(&mut m, &w, tile);
+        let after = m.vertices.len();
+        assert_eq!(
+            after, before,
+            "static ocean drew its underside into the dug cave: {before} -> {after} verts"
+        );
+
+        /* Contrast: a FLOWING suspended pool over that same air DOES keep
+         * its underside (the legit case the gate must not kill). */
+        world_water::set_state(&mut w, tile, d_low, 0x02); /* flow, level 2 */
+        m.reset();
+        build_water_voxels(&mut m, &w, tile);
+        let flowing = m.vertices.len();
+        assert!(
+            flowing > before,
+            "a flowing suspended pool must still draw its underside: {flowing} verts"
+        );
     }
 
     fn vertex_bytes(m: &HexMesh) -> Vec<u8> {
