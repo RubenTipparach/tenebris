@@ -3431,6 +3431,111 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Bottom-left craft-queue HUD: the active timed craft's progress bar + its
+/// output icon, plus a row of queued output icons. Crafting advances in the
+/// frame loop (`crafting_screen::tick_craft`) independent of any UI - this
+/// just SURFACES it so progress is visible with the craft/inventory panel
+/// closed. Self-gates: draws nothing when idle, and the caller only invokes
+/// it while no full-screen panel is open (so it never duplicates the in-panel
+/// progress box). Block-item outputs (no ui_icons entry) show the bar + label
+/// without a thumbnail.
+fn draw_craft_queue_hud(app: &App, screen_w: f32, screen_h: f32) {
+    let Some(act) = app.player.borrow().crafting else {
+        return;
+    };
+    let queue = crafting_screen::queue_outputs();
+    let pct = (act.elapsed_s / act.total_s.max(0.01)).clamp(0.0, 1.0);
+
+    let m = 16.0f32;
+    let a_sz = 30.0f32;
+    let bar_w = 150.0f32;
+    let bar_h = 12.0f32;
+    let q_sz = 20.0f32;
+    let has_queue = !queue.is_empty();
+    let bottom = screen_h - m;
+    let q_y0 = bottom - q_sz;
+    let a_y0 = if has_queue { q_y0 - 8.0 - a_sz } else { bottom - a_sz };
+    let bar_x0 = m + a_sz + 8.0;
+    let bar_y0 = a_y0 + (a_sz - bar_h) * 0.5;
+    let panel_r = (bar_x0 + bar_w).max(m + queue.len().min(8) as f32 * (q_sz + 4.0)) + 10.0;
+
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(ui_alpha_pipeline(&PIP_MINING));
+
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        sgl::v2f(x0, y0);
+        sgl::v2f(x1, y0);
+        sgl::v2f(x1, y1);
+        sgl::v2f(x0, y1);
+    };
+    /* Backdrop. */
+    sgl::begin_quads();
+    sgl::c4f(0.03, 0.05, 0.09, 0.72);
+    quad(m - 8.0, a_y0 - 20.0, panel_r, bottom + 6.0);
+    sgl::end();
+    /* Progress track + amber fill. */
+    sgl::begin_quads();
+    sgl::c4f(0.10, 0.12, 0.16, 0.9);
+    quad(bar_x0, bar_y0, bar_x0 + bar_w, bar_y0 + bar_h);
+    sgl::end();
+    sgl::begin_quads();
+    sgl::c4f(0.95, 0.70, 0.22, 1.0);
+    quad(bar_x0, bar_y0, bar_x0 + bar_w * pct, bar_y0 + bar_h);
+    sgl::end();
+
+    /* Output icons (ui_icons strip; block outputs simply skip the thumbnail). */
+    sgl::enable_texture();
+    sgl::texture(
+        sg::View { id: crate::ui_icons::view_id() },
+        sg::Sampler { id: crate::ui_icons::sampler_id() },
+    );
+    let icon = |item: u16, x0: f32, y0: f32, sz: f32| {
+        if let Some([u0, v0, u1, v1]) = crate::ui_icons::uv(item) {
+            sgl::begin_quads();
+            sgl::c4f(1.0, 1.0, 1.0, 1.0);
+            sgl::v2f_t2f(x0, y0, u0, v0);
+            sgl::v2f_t2f(x0 + sz, y0, u1, v0);
+            sgl::v2f_t2f(x0 + sz, y0 + sz, u1, v1);
+            sgl::v2f_t2f(x0, y0 + sz, u0, v1);
+            sgl::end();
+        }
+    };
+    icon(act.output, m, a_y0, a_sz);
+    let mut qx = m;
+    for (it, _cnt) in queue.iter().take(8) {
+        icon(*it, qx, q_y0, q_sz);
+        qx += q_sz + 4.0;
+    }
+    sgl::disable_texture();
+
+    /* Labels. */
+    let cell = 8.0f32;
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::font(1);
+    sdtx::color3b(0xf0, 0xe0, 0xb0);
+    let head = if act.count > 1 {
+        format!("crafting x{}  {}%", act.count, (pct * 100.0) as i32)
+    } else {
+        format!("crafting  {}%", (pct * 100.0) as i32)
+    };
+    sdtx::origin(bar_x0 / cell, (bar_y0 - 11.0) / cell);
+    sdtx::home();
+    sdtx::puts(&head);
+    if has_queue {
+        sdtx::color3b(0xa8, 0xb8, 0xc8);
+        sdtx::origin((m + queue.len().min(8) as f32 * (q_sz + 4.0) + 6.0) / cell, (q_y0 + 5.0) / cell);
+        sdtx::home();
+        sdtx::puts(&format!("+{} queued", queue.len()));
+    }
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Per-frame MP-parity sync with the server: apply the bag/hunger
 /// replay + kill-credit meat, mirror the server's crop lists + herds
 /// for the active body, upload local bag changes (event-driven), and
@@ -7383,6 +7488,11 @@ fn frame_inner(app: &mut App) {
         }
         /* Survival hunger meter (top-left) - you still get hungry in a rocket. */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
+        /* Craft-queue HUD (bottom-left): surfaces the background craft that
+         * keeps running with the inventory closed. Inside the !screens::any_open
+         * gate, so it hides while the craft panel (which has its own progress
+         * box) is up. */
+        draw_craft_queue_hud(app, sapp::widthf(), sapp::heightf());
         /* Rocket flight instruments (top-centre) while riding a rocket. */
         draw_rocket_hud(app, sapp::widthf(), sapp::heightf());
         /* Navball (bottom-centre, where the hotbar sits on foot) - the

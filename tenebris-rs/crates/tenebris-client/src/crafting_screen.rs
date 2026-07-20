@@ -59,6 +59,18 @@ pub fn is_open() -> bool {
     S.with(|c| c.borrow().open)
 }
 
+/// Snapshot of the waiting queue's outputs (item id, count) in turn order,
+/// for the always-on craft-queue HUD (drawn when the panel is closed).
+pub fn queue_outputs() -> Vec<(items::ItemId, u16)> {
+    S.with(|c| {
+        c.borrow()
+            .queue
+            .iter()
+            .map(|r| (r.output.item, r.output.count))
+            .collect()
+    })
+}
+
 /// Force the craft screen closed (e.g. when the inventory or the pause
 /// modal takes over).
 pub fn close() {
