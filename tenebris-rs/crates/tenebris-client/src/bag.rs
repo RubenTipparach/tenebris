@@ -43,13 +43,7 @@ impl Bag {
     pub fn serialize(&self) -> String {
         self.slots
             .iter()
-            .map(|s| {
-                if s.dur == 0 {
-                    format!("{},{}", s.item, s.count)
-                } else {
-                    format!("{},{},{}", s.item, s.count, s.dur)
-                }
-            })
+            .map(|s| crate::inventory::encode_slot(s.item, s.count as i32, s.dur))
             .collect::<Vec<_>>()
             .join(";")
     }
@@ -57,23 +51,14 @@ impl Bag {
     /// Parse [`serialize`]'s output; `None` on malformed input.
     ///
     /// The third (dur) field is optional: blobs written before tool
-    /// durability have two fields per slot and load as fresh tools.
+    /// durability have two fields per slot and load as fresh tools. Uses
+    /// the SAME per-slot codec as the hotbar ([`crate::inventory`]) so the
+    /// two stores can never drift on the encoding.
     pub fn parse(blob: &str) -> Option<Bag> {
         let mut bag = Bag::default();
         for (i, group) in blob.split(';').enumerate().take(BAG_SLOTS) {
-            let mut f = group.split(',');
-            let item = f.next()?.trim().parse().ok()?;
-            let count = f.next()?.trim().parse().ok()?;
-            /* Absent = fresh. A present-but-garbage dur fails the parse
-             * rather than silently handing back a full-health tool. */
-            let dur = match f.next() {
-                None => 0,
-                Some(d) => d.trim().parse().ok()?,
-            };
-            if f.next().is_some() {
-                return None; /* more fields than the format defines */
-            }
-            bag.slots[i] = ItemStack { item, count, dur };
+            let (item, count, dur) = crate::inventory::decode_slot(group)?;
+            bag.slots[i] = ItemStack { item, count: count as u16, dur };
         }
         Some(bag)
     }

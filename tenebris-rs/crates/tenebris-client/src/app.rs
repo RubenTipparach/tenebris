@@ -4901,6 +4901,16 @@ fn maybe_prime_mode_for_state(app: &mut App) {
                     p.hunger = player_ctrl::MAX_HUNGER;
                 }
             }
+            /* Hotbar persists per world alongside the bag: restore the saved
+             * quick-slots (blocks AND tools, with their durability) if this
+             * world has any, else keep the init_empty / init_creative default
+             * layout set above. This is the fix for the hotbar (and the tools
+             * that land there first) being wiped on every reload. */
+            if let Some(saved) =
+                persistence::load_hotbar(&world).and_then(|blob| inventory::Inventory::parse(&blob))
+            {
+                p.inventory = saved;
+            }
             /* Tech-tree discovery persists per world alongside the bag. */
             p.discovered = persistence::load_tech(&world)
                 .and_then(|blob| crate::tech_tree::Discovered::parse(&blob))
@@ -5051,6 +5061,15 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
     /* Bag + hunger ride the same cadence (tools/meat must survive a
      * re-entry; pose is cheap to re-derive, the bag is not). */
     persistence::save_bag(&world, p.hunger, &p.bag.serialize());
+    /* Hotbar rides the SAME cadence + codec as the bag. Items land
+     * hotbar-FIRST, so a crafted/picked-up tool sitting there must persist
+     * as first-class state - the "tools disappear on reload" bug was the
+     * hotbar having no save path at all (re-inited empty every load). */
+    persistence::save_hotbar(&world, &p.inventory.serialize());
+    /* Post-save scan (user-requested): re-read what we just wrote and log
+     * any inventory slot that didn't round-trip, so a silent persistence
+     * regression shows up in the console instead of as lost items. */
+    verify_inventory_saved(&world, &p.inventory, &p.bag);
     /* Tech-tree discovery rides the same autosave cadence. */
     persistence::save_tech(&world, &p.discovered.serialize());
     /* Mid-flight rocket ride: stages + fuel survive a quit. The ride edges
@@ -5060,6 +5079,46 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
      * re-strap the player. */
     rocket_ride::note_velocity(p.velocity);
     persistence::save_ride(&world, rocket_ride::save_snapshot().as_ref());
+}
+
+/// Re-read the hotbar + bag blobs just written and log any slot that did
+/// NOT round-trip (item / count / durability). Silent when everything
+/// saved cleanly; noisy only when a slot would be lost or corrupted on
+/// reload. Inventory is a first-class persisted store, so a save that
+/// silently drops a tool must surface loudly instead of vanishing.
+fn verify_inventory_saved(world: &str, inv: &inventory::Inventory, bag: &crate::bag::Bag) {
+    match persistence::load_hotbar(world).and_then(|b| inventory::Inventory::parse(&b)) {
+        Some(rt) if rt == *inv => {}
+        Some(rt) => {
+            for i in 0..inventory::INV_HOTBAR_SLOTS {
+                if rt.slots[i] != inv.slots[i] {
+                    eprintln!(
+                        "[persist] HOTBAR slot {i} did not round-trip: in-mem item {} x{} dur {} -> saved item {} x{} dur {}",
+                        inv.slots[i].item, inv.slots[i].count, inv.slots[i].dur,
+                        rt.slots[i].item, rt.slots[i].count, rt.slots[i].dur,
+                    );
+                }
+            }
+        }
+        None => eprintln!(
+            "[persist] HOTBAR blob missing/unparseable right after save - items would be LOST on reload"
+        ),
+    }
+    match persistence::load_bag(world).and_then(|(_, b)| crate::bag::Bag::parse(&b)) {
+        Some(rt) if rt == *bag => {}
+        Some(rt) => {
+            for i in 0..crate::bag::BAG_SLOTS {
+                if rt.slots[i] != bag.slots[i] {
+                    eprintln!(
+                        "[persist] BAG slot {i} did not round-trip: in-mem item {} x{} dur {} -> saved item {} x{} dur {}",
+                        bag.slots[i].item, bag.slots[i].count, bag.slots[i].dur,
+                        rt.slots[i].item, rt.slots[i].count, rt.slots[i].dur,
+                    );
+                }
+            }
+        }
+        None => eprintln!("[persist] BAG blob missing/unparseable right after save"),
+    }
 }
 
 /* --------------------------------------------------------------------- */

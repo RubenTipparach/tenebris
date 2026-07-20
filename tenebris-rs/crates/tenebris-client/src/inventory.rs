@@ -205,6 +205,70 @@ pub fn consume(inv: &mut Inventory) {
     }
 }
 
+/// Encode one item slot as the shared save/wire group `item,count[,dur]`.
+/// The `dur` field is omitted for the `dur == 0` (fresh / not-a-tool) case,
+/// so blobs stay byte-identical to the pre-durability format. This is the
+/// ONE per-slot codec shared by the hotbar AND the bag ([`crate::bag`]) so
+/// the two stores can never drift on the encoding.
+pub(crate) fn encode_slot(item: items::ItemId, count: i32, dur: u16) -> String {
+    if dur == 0 {
+        format!("{},{}", item, count)
+    } else {
+        format!("{},{},{}", item, count, dur)
+    }
+}
+
+/// Decode one [`encode_slot`] group into `(item, count, dur)`; `None` on
+/// malformed input. An absent third field parses as fresh (`dur == 0`); a
+/// present-but-garbage `dur` fails the parse rather than silently handing
+/// back a full-health tool.
+pub(crate) fn decode_slot(group: &str) -> Option<(items::ItemId, i32, u16)> {
+    let mut f = group.split(',');
+    let item = f.next()?.trim().parse().ok()?;
+    let count = f.next()?.trim().parse().ok()?;
+    let dur = match f.next() {
+        None => 0,
+        Some(d) => d.trim().parse().ok()?,
+    };
+    if f.next().is_some() {
+        return None; /* more fields than the format defines */
+    }
+    Some((item, count, dur))
+}
+
+impl Inventory {
+    /// Serialise the hotbar for the per-world SP save: the 9 slot groups
+    /// (`item,count[,dur]`, fixed order) joined by `;`, then `|selected`.
+    /// A worn tool on the hotbar keeps its `dur` exactly like a bag tool -
+    /// the hotbar is a first-class persisted store, not a scratch buffer.
+    pub fn serialize(&self) -> String {
+        let slots = self
+            .slots
+            .iter()
+            .map(|s| encode_slot(s.item, s.count, s.dur))
+            .collect::<Vec<_>>()
+            .join(";");
+        format!("{}|{}", slots, self.selected)
+    }
+
+    /// Parse [`serialize`]'s output; `None` on malformed input. Slots the
+    /// blob doesn't cover stay empty; a missing `|selected` tail defaults
+    /// to slot 0 (forward-compatible with a slots-only blob).
+    pub fn parse(blob: &str) -> Option<Inventory> {
+        let mut inv = Inventory::default();
+        let (slots, sel) = match blob.split_once('|') {
+            Some((s, sel)) => (s, sel.trim().parse::<i32>().ok()?),
+            None => (blob, 0),
+        };
+        for (i, group) in slots.split(';').enumerate().take(INV_HOTBAR_SLOTS) {
+            let (item, count, dur) = decode_slot(group)?;
+            inv.slots[i] = InvSlot { item, count, dur };
+        }
+        inv.selected = sel.clamp(0, INV_HOTBAR_SLOTS as i32 - 1);
+        Some(inv)
+    }
+}
+
 /// Move selection. Clamps to the hotbar range (the C header says
 /// "wraps" but the implementation clamps; the implementation wins).
 pub fn select(inv: &mut Inventory, slot: i32) {
@@ -350,5 +414,46 @@ mod tests {
         assert_eq!(inv.selected, 8);
         select(&mut inv, 3);
         assert_eq!(inv.selected, 3);
+    }
+
+    #[test]
+    fn hotbar_round_trips_blocks_tools_and_selection() {
+        let mut inv = Inventory::default();
+        init_empty(&mut inv);
+        inv.slots[0] = InvSlot::block(Block::Stone, 42);
+        /* A WORN tool on the hotbar - the exact thing that was being lost. */
+        inv.slots[2] = InvSlot { item: items::IRON_PICKAXE, count: 1, dur: 137 };
+        inv.slots[5] = InvSlot::of(items::FLINT, 9);
+        inv.selected = 5;
+
+        let blob = inv.serialize();
+        let back = Inventory::parse(&blob).expect("hotbar blob round-trips");
+        assert_eq!(back, inv, "every slot + selection survives");
+        /* Durability specifically must not silently reset to fresh. */
+        assert_eq!(back.slots[2].item, items::IRON_PICKAXE);
+        assert_eq!(back.slots[2].dur, 137);
+        assert_eq!(back.selected, 5);
+    }
+
+    #[test]
+    fn hotbar_parse_tolerates_a_slots_only_blob() {
+        /* No `|selected` tail (a hypothetical older/partial blob): selection
+         * defaults to 0 and the slots still load. */
+        let inv = Inventory::parse("50,3;0,0;0,0;0,0;0,0;0,0;0,0;0,0;0,0")
+            .expect("slots-only blob parses");
+        assert_eq!(inv.slots[0], InvSlot::of(50, 3));
+        assert_eq!(inv.selected, 0);
+    }
+
+    #[test]
+    fn slot_codec_omits_dur_when_fresh() {
+        /* Fresh slots stay two-field so blobs are byte-identical to the
+         * pre-durability format; worn tools add the third field. */
+        assert_eq!(encode_slot(50, 3, 0), "50,3");
+        assert_eq!(encode_slot(128, 1, 200), "128,1,200");
+        assert_eq!(decode_slot("50,3"), Some((50, 3, 0)));
+        assert_eq!(decode_slot("128,1,200"), Some((128, 1, 200)));
+        assert_eq!(decode_slot("1,2,3,4"), None); /* too many fields */
+        assert_eq!(decode_slot("x,2"), None); /* garbage item */
     }
 }

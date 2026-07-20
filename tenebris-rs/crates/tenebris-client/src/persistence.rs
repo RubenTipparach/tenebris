@@ -48,6 +48,11 @@ use tenebris_core::block_entity::{
 const KEY_PREFIX: &str = "tenebris-c:world:";
 /// Per-world survival bag + hunger (Rust-port extension key).
 const KEY_BAG_PREFIX: &str = "tenebris-c:bag:";
+/// Per-world hotbar (the 9 quick-slots + selection). Distinct from the bag
+/// key: items land hotbar-FIRST, so tools/blocks sitting on the hotbar must
+/// persist as first-class state, not get re-inited empty on reload
+/// (Rust-port extension key).
+const KEY_HOTBAR_PREFIX: &str = "tenebris-c:hotbar:";
 /// Per-world tech-tree discovery bitset (Rust-port extension key).
 const KEY_TECH_PREFIX: &str = "tenebris-c:tech:";
 /// Per-world terrain seed (Rust-port extension key). Written once at
@@ -331,6 +336,27 @@ pub fn load_bag(world_name: &str) -> Option<(f32, String)> {
     Some((h.trim().parse::<f32>().ok()?, rest.to_string()))
 }
 
+/// Save a world's hotbar blob (`Inventory::serialize`). Written wherever
+/// the bag is written - the per-craft / per-edit sites AND the 5 s autosave
+/// - so a tool crafted onto the hotbar survives an immediate reload.
+pub fn save_hotbar(world_name: &str, hotbar_blob: &str) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    client_kv::set(&format!("{KEY_HOTBAR_PREFIX}{world_name}"), hotbar_blob);
+    true
+}
+
+/// Load a world's hotbar blob. `None` = no hotbar stored (a world created
+/// before hotbar persistence, or never saved) - the caller falls back to
+/// the init_empty / init_creative default layout, exactly like the bag.
+pub fn load_hotbar(world_name: &str) -> Option<String> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    client_kv::get(&format!("{KEY_HOTBAR_PREFIX}{world_name}"))
+}
+
 /// Save a world's tech-tree discovery bitset (client::tech_tree). Rides
 /// the same autosave cadence as the bag.
 pub fn save_tech(world_name: &str, tech_blob: &str) -> bool {
@@ -379,6 +405,7 @@ pub fn delete(world_name: &str) {
     }
     client_kv::remove(&build_key(world_name));
     client_kv::remove(&format!("{KEY_BAG_PREFIX}{world_name}"));
+    client_kv::remove(&format!("{KEY_HOTBAR_PREFIX}{world_name}"));
     client_kv::remove(&format!("{KEY_TECH_PREFIX}{world_name}"));
     client_kv::remove(&format!("{KEY_SEED_PREFIX}{world_name}"));
     // Also wipe every per-tile column and per-body torch list, so
