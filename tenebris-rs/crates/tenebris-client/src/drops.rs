@@ -227,7 +227,7 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
 
     let mut pip = PIP.with(|p| p.get());
     if pip.id == 0 {
-        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+        let mut desc = sokol::gfx::PipelineDesc {
             depth: sokol::gfx::DepthState {
                 write_enabled: true,
                 compare: sokol::gfx::CompareFunc::Less,
@@ -235,7 +235,13 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             },
             cull_mode: sokol::gfx::CullMode::None,
             ..Default::default()
-        });
+        };
+        /* RGB-only: the offscreen alpha is the composite's wet-mask (terrain
+         * bakes v_wet there; water fog keys off it). A drop prism writing
+         * alpha would paint teal deep-water fog as a square in a below-sea
+         * cave, the same bug the torch glow had. */
+        desc.colors[0].write_mask = sokol::gfx::ColorMask::Rgb;
+        pip = sgl::make_pipeline(&desc);
         PIP.with(|p| p.set(pip));
     }
 
@@ -293,6 +299,9 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             dst_factor_alpha: sokol::gfx::BlendFactor::One,
             ..Default::default()
         };
+        /* RGB-only: keep the icon billboard out of the offscreen wet-mask
+         * (the alpha channel) so it can't paint teal water fog below sea. */
+        desc.colors[0].write_mask = sokol::gfx::ColorMask::Rgb;
         ipip = sgl::make_pipeline(&desc);
         ICON_PIP.with(|p| p.set(ipip));
     }

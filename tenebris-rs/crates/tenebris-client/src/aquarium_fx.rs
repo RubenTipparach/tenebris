@@ -356,6 +356,11 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
             dst_factor_alpha: sg::BlendFactor::OneMinusSrcAlpha,
             ..Default::default()
         };
+        /* RGB-only: the offscreen alpha is the composite's wet-mask (terrain
+         * bakes v_wet there; water fog keys off it). The glass shell must not
+         * write it, or a tank below sea level would paint teal water fog over
+         * its own footprint - the same class as the torch-glow teal square. */
+        desc.colors[0].write_mask = sg::ColorMask::Rgb;
         pip = sgl::make_pipeline(&desc);
         PIP.with(|p| p.set(pip));
     }

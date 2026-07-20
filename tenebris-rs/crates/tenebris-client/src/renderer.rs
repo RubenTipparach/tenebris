@@ -6802,6 +6802,11 @@ pub fn draw_light_glow(view: Mat4, proj: Mat4) {
                     dst_factor_alpha: sg::BlendFactor::One,
                     ..Default::default()
                 };
+                /* NEVER write the offscreen alpha: it is the composite's
+                 * wet-mask (terrain bakes v_wet into alpha; the water fog keys
+                 * off it). Writing it stamped teal deep-water fog as a square
+                 * at every torch in a below-sea-level cave. RGB-only. */
+                desc.colors[0].write_mask = sg::ColorMask::Rgb;
                 desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CENTER].format =
                     sg::VertexFormat::Float3;
                 desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CORNER].format =

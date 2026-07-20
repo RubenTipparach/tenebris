@@ -89,7 +89,14 @@ void main()
 {
     float f = clamp(1.0 - length(v_uv), 0.0, 1.0);
     f *= f;
-    frag_color = vec4(glow_fs_params[0].xyz * (f * v_alpha), 1.0);
+    // Alpha MUST be 0: the offscreen scene's alpha channel is the composite's
+    // wet-mask (the terrain writes v_wet there; the water fog keys off it). An
+    // additive glow that wrote alpha 1 stamped 'fully wet' over its billboard,
+    // so the composite painted teal deep-water fog as a square at every torch
+    // in a below-sea-level cave. The torch mesh already writes alpha 0 for the
+    // same reason; the glow now matches. (Blend is additive on alpha too, so 0
+    // leaves the terrain's mask untouched; the RGB write-mask double-guards it.)
+    frag_color = vec4(glow_fs_params[0].xyz * (f * v_alpha), 0.0);
 }
 ";
 
@@ -140,7 +147,8 @@ void main()
 {
     highp float f = clamp(1.0 - length(v_uv), 0.0, 1.0);
     f *= f;
-    frag_color = vec4(glow_fs_params[0].xyz * (f * v_alpha), 1.0);
+    // Alpha 0: the offscreen alpha is the composite wet-mask (see the 410 FS).
+    frag_color = vec4(glow_fs_params[0].xyz * (f * v_alpha), 0.0);
 }
 ";
 
