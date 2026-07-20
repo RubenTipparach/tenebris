@@ -7381,7 +7381,7 @@ fn frame_inner(app: &mut App) {
         let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
         crate::reentry_fx::draw(view, proj, eye, p.velocity, p.basis.fwd, p.basis.up);
     }
-    fishing::draw(view, proj, &app.player.borrow());
+    fishing::draw(view_scene, proj, &app.player.borrow());
     crops::draw(view_scene, proj);
     drops::draw(view_scene, proj, renderer::time_seconds());
     {

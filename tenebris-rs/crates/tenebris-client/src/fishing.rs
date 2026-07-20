@@ -77,23 +77,25 @@ fn strength_pips(strength: u8) -> String {
     out
 }
 
-/// Rod-tip anchor: just right of the camera, slightly forward + up. The
-/// line pays out from here.
+/// Rod-tip anchor: well OUT IN FRONT of the camera, only slightly right of
+/// centre and near eye height, so the pole reads as pointing forward into
+/// the scene (not jutting off to the side). The line pays out from here.
 fn rod_tip(p: &PlayerCtrl) -> DVec3 {
     let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
     dvec3_add(
-        dvec3_add(eye, dvec3_scale(p.basis.right, 0.35)),
-        dvec3_add(dvec3_scale(p.basis.fwd, 0.4), dvec3_scale(p.basis.up, -0.15)),
+        dvec3_add(eye, dvec3_scale(p.basis.right, 0.26)),
+        dvec3_add(dvec3_scale(p.basis.fwd, 0.95), dvec3_scale(p.basis.up, 0.05)),
     )
 }
 
-/// Rod-grip anchor: the butt of the pole down by the hand, closer in and
-/// lower than the tip so the drawn shaft reads as a held fishing rod.
+/// Rod-grip anchor: the butt of the pole down by the hand - close in, low,
+/// and just right of centre - so the drawn shaft rises from the hand up and
+/// FORWARD to the tip like a held rod.
 fn rod_grip(p: &PlayerCtrl) -> DVec3 {
     let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, 1.6));
     dvec3_add(
-        dvec3_add(eye, dvec3_scale(p.basis.right, 0.22)),
-        dvec3_add(dvec3_scale(p.basis.fwd, 0.12), dvec3_scale(p.basis.up, -0.30)),
+        dvec3_add(eye, dvec3_scale(p.basis.right, 0.18)),
+        dvec3_add(dvec3_scale(p.basis.fwd, 0.22), dvec3_scale(p.basis.up, -0.30)),
     )
 }
 
@@ -358,9 +360,14 @@ fn bob_box(c: DVec3, h: f64, r: f32, g: f32, b: f32, lit: f32) {
     }
 }
 
-/// Draw the line + bobber into the offscreen world pass.
+/// Draw the line + bobber into the offscreen world pass. `view` is the
+/// eye-at-origin scene view (`view_scene`), so every emitted vertex is
+/// FLOATING-ORIGIN rebased to the camera (`world - camera_world_d`) - the
+/// same convention the other props use. Feeding absolute world positions
+/// here jittered the rod + bobber at ~150 km (f32 `view * abs_pos`
+/// catastrophic cancellation).
 pub fn draw(view: Mat4, proj: Mat4, p: &PlayerCtrl) {
-    let Some((pos, phase)) = S.with(|s| s.borrow().as_ref().map(|st| (st.pos, st.phase))) else {
+    let Some((pos_abs, phase)) = S.with(|s| s.borrow().as_ref().map(|st| (st.pos, st.phase))) else {
         return;
     };
     renderer::sgl_world_begin();
@@ -385,9 +392,15 @@ pub fn draw(view: Mat4, proj: Mat4, p: &PlayerCtrl) {
     }
     sgl::load_pipeline(pip);
 
-    let lit = renderer::entity_sun_brightness(pos).max(0.35);
-    let tip = rod_tip(p);
-    let grip = rod_grip(p);
+    /* Sun brightness reads the ABSOLUTE world pos (it rebases internally). */
+    let lit = renderer::entity_sun_brightness(pos_abs).max(0.35);
+    /* FLOATING ORIGIN: rebase every drawn point by the camera so the
+     * eye-at-origin scene view keeps f32 precise at any world scale. Basis
+     * vectors are directions, so they need no rebasing. */
+    let cam = renderer::camera_world_d();
+    let tip = dvec3_sub(rod_tip(p), cam);
+    let grip = dvec3_sub(rod_grip(p), cam);
+    let pos = dvec3_sub(pos_abs, cam);
 
     /* The rod shaft: a tapered wood pole from the grip up to the tip,
      * so the line visibly pays out of a rod rather than thin air. */
