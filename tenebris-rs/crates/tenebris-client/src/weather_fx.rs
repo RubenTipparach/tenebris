@@ -220,7 +220,17 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
      * draw no precipitation - falling streaks must not show through a solid
      * ceiling. Same shelter gate the composite lens / wet-terrain pass uses,
      * so "am I in the rain?" is decided in exactly one place (World). */
-    if !w.sky_exposed_at(dvec3_to_vec3(local)) {
+    /* Sample sky exposure from EYE height, not the feet. `local` is the feet,
+     * which on the ground sit right at the surface voxel boundary - so
+     * `ceiling_above` from that radius can catch the GROUND the player stands on
+     * as a "ceiling" and flip exposed<->sheltered as the feet radius micro-
+     * wobbles, blinking the WHOLE rain effect on/off every few frames. It only
+     * bit on foot (airborne the feet clear the surface), which read as "rain
+     * flickers on land but not while flying". The eye clears the surface, so it
+     * only trips on a REAL roof (cave / overhang) - and matches the composite-
+     * lens caller, which already samples the camera eye. */
+    let eye_local = dvec3_add(local, dvec3_scale(up, crate::player_ctrl::EYE_HEIGHT as f64));
+    if !w.sky_exposed_at(dvec3_to_vec3(eye_local)) {
         return;
     }
     let planet_r = w.body.radius_m as f64;
@@ -257,21 +267,6 @@ pub fn draw(view: Mat4, proj: Mat4, w: &World, p: &PlayerCtrl, time_s: f64) {
             depth: sg::DepthState {
                 write_enabled: false,
                 compare: sg::CompareFunc::Less,
-                /* Pull the translucent rain curtains TOWARD the camera in depth
-                 * so they don't Z-FIGHT the terrain they graze at distance. The
-                 * scene runs a 0.3 m..20 km frustum (the sun disc needs the far
-                 * plane), so depth resolution out at the storm shafts is ~0.4 m.
-                 * A distant sheet viewed at a grazing angle is nearly coplanar
-                 * with the ground over its whole face, so fragments trade the
-                 * Less test frame-to-frame and the sheet flickers / blinks out.
-                 * The mined-cell decal hit the same planet-scale precision wall
-                 * (see app.rs draw-world) and was moved in-shader; rain is
-                 * separate geometry, so instead we bias it. Negative = toward
-                 * the camera; slope-scaled so GRAZING (high-slope) faces get the
-                 * most nudge and win the test, while a nearer hill (large depth
-                 * gap) still occludes the rain behind it. */
-                bias: -2.0,
-                bias_slope_scale: -3.0,
                 ..Default::default()
             },
             cull_mode: sg::CullMode::None,
@@ -520,26 +515,6 @@ fn draw_distant_shafts(
                 continue;
             }
 
-            /* Rain INTENSITY fade. A cell near the on/off threshold draws FAINT
-             * rain, not full-alpha. The distant shafts/sheets gated on the
-             * BINARY `raining` flag at full opacity, so a cell POPPED from
-             * opaque to gone the frame its cover crossed rain_cover_min as the
-             * clouds drifted - the "distant rain blinking out in the distance"
-             * artifact. The near shower already fades by intensity; this brings
-             * the distant curtains in line. Keyed to the SAME rain_cover_min the
-             * flag flips at, so intensity reaches 0 exactly where the cell stops
-             * raining and the transition is a fade, not a pop. A forced storm
-             * rains at full intensity everywhere (no marginal cells). */
-            let intensity = if forced.is_some() {
-                1.0f32
-            } else {
-                ((cell.cover - wcfg.rain_cover_min) / (1.0 - wcfg.rain_cover_min).max(1e-3))
-                    .clamp(0.0, 1.0)
-            };
-            if intensity <= 0.0 {
-                continue;
-            }
-
             /* Column geometry: from the cloud base down to the surface top. */
             let base_alt = land_alt(w, dir_w);
             let base_r = planet_r + base_alt;
@@ -560,11 +535,7 @@ fn draw_distant_shafts(
              * Opacity ramps rain_alpha_far -> rain_alpha_near (weather.yaml). */
             let d = d2.sqrt();
             let fade = (1.0 - (d / SHAFT_RANGE_M)).clamp(0.0, 1.0) as f32;
-            /* Distance fade times the rain-intensity fade above: both the near
-             * curtains and the far impostor sheets ride this alpha, so a
-             * marginal cell is faint everywhere instead of popping. */
-            let alpha = (wcfg.rain_alpha_far + (wcfg.rain_alpha_near - wcfg.rain_alpha_far) * fade)
-                * intensity;
+            let alpha = wcfg.rain_alpha_far + (wcfg.rain_alpha_near - wcfg.rain_alpha_far) * fade;
 
             let up = dir_w;
             let mut right = dvec3_sub(right_ref, dvec3_scale(up, dvec3_dot(right_ref, up)));
