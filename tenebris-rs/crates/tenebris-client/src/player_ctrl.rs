@@ -674,6 +674,22 @@ fn compute_look(p: &PlayerCtrl) -> (DVec3, DVec3) {
     (look, up)
 }
 
+/// The camera's eye + orthonormal VIEW basis: `(eye, look, right, up)`,
+/// exactly the frame [`view`] builds - yaw, pitch, AND jetpack view-roll
+/// folded in. First-person viewmodels (the fishing rod) anchor off THIS so
+/// they track where the camera actually looks, not the flat surface-locked
+/// body basis (which ignores pitch, so a rod hung off it stayed level while
+/// you aimed up or down). `look` is the view direction; `right` is screen-
+/// right; `up` is the re-orthogonalised screen-up (compute_look's up hint
+/// carries a look-ward component at pitch, so it's rebuilt here).
+pub fn camera_basis(p: &PlayerCtrl) -> (DVec3, DVec3, DVec3, DVec3) {
+    let (look, up_hint) = compute_look(p);
+    let right = dvec3_normalize(dvec3_cross(up_hint, look));
+    let up = dvec3_normalize(dvec3_cross(look, right));
+    let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, EYE_HEIGHT as f64));
+    (eye, look, right, up)
+}
+
 fn walk_wish(p: &PlayerCtrl, inp: &PhysInput) -> DVec3 {
     let b = &p.basis;
     let cy = (p.yaw as f64).cos();
@@ -3987,6 +4003,44 @@ mod tests {
         assert!(dvec3_dot(up1, dvec3_make(0.0, 1.0, 0.0)).abs() < 1e-6, "up rolled off +Y");
         assert!(dvec3_dot(up1, look1).abs() < 1e-6, "up stays perpendicular to look");
         assert!(dvec3_dot(up1, dvec3_make(-1.0, 0.0, 0.0)) > 1.0 - 1e-6, "up -> -X");
+    }
+
+    /* -- camera_basis: the frame first-person viewmodels (fishing rod) anchor
+     * off - must be orthonormal, match the render camera, and TRACK pitch so a
+     * rod hung off it follows the look direction. */
+    #[test]
+    fn camera_basis_is_orthonormal_and_tracks_pitch() {
+        let mut p = PlayerCtrl::default();
+        /* Orthonormal surface basis up=+Y, fwd=+Z, right=+X. */
+        p.basis.up = dvec3_make(0.0, 1.0, 0.0);
+        p.basis.fwd = dvec3_make(0.0, 0.0, 1.0);
+        p.basis.right = dvec3_make(1.0, 0.0, 0.0);
+        p.position = dvec3_make(0.0, 0.0, 0.0);
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+
+        let (_eye, look, right, up) = camera_basis(&p);
+        /* Unit length. */
+        assert!((dvec3_length(look) - 1.0).abs() < 1e-9, "look unit");
+        assert!((dvec3_length(right) - 1.0).abs() < 1e-9, "right unit");
+        assert!((dvec3_length(up) - 1.0).abs() < 1e-9, "up unit");
+        /* Mutually perpendicular. */
+        assert!(dvec3_dot(look, right).abs() < 1e-9, "right perp look");
+        assert!(dvec3_dot(look, up).abs() < 1e-9, "up perp look");
+        assert!(dvec3_dot(right, up).abs() < 1e-9, "right perp up");
+        /* Look matches the camera the renderer builds (compute_look). */
+        assert!(dvec3_dot(look, compute_look(&p).0) > 1.0 - 1e-9, "look == render camera");
+        /* At yaw=pitch=0: look=+Z, screen-right=+X, up=+Y. */
+        assert!(dvec3_dot(look, dvec3_make(0.0, 0.0, 1.0)) > 1.0 - 1e-9, "look +Z");
+        assert!(dvec3_dot(right, dvec3_make(1.0, 0.0, 0.0)) > 1.0 - 1e-9, "right +X");
+        assert!(dvec3_dot(up, dvec3_make(0.0, 1.0, 0.0)) > 1.0 - 1e-9, "up +Y");
+
+        /* Pitch up: the look (hence the anchored rod tip) swings up with it -
+         * this is the whole point of anchoring off the camera, not the flat
+         * body basis (which has no pitch). */
+        p.pitch = 0.5;
+        let (_e, look_up, ..) = camera_basis(&p);
+        assert!(look_up.y > 0.4, "pitch swings the look/rod up (y = {})", look_up.y);
     }
 
     /* -- hotbar: key select + wheel cycling with wrap ----------------------- */
