@@ -35,6 +35,8 @@
 #                     .tenecap file of the collision neighbourhood (debug).
 #                     Also fires on Shift+P. TENEBRIS_CAPTURE_DIR sets the dir.
 #   flow_debug      - toggle the water-flow debug overlay (debug)
+#   jetpack_unlimited - bypass the jetpack fuel-tank timeout/recharge gate
+#                     (debug). Also fires on Shift+J.
 #   hotbar_1 .. hotbar_10 - select a hotbar slot
 
 move_forward:    W
@@ -102,6 +104,7 @@ profiler:        F3
 pixel_ui_demo:   F8
 block_snapshot:  F4
 flow_debug:      F5
+jetpack_unlimited: F6
 hide_terrain:    H
 hide_water:      J
 hide_skybox:     Y

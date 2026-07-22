@@ -3477,6 +3477,92 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     sdtx::color3b(0xff, 0xff, 0xff);
 }
 
+/// Jetpack fuel gauge: a small cyan meter, bottom-centre just above the
+/// hotbar. Self-hides while the tank is full and idle (no drain/recharge in
+/// flight) so it doesn't clutter the HUD during ordinary walking - it only
+/// appears while actively draining or mid-recharge. Applies in both survival
+/// and creative (the jetpack itself isn't survival-gated), unlike the
+/// hunger/health bars above. While the Shift+J unlimited-jetpack debug
+/// toggle is on, the tank is pinned full so the meter would never show;
+/// print a small persistent label instead so the toggle stays visible
+/// on-screen, not just in the console.
+fn draw_jetpack_bar(app: &App, screen_w: f32, screen_h: f32) {
+    /* On foot only - riding replaces the jetpack with the rocket engine
+     * (player_ctrl::update gates the whole jetpack branch on !riding), and
+     * bottom-centre is the navball's spot while flying. */
+    if rocket_ride::is_riding() {
+        return;
+    }
+    let (unlimited, fuel_s, max_fuel_s) = {
+        let p = app.player.borrow();
+        (p.unlimited_jetpack, p.jetpack_fuel_s, config::lod().jetpack_max_fuel_s)
+    };
+    let cell = 8.0f32;
+    if unlimited {
+        sdtx::canvas(screen_w, screen_h);
+        sdtx::origin(0.0, 0.0);
+        sdtx::font(1);
+        sdtx::color3b(0x70, 0xe0, 0xf0);
+        let txt = "JETPACK: UNLIMITED (Shift+J)";
+        let col = (screen_w * 0.5 - txt.len() as f32 * 0.5 * cell) / cell;
+        sdtx::pos(col.max(0.0), (screen_h - 92.0) / cell);
+        sdtx::puts(txt);
+        sdtx::font(0);
+        sdtx::color3b(0xff, 0xff, 0xff);
+        return;
+    }
+    let pct = if max_fuel_s > 0.0 { (fuel_s / max_fuel_s).clamp(0.0, 1.0) } else { 0.0 };
+    if pct >= 1.0 {
+        return; /* full + idle: nothing to show */
+    }
+
+    let bar_w = 140.0f32;
+    let bar_h = 10.0f32;
+    let pad = 3.0f32;
+    let bx = screen_w * 0.5 - bar_w * 0.5;
+    let by = screen_h - 88.0;
+
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(ui_alpha_pipeline(&PIP_MINING));
+
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        sgl::v2f(x0, y0);
+        sgl::v2f(x1, y0);
+        sgl::v2f(x1, y1);
+        sgl::v2f(x0, y1);
+    };
+    sgl::begin_quads();
+    sgl::c4f(0.04, 0.06, 0.10, 0.85);
+    quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
+    sgl::end();
+    sgl::begin_quads();
+    /* Cyan while there's fuel; amber once empty (recharge hasn't started
+     * yet or is still ramping) so "out of jetpack" reads at a glance. */
+    if pct > 0.0 {
+        sgl::c4f(0.25, 0.75, 0.95, 1.0);
+    } else {
+        sgl::c4f(0.85, 0.55, 0.15, 1.0);
+    }
+    quad(bx, by, bx + bar_w * pct, by + bar_h);
+    sgl::end();
+
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+    sdtx::color3b(0xa0, 0xe0, 0xf0);
+    let txt = "JETPACK";
+    let col = (screen_w * 0.5 - txt.len() as f32 * 0.5 * cell) / cell;
+    sdtx::pos(col.max(0.0), (by - 11.0) / cell);
+    sdtx::puts(txt);
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
 /// Bottom-left craft-queue HUD: the active timed craft's progress bar + its
 /// output icon, plus a row of queued output icons. Crafting advances in the
 /// frame loop (`crafting_screen::tick_craft`) independent of any UI - this
@@ -7541,6 +7627,10 @@ fn frame_inner(app: &mut App) {
         }
         /* Survival hunger meter (top-left) - you still get hungry in a rocket. */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
+        /* Jetpack fuel gauge (bottom-centre, above the hotbar) - applies in
+         * both survival and creative, so it's not folded into the survival-
+         * gated hunger bar above. */
+        draw_jetpack_bar(app, sapp::widthf(), sapp::heightf());
         /* Craft-queue HUD (bottom-left): surfaces the background craft that
          * keeps running with the inventory closed. Inside the !screens::any_open
          * gate, so it hides while the craft panel (which has its own progress
@@ -8016,6 +8106,18 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
     if do_respawn {
         rocket_respawn_action(app);
     }
+}
+
+/// Flip `unlimited_jetpack` and print a console confirmation. Shared by the
+/// rebindable JetpackUnlimited action and the fixed Shift+J chord (both fire
+/// this, never toggle the field directly, so the two triggers can't drift).
+fn toggle_unlimited_jetpack(app: &App) {
+    let mut p = app.player.borrow_mut();
+    p.unlimited_jetpack = !p.unlimited_jetpack;
+    println!(
+        "[jetpack] Shift+J unlimited jetpack {}",
+        if p.unlimited_jetpack { "ON" } else { "OFF" }
+    );
 }
 
 fn event_inner(app: &mut App, e: &sapp::Event) {
@@ -8552,6 +8654,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             if on { "ON" } else { "OFF" },
             n_origins
         );
+        return;
+    }
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code)
+            == Some(crate::controls::Action::JetpackUnlimited)
+    {
+        toggle_unlimited_jetpack(app);
+        return;
+    }
+    /* Shift+J: fixed convenience chord for the unlimited-jetpack toggle,
+     * alongside the rebindable JetpackUnlimited action above - same shape
+     * as Shift+P for block capture. Not gated on the debug master; it's
+     * meant to be reachable mid-flight. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::J
+        && (e.modifiers & sapp::MODIFIER_SHIFT) != 0
+    {
+        toggle_unlimited_jetpack(app);
         return;
     }
     if app.debug_ui_visible {

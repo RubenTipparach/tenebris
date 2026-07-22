@@ -80,6 +80,10 @@ pub enum Action {
     BlockSnapshot,
     /// Toggle the water-flow debug overlay (debug).
     FlowDebug,
+    /// Unlimited jetpack: bypasses the fuel-tank timeout/recharge gate
+    /// entirely (see player_ctrl::update's jetpack fuel bookkeeping).
+    /// Also fires on Shift+J (fixed chord), mirroring BlockSnapshot/Shift+P.
+    JetpackUnlimited,
     /// Select hotbar slot 0..=9 (the "1".."0" keys).
     Hotbar(u8),
 }
@@ -117,6 +121,7 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Debug", "Pixel UI demo", Action::PixelUiDemo),
     ("Debug", "Block capture (Shift+P)", Action::BlockSnapshot),
     ("Debug", "Flow debug", Action::FlowDebug),
+    ("Debug", "Unlimited jetpack (Shift+J)", Action::JetpackUnlimited),
     ("Debug", "Hide terrain", Action::ToggleTerrain),
     ("Debug", "Hide water", Action::ToggleWater),
     ("Debug", "Hide skybox", Action::ToggleSkybox),
@@ -166,6 +171,7 @@ fn action_from_name(name: &str) -> Option<Action> {
         "pixel_ui_demo" => Action::PixelUiDemo,
         "block_snapshot" => Action::BlockSnapshot,
         "flow_debug" => Action::FlowDebug,
+        "jetpack_unlimited" => Action::JetpackUnlimited,
         _ => {
             if let Some(n) = name.strip_prefix("hotbar_") {
                 let slot: u8 = n.parse().ok()?;
@@ -275,6 +281,7 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (F8, Action::PixelUiDemo),
         (F4, Action::BlockSnapshot),
         (F5, Action::FlowDebug),
+        (F6, Action::JetpackUnlimited),
         /* Debug render toggles (only while the debug UI is on). Skybox moved
          * off K - K opens the tech tree, which used to shadow it dead. */
         (H, Action::ToggleTerrain),

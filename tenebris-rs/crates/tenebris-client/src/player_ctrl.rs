@@ -153,6 +153,19 @@ pub struct PlayerCtrl {
     pub jump_held_s: f32,
     pub jump_consumed: bool,
 
+    /* Jetpack fuel gate. jetpack_fuel_s counts seconds of burn remaining
+     * (0..=jetpack_max_fuel_s, config), drained while the jetpack actively
+     * thrusts and refilled once idle. jetpack_idle_s counts seconds since
+     * the jetpack last thrusted; recharge only starts once it passes
+     * jetpack_idle_before_recharge_s (config) - Default's 0.0 correctly
+     * reads as "just used" until init() seeds a full tank. unlimited_jetpack
+     * is the Shift+J debug toggle (see app.rs): while set, thrust never
+     * drains the tank and the fuel gauge stays hidden. Runtime-only, like
+     * the other Shift+key debug chords - not persisted or networked. */
+    pub jetpack_fuel_s: f32,
+    pub jetpack_idle_s: f32,
+    pub unlimited_jetpack: bool,
+
     /* Hotbar inventory. selected_block is the type the right-click
      * place will use; survival_mode gates whether breaking accumulates
      * pickups + costs time, or is instantaneous + free (creative). */
@@ -996,6 +1009,8 @@ pub fn init(p: &mut PlayerCtrl, body: &BodyConfig) {
     p.last_tile = -1;
     p.jump_held_s = 0.0;
     p.jump_consumed = false;
+    p.jetpack_fuel_s = config::lod().jetpack_max_fuel_s;
+    p.jetpack_idle_s = 0.0;
     p.basis_ready = false;
     /* Default to creative - the menu / a key toggle will switch to
      * survival, which calls inventory::init_empty + sets survival_mode. */
@@ -2158,6 +2173,8 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
         crate::rocket_ride::burn(dt);
         p.grounded = false;
     }
+    let mut jetpack_thrusting = false;
+    let mut jetpack_attempting = false;
     if inp.phys.jump && !riding {
         p.jump_held_s += dt;
         if eyes_in_water {
@@ -2189,16 +2206,54 @@ pub fn update(p: &mut PlayerCtrl, w: Option<&World>, dt: f32) {
          * out, the swim thrust is off (eyes dry) and without jetpack
          * they'd be stuck floating on the surface unable to climb out
          * - so this branch fires the moment eyes_in_water flips false,
-         * letting them jetpack up out of the water. */
+         * letting them jetpack up out of the water. `jetpack_attempting`
+         * covers every gate EXCEPT fuel (held past threshold, ungrounded,
+         * dry); thrust additionally needs fuel (or the unlimited_jetpack
+         * debug toggle) - once the tank empties, thrust cuts out even
+         * though attempting stays true, the same way a real jetpack sputters
+         * instead of vanishing the instant you let go of the trigger. */
         if !eyes_in_water && p.jump_held_s > l.jetpack_hold_threshold_s && !p.grounded {
-            vy += l.jetpack_accel_mps2 as f64 * dt as f64;
-            if vy > l.jetpack_max_vy_mps as f64 {
-                vy = l.jetpack_max_vy_mps as f64;
+            jetpack_attempting = true;
+            if p.unlimited_jetpack || p.jetpack_fuel_s > 0.0 {
+                vy += l.jetpack_accel_mps2 as f64 * dt as f64;
+                if vy > l.jetpack_max_vy_mps as f64 {
+                    vy = l.jetpack_max_vy_mps as f64;
+                }
+                jetpack_thrusting = true;
             }
         }
     } else {
         p.jump_held_s = 0.0;
         p.jump_consumed = false;
+    }
+    /* Jetpack fuel bookkeeping: ONE path for "jump never pressed", "held but
+     * gated off" (underwater / grounded / under the hold threshold), and
+     * "held, past every gate, but the tank is dry" - all fall through here
+     * with jetpack_thrusting false, so drain and recharge can't drift into
+     * two different rules. jetpack_attempting (distinct from thrusting)
+     * matters for idle time: a player STILL HOLDING the key with an empty
+     * tank is dry-firing, not idle - they haven't let go yet, so recharge
+     * must not sneak a start mid-hold. Idle only counts, and recharge only
+     * starts, once the player actually stops attempting (released the key,
+     * grounded, or submerged). Recharge rate empties/fills the whole tank
+     * in jetpack_recharge_time_s regardless of max capacity, so retuning
+     * the capacity doesn't silently retune the recharge speed. */
+    if p.unlimited_jetpack {
+        p.jetpack_fuel_s = l.jetpack_max_fuel_s;
+        p.jetpack_idle_s = 0.0;
+    } else if jetpack_thrusting {
+        p.jetpack_fuel_s = (p.jetpack_fuel_s - dt).max(0.0);
+        p.jetpack_idle_s = 0.0;
+    } else if jetpack_attempting {
+        /* Dry-firing: empty tank, still trying. No drain (nothing left to
+         * drain) and no idle accumulation (still not idle). */
+    } else {
+        p.jetpack_idle_s += dt;
+        if p.jetpack_idle_s > l.jetpack_idle_before_recharge_s && l.jetpack_recharge_time_s > 0.0
+        {
+            let rate = l.jetpack_max_fuel_s / l.jetpack_recharge_time_s;
+            p.jetpack_fuel_s = (p.jetpack_fuel_s + rate * dt).min(l.jetpack_max_fuel_s);
+        }
     }
     /* Velocity component perpendicular to basis.up, reused (and reassigned)
      * by the ground/ceiling collision snapping below, so it is declared here. */
@@ -3759,6 +3814,92 @@ mod tests {
             [0x3fedf2dddc4dd42b, 0xbc8e55b11b7ca6e9, 0x3fd68ba96967471b],
             1e-12,
             "D2 basis.fwd held by roll",
+        );
+    }
+
+    /// Jetpack fuel gate: jetpack_max_fuel_s of continuous thrust past the
+    /// hold threshold drains the tank to empty, an empty tank cuts thrust
+    /// even though every other gate (held, threshold, ungrounded) still
+    /// says go, idle time only counts once thrust stops firing, recharge
+    /// only starts after jetpack_idle_before_recharge_s of that idle time,
+    /// and the Shift+J unlimited_jetpack debug toggle bypasses the whole
+    /// gate (tank pinned full, never drains). On-foot jetpacking is a
+    /// PLANET-mode mechanic (the deep-space 6DOF branch never reaches the
+    /// jump/jetpack block this test exercises) - init() spawns 2 m above
+    /// the surface, already ungrounded and out of space, so holding jump
+    /// from there drives the real path with no extra setup.
+    #[test]
+    fn jetpack_fuel_drains_gates_thrust_and_recharges_after_idle() {
+        clear_input();
+        let (body, w) = tenebris_world();
+        let mut p = PlayerCtrl::default();
+        init(&mut p, &body);
+        let cfg = config::lod();
+        assert_eq!(
+            p.jetpack_fuel_s, cfg.jetpack_max_fuel_s,
+            "spawns with a full tank"
+        );
+        assert!(!p.grounded, "spawns airborne (2 m above the surface)");
+
+        set_phys(|ph| ph.jump = true);
+        /* Comfortably below the hold threshold (half of it, well clear of
+         * any frame-accumulation rounding at the boundary itself): the
+         * jetpack branch requires jump_held_s to strictly exceed the
+         * threshold, so this must not have drained anything yet. */
+        let half_threshold_frames = (cfg.jetpack_hold_threshold_s * 0.5 / DT) as usize;
+        steps(&mut p, Some(&w), half_threshold_frames);
+        assert_eq!(
+            p.jetpack_fuel_s, cfg.jetpack_max_fuel_s,
+            "no drain well below the hold threshold"
+        );
+
+        /* Keep holding past the threshold AND jetpack_max_fuel_s worth of
+         * ACTIVE thrust (+10 frames slack) - the tank must empty and clamp
+         * at exactly 0, not go negative. */
+        let drain_frames =
+            ((cfg.jetpack_hold_threshold_s + cfg.jetpack_max_fuel_s) / DT).ceil() as usize + 10;
+        steps(&mut p, Some(&w), drain_frames);
+        assert_eq!(
+            p.jetpack_fuel_s, 0.0,
+            "tank empties after jetpack_max_fuel_s of burn and clamps at 0"
+        );
+
+        /* Release jump: idle time starts counting toward the recharge gate,
+         * but must NOT start refilling before jetpack_idle_before_recharge_s
+         * has actually elapsed. */
+        set_phys(|ph| ph.jump = false);
+        let idle_frames = (cfg.jetpack_idle_before_recharge_s / DT).ceil() as usize;
+        steps(&mut p, Some(&w), idle_frames.saturating_sub(1));
+        assert_eq!(
+            p.jetpack_fuel_s, 0.0,
+            "still empty - idle-before-recharge gate hasn't cleared yet"
+        );
+
+        /* Cross the idle gate and keep going for jetpack_recharge_time_s (+
+         * slack): the tank must refill all the way back to max. */
+        let recharge_frames = (cfg.jetpack_recharge_time_s / DT).ceil() as usize + 10;
+        steps(&mut p, Some(&w), 2 + recharge_frames);
+        assert_eq!(
+            p.jetpack_fuel_s, cfg.jetpack_max_fuel_s,
+            "tank refills after the idle gate clears + recharge_time_s"
+        );
+
+        /* Drain it again, then flip the Shift+J unlimited toggle - the tank
+         * must snap to full immediately and STAY full while still actively
+         * thrusting (an empty-tank cutoff would otherwise apply here). */
+        set_phys(|ph| ph.jump = true);
+        steps(&mut p, Some(&w), drain_frames);
+        assert_eq!(p.jetpack_fuel_s, 0.0, "drained again ahead of the unlimited check");
+        p.unlimited_jetpack = true;
+        steps(&mut p, Some(&w), 1);
+        assert_eq!(
+            p.jetpack_fuel_s, cfg.jetpack_max_fuel_s,
+            "unlimited toggle pins the tank full immediately"
+        );
+        steps(&mut p, Some(&w), 30);
+        assert_eq!(
+            p.jetpack_fuel_s, cfg.jetpack_max_fuel_s,
+            "stays pinned full under unlimited_jetpack even while still thrusting"
         );
     }
 
