@@ -1,10 +1,16 @@
 # Continuous build + deploy for Tenebris.
 #
-# Every push to every branch builds AND deploys: the WASM + landing
-# pages go to GitHub Pages, the dedicated server goes to Fly.io.
-# Single-dev / fast-iteration mode — whoever pushed last wins both
-# the live site and the live server. Tighten to a branch allowlist
-# later if the project grows contributors.
+# Every push to every branch builds the WASM + landing pages and
+# deploys the dedicated server to Fly.io. GitHub Pages auto-deploy is
+# DISABLED (the Pages `deploy` job was removed by request) - the build
+# still produces dist/ and uploads it as a downloadable artifact, but
+# nothing publishes it to rubentipparach.github.io. Re-enable by
+# restoring the `deploy` job + its pages-artifact upload + the
+# `pages: write` / `id-token: write` permissions.
+#
+# Single-dev / fast-iteration mode - whoever pushed last wins the live
+# server. Tighten to a branch allowlist later if the project grows
+# contributors.
 #
 # Fly deploy requires a FLY_API_TOKEN repo secret (scoped deploy
 # token from `fly tokens create deploy -a tenebris-c`, including the
@@ -29,13 +35,13 @@ on:
         required: false
         default: ''
 
+# GitHub Pages deploy is disabled, so the `pages: write` / `id-token: write`
+# permissions it needed are dropped; the build only reads the repo.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deploy at a time across the whole repo, not per-ref, so a newer
-# push cleanly supersedes an older in-flight deploy.
+# push cleanly supersedes an older in-flight Fly deploy.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -88,10 +94,9 @@ jobs:
           path: dist
           retention-days: 14
 
-      - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: 'dist'
+      # GitHub Pages publish disabled by request: no upload-pages-artifact
+      # step and no `deploy` job. dist/ ships only as the downloadable
+      # tenebris-dist artifact above.
 
       # ---------------------------------------------------------------
       # Server deploy. Folded into the build job so a single push gives
@@ -164,15 +169,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  deploy:
-    needs: build
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+  # GitHub Pages `deploy` job removed by request - the site no longer
+  # auto-publishes to rubentipparach.github.io on push. To re-enable,
+  # restore this job (needs: build), the pages-artifact upload in the
+  # build job, and the pages/id-token permissions at the top.
