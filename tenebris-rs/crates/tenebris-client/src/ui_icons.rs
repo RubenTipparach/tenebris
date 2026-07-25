@@ -112,7 +112,7 @@ const ICONS: &[(u16, &str)] = &[
     (items::BUCKET, "assets/textures/items/bucket.png"),
     (items::WATER_BUCKET, "assets/textures/items/water_bucket.png"),
     // --- resource items ---
-    (items::PLANK, "assets/textures/wood.png"),
+    (items::PLANK, "assets/textures/items/plank.png"),
     (items::STICK, "assets/textures/items/sticks.png"),
     (items::COAL, "assets/textures/items/coal.png"),
     (items::FLINT, "assets/textures/items/flint.png"),
