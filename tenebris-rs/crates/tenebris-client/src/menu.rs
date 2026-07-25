@@ -1653,8 +1653,11 @@ fn draw_inner(m: &mut Menu, screen_w: i32, screen_h: i32) {
     }
     sgl::load_pipeline(pip);
 
-    /* Backdrop covers the entire screen, dim. */
-    quad(0.0, 0.0, w, h, 0.03, 0.05, 0.10, 0.85);
+    /* No full-screen dim quad here: menu states now render over the
+     * live 3D orbit backdrop (menu_scene::draw, called earlier in the
+     * same pass from app.rs), and an 0.85-alpha near-black quad crushed
+     * it to near-black. Per-state panels below (and ProfileSelect's own
+     * button/title contrast) carry text legibility instead. */
 
     /* Container panel behind every menu state's content. Sits the
      * buttons + title + helper text on a single readable surface
