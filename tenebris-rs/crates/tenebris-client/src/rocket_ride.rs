@@ -146,13 +146,31 @@ fn release_pointer() {}
 /// pad, so a later respawn can't reset a rocket the player has walked away
 /// from - the parts are still on the pad; re-board it with E instead.
 pub fn clear() {
+    forget();
+    /* Same-frame clear of the mid-flight save: a landed / exited save must
+     * never re-strap the player on the next load. */
+    sp_save_now();
+}
+
+/// Forget the in-memory ride/parked state WITHOUT touching persistence -
+/// the split-out half of [`clear`] used when the ACTIVE WORLD ITSELF is
+/// being switched (`start_world_regen` in app.rs), never when actually
+/// exiting a ship. At that point `menu::active_world()` already names the
+/// INCOMING world (`start_sp_for_world` sets it before entering
+/// `InGameSp`), so calling the normal `clear()` here would run
+/// `sp_save_now()` against the NEW world and stomp its own, not-yet-loaded
+/// ride save with a bogus "nothing riding" - destroying a ship that world
+/// had legitimately parked from an earlier session. The OUTGOING world's
+/// save is already correct (every ride mutation persists same-frame per
+/// the "world edits persist immediately" rule), so nothing needs saving
+/// here at all - only the stale pointer to the OLD world's ship needs to
+/// go, so `apply_sp_world_saves`'s `!is_riding()` guard sees a clean slate
+/// and actually loads (or doesn't) the incoming world's own ride save.
+pub fn forget() {
     RIDE.with(|c| *c.borrow_mut() = None);
     ORIGIN.with(|o| *o.borrow_mut() = None);
     PARKED.with(|c| *c.borrow_mut() = None);
     DOCKED_PAD.with(|c| c.set(None));
-    /* Same-frame clear of the mid-flight save: a landed / exited save must
-     * never re-strap the player on the next load. */
-    sp_save_now();
 }
 
 /// Climb out but LEAVE THE SHIP IN THE WORLD: park it at `pos`/`up` coasting
@@ -702,6 +720,42 @@ mod tests {
         clear();
         assert!(!can_respawn());
         assert_eq!(respawn(), None);
+    }
+
+    /// THE cross-world-load bug this session's report was: switching SP
+    /// saves while mid-flight (or with a parked ship) left `is_riding()` /
+    /// `has_parked()` true for the OLD world's ship, so the new world's
+    /// `apply_sp_world_saves` guard (`if !is_riding() { load_ride(...) }`)
+    /// never ran and the player stayed strapped into a rocket that
+    /// belonged to a different save. `forget()` is the world-switch reset
+    /// (called from `start_world_regen`) - it must drop every bit of
+    /// in-memory ride/parked/docked state exactly like `clear()` does,
+    /// the difference being it must NOT call `sp_save_now()` (see its
+    /// doc comment: by the time it runs, `menu::active_world()` already
+    /// names the incoming world, so a save here would stomp that world's
+    /// own not-yet-loaded ride save).
+    #[test]
+    fn forget_drops_riding_and_parked_state_for_a_world_switch() {
+        clear();
+        let (pos, up) = board();
+        assert!(is_riding());
+        assert!(can_respawn());
+
+        forget();
+        assert!(!is_riding(), "no longer flying the old world's ship");
+        assert!(!has_parked(), "and it isn't left parked in memory either");
+        assert!(!can_respawn(), "the old origin pad is forgotten too");
+        assert_eq!(in_flight_pad(), None);
+
+        /* Same check starting from a PARKED (not riding) ship. */
+        clear();
+        board();
+        park(pos, up, dvec3_make(15.0, 0.0, 2.0));
+        assert!(has_parked());
+        forget();
+        assert!(!has_parked(), "a parked ship from the old world is dropped too");
+        assert!(!is_riding());
+        clear();
     }
 
     /// THE despawn fix: climbing out PARKS the ship in the world instead of
