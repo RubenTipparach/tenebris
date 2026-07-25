@@ -2215,6 +2215,53 @@ fn sgl_world_ctx() -> sgl::Context {
     })
 }
 
+/// Debug isolation switch: hide a named draw pass so a mystery on-screen
+/// quad can be bisected to its exact source in ONE build (hide the pass,
+/// relaunch, see if the quad vanished). Names: water, torch, glow, drops,
+/// aquarium, flame. Pure diagnostic - no effect unless a pass is listed.
+///
+/// Two sources, unioned and parsed once:
+///   - `assets/config/debug.yaml`'s `hide:` line (the easy one - just edit
+///     the file and relaunch; no env-var wrangling, especially on Windows),
+///   - the `TENEBRIS_DEV_HIDE=water,drops,...` env var.
+pub fn dev_hidden(what: &str) -> bool {
+    thread_local! {
+        static HIDE: std::cell::RefCell<Option<String>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    HIDE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            /* Start from the env var, then fold in the debug.yaml `hide:`
+             * line. Both feed the same comma-split below, so either works
+             * and they combine. Read once per thread (thread_local cache). */
+            let mut set = std::env::var("TENEBRIS_DEV_HIDE").unwrap_or_default();
+            if let Ok(text) = std::fs::read_to_string("assets/config/debug.yaml") {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(rest) = line.strip_prefix("hide:") {
+                        let rest = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                        for tok in rest.split([',', ' ', '\t']) {
+                            let tok = tok.trim();
+                            if !tok.is_empty() {
+                                if !set.is_empty() {
+                                    set.push(',');
+                                }
+                                set.push_str(tok);
+                            }
+                        }
+                    }
+                }
+            }
+            *c = Some(set);
+        }
+        c.as_ref().unwrap().split(',').any(|s| s.trim() == what)
+    })
+}
+
 /// Route subsequent sgl recording (and lazy `sgl::make_pipeline` calls)
 /// into the world-entity context. Pair with [`sgl_world_end`].
 pub fn sgl_world_begin() {
@@ -4973,11 +5020,19 @@ pub fn compose_to_swapchain(view: Mat4, proj: Mat4) {
             };
             let cloud_deck = tenebris_core::clouds::config().altitude_m;
             let in_weather_layer = cam_alt < cloud_deck;
+            /* Sheltered from the sky (cave / overhang): no rain-on-glass lens
+             * droplets and no wet terrain - you're protected. Same predicate
+             * (World::sky_exposed_at) the falling-precipitation pass uses, so
+             * the streaks and the lens/wet FX can't disagree. */
+            let sky_exposed = {
+                let world = ab.world.borrow();
+                world.sky_exposed_at(vec3_sub(r.env.camera_world, body_center))
+            };
             /* Wet terrain while it's raining at the camera: a strong base
              * wetness the moment precipitation starts, deepening a touch
              * under heavier overcast. Dry (0) otherwise, and never on the
-             * lens from above the cloud deck / in space. */
-            let wet_target = if wx_precip && wx_is_rain && in_weather_layer {
+             * lens from above the cloud deck / in space, or when sheltered. */
+            let wet_target = if wx_precip && wx_is_rain && in_weather_layer && sky_exposed {
                 (0.55 + 0.45 * wx_overcast).min(1.0)
             } else {
                 0.0
@@ -6036,7 +6091,7 @@ pub fn draw_world(
 /// Port of `renderer_draw_water()`. Runs after compose_to_swapchain;
 /// only the active body within the detail cutoff draws its cap.
 pub fn draw_water(view: Mat4, proj: Mat4, camera_world: Vec3) {
-    if !terrain_visible() {
+    if !terrain_visible() || dev_hidden("water") {
         return;
     }
     if !water_visible() {
@@ -6551,7 +6606,7 @@ pub fn draw_water_flow_debug(view: Mat4, proj: Mat4) {
 /// and this rebases them by the active body's floating-origin render centre
 /// so they sit on their terrain at any world scale (see torch::model_matrix).
 pub fn draw_torches(view: Mat4, proj: Mat4) {
-    if !terrain_visible() {
+    if !terrain_visible() || dev_hidden("torch") {
         return;
     }
     let (time_seconds, body_offset) = R.with(|cell| {
@@ -6643,6 +6698,9 @@ fn glow_push_quad(verts: &mut Vec<f32>, c: Vec3, size: f32) {
 /// (after the opaque terrain), additive with depth-test so the planet
 /// occludes lights beyond the horizon.
 pub fn draw_light_glow(view: Mat4, proj: Mat4) {
+    if dev_hidden("glow") {
+        return;
+    }
     let l = config::lighting();
     if l.glow_alpha_day <= 0.0 && l.glow_alpha_night <= 0.0 {
         return;
@@ -6744,6 +6802,11 @@ pub fn draw_light_glow(view: Mat4, proj: Mat4) {
                     dst_factor_alpha: sg::BlendFactor::One,
                     ..Default::default()
                 };
+                /* NEVER write the offscreen alpha: it is the composite's
+                 * wet-mask (terrain bakes v_wet into alpha; the water fog keys
+                 * off it). Writing it stamped teal deep-water fog as a square
+                 * at every torch in a below-sea-level cave. RGB-only. */
+                desc.colors[0].write_mask = sg::ColorMask::Rgb;
                 desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CENTER].format =
                     sg::VertexFormat::Float3;
                 desc.layout.attrs[shaders::glow::ATTR_GLOW_A_CORNER].format =

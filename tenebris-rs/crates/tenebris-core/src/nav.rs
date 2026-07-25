@@ -58,6 +58,13 @@ pub fn dominant_body(pos: DVec3) -> BodyConfig {
     best
 }
 
+/// Floor on [`Conic::sample`]'s hyperbola clip radius, as a multiple of the
+/// conic's own periapsis - guarantees a visible (non-degenerate) arc
+/// regardless of the focus body's scale, without overriding a caller's
+/// DELIBERATELY tight clip (as long as it's still bigger than periapsis,
+/// which is the only case that can actually be sampled). See `sample`'s doc.
+const HYPERBOLA_CLIP_PERIAPSIS_MULT: f64 = 1.2;
+
 /// A two-body conic section: the orbit the current state implies around
 /// its focus body. Ellipse when bound (e < 1), hyperbola when not.
 #[derive(Clone, Copy, Debug)]
@@ -162,6 +169,16 @@ impl Conic {
     /// Ellipse: the full loop (closed - the last point meets the first).
     /// Hyperbola: the arc around periapsis clipped at `r_max` from the
     /// focus, so an escape trajectory doesn't draw off to infinity.
+    ///
+    /// `r_max` is floored to a multiple of THIS conic's own periapsis, so
+    /// the clip self-scales with the focus body instead of assuming one
+    /// fixed absolute distance. A planetary escape's periapsis is a few km;
+    /// a heliocentric escape's is the planet's whole orbital radius around
+    /// the star (~150 km in this system) - a caller-supplied clip tuned for
+    /// the planetary case (e.g. 40 km) sits INSIDE the heliocentric
+    /// periapsis, so `p / r_max` blows way past 1, clamps to the same
+    /// point every sample, and the hyperbola draws as a single dot (the
+    /// "heliocentric orbit fails to draw once I hit escape velocity" bug).
     pub fn sample(&self, n: usize, r_max: f64) -> Vec<DVec3> {
         let n = n.max(8);
         let p = self.periapsis_m * (1.0 + self.e); /* semi-latus rectum */
@@ -173,6 +190,7 @@ impl Conic {
                 out.push(self.point_at(r, th));
             }
         } else {
+            let r_max = r_max.max(self.periapsis_m * HYPERBOLA_CLIP_PERIAPSIS_MULT);
             /* True anomaly where r hits r_max: cos(th) = (p/r - 1)/e. */
             let c = ((p / r_max - 1.0) / self.e).clamp(-1.0, 1.0);
             let th_max = c.acos();
@@ -361,6 +379,127 @@ impl Conic {
             Some(dt)
         }
     }
+}
+
+/* ---------------------------- patched conics ---------------------------- */
+/* Full multi-hop patched conics: a trajectory doesn't just have ONE conic
+ * (the current SOI's) - it's a CHAIN of conics, one per body whose field it
+ * passes through, each solved fresh from the exact state at the handover.
+ * This generalizes the old single-hop "preview the heliocentric orbit once
+ * you escape a planet" special case (which used to live in nav_ui) into the
+ * general N-body-in-sequence case the nav UI's rendering wants: intercept a
+ * moon -> show the moon-relative orbit; escape it -> show the sun-relative
+ * orbit; and so on for however many SOIs the path actually crosses. */
+
+/// One leg of a multi-hop patched-conics trajectory: the conic the ship
+/// flies while `body` dominates, and when (relative to the whole
+/// trajectory's epoch, t=0 at the starting state) that leg starts/ends. See
+/// [`patched_trajectory`].
+#[derive(Clone, Copy, Debug)]
+pub struct PatchedLeg {
+    pub body: BodyConfig,
+    pub conic: Conic,
+    /// Seconds from the trajectory's epoch that this leg begins.
+    pub t_start_s: f64,
+    /// Seconds from the epoch this leg hands off to the next body's SOI, or
+    /// `None` if propagation stopped here: no more hops were requested, or
+    /// no crossing was found within the search horizon (a genuinely closed
+    /// orbit that never leaves this SOI, or an escape too distant to
+    /// resolve within the horizon).
+    pub t_end_s: Option<f64>,
+}
+
+/// Coarse-then-bisect search for the first time in `(0, t_max]` at which
+/// `conic`'s propagated position leaves `body_name`'s dominance - the
+/// sphere-of-influence crossing a patched-conics trajectory hands off at.
+/// Compared by NAME, not [`BodyConfig::id`]: the synthetic sun body
+/// ([`planet::sun_body`]) carries a placeholder id, so name is the only
+/// reliable identity check here (mirrors [`dominant_body`]'s own tests).
+fn find_soi_crossing(conic: &Conic, body_name: &str, t_max: f64) -> Option<(f64, DVec3, DVec3)> {
+    if !(t_max.is_finite() && t_max > 0.0) {
+        return None;
+    }
+    /* 256 coarse samples + a 40-iteration bisection comfortably resolves the
+     * crossing to sub-metre precision even across an hours-long horizon,
+     * at a cost (a few hundred closed-form Kepler solves) that's nothing
+     * next to one frame's terrain mesh work. */
+    const COARSE_STEPS: usize = 256;
+    let step = t_max / COARSE_STEPS as f64;
+    let mut prev_t = 0.0;
+    for i in 1..=COARSE_STEPS {
+        let t = i as f64 * step;
+        let Some((pos, _)) = conic.state_at(t) else { return None };
+        if dominant_body(pos).name != body_name {
+            let (mut lo, mut hi) = (prev_t, t);
+            for _ in 0..40 {
+                let mid = 0.5 * (lo + hi);
+                let Some((pmid, _)) = conic.state_at(mid) else { break };
+                if dominant_body(pmid).name == body_name {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return conic.state_at(hi).map(|(p, v)| (hi, p, v));
+        }
+        prev_t = t;
+    }
+    None
+}
+
+/// The full patched-conics stack a trajectory starting at `(pos0, vel0)`
+/// will fly: one [`PatchedLeg`] per body whose SOI it passes through, in
+/// order, each leg's conic solved fresh around ITS body from the exact
+/// state at the handover - not a continued propagation of the old conic,
+/// a brand new two-body solve, exactly like a real patched-conics
+/// approximation is supposed to work (see the module doc).
+///
+/// Stops after `max_hops` legs, or as soon as a leg finds no further
+/// crossing within `horizon_s` (a genuinely closed orbit, or an escape the
+/// horizon can't resolve) - whichever comes first. `horizon_s` bounds the
+/// crossing SEARCH within a single leg; a bound ellipse additionally
+/// self-caps at its own period (if it hasn't left in one lap, it never
+/// will), so a slow-orbiting moon doesn't need a huge caller-supplied
+/// horizon just to prove it stays put.
+///
+/// Empty only when the very first conic is degenerate (radial trajectory -
+/// see [`Conic::from_state`]); otherwise always at least one leg.
+pub fn patched_trajectory(
+    pos0: DVec3,
+    vel0: DVec3,
+    max_hops: usize,
+    horizon_s: f64,
+) -> Vec<PatchedLeg> {
+    let mut legs = Vec::new();
+    let mut body = dominant_body(pos0);
+    let mut pos = pos0;
+    let mut vel = vel0;
+    let mut t_accum = 0.0;
+    for _ in 0..max_hops.max(1) {
+        let Some(conic) = Conic::from_state(&body, pos, vel) else { break };
+        /* period_s is +inf for an unbound conic, so .min(horizon_s) already
+         * reduces to the caller's horizon there - no separate branch needed. */
+        let search_max = conic.period_s.min(horizon_s);
+        match find_soi_crossing(&conic, body.name, search_max) {
+            Some((t_cross, pos_c, vel_c)) => {
+                legs.push(PatchedLeg {
+                    body,
+                    conic,
+                    t_start_s: t_accum,
+                    t_end_s: Some(t_accum + t_cross),
+                });
+                t_accum += t_cross;
+                pos = pos_c;
+                vel = vel_c;
+                body = dominant_body(pos);
+            }
+            None => {
+                legs.push(PatchedLeg { body, conic, t_start_s: t_accum, t_end_s: None });
+                break;
+            }
+        }
+    }
+    legs
 }
 
 /// Prograde / orbit-normal / radial-out unit basis at a state - the axes a
@@ -554,6 +693,7 @@ pub fn attitude_pid_step(g: AttGains, st: &mut AttPidState, err: DVec3, dt: f64)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::planet::test_support::lock_and_reset;
     use crate::planet::BodyId;
 
     fn tenebris() -> BodyConfig {
@@ -790,6 +930,7 @@ mod tests {
     /// orbit when a transfer arrives.
     #[test]
     fn dominant_body_hands_over_near_luna() {
+        let _g = lock_and_reset();
         assert_eq!(dominant_body(dvec3_make(0.0, 3_000.0, 0.0)).name, "Tenebris");
         assert_eq!(dominant_body(dvec3_make(0.0, 5_900.0, 0.0)).name, "Luna");
         assert_eq!(dominant_body(dvec3_make(400.0, 0.0, 0.0)).name, "Tenebris");
@@ -811,5 +952,110 @@ mod tests {
             let expect = p / (1.0 + c.e * cos_th);
             assert!((rr - expect).abs() < 1e-6 * rr.max(1.0), "r {} vs conic {}", rr, expect);
         }
+    }
+
+    /// Regression for "the heliocentric orbit fails to draw once I hit
+    /// escape velocity": a hyperbola's sample must not collapse to a single
+    /// point when the CALLER's `r_max` (tuned for a planetary-scale escape,
+    /// e.g. a fixed 40 km) is smaller than the conic's OWN periapsis (a
+    /// heliocentric escape's periapsis is the planet's whole orbital radius
+    /// around the star, ~150 km here - well past a 40 km clip). `sample`
+    /// must floor the clip to the conic's own scale instead of trusting the
+    /// caller's constant blindly.
+    #[test]
+    fn sample_does_not_collapse_when_r_max_is_smaller_than_periapsis() {
+        let b = tenebris();
+        let r = 8_000.0;
+        let v = 1.5 * (2.0 * mu(&b) / r).sqrt(); /* well past escape speed */
+        let c = Conic::from_state(&b, dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 40.0, v)).unwrap();
+        assert!(c.e >= 1.0, "escape trajectory");
+
+        /* A clip well INSIDE the conic's own periapsis - the exact
+         * planetary-clip-vs-larger-focus-scale mismatch that collapsed the
+         * heliocentric hyperbola to a single point. */
+        let r_max = c.periapsis_m * 0.1;
+        let pts = c.sample(64, r_max);
+        let spread = pts
+            .windows(2)
+            .map(|w| dvec3_length(dvec3_sub(w[1], w[0])))
+            .fold(0.0_f64, f64::max);
+        assert!(spread > 1.0, "sample collapsed to a single point (max chord = {spread})");
+    }
+
+    /* ----------------------- patched conics ----------------------------- */
+
+    /// A closed orbit that never leaves Tenebris's SOI produces exactly ONE
+    /// leg with `t_end_s: None` - there is nothing to hand off to, so
+    /// `patched_trajectory` must not manufacture a phantom crossing.
+    #[test]
+    fn patched_trajectory_stays_single_leg_for_a_closed_orbit() {
+        let _g = lock_and_reset();
+        let b = tenebris();
+        /* NOT 10_000: that's exactly the Tenebris/Sequoia midpoint (Sequoia
+         * sits at x=20_000) and Sequoia's bigger mu wins there - the same
+         * distance dominant_body has to arbitrate is what this test needs
+         * to stay decisively Tenebris's. 3_000 matches the safely-Tenebris
+         * point `dominant_body_hands_over_near_luna` already pins. */
+        let r = 3_000.0;
+        let v = (mu(&b) / r).sqrt(); /* circular */
+        let legs = patched_trajectory(dvec3_make(r, 0.0, 0.0), dvec3_make(0.0, 0.0, v), 4, 3600.0);
+        assert_eq!(legs.len(), 1, "a closed orbit is one leg");
+        assert_eq!(legs[0].body.name, "Tenebris");
+        assert_eq!(legs[0].t_start_s, 0.0);
+        assert!(legs[0].t_end_s.is_none(), "nothing to hand off to");
+    }
+
+    /// The literal user-facing scenario: launch nearly straight from
+    /// Tenebris toward Luna (a tiny lateral kick keeps the conic
+    /// non-degenerate, per `radial_launch_is_degenerate`) fast enough to
+    /// reach Luna's dominance band within the horizon. `patched_trajectory`
+    /// must hand off leg 0 (Tenebris) to leg 1 (Luna) at the SAME crossing
+    /// `dominant_body` itself reports (mirrors `dominant_body_hands_over_
+    /// near_luna`'s known Tenebris/Luna boundary), and leg 1's conic must be
+    /// centred on Luna, not Tenebris.
+    #[test]
+    fn patched_trajectory_hands_over_from_tenebris_to_luna() {
+        let _g = lock_and_reset();
+        let b = tenebris();
+        /* Known Tenebris-dominant point (dominant_body_hands_over_near_luna).
+         * A brisk escape speed mostly along +Y (toward Luna at (0,6000,0))
+         * with a small +X kick for angular momentum. */
+        let pos0 = dvec3_make(0.0, 3_000.0, 0.0);
+        let v_esc = (2.0 * mu(&b) / 3_000.0).sqrt();
+        let vel0 = dvec3_make(v_esc * 0.02, v_esc * 1.4, 0.0);
+
+        let legs = patched_trajectory(pos0, vel0, 4, 3600.0);
+        assert!(legs.len() >= 2, "expected a Tenebris -> Luna handover, got {} leg(s)", legs.len());
+        assert_eq!(legs[0].body.name, "Tenebris");
+        assert_eq!(legs[0].t_start_s, 0.0);
+        let t_cross = legs[0].t_end_s.expect("leg 0 must record a handover time");
+        assert_eq!(legs[1].body.name, "Luna", "leg 1 hands off to Luna");
+        assert_eq!(legs[1].t_start_s, t_cross, "leg 1 starts exactly where leg 0 ends");
+
+        /* The crossing point really does sit in Luna's dominance band, and
+         * leg 1's conic is centred on Luna - not still Tenebris. */
+        let (cross_pos, _) = legs[0].conic.state_at(t_cross).unwrap();
+        assert_eq!(dominant_body(cross_pos).name, "Luna");
+        let luna = planet::get(planet::BodyId::Luna);
+        let luna_c = dvec3_make(luna.pos_x, luna.pos_y, luna.pos_z);
+        assert!(
+            dvec3_length(dvec3_sub(legs[1].conic.focus, luna_c)) < 1e-6,
+            "leg 1 conic is focused on Luna"
+        );
+    }
+
+    /// `max_hops` is a hard cap even when the trajectory would keep crossing
+    /// SOIs - the search must stop building legs once it's hit, not run
+    /// away chasing an arbitrarily long chain.
+    #[test]
+    fn patched_trajectory_respects_max_hops() {
+        let _g = lock_and_reset();
+        let b = tenebris();
+        let pos0 = dvec3_make(0.0, 3_000.0, 0.0);
+        let v_esc = (2.0 * mu(&b) / 3_000.0).sqrt();
+        let vel0 = dvec3_make(v_esc * 0.02, v_esc * 1.4, 0.0);
+        let legs = patched_trajectory(pos0, vel0, 1, 3600.0);
+        assert_eq!(legs.len(), 1, "max_hops=1 caps at a single leg even mid-escape");
+        assert_eq!(legs[0].body.name, "Tenebris");
     }
 }

@@ -71,6 +71,96 @@ pub fn queue_outputs() -> Vec<(items::ItemId, u16)> {
     })
 }
 
+/// Serialize the player's active craft + the waiting queue to a flat string
+/// for same-frame persistence (see `persistence::save_craft`). Format:
+///   `<active>#<queue>`
+///   active = `out,count,total_s,elapsed_s`   (empty when nothing crafting)
+///   queue  = entries joined by `;`
+///   entry  = `out,count,time_s,<inputs>`
+///   inputs = `item:count|item:count|...`     (reserved inputs, for refund)
+/// Inputs are carried so a queued entry cancelled AFTER a reload still
+/// refunds correctly (they were consumed at enqueue time). The bag/hotbar
+/// save already reflects the post-consume state, so restoring never
+/// double-consumes.
+pub fn serialize_state(p: &PlayerCtrl) -> String {
+    let active = match p.crafting {
+        Some(ac) => format!("{},{},{},{}", ac.output, ac.count, ac.total_s, ac.elapsed_s),
+        None => String::new(),
+    };
+    let queue = S.with(|c| {
+        c.borrow()
+            .queue
+            .iter()
+            .map(|r| {
+                let inputs = r
+                    .inputs
+                    .iter()
+                    .map(|s| format!("{}:{}", s.item, s.count))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("{},{},{},{}", r.output.item, r.output.count, r.time_s, inputs)
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    });
+    format!("{active}#{queue}")
+}
+
+fn parse_active(s: &str) -> Option<ActiveCraft> {
+    let mut it = s.split(',');
+    let output = it.next()?.trim().parse::<items::ItemId>().ok()?;
+    let count = it.next()?.trim().parse::<u16>().ok()?;
+    let total_s = it.next()?.trim().parse::<f32>().ok()?;
+    let elapsed_s = it.next()?.trim().parse::<f32>().ok()?;
+    Some(ActiveCraft {
+        output,
+        count,
+        total_s: total_s.max(0.01),
+        elapsed_s: elapsed_s.max(0.0),
+    })
+}
+
+fn parse_queue_entry(s: &str) -> Option<Recipe> {
+    let mut it = s.split(',');
+    let out = it.next()?.trim().parse::<items::ItemId>().ok()?;
+    let count = it.next()?.trim().parse::<u16>().ok()?;
+    let time_s = it.next()?.trim().parse::<f32>().ok()?;
+    let inputs = it
+        .next()
+        .unwrap_or("")
+        .split('|')
+        .filter(|p| !p.is_empty())
+        .filter_map(|pair| {
+            let (i, c) = pair.split_once(':')?;
+            Some(items::ItemStack::new(
+                i.trim().parse::<items::ItemId>().ok()?,
+                c.trim().parse::<u16>().ok()?,
+            ))
+        })
+        .collect();
+    Some(Recipe {
+        name: String::new(),
+        inputs,
+        output: items::ItemStack::new(out, count),
+        tier: 0,
+        station: None,
+        time_s: time_s.max(0.01),
+    })
+}
+
+/// Restore the active craft + queue saved by [`serialize_state`]. Inputs are
+/// NOT re-consumed (the saved bag/hotbar already reflect the consumption).
+pub fn restore_state(p: &mut PlayerCtrl, blob: &str) {
+    let (active, queue) = blob.split_once('#').unwrap_or((blob, ""));
+    p.crafting = parse_active(active);
+    let recipes: Vec<Recipe> = queue
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .filter_map(parse_queue_entry)
+        .collect();
+    S.with(|c| c.borrow_mut().queue = recipes);
+}
+
 /// Force the craft screen closed (e.g. when the inventory or the pause
 /// modal takes over).
 pub fn close() {
@@ -795,5 +885,55 @@ in: plank 2
         let p2 = player_with_logs(1);
         set_player(Some(p2));
         assert!(affordable_flags()[0], "planks affordable with a log");
+    }
+
+    #[test]
+    fn craft_state_round_trips_through_persistence() {
+        // The active craft's progress AND the waiting queue must survive a
+        // save/load so a background craft resumes on reload instead of
+        // vanishing (the user's "same with crafting progress and queue").
+        setup();
+        let p = player_with_logs(3);
+        set_player(Some(p.clone()));
+        assert!(craft_row(0), "starts planks (active)");
+        assert!(craft_row(0), "queues planks #2");
+        assert!(craft_row(0), "queues planks #3");
+        // Advance the active craft partway so elapsed is non-zero.
+        tick_craft(&p, 0.4);
+        let active_before = p.borrow().crafting.expect("a craft is active");
+        let queue_before = queue_outputs();
+        assert_eq!(queue_before.len(), 2, "two queued behind the active one");
+
+        let blob = serialize_state(&p.borrow());
+        // Wipe the live state, then restore from the blob (simulates a reload).
+        {
+            let mut pb = p.borrow_mut();
+            pb.crafting = None;
+            clear_queue();
+            restore_state(&mut pb, &blob);
+        }
+
+        let active_after = p.borrow().crafting.expect("active craft restored");
+        assert_eq!(active_after.output, active_before.output);
+        assert_eq!(active_after.count, active_before.count);
+        assert_eq!(active_after.total_s, active_before.total_s);
+        assert_eq!(active_after.elapsed_s, active_before.elapsed_s, "progress kept");
+        assert_eq!(queue_outputs(), queue_before, "queue restored in order");
+        clear_queue();
+    }
+
+    #[test]
+    fn empty_craft_state_round_trips_to_nothing() {
+        setup();
+        let p = player_with_logs(0);
+        set_player(Some(p.clone()));
+        let blob = serialize_state(&p.borrow());
+        {
+            let mut pb = p.borrow_mut();
+            restore_state(&mut pb, &blob);
+        }
+        assert!(p.borrow().crafting.is_none(), "no active craft restored");
+        assert!(queue_outputs().is_empty(), "no queue restored");
+        clear_queue();
     }
 }

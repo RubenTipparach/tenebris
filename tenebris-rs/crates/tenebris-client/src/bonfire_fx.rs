@@ -256,7 +256,7 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
 
     let mut pip = PIP.with(|p| p.get());
     if pip.id == 0 {
-        pip = sgl::make_pipeline(&sg::PipelineDesc {
+        let mut desc = sg::PipelineDesc {
             depth: sg::DepthState {
                 write_enabled: true,
                 compare: sg::CompareFunc::Less,
@@ -264,7 +264,13 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
             },
             cull_mode: sg::CullMode::None,
             ..Default::default()
-        });
+        };
+        /* RGB-only: the offscreen alpha is the composite's wet-mask (terrain
+         * bakes v_wet there; water fog keys off it). The stick pile must not
+         * write it, or a bonfire below sea level would paint teal water fog as
+         * a square - the same class as the torch-glow teal square. */
+        desc.colors[0].write_mask = sg::ColorMask::Rgb;
+        pip = sgl::make_pipeline(&desc);
         PIP.with(|p| p.set(pip));
     }
     sgl::load_pipeline(pip);
@@ -316,7 +322,7 @@ pub fn draw(w: &World, view: Mat4, proj: Mat4, time_s: f32) {
      * the sea sat behind it - the "flame not drawing over water" bug. See
      * renderer::sgl_overlay_begin. */
     let (fview, fsmp) = flame_texture();
-    if fview != 0 && frames.iter().any(|f| f.lit) {
+    if fview != 0 && !renderer::dev_hidden("flame") && frames.iter().any(|f| f.lit) {
         renderer::sgl_overlay_begin();
         sgl::defaults();
         sgl::matrix_mode_projection();

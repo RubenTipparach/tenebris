@@ -506,11 +506,13 @@ pub fn draw(view: Mat4, proj: Mat4, world: &World) {
     if !models() {
         return;
     }
-    /* The rocket being flown is drawn around the player (app.rs), so its
-     * pad hides ITS ROCKET ONLY - the launch tower is ground equipment and
-     * must stay standing while the rocket it serviced is up (hiding the
-     * whole pad entry took the gantry with it). Every other pad still draws
-     * its static rocket. */
+    /* The rocket being flown (or parked away from its pad after climbing out
+     * mid-flight - see in_flight_pad's doc) is drawn elsewhere (around the
+     * player, or at its parked pose below), so its origin pad hides ITS
+     * ROCKET ONLY - the launch tower is ground equipment and must stay
+     * standing while the rocket it serviced is away (hiding the whole pad
+     * entry took the gantry with it). Every other pad still draws its
+     * static rocket. */
     let in_flight = crate::rocket_ride::in_flight_pad();
 
     /* (tile, depth, parts, rocket-hidden) for pads that carry a rocket. */

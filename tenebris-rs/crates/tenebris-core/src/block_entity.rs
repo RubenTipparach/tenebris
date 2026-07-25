@@ -586,7 +586,11 @@ pub fn electric_furnace_tick(e: &mut ElectricFurnaceState, dt: f32) -> bool {
     if !out_ok {
         return false;
     }
-    e.progress += dt / ELEC_SMELT_TIME_S;
+    /* Same per-item recipe time as the coal furnace, kept 5x faster (the
+     * ELEC/COAL ratio) so both stay configurable from one recipes.yaml time. */
+    let base_s = crate::crafting::smelt_time_s(out_item).unwrap_or(FURNACE_SMELT_TIME_S);
+    let elec_s = (base_s * ELEC_SMELT_TIME_S / FURNACE_SMELT_TIME_S).max(0.1);
+    e.progress += dt / elec_s;
     if e.progress >= 1.0 {
         e.progress = 0.0;
         e.input.count -= 1;
@@ -637,7 +641,11 @@ pub fn furnace_tick(f: &mut FurnaceState, dt: f32) -> bool {
             return false;
         }
     }
-    f.progress += dt / FURNACE_SMELT_TIME_S;
+    /* Per-item smelt time from the recipe's `time:` (recipes.yaml), so iron
+     * (10 s), cooked fish, glass, etc. are each tunable; falls back to the
+     * compiled-in default for an item with no furnace recipe. */
+    let smelt_s = crate::crafting::smelt_time_s(out_item).unwrap_or(FURNACE_SMELT_TIME_S).max(0.1);
+    f.progress += dt / smelt_s;
     if f.progress >= 1.0 {
         f.progress = 0.0;
         f.input.count -= 1;
@@ -757,8 +765,8 @@ pub fn bonfire_tick(b: &mut BonfireState, dt: f32) -> bool {
  * lists - safe on both kv backends and inside the CSV wire framing):
  *   `tile:depth:facing`                        - plain block
  *   `tile:depth:facing:c:idx,item,count,...`   - chest (non-empty slots)
- *   `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr`- furnace (progress is
- *                                                transient, not carried)
+ *   `tile:depth:facing:f:in,inc,fl,flc,o,oc,fr,pm`- furnace (pm = smelt
+ *                                                progress permille, optional)
  *   `:s:` steam engine, `:e:` electric furnace, `:k:` computer,
  *   `:p:` printer, `:l:` launch pad (segments, part ids bottom->top),
  *   `:q:` aquarium (water flag, then the fish species wire ids).
@@ -783,29 +791,34 @@ pub fn record_write(tile: i32, depth: i32, e: &BlockEntity) -> String {
             }
         }
         MachineState::Furnace(f) => {
+            /* Trailing field: smelt progress as PERMILLE (0..1000) so the
+             * in-flight smelt resumes where it left off across a reload. Old
+             * blobs without it parse as progress 0. */
             rec.push_str(&format!(
-                ":f:{},{},{},{},{},{},{}",
+                ":f:{},{},{},{},{},{},{},{}",
                 f.input.item,
                 f.input.count,
                 f.fuel.item,
                 f.fuel.count,
                 f.output.item,
                 f.output.count,
-                f.fuel_remaining
+                f.fuel_remaining,
+                (f.progress.clamp(0.0, 1.0) * 1000.0) as u32
             ));
         }
         MachineState::Bonfire(b) => {
-            /* input, fuel, output stacks + whole seconds of burn left
-             * (cook_progress is transient, like the furnace progress). */
+            /* input, fuel, output stacks + whole seconds of burn left, then
+             * cook progress as PERMILLE so an in-flight cook resumes. */
             rec.push_str(&format!(
-                ":b:{},{},{},{},{},{},{}",
+                ":b:{},{},{},{},{},{},{},{}",
                 b.input.item,
                 b.input.count,
                 b.fuel.item,
                 b.fuel.count,
                 b.output.item,
                 b.output.count,
-                b.burn_s.max(0.0) as u32
+                b.burn_s.max(0.0) as u32,
+                (b.cook_progress.clamp(0.0, 1.0) * 1000.0) as u32
             ));
         }
         MachineState::SteamEngine(s) => {
@@ -813,8 +826,9 @@ pub fn record_write(tile: i32, depth: i32, e: &BlockEntity) -> String {
         }
         MachineState::ElectricFurnace(e) => {
             rec.push_str(&format!(
-                ":e:{},{},{},{}",
-                e.input.item, e.input.count, e.output.item, e.output.count
+                ":e:{},{},{},{},{}",
+                e.input.item, e.input.count, e.output.item, e.output.count,
+                (e.progress.clamp(0.0, 1.0) * 1000.0) as u32
             ));
         }
         MachineState::Computer(_) => {
@@ -884,6 +898,10 @@ pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
                 f.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
                 f.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
                 f.fuel_remaining = v[6] as u16;
+                /* Optional progress (permille) - absent in pre-progress saves. */
+                if let Some(&pm) = v.get(7) {
+                    f.progress = (pm as f32 / 1000.0).clamp(0.0, 1.0);
+                }
             }
         }
         Some("b") => {
@@ -894,6 +912,9 @@ pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
                 b.fuel = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
                 b.output = ChestSlot { item: v[4] as u16, count: v[5] as u16 };
                 b.burn_s = v[6] as f32;
+                if let Some(&pm) = v.get(7) {
+                    b.cook_progress = (pm as f32 / 1000.0).clamp(0.0, 1.0);
+                }
             }
         }
         Some("s") => {
@@ -908,6 +929,9 @@ pub fn record_parse(rec: &str) -> Option<(i32, i32, BlockEntity)> {
                 let ef = e.electric_furnace_mut();
                 ef.input = ChestSlot { item: v[0] as u16, count: v[1] as u16 };
                 ef.output = ChestSlot { item: v[2] as u16, count: v[3] as u16 };
+                if let Some(&pm) = v.get(4) {
+                    ef.progress = (pm as f32 / 1000.0).clamp(0.0, 1.0);
+                }
             }
         }
         Some("k") => {
@@ -1237,7 +1261,8 @@ mod tests {
         assert_eq!(record_write(9, 70, &plain), "9:70:4");
         assert_eq!(record_parse("9:70:4"), Some((9, 70, plain)));
 
-        /* Furnace mid-burn (progress deliberately not carried). */
+        /* Furnace mid-burn: smelt progress now persists (permille) so an
+         * in-flight smelt resumes on reload instead of restarting. */
         let mut fe = BlockEntity::with_facing(1);
         {
             let f = fe.furnace_mut();
@@ -1245,7 +1270,7 @@ mod tests {
             f.fuel = ChestSlot { item: COAL, count: 2 };
             f.output = ChestSlot { item: COPPER_INGOT, count: 5 };
             f.fuel_remaining = 6;
-            f.progress = 0.75; /* transient - must NOT round-trip */
+            f.progress = 0.75; /* carried through the record now */
         }
         let rec = record_write(41, 64, &fe);
         let (t, d, back) = record_parse(&rec).unwrap();
@@ -1253,7 +1278,7 @@ mod tests {
         let f = back.furnace().unwrap();
         assert_eq!(f.input, ChestSlot { item: COPPER, count: 3 });
         assert_eq!(f.fuel_remaining, 6);
-        assert_eq!(f.progress, 0.0);
+        assert_eq!(f.progress, 0.75);
 
         /* Chest with sparse slots. */
         let mut ch = BlockEntity::with_facing(0);

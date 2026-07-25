@@ -611,6 +611,12 @@ pub struct LodConfig {
     pub jetpack_hold_threshold_s: f32,
     pub jetpack_accel_mps2: f32,
     pub jetpack_max_vy_mps: f32,
+    /* Jetpack fuel gate: a max continuous burn, then a recharge that only
+     * starts after the pack has sat idle for a bit (so tap-tap-tap jetpacking
+     * doesn't recharge for free between taps). */
+    pub jetpack_max_fuel_s: f32,
+    pub jetpack_recharge_time_s: f32,
+    pub jetpack_idle_before_recharge_s: f32,
 
     /* Player capsule height, foot-to-head. */
     pub player_height_m: f32,
@@ -764,6 +770,9 @@ pub const LOD_DEFAULTS: LodConfig = LodConfig {
     jetpack_hold_threshold_s: 0.5,
     jetpack_accel_mps2: 42.0,
     jetpack_max_vy_mps: 14.0,
+    jetpack_max_fuel_s: 3.0,
+    jetpack_recharge_time_s: 1.0,
+    jetpack_idle_before_recharge_s: 2.0,
     player_height_m: 1.8,
     step_height_m: 0.6,
     camera_collider_radius_m: 0.4,
@@ -949,6 +958,18 @@ pub fn parse_lod(src: &str, path: &str) -> i32 {
             }
             "jetpack_max_vy_mps" => {
                 cfg.jetpack_max_vy_mps = fval(val);
+                0
+            }
+            "jetpack_max_fuel_s" => {
+                cfg.jetpack_max_fuel_s = fval(val);
+                0
+            }
+            "jetpack_recharge_time_s" => {
+                cfg.jetpack_recharge_time_s = fval(val);
+                0
+            }
+            "jetpack_idle_before_recharge_s" => {
+                cfg.jetpack_idle_before_recharge_s = fval(val);
                 0
             }
             "player_height_m" => {

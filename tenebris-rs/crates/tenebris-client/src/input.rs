@@ -337,6 +337,7 @@ fn set_key(s: &mut State, k: sapp::Keycode, down: bool) {
         | Action::PixelUiDemo
         | Action::BlockSnapshot
         | Action::FlowDebug
+        | Action::JetpackUnlimited
         | Action::ToggleTerrain
         | Action::ToggleWater
         | Action::ToggleSkybox

@@ -117,6 +117,8 @@ const ICONS: &[(u16, &str)] = &[
     (items::COAL, "assets/textures/items/coal.png"),
     (items::FLINT, "assets/textures/items/flint.png"),
     (items::CHARCOAL, "assets/textures/items/charcoal.png"),
+    (items::MOSS, "assets/textures/items/moss.png"),
+    (items::ROCK, "assets/textures/items/rock.png"),
     (items::COPPER, "assets/textures/minerals/rocks_copper.png"),
     (items::TIN, "assets/textures/minerals/rocks_tin.png"),
     (items::IRON, "assets/textures/minerals/rocks_iron.png"),

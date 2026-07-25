@@ -116,6 +116,16 @@ lod:
   jetpack_accel_mps2:          42.0
   jetpack_max_vy_mps:          14.0
 
+  # Jetpack fuel gate: a max continuous burn (jetpack_max_fuel_s seconds),
+  # then a recharge that only starts once the pack has sat unused for
+  # jetpack_idle_before_recharge_s seconds (so tap-tap-tapping the trigger
+  # doesn't recharge for free between taps). Recharge takes
+  # jetpack_recharge_time_s seconds to go from empty back to full. Shift+J
+  # (Debug > Unlimited jetpack in the Inputs panel) bypasses this entirely.
+  jetpack_max_fuel_s:              3.0
+  jetpack_recharge_time_s:         1.0
+  jetpack_idle_before_recharge_s:  2.0
+
   # Player capsule. height_m is foot-to-head distance - the ceiling
   # collision rejects any tile whose first overhead solid block sits
   # within feet + height_m. Set this to match EYE_HEIGHT plus a bit

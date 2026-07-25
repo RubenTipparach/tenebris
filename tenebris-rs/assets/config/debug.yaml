@@ -1,0 +1,25 @@
+# debug.yaml - developer render-isolation toggles. SHIP THIS EMPTY.
+#
+# `hide:` lists draw passes to SKIP this run, so an on-screen artifact can
+# be bisected to its exact source: hide one pass, relaunch, and see whether
+# the artifact vanished. Names are comma- or space-separated. An empty
+# `hide:` (the shipped default) draws everything - the normal game.
+#
+# Known passes:
+#   water     the ocean / sea-surface sheet (the alpha-blended water shader)
+#   torch     placed torch meshes (handle + head + flame cone)
+#   glow      the emissive light-glow billboards (far-LOD torch dots)
+#   drops     floating item pickups
+#   aquarium  glass / aquarium translucent shells
+#   flame     bonfire flame flip-book billboards
+#
+# Example - hide ONLY the water sheet to test if a mystery quad is water:
+#   hide: water
+#
+# The TENEBRIS_DEV_HIDE env var (same names) is unioned with this list, so
+# either mechanism works; the file is the easy one (just edit and relaunch).
+#
+# Remember to set this back to an empty `hide:` when you are done - a
+# non-empty value shipped in the build would hide that pass for everyone.
+
+hide:

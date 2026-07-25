@@ -171,12 +171,17 @@ in: stone 8
 # furnace station (station: furnace) - you must place a furnace and
 # interact with it; they no longer hand-craft at the bench.
 
+# `time:` is the SECONDS the placed furnace takes to produce one output (read
+# by block_entity::furnace_tick via crafting::smelt_time_s). Tune the smelt /
+# cook speed here per item; the electric furnace runs the same times 5x faster.
+
 [copper-ingot]
 tier: 1
 station: furnace
 out: copper-ingot 1
 in: copper 1
 in: coal 1
+time: 8
 
 [tin-ingot]
 tier: 1
@@ -184,6 +189,7 @@ station: furnace
 out: tin-ingot 1
 in: tin 1
 in: coal 1
+time: 8
 
 [iron-ingot]
 tier: 1
@@ -191,6 +197,45 @@ station: furnace
 out: iron-ingot 1
 in: iron 1
 in: coal 1
+time: 10
+
+# Cooking + glassmaking + charring: the furnace also cooks raw food, melts
+# sand to glass, and chars logs to charcoal (see items::smelt_output). These
+# recipes exist mainly to set each one's furnace `time:` (the placed furnace
+# uses its fuel slot for coal, not the `in: coal` line - that documents the
+# fuel cost). They gate on the furnace like the ore smelts.
+
+[cooked-fish]
+tier: 1
+station: furnace
+out: cooked-fish 1
+in: raw-fish 1
+in: coal 1
+time: 6
+
+[cooked-meat]
+tier: 1
+station: furnace
+out: cooked-meat 1
+in: raw-meat 1
+in: coal 1
+time: 8
+
+[glass]
+tier: 1
+station: furnace
+out: glass 1
+in: sand 1
+in: coal 1
+time: 12
+
+[charcoal]
+tier: 1
+station: furnace
+out: charcoal 1
+in: log 1
+in: coal 1
+time: 15
 
 # Bronze is an alloy, not a smelt - the furnace only does ore -> ingot
 # now (timed smelter), so bronze is hand-crafted from the two ingots.

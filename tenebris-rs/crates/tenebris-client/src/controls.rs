@@ -74,10 +74,16 @@ pub enum Action {
     ToggleProfiler,
     /// Toggle the pixel-art UI demo panel.
     PixelUiDemo,
-    /// Print a block snapshot of the aimed column to the console (debug).
+    /// Block capture (debug): print the feet-column snapshot to the console
+    /// AND write a replayable `.tenecap` file of the collision neighbourhood.
+    /// Also fires on Shift+P (fixed chord). See `block_capture`.
     BlockSnapshot,
     /// Toggle the water-flow debug overlay (debug).
     FlowDebug,
+    /// Unlimited jetpack: bypasses the fuel-tank timeout/recharge gate
+    /// entirely (see player_ctrl::update's jetpack fuel bookkeeping).
+    /// Also fires on Shift+J (fixed chord), mirroring BlockSnapshot/Shift+P.
+    JetpackUnlimited,
     /// Select hotbar slot 0..=9 (the "1".."0" keys).
     Hotbar(u8),
 }
@@ -113,8 +119,9 @@ pub const BINDING_ROWS: &[(&str, &str, Action)] = &[
     ("Debug", "Players panel", Action::PlayersPanel),
     ("Debug", "Profiler", Action::ToggleProfiler),
     ("Debug", "Pixel UI demo", Action::PixelUiDemo),
-    ("Debug", "Block snapshot", Action::BlockSnapshot),
+    ("Debug", "Block capture (Shift+P)", Action::BlockSnapshot),
     ("Debug", "Flow debug", Action::FlowDebug),
+    ("Debug", "Unlimited jetpack (Shift+J)", Action::JetpackUnlimited),
     ("Debug", "Hide terrain", Action::ToggleTerrain),
     ("Debug", "Hide water", Action::ToggleWater),
     ("Debug", "Hide skybox", Action::ToggleSkybox),
@@ -164,6 +171,7 @@ fn action_from_name(name: &str) -> Option<Action> {
         "pixel_ui_demo" => Action::PixelUiDemo,
         "block_snapshot" => Action::BlockSnapshot,
         "flow_debug" => Action::FlowDebug,
+        "jetpack_unlimited" => Action::JetpackUnlimited,
         _ => {
             if let Some(n) = name.strip_prefix("hotbar_") {
                 let slot: u8 = n.parse().ok()?;
@@ -273,6 +281,7 @@ fn default_bindings() -> Vec<(Keycode, Action)> {
         (F8, Action::PixelUiDemo),
         (F4, Action::BlockSnapshot),
         (F5, Action::FlowDebug),
+        (F6, Action::JetpackUnlimited),
         /* Debug render toggles (only while the debug UI is on). Skybox moved
          * off K - K opens the tech tree, which used to shadow it dead. */
         (H, Action::ToggleTerrain),

@@ -354,8 +354,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
     /* Torch raycast - placed-torch entities are NOT in the voxel grid,
      * so they need their own intersection pass. Whichever target sits
      * closer along the look ray wins; the torch path short-circuits
-     * the block path so a torch always takes precedence on a tie. */
-    let eye_f = vec3_make(eye.x as f32, eye.y as f32, eye.z as f32);
+     * the block path so a torch always takes precedence on a tie.
+     *
+     * Torch positions are stored BODY-LOCAL (base = world - body_center;
+     * torch.rs), so the ray ORIGIN must be body-local too. `eye` is a world-
+     * space pose, so subtract the body centre first. This was invisible while
+     * Tenebris sat at the world origin (body-local == world), but bodies now
+     * orbit ~150 km out - passing the world eye put the ray 150 km from the
+     * body-local torch spheres, so `torch::raycast` never hit and you could
+     * not target (or recover) a torch. The direction is translation-invariant,
+     * so it needs no rebase (same fix shape as the planet-local water camera). */
+    let bc = dvec3_make(w.body.pos_x, w.body.pos_y, w.body.pos_z);
+    let eye_local = dvec3_sub(eye, bc);
+    let eye_f = vec3_make(eye_local.x as f32, eye_local.y as f32, eye_local.z as f32);
     let dir_f = vec3_make(dir.x as f32, dir.y as f32, dir.z as f32);
     crate::profiler::begin("interact-targets");
     let (torch_hit, torch_dist_f) = torch::raycast(eye_f, dir_f, MAX_DIST as f32);
@@ -537,7 +548,13 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
                 );
             }
             if p.survival_mode {
-                inventory::add(&mut p.inventory, Block::Torch);
+                /* Recover the torch. Route through bag::give (hotbar-first,
+                 * then spill to the bag) - the same single collection path
+                 * block / animal pickups use - so a FULL hotbar never
+                 * silently eats the broken torch (the old inventory::add
+                 * dropped it on the floor of a full hotbar). */
+                let torch_item = tenebris_core::items::from_block(Block::Torch);
+                crate::bag::give(&mut p.inventory, &mut p.bag, torch_item, 1);
             }
             /* Index is now invalid (swap-removed); clear it so the
              * HUD doesn't print stale state for the rest of this
@@ -926,18 +943,19 @@ pub fn update(s: &mut InteractState, w: &mut World, p: &mut PlayerCtrl, dt: f32)
 /// rock" instead of naming what it yields (the leafy mound gives sticks, but
 /// "pick up stick" over a mossy rock reads like a bug). ASCII, no underscores
 /// (CLAUDE.md in-game-text rule).
-fn scatter_pickup_named(w: &World, tile_idx: i32) -> Option<(items::ItemId, &'static str)> {
+fn scatter_pickup_named(w: &World, tile_idx: i32) -> Option<(&'static [items::ItemId], &'static str)> {
     if crate::hex_mesher::tile_has_rock(w, tile_idx) {
-        return Some((items::FLINT, "flint"));
+        return Some((&[items::FLINT], "flint"));
     }
     if crate::hex_mesher::tile_has_bush(w, tile_idx) {
-        return Some((items::STICK, "mossy rock"));
+        /* The mossy rock yields BOTH its moss and the rock underneath. */
+        return Some((&[items::MOSS, items::ROCK], "mossy rock"));
     }
     None
 }
 
-fn scatter_pickup_item(w: &World, tile_idx: i32) -> Option<items::ItemId> {
-    scatter_pickup_named(w, tile_idx).map(|(item, _)| item)
+fn scatter_pickup_items(w: &World, tile_idx: i32) -> Option<&'static [items::ItemId]> {
+    scatter_pickup_named(w, tile_idx).map(|(items, _)| items)
 }
 
 /// What the E-key pickup would gather from the tile under the reticle, if
@@ -949,7 +967,7 @@ pub fn pickup_target(
     s: &InteractState,
     w: &World,
     p: &PlayerCtrl,
-) -> Option<(items::ItemId, &'static str)> {
+) -> Option<(&'static [items::ItemId], &'static str)> {
     if !p.survival_mode || !s.has_target || s.is_torch_target {
         return None;
     }
@@ -968,14 +986,16 @@ pub fn pickup_target(
 /// underfoot, so foraging those on E would swallow the inventory binding.
 pub fn try_pickup_scatter(s: &InteractState, w: &mut World, p: &PlayerCtrl) -> bool {
     match pickup_target(s, w, p) {
-        Some((item, _)) => {
+        Some((items_out, _)) => {
             /* Spawn in the AIR cell above the surface, not inside the solid
              * ground block the ray hit: the drop's magnet pulls from the
              * player, and a pickup buried half a block under the floor starts
              * further away than it looks. Mining can spawn at hit_depth
              * because it has just turned that cell to air; foraging has not. */
             let air_depth = (s.hit_depth + 1).min(WORLD_MAX_DEPTH - 1);
-            crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
+            for &item in items_out {
+                crate::drops::spawn(w, s.hit_tile, air_depth, item, 1);
+            }
             /* CONSUME the object: one pebble = one flint, ever. The taken
              * bit hides it from the prompt/pickup immediately and the
              * remesh (take_scatter dirties the tile) removes the visual.
@@ -1003,8 +1023,10 @@ fn forage_surface(s: &InteractState, w: &mut World) -> bool {
      * same-frame save) - one pebble is one flint, not an infinite well.
      * The bare-surface forage below stays unlimited by design (grass
      * fields, stone faces). */
-    if let Some(item) = scatter_pickup_item(w, s.hit_tile) {
-        crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+    if let Some(items_out) = scatter_pickup_items(w, s.hit_tile) {
+        for &item in items_out {
+            crate::drops::spawn(w, s.hit_tile, s.hit_depth, item, 1);
+        }
         w.take_scatter(s.hit_tile);
         sp_save_scatter_after_change(w);
         return true;

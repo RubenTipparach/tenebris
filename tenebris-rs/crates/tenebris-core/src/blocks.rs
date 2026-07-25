@@ -249,6 +249,126 @@ pub fn is_solid(b: Block) -> bool {
     b != Block::Air && b != Block::Water
 }
 
+/// ASCII-only name for a block, for devtools dumps (the block-snapshot
+/// console output and the `.tenecap` capture file). NOT player-facing text -
+/// but kept 7-bit ASCII / underscore-free-of-Unicode per the in-game text
+/// rule anyway. Single source of truth so the console snapshot and the file
+/// renderer can never disagree.
+pub fn name(b: Block) -> &'static str {
+    match b {
+        Block::Air => "AIR",
+        Block::Water => "WATER",
+        Block::Sand => "SAND",
+        Block::Dirt => "DIRT",
+        Block::Grass => "GRASS",
+        Block::Stone => "STONE",
+        Block::Ice => "ICE",
+        Block::Snow => "SNOW",
+        Block::DirtGrass => "DIRT_GRASS",
+        Block::DirtSnow => "DIRT_SNOW",
+        Block::Torch => "TORCH",
+        Block::Moon => "MOON",
+        Block::SeqGrass => "SEQ_GRASS",
+        Block::SeqDirt => "SEQ_DIRT",
+        Block::SeqDirtGrass => "SEQ_DIRT_GRASS",
+        Block::SeqSand => "SEQ_SAND",
+        Block::SeqSnow => "SEQ_SNOW",
+        Block::SeqDirtSnow => "SEQ_DIRT_SNOW",
+        Block::CragRock => "CRAG_ROCK",
+        Block::FrostIce => "FROST_ICE",
+        Block::AsteroidRock => "ASTEROID_ROCK",
+        Block::Wood => "WOOD",
+        Block::Leaves => "LEAVES",
+        Block::Bedrock => "BEDROCK",
+        Block::SeqLeaves => "SEQ_LEAVES",
+        Block::CoalOre => "COAL_ORE",
+        Block::CopperOre => "COPPER_ORE",
+        Block::TinOre => "TIN_ORE",
+        Block::IronOre => "IRON_ORE",
+        Block::LaunchPad => "LAUNCH_PAD",
+        Block::Furnace => "FURNACE",
+        Block::ElectricFurnace => "ELECTRIC_FURNACE",
+        Block::Printer3D => "3D_PRINTER",
+        Block::Computer => "COMPUTER",
+        Block::ElectronicsWorkbench => "ELECTRONICS_WORKBENCH",
+        Block::HydroGenerator => "HYDRO_GENERATOR",
+        Block::SteamEngine => "STEAM_ENGINE",
+        Block::StorageChest => "STORAGE_CHEST",
+        Block::LaunchTower => "LAUNCH_TOWER",
+        Block::Cable => "CABLE",
+        Block::CopperPipe => "COPPER_PIPE",
+        Block::Farmland => "FARMLAND",
+        Block::JungleGrass => "JUNGLE_GRASS",
+        Block::DryGrass => "DRY_GRASS",
+        Block::Bonfire => "BONFIRE",
+        Block::StationHull => "STATION_HULL",
+        Block::StationFloor => "STATION_FLOOR",
+        Block::CasinoCarpet => "CASINO_CARPET",
+        Block::CasinoWall => "CASINO_WALL",
+        Block::NeonTrim => "NEON_TRIM",
+        Block::CasinoSign => "CASINO_SIGN",
+        Block::SlotMachine => "SLOT_MACHINE",
+        Block::CardTable => "CARD_TABLE",
+        Block::SeqMycelium => "SEQ_MYCELIUM",
+        Block::SeqShroomCap => "SEQ_SHROOM_CAP",
+        Block::Glass => "GLASS",
+        Block::Aquarium => "AQUARIUM",
+    }
+}
+
+/// One-letter glyph per block for ASCII column dumps (devtools only). Same
+/// single source of truth as [`name`].
+pub fn glyph(b: Block) -> char {
+    match b {
+        Block::Air => 'a',
+        Block::Water => 'w',
+        Block::Sand | Block::SeqSand => 'S',
+        Block::Dirt | Block::SeqDirt => 'd',
+        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass => 'g',
+        Block::SeqMycelium => 'm',
+        Block::SeqShroomCap => 'M',
+        Block::Stone | Block::CragRock | Block::AsteroidRock => '#',
+        Block::Ice | Block::FrostIce => 'i',
+        Block::Snow | Block::SeqSnow => 's',
+        Block::DirtGrass | Block::DirtSnow | Block::SeqDirtGrass | Block::SeqDirtSnow => 'D',
+        Block::Farmland => 'f',
+        Block::Torch => 'T',
+        Block::Moon => 'm',
+        Block::Wood => 'W',
+        Block::Leaves | Block::SeqLeaves => 'L',
+        Block::Bedrock => 'b',
+        Block::CoalOre => 'c',
+        Block::CopperOre => 'o',
+        Block::TinOre => 't',
+        Block::IronOre => 'r',
+        Block::LaunchPad => 'P',
+        Block::Furnace => 'F',
+        /* Ported tech blocks share one glyph in the devtools dump. */
+        Block::ElectricFurnace
+        | Block::Printer3D
+        | Block::Computer
+        | Block::ElectronicsWorkbench
+        | Block::HydroGenerator
+        | Block::SteamEngine
+        | Block::StorageChest
+        | Block::LaunchTower
+        | Block::Cable
+        | Block::CopperPipe => 'E',
+        Block::Bonfire => 'B',
+        /* Station / casino set shares one glyph in the devtools dump. */
+        Block::StationHull
+        | Block::StationFloor
+        | Block::CasinoCarpet
+        | Block::CasinoWall
+        | Block::NeonTrim
+        | Block::CasinoSign
+        | Block::SlotMachine
+        | Block::CardTable => 'C',
+        Block::Glass => 'G',
+        Block::Aquarium => 'Q',
+    }
+}
+
 /// Port of `block_is_transparent()`.
 pub fn is_transparent(b: Block) -> bool {
     /* Leaves count as transparent so trunk-side faces inside the canopy

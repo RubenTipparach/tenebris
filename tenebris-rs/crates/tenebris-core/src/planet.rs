@@ -1017,28 +1017,44 @@ pub fn parse_atmosphere(src: &str, path: &str) -> i32 {
 
 /* ------------------------------------------------------------------------ */
 
+/// Test-only, but crate-visible (not nested in `planet::tests`): the body
+/// table + the heliocentric flag are process-wide mutable state, and
+/// `cargo test` runs every module's tests in ONE process across many
+/// threads. Any test in ANY module that reads live body positions (e.g.
+/// `nav::dominant_body`) or calls `reposition_heliocentric` can race a
+/// concurrent test doing the same from a different module - so the lock
+/// lives here, at the crate root of body state, instead of being
+/// re-declared per module (which would serialise each module's tests
+/// against ITSELF but not against every OTHER module touching the same
+/// globals - the exact race this exists to prevent).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the shared lock and reset `BODIES` + `HELIOCENTRIC` to the
+    /// pristine pre-heliocentric frame (Tenebris at the origin, no solar
+    /// gravity) first, so a test never inherits another test's dirty state
+    /// - and, held for the guard's lifetime, no other test can dirty it out
+    /// from under this one either.
+    pub(crate) fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *BODIES.lock().unwrap() = BODIES_INIT;
+        HELIOCENTRIC.store(false, std::sync::atomic::Ordering::Relaxed);
+        guard
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::math::dvec3_make;
+    use test_support::lock_and_reset;
 
     /* Pinned values generated from the C source of truth: planet.c
      * compiled with gcc -O2 -fwrapv (x86-64, SSE2) and dumped as bit
      * patterns. Comparisons are bit-exact. */
-
-    /// The body table is process-wide and mutable via set_atmosphere;
-    /// tests that read or write it serialise on this lock and restore
-    /// pristine state first.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        *BODIES.lock().unwrap() = BODIES_INIT;
-        /* Back to the pre-heliocentric frame (Tenebris at origin, no solar
-         * gravity) so a heliocentric test can't leak its armed flag. */
-        HELIOCENTRIC.store(false, std::sync::atomic::Ordering::Relaxed);
-        guard
-    }
 
     #[test]
     fn body_has_atmosphere_only_for_watered_enabled_worlds() {

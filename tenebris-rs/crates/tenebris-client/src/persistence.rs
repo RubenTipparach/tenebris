@@ -65,6 +65,9 @@ const KEY_CROP_PREFIX: &str = "tenebris-c:crops:";
 const KEY_WATER_PREFIX: &str = "tenebris-c:water:";
 /// Per-placed-block state (tech facing etc.), one CSV line per entity.
 const KEY_BENTITY_PREFIX: &str = "tenebris-c:bentities:";
+/// The player's active craft + craft queue (Rust-port extension key), so a
+/// background craft resumes on reload instead of vanishing.
+const KEY_CRAFT_PREFIX: &str = "tenebris-c:craft:";
 /// Tiles whose loose scatter object (flint pebble / bush) was picked up
 /// (Rust-port extension key). Single comma-separated line of tile indices -
 /// deliberately no '\n' framing, which the native kv layer scrubs (see the
@@ -373,6 +376,24 @@ pub fn load_tech(world_name: &str) -> Option<String> {
         return None;
     }
     client_kv::get(&format!("{KEY_TECH_PREFIX}{world_name}"))
+}
+
+/// Save the player's active craft + craft queue blob (see
+/// `crafting_screen::serialize_state`).
+pub fn save_craft(world_name: &str, blob: &str) -> bool {
+    if !valid_name(world_name) {
+        return false;
+    }
+    client_kv::set(&format!("{KEY_CRAFT_PREFIX}{world_name}"), blob);
+    true
+}
+
+/// Load the player's active craft + queue blob.
+pub fn load_craft(world_name: &str) -> Option<String> {
+    if !valid_name(world_name) {
+        return None;
+    }
+    client_kv::get(&format!("{KEY_CRAFT_PREFIX}{world_name}"))
 }
 
 /// Save a world's terrain seed. Written once when the world is

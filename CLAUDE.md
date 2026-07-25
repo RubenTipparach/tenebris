@@ -540,6 +540,27 @@ slapped over the canvas and call it done. If you cannot draw the icons
 yet, surface that as the blocking task and solve it (item-icon atlas,
 texture sampling in the UI layer) — do not substitute a text list.
 
+### The hotbar is ALWAYS part of the inventory
+
+**Standing instruction from the user (engrained).** The 9-slot hotbar
+(`inventory.rs`) and the bag (`bag.rs`) are ONE inventory split across two
+stores. Any panel that asks the player to move items in from their
+inventory — the furnace, chest, crafting, storage, a future trade window —
+**must show the HOTBAR alongside the bag**, and must be able to pull items
+from EITHER store. Showing only the bag is a bug: pickups and crafted items
+land on the hotbar first (the hotbar-first rule), so a furnace that only
+reads `p.bag.slots` can't reach the ore sitting on your hotbar.
+
+- **Display both.** Render the hotbar row (9) plus the bag rows (27) as one
+  grid, hotbar clearly grouped (it's the quick-access row) but part of the
+  same "your items" panel.
+- **Operate on both.** Loading a machine slot, paying a recipe, depositing
+  to a chest — all draw from hotbar + bag combined (see `bag::available` /
+  `bag::give`; add a combined take if one isn't there). Depositing back into
+  the inventory fills the hotbar first, then the bag (`bag::give`).
+- This applies to every current and future item-input panel. When you add
+  one, wire it to the combined hotbar+bag store from the start.
+
 ### General
 
 When the user asks for UI — menus, dialogs, popups, debug panels,

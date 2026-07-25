@@ -1,10 +1,16 @@
 # Continuous build + deploy for Tenebris.
 #
-# Every push to every branch builds AND deploys: the WASM + landing
-# pages go to GitHub Pages, the dedicated server goes to Fly.io.
-# Single-dev / fast-iteration mode — whoever pushed last wins both
-# the live site and the live server. Tighten to a branch allowlist
-# later if the project grows contributors.
+# Every push to every branch builds the WASM + landing pages and
+# deploys the dedicated server to Fly.io. GitHub Pages auto-deploy is
+# DISABLED (the Pages `deploy` job was removed by request) - the build
+# still produces dist/ and uploads it as a downloadable artifact, but
+# nothing publishes it to rubentipparach.github.io. Re-enable by
+# restoring the `deploy` job + its pages-artifact upload + the
+# `pages: write` / `id-token: write` permissions.
+#
+# Single-dev / fast-iteration mode - whoever pushed last wins the live
+# server. Tighten to a branch allowlist later if the project grows
+# contributors.
 #
 # Fly deploy requires a FLY_API_TOKEN repo secret (scoped deploy
 # token from `fly tokens create deploy -a tenebris-c`, including the
@@ -29,13 +35,13 @@ on:
         required: false
         default: ''
 
+# GitHub Pages deploy is disabled, so the `pages: write` / `id-token: write`
+# permissions it needed are dropped; the build only reads the repo.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deploy at a time across the whole repo, not per-ref, so a newer
-# push cleanly supersedes an older in-flight deploy.
+# push cleanly supersedes an older in-flight Fly deploy.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -81,17 +87,22 @@ jobs:
           test -f dist/wasm/index.html  || { echo "missing dist/wasm/index.html"; exit 1; }
           echo "has_wasm=true" >> "$GITHUB_OUTPUT"
 
+      # Non-blocking: the compile + "Verify dist layout" above already gate
+      # real build breaks. This upload is a convenience download only, so an
+      # Actions storage-quota hit (or any upload-service blip) must NOT red the
+      # build check. Retention trimmed to 3 days to keep the artifact footprint
+      # small - the quota fills from 14-day copies stacking up per push.
       - name: Upload build artifact (always)
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: tenebris-dist-${{ github.sha }}
           path: dist
-          retention-days: 14
+          retention-days: 3
 
-      - name: Upload pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: 'dist'
+      # GitHub Pages publish disabled by request: no upload-pages-artifact
+      # step and no `deploy` job. dist/ ships only as the downloadable
+      # tenebris-dist artifact above.
 
       # ---------------------------------------------------------------
       # Server deploy. Folded into the build job so a single push gives
@@ -108,10 +119,17 @@ jobs:
       # an on-wire identifier baked into every client. Saves carry
       # over: the volume + format are byte-compatible by porting rule.
       # ---------------------------------------------------------------
+      # Both Fly steps are non-blocking: flyctl setup downloads the binary
+      # from Fly's servers (has 503'd during Fly outages) and the deploy talks
+      # to Fly too. A Fly-side outage must not red the build check - the WASM
+      # build is already done and validated above. When Fly is up these still
+      # deploy the server normally; when it's down the step goes yellow, not red.
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
+        continue-on-error: true
 
       - name: Deploy server to Fly.io (Rust)
+        continue-on-error: true
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         working-directory: tenebris-rs
@@ -155,24 +173,17 @@ jobs:
 
       - name: Upload WebGPU build artifact
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: tenebris-wgpu-${{ github.sha }}
           # build-wasm.sh copies the linked client to dist/wasm/ (same as
           # the WebGL2 build); the raw objects stay in tenebris-c/build-web/.
           path: dist/wasm
-          retention-days: 14
+          retention-days: 3
           if-no-files-found: ignore
 
-  deploy:
-    needs: build
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+  # GitHub Pages `deploy` job removed by request - the site no longer
+  # auto-publishes to rubentipparach.github.io on push. To re-enable,
+  # restore this job (needs: build), the pages-artifact upload in the
+  # build job, and the pages/id-token permissions at the top.

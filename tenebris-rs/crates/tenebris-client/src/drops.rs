@@ -28,7 +28,7 @@ use tenebris_core::world::World;
 
 use crate::bag;
 use crate::gfx_math::Mat4;
-use crate::hex_mesher::HEX_ATLAS_U_STEP;
+use crate::hex_mesher::HEX_ATLAS_TILES_PHYS;
 use crate::player_ctrl::PlayerCtrl;
 use crate::renderer;
 
@@ -206,6 +206,9 @@ pub fn update(dt: f32, p: &mut PlayerCtrl) {
 /// ui_icons atlas, so a bonus seed no longer masquerades as a second
 /// block.
 pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
+    if renderer::dev_hidden("drops") {
+        return;
+    }
     let list = S.with(|c| c.borrow().clone());
     if list.is_empty() {
         return;
@@ -224,7 +227,7 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
 
     let mut pip = PIP.with(|p| p.get());
     if pip.id == 0 {
-        pip = sgl::make_pipeline(&sokol::gfx::PipelineDesc {
+        let mut desc = sokol::gfx::PipelineDesc {
             depth: sokol::gfx::DepthState {
                 write_enabled: true,
                 compare: sokol::gfx::CompareFunc::Less,
@@ -232,7 +235,13 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             },
             cull_mode: sokol::gfx::CullMode::None,
             ..Default::default()
-        });
+        };
+        /* RGB-only: the offscreen alpha is the composite's wet-mask (terrain
+         * bakes v_wet there; water fog keys off it). A drop prism writing
+         * alpha would paint teal deep-water fog as a square in a below-sea
+         * cave, the same bug the torch glow had. */
+        desc.colors[0].write_mask = sokol::gfx::ColorMask::Rgb;
+        pip = sgl::make_pipeline(&desc);
         PIP.with(|p| p.set(pip));
     }
 
@@ -290,6 +299,9 @@ pub fn draw(view: Mat4, proj: Mat4, time_s: f32) {
             dst_factor_alpha: sokol::gfx::BlendFactor::One,
             ..Default::default()
         };
+        /* RGB-only: keep the icon billboard out of the offscreen wet-mask
+         * (the alpha channel) so it can't paint teal water fog below sea. */
+        desc.colors[0].write_mask = sokol::gfx::ColorMask::Rgb;
         ipip = sgl::make_pipeline(&desc);
         ICON_PIP.with(|p| p.set(ipip));
     }
@@ -364,9 +376,17 @@ fn draw_hex(pos: DVec3, up: DVec3, angle: f32, block: Block, lit: f32) {
         }
     };
 
+    /* Atlas U per face. The block face_tile is a LOGICAL column (/93), but
+     * the physical atlas is HEX_ATLAS_TILES_PHYS (108) wide; the terrain hex
+     * FS rescales mesh-u by 93/108 to land on the right physical column. This
+     * prism draws through a plain textured pipeline (no hex FS), so bake the
+     * PHYSICAL step (1/108) directly - otherwise it samples col/93 on a
+     * 108-wide atlas and shows a neighbouring tile's texture (the "drops use a
+     * random atlas texture" bug). */
+    let phys_step = 1.0 / HEX_ATLAS_TILES_PHYS as f32;
     let col_u = |cap: FaceCap| {
-        let col = face_tile(block, cap) as i32;
-        (col as f32 * HEX_ATLAS_U_STEP, (col + 1) as f32 * HEX_ATLAS_U_STEP)
+        let col = face_tile(block, cap) as f32;
+        (col * phys_step, (col + 1.0) * phys_step)
     };
     let (tu0, tu1) = col_u(FaceCap::Top);
     let (bu0, bu1) = col_u(FaceCap::Bottom);

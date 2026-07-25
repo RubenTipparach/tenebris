@@ -1044,7 +1044,23 @@ pub fn spawn_near_kind(
     let offset = dvec3_add(dvec3_scale(t, ang.cos() * dist), dvec3_scale(b, ang.sin() * dist));
     let point = dvec3_add(local, offset);
     let dir = dvec3_normalize(point);
-    let pos = floor_pos(w, dir, r, -1)?;
+    let tile = w.grid.find_tile(dir, -1);
+    let pos = floor_pos(w, dir, r, tile)?;
+    /* SURFACE-ONLY: reject a spawn whose floor sits well below the column's
+     * topmost solid surface - that's a cave floor with terrain overhead, and
+     * animals must not spawn underground (user direction). When the anchor
+     * (player) is in a cave, `walkable_floor_near` finds a buried floor near
+     * their depth; this gate drops it. Water spawns pass: over the sea the
+     * topmost solid IS the bed the floor sits on, and spawn_near_auto lifts
+     * the fish into the water column afterwards. */
+    let surf_r = w.topmost_solid_floor(tile);
+    if surf_r > 0.0 {
+        let spawn_r = dvec3_length(dvec3_sub(pos, center));
+        let block_m = (w.depth_to_radius_m(1) - w.depth_to_radius_m(0)).abs().max(0.5);
+        if surf_r - spawn_r > 2.5 * block_m {
+            return None; /* underground - no spawn here */
+        }
+    }
     Some(Animal::new_kind(id, pos, dir, kind))
 }
 

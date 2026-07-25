@@ -41,6 +41,7 @@ use tenebris_core::world::{World, WORLD_MAX_DEPTH};
 use tenebris_core::world_water;
 
 use crate::animals;
+use crate::block_capture;
 use crate::client_kv;
 use crate::clouds;
 use crate::weather_fx;
@@ -3360,12 +3361,39 @@ fn draw_mining_bar(app: &App, screen_w: f32, screen_h: f32) {
     /* sdtx flush is centralised at frame end. */
 }
 
-/// Survival hunger meter, top-left. Fill runs green (full) -> red
-/// (empty); an eat hint shows while it's low.
+/// Draw `s` with a fake black 8-way outline, then the fill colour on top, at
+/// character-cell position (`col`, `row`). sdtx has no native outline, so we
+/// stamp the string in black at 1px offsets around the centre first. Leaves
+/// the sdtx colour reset to white.
+fn sdtx_outlined(col: f32, row: f32, r: u8, g: u8, b: u8, s: &str) {
+    const O: f32 = 0.16; /* ~1px at the 8px cell */
+    sdtx::color3b(0x00, 0x00, 0x00);
+    for (dc, dr) in [
+        (-O, 0.0), (O, 0.0), (0.0, -O), (0.0, O),
+        (-O, -O), (O, -O), (-O, O), (O, O),
+    ] {
+        sdtx::pos(col + dc, row + dr);
+        sdtx::puts(s);
+    }
+    sdtx::color3b(r, g, b);
+    sdtx::pos(col, row);
+    sdtx::puts(s);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Survival status HUD, top-left: a HEALTH bar, the HUNGER bar under it, and
+/// the credits readout under that (with a black outline). Health is a
+/// PLACEHOLDER (always full) until damage mechanics land; hunger drains and
+/// shows an eat hint when low.
 fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
-    let (survival, pct) = {
+    let (survival, hunger_pct, health_pct, credits) = {
         let p = app.player.borrow();
-        (p.survival_mode, (p.hunger / player_ctrl::MAX_HUNGER).clamp(0.0, 1.0))
+        (
+            p.survival_mode,
+            (p.hunger / player_ctrl::MAX_HUNGER).clamp(0.0, 1.0),
+            (p.health / player_ctrl::MAX_HEALTH).clamp(0.0, 1.0),
+            p.wallet.credits(),
+        )
     };
     if !survival {
         return;
@@ -3375,8 +3403,9 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
     let bar_h = 14.0f32;
     let pad = 3.0f32;
     let bx = 18.0f32;
-    let by = 18.0f32;
-    let fill_w = bar_w * pct;
+    let gap = 8.0f32; /* vertical gap between the two bars */
+    let health_y = 18.0f32;
+    let hunger_y = health_y + bar_h + gap;
 
     sgl::defaults();
     sgl::matrix_mode_projection();
@@ -3392,41 +3421,144 @@ fn draw_hunger_bar(app: &App, screen_w: f32, screen_h: f32) {
         sgl::v2f(x1, y1);
         sgl::v2f(x0, y1);
     };
-
-    /* Track. */
-    sgl::begin_quads();
-    sgl::c4f(0.04, 0.06, 0.10, 0.85);
-    quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
-    sgl::end();
-
-    /* Fill - lerp green (full) to red (empty). */
-    let fr = 0.90 - 0.50 * pct;
-    let fg = 0.20 + 0.60 * pct;
-    sgl::begin_quads();
-    sgl::c4f(fr, fg, 0.20, 1.0);
-    quad(bx, by, bx + fill_w, by + bar_h);
-    sgl::end();
-
-    /* Label + eat hint (the key label tracks the Eat binding). */
-    let eat_key = crate::controls::action_label(crate::controls::Action::Eat);
-    let buf = if pct <= 0.0 {
-        format!("STARVING - eat! [{}]", eat_key)
-    } else if pct < 0.3 {
-        format!("HUNGER {}%  [{}] eat", (pct * 100.0) as i32, eat_key)
-    } else {
-        format!("HUNGER {}%", (pct * 100.0) as i32)
+    /* One meter: dark track + a coloured fill scaled by `pct`. */
+    let bar = |by: f32, pct: f32, fr: f32, fg: f32, fb: f32| {
+        sgl::begin_quads();
+        sgl::c4f(0.04, 0.06, 0.10, 0.85);
+        quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
+        sgl::end();
+        sgl::begin_quads();
+        sgl::c4f(fr, fg, fb, 1.0);
+        quad(bx, by, bx + bar_w * pct, by + bar_h);
+        sgl::end();
     };
+
+    /* HEALTH (top): red bar. Placeholder - full for now. */
+    bar(health_y, health_pct, 0.85, 0.22, 0.24);
+    /* HUNGER (below): green (full) -> red (empty). */
+    let fr = 0.90 - 0.50 * hunger_pct;
+    let fg = 0.20 + 0.60 * hunger_pct;
+    bar(hunger_y, hunger_pct, fr, fg, 0.20);
+
+    /* Labels (sdtx) to the right of each bar, and the money readout right
+     * under the hunger bar. */
     let cell = 8.0f32;
+    let label_col = (bx + bar_w + pad + 6.0) / cell;
     sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
     sdtx::font(1);
-    sdtx::origin(bx / cell, (by + bar_h + 4.0) / cell);
-    if pct < 0.3 {
+
+    sdtx::color3b(0xe6, 0xb0, 0xb0);
+    sdtx::pos(label_col, (health_y + 3.0) / cell);
+    sdtx::puts(&format!("HP {}%", (health_pct * 100.0) as i32));
+
+    let eat_key = crate::controls::action_label(crate::controls::Action::Eat);
+    let hunger_txt = if hunger_pct <= 0.0 {
+        format!("STARVING - eat! [{}]", eat_key)
+    } else if hunger_pct < 0.3 {
+        format!("HUNGER {}%  [{}] eat", (hunger_pct * 100.0) as i32, eat_key)
+    } else {
+        format!("HUNGER {}%", (hunger_pct * 100.0) as i32)
+    };
+    if hunger_pct < 0.3 {
         sdtx::color3b(0xff, 0x80, 0x60);
     } else {
         sdtx::color3b(0xd0, 0xe0, 0xd0);
     }
-    sdtx::home();
-    sdtx::puts(&buf);
+    sdtx::pos(label_col, (hunger_y + 3.0) / cell);
+    sdtx::puts(&hunger_txt);
+
+    /* Money: directly under the hunger bar, black-outlined (space-era
+     * wallet). */
+    let money_row = (hunger_y + bar_h + pad + 5.0) / cell;
+    sdtx_outlined(bx / cell, money_row, 0xf0, 0xd8, 0x60, &format!("{} cr", credits));
+
+    sdtx::font(0);
+    sdtx::color3b(0xff, 0xff, 0xff);
+}
+
+/// Jetpack fuel gauge: a small cyan meter, bottom-centre just above the
+/// hotbar. Self-hides while the tank is full and idle (no drain/recharge in
+/// flight) so it doesn't clutter the HUD during ordinary walking - it only
+/// appears while actively draining or mid-recharge. Applies in both survival
+/// and creative (the jetpack itself isn't survival-gated), unlike the
+/// hunger/health bars above. While the Shift+J unlimited-jetpack debug
+/// toggle is on, the tank is pinned full so the meter would never show;
+/// print a small persistent label instead so the toggle stays visible
+/// on-screen, not just in the console.
+fn draw_jetpack_bar(app: &App, screen_w: f32, screen_h: f32) {
+    /* On foot only - riding replaces the jetpack with the rocket engine
+     * (player_ctrl::update gates the whole jetpack branch on !riding), and
+     * bottom-centre is the navball's spot while flying. */
+    if rocket_ride::is_riding() {
+        return;
+    }
+    let (unlimited, fuel_s, max_fuel_s) = {
+        let p = app.player.borrow();
+        (p.unlimited_jetpack, p.jetpack_fuel_s, config::lod().jetpack_max_fuel_s)
+    };
+    let cell = 8.0f32;
+    if unlimited {
+        sdtx::canvas(screen_w, screen_h);
+        sdtx::origin(0.0, 0.0);
+        sdtx::font(1);
+        sdtx::color3b(0x70, 0xe0, 0xf0);
+        let txt = "JETPACK: UNLIMITED (Shift+J)";
+        let col = (screen_w * 0.5 - txt.len() as f32 * 0.5 * cell) / cell;
+        sdtx::pos(col.max(0.0), (screen_h - 92.0) / cell);
+        sdtx::puts(txt);
+        sdtx::font(0);
+        sdtx::color3b(0xff, 0xff, 0xff);
+        return;
+    }
+    let pct = if max_fuel_s > 0.0 { (fuel_s / max_fuel_s).clamp(0.0, 1.0) } else { 0.0 };
+    if pct >= 1.0 {
+        return; /* full + idle: nothing to show */
+    }
+
+    let bar_w = 140.0f32;
+    let bar_h = 10.0f32;
+    let pad = 3.0f32;
+    let bx = screen_w * 0.5 - bar_w * 0.5;
+    let by = screen_h - 88.0;
+
+    sgl::defaults();
+    sgl::matrix_mode_projection();
+    sgl::load_identity();
+    sgl::ortho(0.0, screen_w, screen_h, 0.0, -1.0, 1.0);
+    sgl::matrix_mode_modelview();
+    sgl::load_identity();
+    sgl::load_pipeline(ui_alpha_pipeline(&PIP_MINING));
+
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        sgl::v2f(x0, y0);
+        sgl::v2f(x1, y0);
+        sgl::v2f(x1, y1);
+        sgl::v2f(x0, y1);
+    };
+    sgl::begin_quads();
+    sgl::c4f(0.04, 0.06, 0.10, 0.85);
+    quad(bx - pad, by - pad, bx + bar_w + pad, by + bar_h + pad);
+    sgl::end();
+    sgl::begin_quads();
+    /* Cyan while there's fuel; amber once empty (recharge hasn't started
+     * yet or is still ramping) so "out of jetpack" reads at a glance. */
+    if pct > 0.0 {
+        sgl::c4f(0.25, 0.75, 0.95, 1.0);
+    } else {
+        sgl::c4f(0.85, 0.55, 0.15, 1.0);
+    }
+    quad(bx, by, bx + bar_w * pct, by + bar_h);
+    sgl::end();
+
+    sdtx::canvas(screen_w, screen_h);
+    sdtx::origin(0.0, 0.0);
+    sdtx::font(1);
+    sdtx::color3b(0xa0, 0xe0, 0xf0);
+    let txt = "JETPACK";
+    let col = (screen_w * 0.5 - txt.len() as f32 * 0.5 * cell) / cell;
+    sdtx::pos(col.max(0.0), (by - 11.0) / cell);
+    sdtx::puts(txt);
     sdtx::font(0);
     sdtx::color3b(0xff, 0xff, 0xff);
 }
@@ -3845,28 +3977,6 @@ fn draw_pickup_hint(app: &App, screen_w: f32, screen_h: f32) {
     draw_interact_prompt(&msg, screen_w, screen_h);
 }
 
-/// Credits readout (top-right): the space-era wallet. Only shown in survival /
-/// space worlds - creative has no economy.
-fn draw_credits_hud(app: &App, screen_w: f32, screen_h: f32) {
-    let p = app.player.borrow();
-    if !p.survival_mode {
-        return;
-    }
-    let msg = format!("{} cr", p.wallet.credits());
-    drop(p);
-    let cell = 8.0f32;
-    let x = (screen_w - (msg.len() as f32 + 1.5) * cell) / cell;
-    sdtx::canvas(screen_w, screen_h);
-    /* Reset the origin - earlier HUD draws (hints) leave it shifted, which
-     * pushed this readout off-canvas. */
-    sdtx::origin(0.0, 0.0);
-    sdtx::font(1);
-    sdtx::pos(x, 1.0);
-    sdtx::color3b(0xf0, 0xd8, 0x60);
-    sdtx::puts(&msg);
-    sdtx::font(0);
-    sdtx::color3b(0xff, 0xff, 0xff);
-}
 
 /// Rocket flight HUD (top-centre) shown while the player is riding a rocket:
 /// active engine kind, stages left, active-stage fuel %, TWR, and speed, plus
@@ -4915,10 +5025,16 @@ fn maybe_prime_mode_for_state(app: &mut App) {
             p.discovered = persistence::load_tech(&world)
                 .and_then(|blob| crate::tech_tree::Discovered::parse(&blob))
                 .unwrap_or_default();
-            /* In-flight craft + queue are session-scoped - a craft from
-             * world A must not deliver into world B's bag. */
+            /* In-flight craft + queue persist per world (their inputs were
+             * consumed at enqueue, and the bag/hotbar we just restored reflect
+             * that), so a background craft resumes where it left off instead of
+             * vanishing on reload. Clear first so world A's craft can't leak
+             * into world B when B has no saved craft. */
             p.crafting = None;
             crafting_screen::clear_queue();
+            if let Some(blob) = persistence::load_craft(&world) {
+                crafting_screen::restore_state(&mut p, &blob);
+            }
         }
         None => {
             if s == app.inv_primed_for_state {
@@ -5079,6 +5195,21 @@ fn maybe_autosave_sp(app: &mut App, dt: f64) {
      * re-strap the player. */
     rocket_ride::note_velocity(p.velocity);
     persistence::save_ride(&world, rocket_ride::save_snapshot().as_ref());
+    drop(p);
+    /* Placed-machine state (furnace / bonfire / electric smelt progress + item
+     * slots) rides the same cadence so an in-flight smelt resumes where it
+     * left off on reload. Completions already save same-frame; this captures
+     * the partial progress accumulated between them. */
+    {
+        let w = app.world.borrow();
+        persistence::save_block_entities(&world, w.body.id as u32, &w.block_entities);
+    }
+    /* The crafting queue + the active craft's progress ride the cadence too,
+     * so a background craft resumes instead of vanishing on reload. */
+    {
+        let p = app.player.borrow();
+        persistence::save_craft(&world, &crafting_screen::serialize_state(&p));
+    }
 }
 
 /// Re-read the hotbar + bag blobs just written and log any slot that did
@@ -5125,119 +5256,16 @@ fn verify_inventory_saved(world: &str, inv: &inventory::Inventory, bag: &crate::
 /* F4 block snapshot (console diagnostic)                                  */
 /* --------------------------------------------------------------------- */
 
+/* block_name / block_glyph moved to core `blocks::name` / `blocks::glyph`
+ * (single source of truth so the console snapshot and the .tenecap capture
+ * file's ASCII layout can't drift). These thin wrappers keep the local call
+ * sites unchanged. */
 fn block_name(b: Block) -> &'static str {
-    match b {
-        Block::Air => "AIR",
-        Block::Water => "WATER",
-        Block::Sand => "SAND",
-        Block::Dirt => "DIRT",
-        Block::Grass => "GRASS",
-        Block::Stone => "STONE",
-        Block::Ice => "ICE",
-        Block::Snow => "SNOW",
-        Block::DirtGrass => "DIRT_GRASS",
-        Block::DirtSnow => "DIRT_SNOW",
-        Block::Torch => "TORCH",
-        Block::Moon => "MOON",
-        Block::SeqGrass => "SEQ_GRASS",
-        Block::SeqDirt => "SEQ_DIRT",
-        Block::SeqDirtGrass => "SEQ_DIRT_GRASS",
-        Block::SeqSand => "SEQ_SAND",
-        Block::SeqSnow => "SEQ_SNOW",
-        Block::SeqDirtSnow => "SEQ_DIRT_SNOW",
-        Block::CragRock => "CRAG_ROCK",
-        Block::FrostIce => "FROST_ICE",
-        Block::AsteroidRock => "ASTEROID_ROCK",
-        Block::Wood => "WOOD",
-        Block::Leaves => "LEAVES",
-        Block::Bedrock => "BEDROCK",
-        Block::SeqLeaves => "SEQ_LEAVES",
-        Block::CoalOre => "COAL_ORE",
-        Block::CopperOre => "COPPER_ORE",
-        Block::TinOre => "TIN_ORE",
-        Block::IronOre => "IRON_ORE",
-        Block::LaunchPad => "LAUNCH_PAD",
-        Block::Furnace => "FURNACE",
-        Block::ElectricFurnace => "ELECTRIC_FURNACE",
-        Block::Printer3D => "3D_PRINTER",
-        Block::Computer => "COMPUTER",
-        Block::ElectronicsWorkbench => "ELECTRONICS_WORKBENCH",
-        Block::HydroGenerator => "HYDRO_GENERATOR",
-        Block::SteamEngine => "STEAM_ENGINE",
-        Block::StorageChest => "STORAGE_CHEST",
-        Block::LaunchTower => "LAUNCH_TOWER",
-        Block::Cable => "CABLE",
-        Block::CopperPipe => "COPPER_PIPE",
-        Block::Farmland => "FARMLAND",
-        Block::JungleGrass => "JUNGLE_GRASS",
-        Block::DryGrass => "DRY_GRASS",
-        Block::Bonfire => "BONFIRE",
-        Block::StationHull => "STATION_HULL",
-        Block::StationFloor => "STATION_FLOOR",
-        Block::CasinoCarpet => "CASINO_CARPET",
-        Block::CasinoWall => "CASINO_WALL",
-        Block::NeonTrim => "NEON_TRIM",
-        Block::CasinoSign => "CASINO_SIGN",
-        Block::SlotMachine => "SLOT_MACHINE",
-        Block::CardTable => "CARD_TABLE",
-        Block::SeqMycelium => "SEQ_MYCELIUM",
-        Block::SeqShroomCap => "SEQ_SHROOM_CAP",
-        Block::Glass => "GLASS",
-        Block::Aquarium => "AQUARIUM",
-    }
+    tenebris_core::blocks::name(b)
 }
 
-/// One-letter glyph per block for the ASCII column dump (devtools
-/// console only - not player-facing text).
 fn block_glyph(b: Block) -> char {
-    match b {
-        Block::Air => 'a',
-        Block::Water => 'w',
-        Block::Sand | Block::SeqSand => 'S',
-        Block::Dirt | Block::SeqDirt => 'd',
-        Block::Grass | Block::SeqGrass | Block::JungleGrass | Block::DryGrass => 'g',
-        Block::SeqMycelium => 'm',
-        Block::SeqShroomCap => 'M',
-        Block::Stone | Block::CragRock | Block::AsteroidRock => '#',
-        Block::Ice | Block::FrostIce => 'i',
-        Block::Snow | Block::SeqSnow => 's',
-        Block::DirtGrass | Block::DirtSnow | Block::SeqDirtGrass | Block::SeqDirtSnow => 'D',
-        Block::Farmland => 'f',
-        Block::Torch => 'T',
-        Block::Moon => 'm',
-        Block::Wood => 'W',
-        Block::Leaves | Block::SeqLeaves => 'L',
-        Block::Bedrock => 'b',
-        Block::CoalOre => 'c',
-        Block::CopperOre => 'o',
-        Block::TinOre => 't',
-        Block::IronOre => 'r',
-        Block::LaunchPad => 'P',
-        Block::Furnace => 'F',
-        /* Ported tech blocks share one glyph in the devtools dump. */
-        Block::ElectricFurnace
-        | Block::Printer3D
-        | Block::Computer
-        | Block::ElectronicsWorkbench
-        | Block::HydroGenerator
-        | Block::SteamEngine
-        | Block::StorageChest
-        | Block::LaunchTower
-        | Block::Cable
-        | Block::CopperPipe => 'E',
-        Block::Bonfire => 'B',
-        /* Station / casino set shares one glyph in the devtools dump. */
-        Block::StationHull
-        | Block::StationFloor
-        | Block::CasinoCarpet
-        | Block::CasinoWall
-        | Block::NeonTrim
-        | Block::CasinoSign
-        | Block::SlotMachine
-        | Block::CardTable => 'C',
-        Block::Glass => 'G',
-        Block::Aquarium => 'Q',
-    }
+    tenebris_core::blocks::glyph(b)
 }
 
 /// Glyph for water-simulator state in the snapshot grid: O = ocean /
@@ -5259,6 +5287,24 @@ fn water_glyph(w: &World, tile: i32, depth: i32) -> char {
 
 /// F4-bound: dump the player's tile + 6 hex neighbours, 9 depths each,
 /// to stdout. Same diagnostic shape as the Tenebris-JS tool.
+/// Block capture: print the human-readable console snapshot AND write a
+/// replayable `.tenecap` file of the collision neighbourhood (feet tile +
+/// neighbour columns + pose). The file rebuilds the exact world+pose in a
+/// headless test - the way an in-game "stuck floating in a cave" / tree
+/// fall-through repro becomes a regression fixture (CLAUDE.md standing bug).
+/// Wired to the BlockSnapshot action (default F4) and Shift+P.
+fn capture_block_scenario(app: &App) {
+    /* Console visual first (its own short-lived borrows). */
+    print_block_snapshot(app);
+    let p = app.player.borrow();
+    let w_rc = world_for_body(app, p.body.as_ref()).unwrap_or_else(|| app.world.clone());
+    let w = w_rc.borrow();
+    match block_capture::write_file(&w, &p) {
+        Ok(path) => println!("[capture] wrote {}", path.display()),
+        Err(e) => println!("[capture] not written: {e}"),
+    }
+}
+
 fn print_block_snapshot(app: &App) {
     let p = app.player.borrow();
     let w_rc = world_for_body(app, p.body.as_ref()).unwrap_or_else(|| app.world.clone());
@@ -6418,6 +6464,9 @@ fn frame_inner(app: &mut App) {
         let mut p = app.player.borrow_mut();
         if p.survival_mode {
             p.hunger = (p.hunger - player_ctrl::HUNGER_DRAIN_PER_S * dt).max(0.0);
+            /* Health is a PLACEHOLDER for now - no damage or regen yet, so
+             * pin it full each frame. Real health mechanics replace this. */
+            p.health = player_ctrl::MAX_HEALTH;
             if input::consume_eat() {
                 /* Best food first: cooked meat > bread > raw meat >
                  * berries > carrot (restore order). */
@@ -6512,6 +6561,31 @@ fn frame_inner(app: &mut App) {
     if menu::pause_active() {
         input::state_mut(|m| {
             m.phys = Default::default();
+            m.left_held = false;
+            m.right_held = false;
+            m.left_click = false;
+            m.right_click = false;
+            m.middle_click = false;
+            m.stick_active = false;
+            m.stick_x = 0.0;
+            m.stick_y = 0.0;
+            m.look_stick_active = false;
+            m.look_stick_x = 0.0;
+            m.look_stick_y = 0.0;
+        });
+    }
+    /* A blocking overlay (inventory / crafting / chest / furnace / ...) has
+     * focus: zero the held movement + click state so the player doesn't keep
+     * walking (or the ship keep steering) while the panel is up - and so a
+     * key-UP the egui overlay swallowed can't leave a move key stuck firing
+     * once the panel closes (the "open inventory while holding W and I keep
+     * moving" bug). Preserve the fly-mode TOGGLE so opening the bag mid-flight
+     * doesn't drop you out of the sky. */
+    else if screens::any_open() {
+        input::state_mut(|m| {
+            let fly = m.phys.fly_mode;
+            m.phys = Default::default();
+            m.phys.fly_mode = fly;
             m.left_held = false;
             m.right_held = false;
             m.left_click = false;
@@ -6873,6 +6947,12 @@ fn frame_inner(app: &mut App) {
         app.water_accum_s += dt;
         let sp = menu::state() == GameState::InGameSp;
         if sp && app.water_accum_s >= period_s {
+            /* Machines advance by the REAL time elapsed since the last tick
+             * (the accumulated period), NOT the single-frame `dt` - passing dt
+             * here ran the furnace at dt/period_s of real speed, so a 10 s
+             * smelt took 30 s+ ("way too extremely long"). Capture before the
+             * reset below. */
+            let machine_dt = app.water_accum_s;
             app.water_accum_s = 0.0;
             /* Water steps synchronously on the main (GL) thread, so a
              * heavy step shows up directly as a frame spike. Profile it
@@ -6899,7 +6979,7 @@ fn frame_inner(app: &mut App) {
                  * completes (a durable output change). In MP the SERVER
                  * ticks machines and broadcasts progress (BentityDiff);
                  * ticking locally too would fight those updates. */
-                let machines_changed = if mp_active { false } else { w.tick_machines(dt) };
+                let machines_changed = if mp_active { false } else { w.tick_machines(machine_dt) };
                 if machines_changed && !sp_world.is_empty() {
                     persistence::save_block_entities(&sp_world, w.body.id as u32, &w.block_entities);
                 }
@@ -7387,7 +7467,7 @@ fn frame_inner(app: &mut App) {
         let eye = dvec3_add(p.position, dvec3_scale(p.basis.up, player_ctrl::EYE_HEIGHT as f64));
         crate::reentry_fx::draw(view, proj, eye, p.velocity, p.basis.fwd, p.basis.up);
     }
-    fishing::draw(view, proj, &app.player.borrow());
+    fishing::draw(view_scene, proj, &app.player.borrow());
     crops::draw(view_scene, proj);
     drops::draw(view_scene, proj, renderer::time_seconds());
     {
@@ -7547,6 +7627,10 @@ fn frame_inner(app: &mut App) {
         }
         /* Survival hunger meter (top-left) - you still get hungry in a rocket. */
         draw_hunger_bar(app, sapp::widthf(), sapp::heightf());
+        /* Jetpack fuel gauge (bottom-centre, above the hotbar) - applies in
+         * both survival and creative, so it's not folded into the survival-
+         * gated hunger bar above. */
+        draw_jetpack_bar(app, sapp::widthf(), sapp::heightf());
         /* Craft-queue HUD (bottom-left): surfaces the background craft that
          * keeps running with the inventory closed. Inside the !screens::any_open
          * gate, so it hides while the craft panel (which has its own progress
@@ -7578,8 +7662,7 @@ fn frame_inner(app: &mut App) {
             /* Autopilot-button tooltip label (text pass over the sgl ball). */
             nav_ui::draw_ap_tooltip_text(sapp::widthf(), sapp::heightf());
         }
-        /* Credits wallet (top-right). */
-        draw_credits_hud(app, sapp::widthf(), sapp::heightf());
+        /* Credits now render under the hunger bar (draw_hunger_bar). */
         /* Station dock prompt (in space, within range) - the whole point of
          * the flight, so it stays up. */
         draw_station_hint(app, sapp::widthf(), sapp::heightf());
@@ -8025,6 +8108,18 @@ fn flight_panel_ui(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Flip `unlimited_jetpack` and print a console confirmation. Shared by the
+/// rebindable JetpackUnlimited action and the fixed Shift+J chord (both fire
+/// this, never toggle the field directly, so the two triggers can't drift).
+fn toggle_unlimited_jetpack(app: &App) {
+    let mut p = app.player.borrow_mut();
+    p.unlimited_jetpack = !p.unlimited_jetpack;
+    println!(
+        "[jetpack] Shift+J unlimited jetpack {}",
+        if p.unlimited_jetpack { "ON" } else { "OFF" }
+    );
+}
+
 fn event_inner(app: &mut App, e: &sapp::Event) {
     /* Feed every event to egui so its panels see the mouse / keyboard.
      * The return - "egui wants this" - gates the flight-mode mouse below:
@@ -8180,8 +8275,10 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
         rocket_cam::toggle_frame();
         return;
     }
-    /* Respawn rocket (default P). */
+    /* Respawn rocket (default P). Shift+P is the block-capture chord (handled
+     * above), so a held shift must not also fire respawn. */
     if e._type == sapp::EventType::KeyDown
+        && (e.modifiers & sapp::MODIFIER_SHIFT) == 0
         && crate::controls::action_for_key(e.key_code)
             == Some(crate::controls::Action::RespawnRocket)
         && crate::rocket_ride::can_respawn()
@@ -8529,8 +8626,19 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
     if e._type == sapp::EventType::KeyDown
         && crate::controls::action_for_key(e.key_code) == Some(crate::controls::Action::BlockSnapshot)
     {
-        /* Block snapshot to the console. Not gated on the debug master. */
-        print_block_snapshot(app);
+        /* Block capture. Not gated on the debug master. */
+        capture_block_scenario(app);
+        return;
+    }
+    /* Shift+P: fixed convenience chord for the block capture (JS/C screenshot
+     * muscle memory), alongside the rebindable BlockSnapshot action above.
+     * Both fire the same one capture path. Checked BEFORE RespawnRocket (also
+     * on P) so the shift chord captures instead of respawning the rocket. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::P
+        && (e.modifiers & sapp::MODIFIER_SHIFT) != 0
+    {
+        capture_block_scenario(app);
         return;
     }
     if e._type == sapp::EventType::KeyDown
@@ -8546,6 +8654,24 @@ fn event_inner(app: &mut App, e: &sapp::Event) {
             if on { "ON" } else { "OFF" },
             n_origins
         );
+        return;
+    }
+    if e._type == sapp::EventType::KeyDown
+        && crate::controls::action_for_key(e.key_code)
+            == Some(crate::controls::Action::JetpackUnlimited)
+    {
+        toggle_unlimited_jetpack(app);
+        return;
+    }
+    /* Shift+J: fixed convenience chord for the unlimited-jetpack toggle,
+     * alongside the rebindable JetpackUnlimited action above - same shape
+     * as Shift+P for block capture. Not gated on the debug master; it's
+     * meant to be reachable mid-flight. */
+    if e._type == sapp::EventType::KeyDown
+        && e.key_code == sapp::Keycode::J
+        && (e.modifiers & sapp::MODIFIER_SHIFT) != 0
+    {
+        toggle_unlimited_jetpack(app);
         return;
     }
     if app.debug_ui_visible {

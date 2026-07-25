@@ -2,3 +2,7 @@ target/
 web-dist/
 tools/__pycache__/
 target-verify/
+# Block-capture debug artifacts (Shift+P / F4). Throwaway repros.
+*.tenecap
+# ...except committed regression fixtures (a captured bug turned into a test).
+!crates/tenebris-client/src/block_capture_testdata/*.tenecap
