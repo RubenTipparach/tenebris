@@ -71,6 +71,7 @@ use crate::inventory_screen;
 use crate::solar_map;
 use crate::tech_tree;
 use crate::menu::{self, GameState};
+use crate::menu_scene;
 use crate::mobile_ui;
 use crate::net_client::{self, NetClientState, NetDesyncKind};
 use crate::persistence::{self, PersistenceSave, COLUMN_BYTES};
@@ -4623,6 +4624,17 @@ thread_local! {
 /// edits stay aligned) - there the derivation is identity at Tenebris
 /// and the sisters keep their compiled seeds.
 fn start_world_regen(app: &mut App, seed: u64, reseed_sisters: bool) {
+    /* The main-menu backdrop may have registered a throwaway, randomly-
+     * seeded Tenebris as real chunked terrain (menu_scene) while the menu
+     * was up - and register_world's first-ever registration always claims
+     * the ACTIVE slot, so that decorative body would otherwise permanently
+     * occupy it (world_for_body matches by BODY ID, not Rc identity - the
+     * real save's Tenebris would find the menu's slot "already registered"
+     * and remesh THAT world's data instead of its own). Every real world
+     * entry (SP or MP) goes through this function, so clearing here
+     * guarantees the body this player actually plays on always gets a
+     * clean slate, regardless of what the menu was showing. */
+    renderer::clear_bodies_for_new_session();
     if reseed_sisters {
         /* derive_body_seed is identity at Tenebris, so the spawn planet
          * still gets exactly `seed` and the seed-match guard is stable. */
@@ -5755,12 +5767,25 @@ extern "C" fn frame() {
             swapchain: sokol::glue::swapchain(),
             ..Default::default()
         };
+        /* Deep-space clear: the 3D backdrop's starfield pass fully overdraws
+         * this (opaque fullscreen triangle), so it's mainly a fallback for
+         * any uncovered edge case. Depth is cleared EXPLICITLY (unlike the
+         * old flat-clear-only menu pass) so the backdrop's depth-tested
+         * planet draw has a fresh buffer to test against - the 2D menu
+         * content after it (sokol_gl/egui) doesn't depth-test, so it still
+         * lands on top regardless. */
         pass.action.colors[0] = sg::ColorAttachmentAction {
             load_action: sg::LoadAction::Clear,
-            clear_value: sg::Color { r: 0.04, g: 0.06, b: 0.10, a: 1.0 },
+            clear_value: sg::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+            ..Default::default()
+        };
+        pass.action.depth = sg::DepthAttachmentAction {
+            load_action: sg::LoadAction::Clear,
+            clear_value: 1.0,
             ..Default::default()
         };
         sg::begin_pass(&pass);
+        menu_scene::draw(sapp::widthf(), sapp::heightf());
         sdtx::canvas(sapp::widthf(), sapp::heightf());
         if menu::state_is_egui() {
             /* SP menu screens render in egui (main menu / world list /

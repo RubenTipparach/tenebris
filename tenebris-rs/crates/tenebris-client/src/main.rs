@@ -41,6 +41,7 @@ mod interact;
 mod inventory;
 mod inventory_screen;
 mod menu;
+mod menu_scene;
 mod mobile_ui;
 mod net_client;
 mod net_transport;

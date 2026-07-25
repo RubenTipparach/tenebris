@@ -70,7 +70,7 @@
 
 #![allow(dead_code)] // wired up by the main_web wave of the port
 
-use crate::gfx_math::{mat4_identity, mat4_mul, mat4_translate, Mat4};
+use crate::gfx_math::{mat4_identity, mat4_mul, mat4_rotate_y, mat4_translate, Mat4};
 use crate::hex_mesher::{self, HexMesh, HexVertex};
 use crate::net_client;
 use crate::profiler;
@@ -85,7 +85,7 @@ use tenebris_core::blocks::{self, Block, FaceCap};
 use tenebris_core::config;
 use tenebris_core::math::{
     dvec3_cross, dvec3_dot, dvec3_length, dvec3_make, dvec3_normalize, dvec3_scale, dvec3_sub,
-    dvec3_to_vec3, vec3_add, vec3_length, vec3_sub, DVec3, Vec3,
+    dvec3_to_vec3, vec3_add, vec3_length, vec3_normalize, vec3_sub, DVec3, Vec3,
 };
 use tenebris_core::orbit;
 use tenebris_core::planet::{self, BodyConfig, BodyId, Tileset};
@@ -654,9 +654,9 @@ fn midpoint_lookup(
 
 /// Equirectangular pixel index -> body-local unit direction. Keep in
 /// lock-step with the dir_to_uv mapping in distant.glsl.
-fn distant_pixel_to_dir(px: i32, py: i32) -> DVec3 {
-    let u = (px as f64 + 0.5) / DISTANT_TEX_W as f64;
-    let v = (py as f64 + 0.5) / DISTANT_TEX_H as f64;
+fn distant_pixel_to_dir(px: i32, py: i32, w: i32, h: i32) -> DVec3 {
+    let u = (px as f64 + 0.5) / w as f64;
+    let v = (py as f64 + 0.5) / h as f64;
     let lon = (u - 0.5) * 2.0 * std::f64::consts::PI;
     let lat = (0.5 - v) * std::f64::consts::PI;
     let cl = lat.cos();
@@ -863,17 +863,16 @@ fn build_distant_texture_pixels(
     bcfg: &BodyConfig,
     fallback: Vec3,
     col_avg: &[Vec3; ATLAS_TILES],
+    w: i32,
+    h: i32,
 ) -> (Vec<u8>, Vec<u8>) {
-    let w = DISTANT_TEX_W;
-    let h = DISTANT_TEX_H;
-
     /* Single altitude grid - albedo reads it per pixel, the normal map
      * a second time via central differences, so the ~12 noise octaves
      * per direction are only evaluated once. */
     let mut alt = vec![0.0f32; (w * h) as usize];
     for py in 0..h {
         for px in 0..w {
-            let dir = distant_pixel_to_dir(px, py);
+            let dir = distant_pixel_to_dir(px, py, w, h);
             let mut surface_m = planet_gen::surface_altitude(bcfg, dir);
             if bcfg.barren {
                 surface_m *= 0.3;
@@ -886,7 +885,7 @@ fn build_distant_texture_pixels(
     let mut normal = vec![0u8; (w * h * 4) as usize];
     for py in 0..h {
         for px in 0..w {
-            let dir = distant_pixel_to_dir(px, py);
+            let dir = distant_pixel_to_dir(px, py, w, h);
             let surface_m = alt[(py * w + px) as usize];
             let (rgb, water_a) = sample_planet_lod_color(bcfg, fallback, dir, surface_m, col_avg);
             /* Quantise to 8-bit; clamp covers height-shade x tint
@@ -3257,47 +3256,82 @@ pub fn init() {
     });
 }
 
+/// Free one body's chunk + distant-LOD GPU resources (buffers, images,
+/// views) and its CPU-side chunk index. Shared by [`shutdown`] (every
+/// body, at process exit) and [`clear_bodies_for_new_session`] (every
+/// body, mid-session) so the two teardown paths can't drift apart.
+fn destroy_body_gpu(body: &mut ChunkedBody) {
+    for c in &mut body.chunks[..chunk_n()] {
+        c.mesh = HexMesh::new();
+        c.water_mesh = HexMesh::new();
+        if c.vbuf.id != 0 {
+            sg::destroy_buffer(c.vbuf);
+        }
+        if c.ibuf.id != 0 {
+            sg::destroy_buffer(c.ibuf);
+        }
+        if c.water_vbuf.id != 0 {
+            sg::destroy_buffer(c.water_vbuf);
+        }
+        if c.water_ibuf.id != 0 {
+            sg::destroy_buffer(c.water_ibuf);
+        }
+    }
+    if body.distant_vbuf.id != 0 {
+        sg::destroy_buffer(body.distant_vbuf);
+    }
+    if body.distant_ibuf.id != 0 {
+        sg::destroy_buffer(body.distant_ibuf);
+    }
+    if body.distant_view_albedo.id != 0 {
+        sg::destroy_view(body.distant_view_albedo);
+    }
+    if body.distant_view_normal.id != 0 {
+        sg::destroy_view(body.distant_view_normal);
+    }
+    if body.distant_tex_albedo.id != 0 {
+        sg::destroy_image(body.distant_tex_albedo);
+    }
+    if body.distant_tex_normal.id != 0 {
+        sg::destroy_image(body.distant_tex_normal);
+    }
+    body.tile_to_chunk = Vec::new();
+    body.chunk_tile_flat = Vec::new();
+}
+
+/// Wipe every registered body (GPU resources + the `r.bodies` registry
+/// itself) WITHOUT touching session-wide resources (atlas, water-normal,
+/// navball, the distant-LOD pipeline/sampler) - unlike [`shutdown`], this
+/// is meant to be called MID-SESSION and safely re-usable afterward.
+///
+/// Needed because the main-menu backdrop (`menu_scene`) registers a
+/// throwaway, randomly-seeded Tenebris world as real chunked terrain so it
+/// has something detailed to show behind the menu - and because
+/// `register_world`'s first-ever registration always claims the ACTIVE
+/// slot, that throwaway body would otherwise permanently occupy slot 0.
+/// `world_for_body` also matches by BODY ID, not `Rc` identity, so the
+/// real save's Tenebris (once the player actually starts a game) would
+/// find the menu's decorative slot already "registered" and remesh THAT
+/// world's data instead of registering its own - the menu backdrop would
+/// leak into gameplay. Calling this before any real world's generation
+/// begins (`start_world_regen`) guarantees a clean slate every time.
+pub fn clear_bodies_for_new_session() {
+    R.with(|cell| {
+        let mut r = cell.borrow_mut();
+        for body in &mut r.bodies {
+            destroy_body_gpu(body);
+        }
+        r.bodies.clear();
+        r.active_body_idx = -1;
+    });
+}
+
 /// Port of `renderer_shutdown()`.
 pub fn shutdown() {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
         for body in &mut r.bodies {
-            for c in &mut body.chunks[..chunk_n()] {
-                c.mesh = HexMesh::new();
-                c.water_mesh = HexMesh::new();
-                if c.vbuf.id != 0 {
-                    sg::destroy_buffer(c.vbuf);
-                }
-                if c.ibuf.id != 0 {
-                    sg::destroy_buffer(c.ibuf);
-                }
-                if c.water_vbuf.id != 0 {
-                    sg::destroy_buffer(c.water_vbuf);
-                }
-                if c.water_ibuf.id != 0 {
-                    sg::destroy_buffer(c.water_ibuf);
-                }
-            }
-            if body.distant_vbuf.id != 0 {
-                sg::destroy_buffer(body.distant_vbuf);
-            }
-            if body.distant_ibuf.id != 0 {
-                sg::destroy_buffer(body.distant_ibuf);
-            }
-            if body.distant_view_albedo.id != 0 {
-                sg::destroy_view(body.distant_view_albedo);
-            }
-            if body.distant_view_normal.id != 0 {
-                sg::destroy_view(body.distant_view_normal);
-            }
-            if body.distant_tex_albedo.id != 0 {
-                sg::destroy_image(body.distant_tex_albedo);
-            }
-            if body.distant_tex_normal.id != 0 {
-                sg::destroy_image(body.distant_tex_normal);
-            }
-            body.tile_to_chunk = Vec::new();
-            body.chunk_tile_flat = Vec::new();
+            destroy_body_gpu(body);
         }
         r.bodies.clear();
         r.active_body_idx = -1;
@@ -3480,7 +3514,8 @@ fn build_distant_textures_for_body(body: &mut ChunkedBody, col_avg: &[Vec3; ATLA
         body.distant_tex_normal = sg::Image::new();
     }
     let bcfg = body.world.borrow().body;
-    let (albedo, normal) = build_distant_texture_pixels(&bcfg, body.distant_color, col_avg);
+    let (albedo, normal) =
+        build_distant_texture_pixels(&bcfg, body.distant_color, col_avg, DISTANT_TEX_W, DISTANT_TEX_H);
 
     /* LOD-albedo colour diagnostic (TENEBRIS_DEV_LODDIAG): print the raw
      * baked albedo at a few equirect pixels + the sampling breakdown at the
@@ -3493,7 +3528,7 @@ fn build_distant_textures_for_body(body: &mut ChunkedBody, col_avg: &[Vec3; ATLA
             let i = ((py * w + px) * 4) as usize;
             (albedo[i], albedo[i + 1], albedo[i + 2], albedo[i + 3])
         };
-        let dir = distant_pixel_to_dir(w / 4, h / 2); /* equator, prime meridian */
+        let dir = distant_pixel_to_dir(w / 4, h / 2, w, h); /* equator, prime meridian */
         let sm = {
             let mut s = planet_gen::surface_altitude(&bcfg, dir);
             if bcfg.barren {
@@ -3564,6 +3599,181 @@ fn build_distant_mesh_for_body(body: &mut ChunkedBody) {
         ..Default::default()
     });
     body.distant_index_count = ibuf.len() as i32;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Main-menu backdrop: Tenebris seen from orbit. Reuses the exact
+ * distant-LOD technique above (build_distant_mesh / build_distant_texture_
+ * pixels: a baked-noise icosphere, no live World needed) but built directly
+ * from planet::get(BodyId::Tenebris) and cached in its OWN thread-local -
+ * deliberately NOT registered into `r.bodies`/`active_body_idx`. The menu
+ * appears at boot, before any save is picked and before World generation
+ * has even started (see app.rs's init/menu sequencing), so it can't reuse
+ * register_world's per-body bookkeeping without corrupting the gameplay
+ * renderer's active-body state for whatever save gets entered afterward. */
+
+/// Cached GPU assets for the menu-backdrop planet - built once, lazily, on
+/// first draw.
+struct MenuPlanetAssets {
+    vbuf: sg::Buffer,
+    ibuf: sg::Buffer,
+    index_count: i32,
+    view_albedo: sg::View,
+    view_normal: sg::View,
+    radius_m: f32,
+}
+
+thread_local! {
+    static MENU_PLANET: RefCell<Option<MenuPlanetAssets>> = const { RefCell::new(None) };
+}
+
+fn build_menu_planet_assets(bcfg: &BodyConfig, col_avg: &[Vec3; ATLAS_TILES]) -> MenuPlanetAssets {
+    let levels = config::lod().distant_subdivisions;
+    let (vbuf_data, ibuf_data) = build_distant_mesh(levels);
+    let vbuf = sg::make_buffer(&sg::BufferDesc {
+        data: sg::slice_as_range(&vbuf_data),
+        label: c"menu-planet-vbuf".as_ptr(),
+        ..Default::default()
+    });
+    let ibuf = sg::make_buffer(&sg::BufferDesc {
+        usage: sg::BufferUsage { index_buffer: true, ..Default::default() },
+        data: sg::slice_as_range(&ibuf_data),
+        label: c"menu-planet-ibuf".as_ptr(),
+        ..Default::default()
+    });
+
+    let fallback = body_distant_color(bcfg);
+    let (albedo, normal) =
+        build_distant_texture_pixels(bcfg, fallback, col_avg, DISTANT_TEX_W, DISTANT_TEX_H);
+    let mut desc = sg::ImageDesc {
+        width: DISTANT_TEX_W,
+        height: DISTANT_TEX_H,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"menu-planet-albedo".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(&albedo);
+    let tex_albedo = sg::make_image(&desc);
+    let mut desc = sg::ImageDesc {
+        width: DISTANT_TEX_W,
+        height: DISTANT_TEX_H,
+        pixel_format: sg::PixelFormat::Rgba8,
+        label: c"menu-planet-normal".as_ptr(),
+        ..Default::default()
+    };
+    desc.data.mip_levels[0] = sg::slice_as_range(&normal);
+    let tex_normal = sg::make_image(&desc);
+    let view_albedo = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: tex_albedo, ..Default::default() },
+        label: c"menu-planet-albedo-view".as_ptr(),
+        ..Default::default()
+    });
+    let view_normal = sg::make_view(&sg::ViewDesc {
+        texture: sg::TextureViewDesc { image: tex_normal, ..Default::default() },
+        label: c"menu-planet-normal-view".as_ptr(),
+        ..Default::default()
+    });
+
+    MenuPlanetAssets {
+        vbuf,
+        ibuf,
+        index_count: ibuf_data.len() as i32,
+        view_albedo,
+        view_normal,
+        radius_m: bcfg.radius_m as f32,
+    }
+}
+
+/// Draw Tenebris as seen from orbit, for the main-menu backdrop: the same
+/// distant-LOD sphere `draw_moons` uses for far bodies, spinning slowly on
+/// its own axis, lit from a fixed pleasant angle (the menu isn't tied to
+/// any world's real time of day). Self-contained - builds + caches its own
+/// GPU assets on first call, needs no loaded World, no camera state beyond
+/// what the caller passes, and touches none of `r.bodies`'s gameplay
+/// bookkeeping. `view`/`proj` are the caller's fixed orbit-viewing camera;
+/// `camera_world` feeds the shader's specular/rim view term.
+///
+/// `spin_rad` is the Y-axis rotation angle (radians) - the CALLER's clock,
+/// not `r.time_seconds`: that field only advances inside `draw_world`
+/// (the gameplay path), which never runs while a menu screen is up, so a
+/// planet spun by it would sit frozen at angle 0 for as long as the menu is
+/// open (see `menu_scene.rs`, which drives this from `sokol::time`).
+pub fn draw_menu_planet(view: Mat4, proj: Mat4, camera_world: Vec3, spin_rad: f32) {
+    R.with(|cell| {
+        let r = cell.borrow();
+        let bcfg = planet::get(planet::BodyId::Tenebris);
+        let need_build = MENU_PLANET.with(|c| c.borrow().is_none());
+        if need_build {
+            let assets = build_menu_planet_assets(&bcfg, &r.atlas_col_avg);
+            MENU_PLANET.with(|c| *c.borrow_mut() = Some(assets));
+        }
+        MENU_PLANET.with(|c| {
+            let cb = c.borrow();
+            let a = cb.as_ref().unwrap();
+            if a.index_count <= 0 || a.view_albedo.id == 0 || a.view_normal.id == 0 {
+                return;
+            }
+            let model = mat4_mul(mat4_rotate_y(spin_rad), mat4_scale_uniform(a.radius_m));
+            let mvp = mat4_mul(mat4_mul(proj, view), model);
+
+            sg::apply_pipeline(r.pip_distant);
+            let mut bind = sg::Bindings::new();
+            bind.vertex_buffers[0] = a.vbuf;
+            bind.index_buffer = a.ibuf;
+            bind.views[shaders::distant::VIEW_TEX_ALBEDO] = a.view_albedo;
+            bind.views[shaders::distant::VIEW_TEX_NORMAL] = a.view_normal;
+            bind.samplers[shaders::distant::SMP_SMP_CLAMP] = r.distant_lod_smp;
+            sg::apply_bindings(&bind);
+            /* fs_pos/fs_radius: the shader wants the WORLD position + radius
+             * to build v_world_pos for the rim fresnel (see draw_moons). The
+             * menu planet sits at the origin at true scale - no far-shell
+             * compression needed at this tiny camera distance. */
+            let dvp = shaders::distant::DistantVsParams {
+                u_mvp: mvp.m,
+                u_fs_pos: [0.0, 0.0, 0.0, a.radius_m],
+            };
+            sg::apply_uniforms(shaders::distant::UB_DISTANT_VS_PARAMS, &sg::value_as_range(&dvp));
+
+            let lc = config::lod();
+            let wc = config::water();
+            let rim = rim_color_for(&lc, bcfg.tileset as usize);
+            /* Fixed key light, upper-left-ish - a pleasant three-quarter
+             * terminator regardless of any world's actual time of day. */
+            let sun_dir = vec3_normalize(Vec3 { x: -0.5, y: 0.35, z: 0.8 });
+            /* A menu-only ambient floor, deliberately brighter than gameplay's
+             * realistic lc.distant_ambient (6%): as the planet spins, its
+             * night side spends half the time facing the fixed camera, and
+             * at a REALISTIC ambient that hemisphere reads as a near-black
+             * void next to the starfield - fine in real orbital physics,
+             * a "is this broken?" look in a menu backdrop meant to always
+             * look good. This is presentation, not simulation, so it gets
+             * its own constant instead of reading the shared gameplay value. */
+            const MENU_AMBIENT: f32 = 0.22;
+            let da = MENU_AMBIENT;
+            let dfp = shaders::distant::DistantFsParams {
+                u_sun_dir: [sun_dir.x, sun_dir.y, sun_dir.z],
+                u_pad0: 0.0,
+                u_ambient: [da, da, da],
+                u_pad1: 0.0,
+                u_camera_pos: [camera_world.x, camera_world.y, camera_world.z],
+                u_normal_strength: 0.6,
+                u_water_specular_tint: [wc.sun_tint.x, wc.sun_tint.y, wc.sun_tint.z],
+                u_water_specular_intensity: wc.specular_intensity,
+                u_water_specular_power: wc.specular_power,
+                u_pad2: 0.0,
+                u_pad3: 0.0,
+                u_pad4: 0.0,
+                u_rim_color: [rim.x, rim.y, rim.z],
+                u_rim_power: lc.distant_rim_power,
+                u_rim_intensity: lc.distant_rim_intensity,
+                u_rim_floor: lc.distant_rim_floor,
+                u_pad5: 0.0,
+                u_pad6: 0.0,
+            };
+            sg::apply_uniforms(shaders::distant::UB_DISTANT_FS_PARAMS, &sg::value_as_range(&dfp));
+            sg::draw(0, a.index_count as usize, 1);
+        });
+    });
 }
 
 /// Registry bookkeeping half of `renderer_register_world()`: claims a
@@ -4689,6 +4899,21 @@ fn ensure_offscreen_targets(r: &mut Renderer, w: i32, h: i32) {
 
 /// Port of `renderer_begin_frame()`. Opens the offscreen opaque pass;
 /// `compose_to_swapchain` ends it and opens the swapchain pass.
+/// Set `r.env` WITHOUT the rest of [`begin_frame`]'s side effects (opening
+/// the offscreen pass, floating-origin rebasing every body, resetting the
+/// per-frame tri/relight counters). For a caller that draws directly into
+/// an ALREADY-OPEN pass (the menu backdrop, which renders straight into the
+/// swapchain pass app.rs already opened, with no offscreen target / water
+/// compositing / floating origin in play - its one decorative body sits at
+/// the true origin and its camera is a true small-scale position, so there
+/// is nothing to rebase). Lets that caller's `draw_skybox`/`draw_world`
+/// calls read real sun direction / atmosphere / ambient instead of
+/// `RenderEnv::default()`'s zeroed fields (which is why the menu's terrain
+/// rendered pitch black before this existed).
+pub fn set_env(env: RenderEnv) {
+    R.with(|cell| cell.borrow_mut().env = env);
+}
+
 pub fn begin_frame(w: i32, h: i32, env: RenderEnv) {
     R.with(|cell| {
         let mut r = cell.borrow_mut();
@@ -7386,19 +7611,19 @@ mod tests {
     fn distant_pixel_to_dir_pinned() {
         /* Every direction is unit length. */
         for &(px, py) in &[(0, 0), (128, 64), (255, 127), (64, 100)] {
-            let d = distant_pixel_to_dir(px, py);
+            let d = distant_pixel_to_dir(px, py, DISTANT_TEX_W, DISTANT_TEX_H);
             let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
             assert!((len - 1.0).abs() < 1e-12);
         }
         /* Top row: lat = (0.5 - 0.5/128) * pi -> y ~ +1 (north pole). */
-        let d = distant_pixel_to_dir(0, 0);
+        let d = distant_pixel_to_dir(0, 0, DISTANT_TEX_W, DISTANT_TEX_H);
         assert!(d.y > 0.999, "y = {}", d.y);
         /* Bottom row: y ~ -1. */
-        let d = distant_pixel_to_dir(0, DISTANT_TEX_H - 1);
+        let d = distant_pixel_to_dir(0, DISTANT_TEX_H - 1, DISTANT_TEX_W, DISTANT_TEX_H);
         assert!(d.y < -0.999);
         /* Equator-centre pixel: lon = (128.5/256 - 0.5) * 2pi, lat =
          * (0.5 - 64.5/128) * pi. */
-        let d = distant_pixel_to_dir(128, 64);
+        let d = distant_pixel_to_dir(128, 64, DISTANT_TEX_W, DISTANT_TEX_H);
         let lon = (128.5 / 256.0 - 0.5) * 2.0 * std::f64::consts::PI;
         let lat = (0.5 - 64.5 / 128.0) * std::f64::consts::PI;
         assert!((d.x - lat.cos() * lon.cos()).abs() < 1e-12);
