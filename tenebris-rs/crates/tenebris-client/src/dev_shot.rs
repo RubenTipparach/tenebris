@@ -25,7 +25,7 @@ const SHOT_EVERY_FRAMES: u64 = 60;
 
 #[cfg(not(target_os = "emscripten"))]
 #[cfg_attr(windows, link(name = "opengl32"))]
-#[cfg_attr(not(windows), link(name = "GL"))]
+#[cfg_attr(all(unix, not(target_os = "macos")), link(name = "GL"))]
 extern "system" {
     fn glReadPixels(x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, data: *mut u8);
     fn glPixelStorei(pname: u32, param: i32);
