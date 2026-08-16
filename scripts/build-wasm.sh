@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Build the WASM client and drop its output into dist/wasm/.
+# Build the C/WASM client and drop its output into dist/wasm/.
 # Requires Emscripten activated in the current shell (EMSDK env var set).
+#
+# ARCHIVE-ONLY - NOT part of `npm run build:all` and NOT run in CI.
+# tenebris-c/ is a frozen archive (see CLAUDE.md); the live target is the
+# native Rust client in tenebris-rs/. This script is kept so the archive
+# stays buildable by hand for reference. Known breakage: the
+# TENEBRIS_WEBGPU=ON path fails at link ("emdawnwebgpu requires C++" -
+# needs em++ / -sDEFAULT_TO_CXX) and is not being fixed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

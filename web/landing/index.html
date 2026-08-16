@@ -15,8 +15,9 @@
     .wrap { max-width:900px; margin:0 auto; padding:64px 24px; }
     h1 { font-size:64px; margin:0 0 8px 0; letter-spacing:2px; }
     .sub { color:var(--muted); margin:0 0 40px 0; font-size:20px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
-    @media (max-width:720px) { .grid { grid-template-columns:1fr; } }
+    /* Single-card grid since the C/WASM preview was retired - keep the
+       card from stretching the full 900px. */
+    .grid { display:grid; grid-template-columns:1fr; gap:20px; max-width:440px; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px;
             text-decoration:none; color:inherit; transition:transform .1s ease, border-color .1s ease;
             display:flex; flex-direction:column; min-height:240px; }
@@ -27,7 +28,6 @@
     .card ul { margin:0 0 0 20px; padding:0; color:var(--muted); font-size:16px; line-height:1.4; }
     .card .spacer { flex:1; }
     .card .play  { margin-top:16px; color:var(--accent); font-size:22px; }
-    .card.wasm h2 { color:#9fd5ff; }
     .card.stable h2 { color:#a8e6a8; }
     .footer { margin-top:40px; color:var(--muted); font-size:14px; }
     .redir  { margin-top:20px; font-size:14px; color:var(--muted); }
@@ -37,7 +37,7 @@
 <body>
   <div class="wrap">
     <h1>TENEBRIS</h1>
-    <p class="sub">Select a build &mdash; both point at the same game, different engines.</p>
+    <p class="sub">The web build. Active development is the native Rust client.</p>
 
     <div class="grid">
       <a class="card stable" href="./js/" data-build="js">
@@ -52,19 +52,6 @@
         <div class="spacer"></div>
         <div class="play">&#9654; Play</div>
       </a>
-
-      <a class="card wasm" href="./wasm/" data-build="wasm">
-        <div class="tag">uat preview</div>
-        <h2>C / WASM</h2>
-        <p>Experimental Sokol + C port. Tier 1 scope only &mdash; flat creative mode. Expect missing features.</p>
-        <ul>
-          <li>Creative mode, flat world</li>
-          <li>Break / place / move / jump</li>
-          <li>No planets, crafting, or rockets yet</li>
-        </ul>
-        <div class="spacer"></div>
-        <div class="play">&#129514; Try Preview</div>
-      </a>
     </div>
 
     <div id="redir" class="redir"></div>
@@ -72,7 +59,10 @@
     <div class="footer">
       UAT checklist: <a href="https://github.com/rubentipparach/tenebris/blob/main/docs/uat-checklist.md" style="color:var(--accent)">docs/uat-checklist.md</a>
       &middot;
-      Direct links: <code>?build=js</code> or <code>?build=wasm</code>
+      Direct link: <code>?build=js</code>
+      <br/>
+      The C / WASM preview is retired &mdash; the port continues as a native Rust
+      client in <code>tenebris-rs/</code>.
     </div>
   </div>
 
@@ -80,8 +70,9 @@
     (function() {
       var params = new URLSearchParams(location.search);
       var override = params.get('build');
-      if (override === 'js')   { location.replace('./js/');   return; }
-      if (override === 'wasm') { location.replace('./wasm/'); return; }
+      if (override === 'js') { location.replace('./js/'); return; }
+      // ?build=wasm is no longer honoured - the C/WASM preview is retired
+      // and ./wasm/ is not built any more, so it would 404.
 
       // Remember last choice and offer a 3-second auto-redirect.
       document.querySelectorAll('.card').forEach(function(a) {
@@ -92,7 +83,13 @@
 
       var last = null;
       try { last = localStorage.getItem('tenebris.lastBuild'); } catch (e) {}
-      if (last === 'js' || last === 'wasm') {
+      // Anyone whose last choice was the retired 'wasm' preview would get
+      // auto-redirected into a 404 - drop the stale value instead.
+      if (last === 'wasm') {
+        try { localStorage.removeItem('tenebris.lastBuild'); } catch (e) {}
+        last = null;
+      }
+      if (last === 'js') {
         var el = document.getElementById('redir');
         var seconds = 3;
         var cancelled = false;

@@ -1,12 +1,23 @@
 # Continuous build + deploy for Tenebris.
 #
-# Every push to every branch builds the WASM + landing pages and
-# deploys the dedicated server to Fly.io. GitHub Pages auto-deploy is
-# DISABLED (the Pages `deploy` job was removed by request) - the build
-# still produces dist/ and uploads it as a downloadable artifact, but
-# nothing publishes it to rubentipparach.github.io. Re-enable by
-# restoring the `deploy` job + its pages-artifact upload + the
-# `pages: write` / `id-token: write` permissions.
+# Every push to every branch builds the archived JS client + landing
+# pages and deploys the dedicated server to Fly.io. GitHub Pages
+# auto-deploy is DISABLED (the Pages `deploy` job was removed by
+# request) - the build still produces dist/ and uploads it as a
+# downloadable artifact, but nothing publishes it to
+# rubentipparach.github.io. Re-enable by restoring the `deploy` job +
+# its pages-artifact upload + the `pages: write` / `id-token: write`
+# permissions.
+#
+# THE C / WASM CLIENT IS NO LONGER BUILT HERE. tenebris-c/ is a frozen
+# archive (see CLAUDE.md) and all work happens in tenebris-rs/, which
+# has its own CI in rust.yml - so this workflow no longer installs
+# Emscripten / Ninja or links tenebris.html. The experimental
+# `webgpu-build` job went with it: emdawnwebgpu requires linking as C++
+# (`emcc: error: emdawnwebgpu requires C++`), nothing depended on the
+# job, and the archive isn't worth fixing. The archive is still
+# buildable by hand with `npm run build:wasm` in a shell that has
+# Emscripten activated.
 #
 # Single-dev / fast-iteration mode - whoever pushed last wins the live
 # server. Tighten to a branch allowlist later if the project grows
@@ -49,8 +60,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    outputs:
-      has_wasm: ${{ steps.check.outputs.has_wasm }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,29 +72,17 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup Emscripten
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: 3.1.64
-          actions-cache-folder: 'emsdk-cache'
-
-      - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v4
-
       - name: Install node dependencies
         run: npm ci
 
-      - name: Build JS + WASM + landing
+      - name: Build JS + landing
         run: npm run build:all
 
       - name: Verify dist layout
-        id: check
         run: |
           set -e
           test -f dist/index.html       || { echo "missing dist/index.html"; exit 1; }
           test -f dist/js/index.html    || { echo "missing dist/js/index.html"; exit 1; }
-          test -f dist/wasm/index.html  || { echo "missing dist/wasm/index.html"; exit 1; }
-          echo "has_wasm=true" >> "$GITHUB_OUTPUT"
 
       # Non-blocking: the compile + "Verify dist layout" above already gate
       # real build breaks. This upload is a convenience download only, so an
@@ -142,46 +139,14 @@ jobs:
           fi
           flyctl deploy --remote-only --wait-timeout 900 --verbose
 
-  # Experimental WebGPU backend build - Stage 0 of the compute-shader
-  # track (tenebris-c/plan-webgpu-compute.md). Non-blocking: it has no
-  # dependents and the `deploy` job needs only `build`, so a failure here
-  # never gates the Pages / Fly deploy. Exists to catch compile + link
-  # regressions on the -DTENEBRIS_WEBGPU=ON path. Uses a newer Emscripten
-  # than the shipping build because the emdawnwebgpu port postdates 3.1.64.
-  webgpu-build:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.branch || github.ref }}
-
-      - name: Setup Emscripten (emdawnwebgpu-capable)
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: latest
-          actions-cache-folder: 'emsdk-cache-wgpu'
-
-      - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v4
-
-      - name: Build WASM (WebGPU backend)
-        env:
-          TENEBRIS_WEBGPU: 'ON'
-        run: bash scripts/build-wasm.sh
-
-      - name: Upload WebGPU build artifact
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: tenebris-wgpu-${{ github.sha }}
-          # build-wasm.sh copies the linked client to dist/wasm/ (same as
-          # the WebGL2 build); the raw objects stay in tenebris-c/build-web/.
-          path: dist/wasm
-          retention-days: 3
-          if-no-files-found: ignore
+  # The experimental `webgpu-build` job (Stage 0 of the C tree's
+  # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.
+  # It built tenebris-c with -DTENEBRIS_WEBGPU=ON and had been failing at
+  # link: the emdawnwebgpu port requires linking as C++ (em++ /
+  # -sDEFAULT_TO_CXX) and the C tree links with emcc. The C tree is a
+  # frozen archive and the Rust port is the live target, so the job was
+  # dropped rather than fixed. Nothing depended on it - it was
+  # continue-on-error with no dependents.
 
   # GitHub Pages `deploy` job removed by request - the site no longer
   # auto-publishes to rubentipparach.github.io on push. To re-enable,
