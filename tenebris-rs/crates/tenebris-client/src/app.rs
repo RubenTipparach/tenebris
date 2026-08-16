@@ -4676,6 +4676,20 @@ fn start_world_regen(app: &mut App, seed: u64, reseed_sisters: bool) {
     crops::restore(Vec::new());
     drops::init();
     animals::init();
+    /* rocket_ride is a process-lifetime thread_local, not part of the
+     * World being rebuilt above - so a stale ride/parked-ship from the
+     * PREVIOUS world survives untouched unless cleared here. Left
+     * alone, apply_sp_world_saves's `if !rocket_ride::is_riding()`
+     * load-ride guard sees the old world's ride as still active and
+     * skips loading the new world's own (usually none) ride save, so
+     * the player stays strapped into the old world's rocket - visibly
+     * flying it over the new terrain, camera stuck in ship mode.
+     * `forget()` (not `clear()`): by this point `menu::active_world()`
+     * already names the INCOMING world, so `clear()`'s same-frame save
+     * would stomp the new world's own ride save before it's even been
+     * read - `forget()` drops only the stale in-memory pointer. */
+    rocket_ride::forget();
+    rocket_cam::reset();
     let id = body.id as usize;
     if id < SP_SAVES_APPLIED_MAX {
         app.sp_saves_applied[id] = false;
