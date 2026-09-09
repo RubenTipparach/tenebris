@@ -41,6 +41,6 @@
   }
  ],
  "texture": "ship_fuel_cell.png",
- "atlas_px": 256,
+ "atlas_px": 320,
  "uv_islands": 5
 }

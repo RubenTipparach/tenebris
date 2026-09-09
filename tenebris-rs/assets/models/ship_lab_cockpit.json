@@ -67,6 +67,6 @@
   }
  ],
  "texture": "ship_lab_cockpit.png",
- "atlas_px": 320,
+ "atlas_px": 384,
  "uv_islands": 21
 }

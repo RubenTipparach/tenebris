@@ -65,6 +65,6 @@
   }
  ],
  "texture": "ship_hull_junction.png",
- "atlas_px": 320,
+ "atlas_px": 256,
  "uv_islands": 7
 }

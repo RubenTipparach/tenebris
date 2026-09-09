@@ -96,6 +96,7 @@ class Obj:
     def __init__(self, name):
         self.name = name
         self.verts = []      # [x,y,z]
+        self.prims = []      # one entry per _emit - see _emit
         self.uvs = []        # (island, u_m, v_m)
         self.faces = []      # (vidx tuple, vtidx tuple, mat, group)
         self.mats = set()
@@ -131,6 +132,12 @@ class Obj:
 
     def _emit(self, verts, faces):
         base = len(self.verts)
+        # Remember which faces came from this one primitive. Winding can only
+        # be judged per-primitive (outward = away from THAT solid's centre),
+        # and tools/check-ship-winding.py needs the grouping.
+        self.prims.append({"face0": len(self.faces), "nfaces": len(faces),
+                           "vert0": base, "nverts": len(verts),
+                           "group": self.cur_group, "mat": self.cur_mat})
         self.verts.extend([tuple(v) for v in verts])
 
         charts = [self._plane_uv([verts[i] for i in f]) for f in faces]
@@ -160,8 +167,12 @@ class Obj:
                     if rot:
                         p = _rot(p, rot[0], rot[1])
                     verts.append((c[0] + p[0], c[1] + p[1], c[2] + p[2]))
-        self._emit(verts, [(0, 1, 3, 2), (5, 4, 6, 7), (4, 5, 1, 0),
-                           (2, 3, 7, 6), (4, 0, 2, 6), (1, 5, 7, 3)])
+        # Wound counter-clockwise seen from OUTSIDE. Every one of these six
+        # was reversed, so every box in the kit was inside-out: invisible
+        # from outside under backface culling, lit upside-down by the icon
+        # rasterizer. Verified by tools/check-ship-winding.py.
+        self._emit(verts, [(0, 2, 3, 1), (5, 7, 6, 4), (4, 0, 1, 5),
+                           (2, 6, 7, 3), (4, 6, 2, 0), (1, 3, 7, 5)])
 
     def hull(self, z0, z1, r0, r1, sides=6, flat=0.62, caps=True, phase=0.0):
         """Prism / frustum along +Z, squashed vertically by `flat` so the
@@ -216,10 +227,30 @@ class Obj:
         self._emit(verts, faces)
 
     def wedge(self, pts_lo, pts_hi):
-        """Solid between two matching 4-point outlines (a thick wing)."""
-        self._emit(list(pts_lo) + list(pts_hi),
-                   [(0, 1, 2, 3), (7, 6, 5, 4),
-                    (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)])
+        """Solid between two matching 4-point outlines (a thick wing).
+
+        SELF-ORIENTING. The face list below is only outward-wound if the
+        caller happens to give the outline in one particular direction, and
+        callers do not agree: the canopies pass one way round, the wing the
+        other, so the wing skin shipped inside-out. Rather than make every
+        caller remember, work out which way the outline actually runs and
+        flip the whole solid if it came in backwards."""
+        faces = [(0, 1, 2, 3), (7, 6, 5, 4),
+                 (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)]
+        lo, hi = list(pts_lo), list(pts_hi)
+        # Newell normal of the lower outline, against the lo -> hi direction.
+        n = [0.0, 0.0, 0.0]
+        for i in range(len(lo)):
+            a, b = lo[i], lo[(i + 1) % len(lo)]
+            n[0] += (a[1] - b[1]) * (a[2] + b[2])
+            n[1] += (a[2] - b[2]) * (a[0] + b[0])
+            n[2] += (a[0] - b[0]) * (a[1] + b[1])
+        up = [sum(p[k] for p in hi) / len(hi) - sum(p[k] for p in lo) / len(lo)
+              for k in range(3)]
+        # face (0,1,2,3) is the LOW face, so its normal must oppose lo -> hi
+        if sum(n[k] * up[k] for k in range(3)) > 0:
+            faces = [tuple(reversed(f)) for f in faces]
+        self._emit(lo + hi, faces)
 
     # -- outputs -----------------------------------------------------------
     def finish(self, seed):
