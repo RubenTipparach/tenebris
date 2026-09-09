@@ -1,0 +1,32 @@
+{
+ "role": "Gear",
+ "mass_kg": 140,
+ "impact_tolerance_mps": 9,
+ "tier": "T3",
+ "recipe": "iron 7 + bronze 3",
+ "blurb": "Rated for a loaded freighter, but it lands slower - 9 m/s, not 12.",
+ "label": "Heavy Cradle",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ],
+ "texture": "ship_heavy_cradle.png",
+ "atlas_px": 256,
+ "uv_islands": 8
+}

@@ -1,0 +1,45 @@
+{
+ "role": "Gyro",
+ "mass_kg": 260,
+ "torque_nm": 180000,
+ "tier": "T4",
+ "recipe": "iron 10 + copper 8 + circuit 4",
+ "blurb": "180 kN-m, no fuel. A 6-tonne hull turns at 0.6 rad/s with one and 0.14 without.",
+ "label": "Attitude Bank",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    1.7
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_attitude_bank.png",
+ "atlas_px": 256,
+ "uv_islands": 36
+}

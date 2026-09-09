@@ -1,0 +1,33 @@
+{
+ "role": "Engine",
+ "mass_kg": 420,
+ "thrust_n": 280000,
+ "fuel_per_s": 26,
+ "tier": "T3",
+ "recipe": "bronze 8 + iron 6 + circuit 1",
+ "blurb": "280 kN on the centreline. Stack it behind the hull and it pushes straight.",
+ "label": "Heavy Nacelle",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    3.4
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_heavy_nacelle.png",
+ "atlas_px": 384,
+ "uv_islands": 12
+}

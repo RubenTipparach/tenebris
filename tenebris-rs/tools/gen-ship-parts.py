@@ -539,13 +539,287 @@ def docking_collar():
     return o, nodes, "Docking Collar", stats
 
 
-PARTS = [cockpit, fuselage_bay, cargo_bay, fuel_cell, wing, nacelle,
-         tail_fin, rcs_block, reaction_wheel, landing_skid, docking_collar]
+
+# ---------------------------------------------------------------------- #
+# heavy kit - the parts that make BIG ships possible                      #
+#                                                                         #
+# What actually gates size here is not room, it is the 24-part cap, mass  #
+# against torque authority, and the thrust line. So each of these does a  #
+# lot per part, and three of them exist specifically to beat a gate:      #
+# Attitude Bank (a heavy hull cannot turn on a 40 kN-m wheel), Thrust     #
+# Spar (mounts engines wide but ON the thrust axis, so they stop pitching #
+# the nose), and Hull Junction (lets a hull branch instead of only        #
+# growing longer).                                                        #
+# ---------------------------------------------------------------------- #
+
+def spine_truss():
+    """6 m open lattice - the cheapest way to make a ship long."""
+    o = Obj("spine_truss")
+    L, R = 6.0, 0.72
+    o.group("collars"); o.mat("bronze")
+    o.hull(0.0, 0.14, R + 0.08, R + 0.08, sides=4, flat=0.8, caps=False, phase=0.785)
+    o.hull(L - 0.14, L, R + 0.08, R + 0.08, sides=4, flat=0.8, caps=False, phase=0.785)
+    o.group("longerons"); o.mat("gunmetal")
+    corners = []
+    for i in range(4):
+        a = 0.785 + math.pi * i / 2
+        p = (R * math.cos(a), R * 0.8 * math.sin(a))
+        corners.append(p)
+        o.tube_axis((p[0], p[1], 0.08), (p[0], p[1], L - 0.08), 0.055, 0.055, 4)
+    o.group("bracing"); o.mat("steel")
+    for i in range(4):
+        p, q = corners[i], corners[(i + 1) % 4]
+        for k in range(3):
+            z0 = 0.3 + k * 1.85
+            z1 = z0 + 1.75
+            o.tube_axis((p[0], p[1], z0), (q[0], q[1], z1), 0.030, 0.030, 3)
+            o.tube_axis((q[0], q[1], z0), (p[0], p[1], z1), 0.030, 0.030, 3)
+    o.group("conduit"); o.mat("hull_dark")
+    o.tube_axis((0.0, R * 0.8, 0.2), (0.0, R * 0.8, L - 0.2), 0.075, 0.075, 5)
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    for z in (1.6, 4.4):
+        nodes.append(node((R, 0, z), (1, 0, 0), "Radial"))
+        nodes.append(node((-R, 0, z), (-1, 0, 0), "Radial"))
+    nodes.append(node((0, R * 0.8, 3.0), (0, 1, 0), "Radial"))
+    nodes.append(node((0, -R * 0.8, 3.0), (0, -1, 0), "Radial"))
+    stats = {"role": "Structure", "mass_kg": 140, "tier": "T3",
+             "recipe": "iron 6 + bronze 3",
+             "blurb": "Six metres of hull for 140 kg and one part slot - the cheapest length you can buy."}
+    return o, nodes, "Spine Truss", stats
+
+
+def hull_junction():
+    """A hull that BRANCHES: one spine in, three out. Catamarans, outriggers."""
+    o = Obj("hull_junction")
+    L = 1.8
+    o.group("body"); o.mat("hull")
+    o.hull(0.0, L, HULL_R, HULL_R * 1.9, flat=FLAT * 0.86)
+    o.group("mounts"); o.mat("steel")
+    for dx in (-1.28, 0.0, 1.28):
+        o.box((dx, 0.0, L - 0.06), (0.60, HULL_R * FLAT * 0.86, 0.10))
+    o.group("ribs"); o.mat("gunmetal")
+    for sx in (-1, 1):
+        o.tube_axis((sx * 0.35, 0.0, 0.1), (sx * 1.28, 0.0, L - 0.16), 0.09, 0.07, 4)
+    o.group("marker"); o.mat("hazard")
+    o.box((0.0, HULL_R * FLAT * 0.9, L * 0.5), (0.34, 0.05, 0.12))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    for dx in (0.0, 1.28, -1.28):
+        nodes.append(node((dx, 0, L), (0, 0, 1), "Stack"))
+    stats = {"role": "Structure", "mass_kg": 160, "tier": "T3",
+             "recipe": "iron 8 + bronze 4",
+             "blurb": "Splits one spine into three. The only part that lets a hull grow sideways."}
+    return o, nodes, "Hull Junction", stats
+
+
+def thrust_spar():
+    """Carries engines WIDE but at hull-axis height, so they stop pitching
+    the nose. The direct answer to off-axis thrust torque."""
+    o = Obj("thrust_spar")
+    span = 2.9
+    o.group("root"); o.mat("gunmetal")
+    o.box((0.0, 0.0, 0.0), (0.30, 0.26, 0.34))
+    o.group("spar"); o.mat("hull")
+    o.tube_axis((-span, 0.0, 0.0), (span, 0.0, 0.0), 0.20, 0.20, 6)
+    o.group("caps"); o.mat("hull_dark")
+    for sx in (-1, 1):
+        o.tube_axis((sx * span, 0.0, 0.0), (sx * (span + 0.16), 0.0, 0.0), 0.21, 0.15, 6)
+    o.group("hardpoints"); o.mat("steel")
+    for sx in (-1, 1):
+        for f in (0.52, 1.0):
+            o.box((sx * span * f, -0.24, 0.0), (0.20, 0.10, 0.22))
+    o.group("stripe"); o.mat("hazard")
+    for sx in (-1, 1):
+        o.tube_axis((sx * span * 0.74, 0.0, 0.0), (sx * span * 0.80, 0.0, 0.0), 0.205, 0.205, 6)
+    nodes = [node((0, 0, 0.34), (0, 0, 1), "Stack")]
+    for sx in (-1, 1):
+        for f in (0.52, 1.0):
+            nodes.append(node((sx * span * f, -0.34, 0.0), (0, -1, 0), "Hardpoint"))
+    stats = {"role": "Structure", "mass_kg": 180, "tier": "T3",
+             "recipe": "iron 7 + bronze 3",
+             "blurb": "Four hardpoints spread wide at hull-axis height - engines here push straight, not up."}
+    return o, nodes, "Thrust Spar", stats
+
+
+def bridge():
+    """Command deck. The cockpit for a ship too big for a canopy."""
+    o = Obj("bridge")
+    L, R = 4.2, HULL_R * 1.5
+    o.group("hull"); o.mat("hull")
+    o.hull(0.0, 1.5, R, R * 0.96, flat=FLAT * 0.9)
+    o.hull(1.5, 3.2, R * 0.96, R * 0.72, flat=FLAT * 0.86)
+    o.hull(3.2, L, R * 0.72, R * 0.30, flat=FLAT * 0.8)
+    o.group("viewband"); o.mat("glass")
+    o.box((0.0, R * FLAT * 0.62, 2.6), (R * 0.66, 0.16, 0.62), rot=("x", -6))
+    o.group("mullions"); o.mat("gunmetal")
+    for sx in (-2, -1, 0, 1, 2):
+        o.box((sx * 0.30, R * FLAT * 0.62, 2.6), (0.035, 0.17, 0.63))
+    o.group("deck"); o.mat("hull_dark")
+    o.box((0.0, -R * FLAT * 0.74, 2.2), (R * 0.62, 0.14, 1.1))
+    o.group("masts"); o.mat("steel")
+    for sx in (-1, 1):
+        o.tube_axis((sx * R * 0.5, R * FLAT * 0.8, 0.9), (sx * R * 0.62, R * FLAT * 1.5, 0.7),
+                    0.05, 0.03, 4)
+    o.group("beacons"); o.mat("amber")
+    for sx in (-1, 1):
+        o.box((sx * R * 0.62, R * FLAT * 1.52, 0.7), (0.07, 0.07, 0.07))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((0, R * FLAT * 0.9, 1.0), (0, 1, 0), "Radial"),
+             node((0, -R * FLAT * 0.9, 1.1), (0, -1, 0), "Radial")]
+    stats = {"role": "Cockpit", "mass_kg": 480, "torque_nm": 22000, "cargo": 6,
+             "tier": "T4", "recipe": "copper 8 + iron 6 + circuit 3 + wire 4",
+             "blurb": "Heavy crew module: three times the torque of a cockpit, and it looks like a ship's bridge."}
+    return o, nodes, "Bridge", stats
+
+
+def heavy_nacelle():
+    """Main drive for a freighter. Stack-mounted, so it sits ON the axis."""
+    o = Obj("heavy_nacelle")
+    L = 3.4
+    o.group("bell"); o.mat("soot")
+    o.hull(0.0, 0.34, 0.92, 0.70, sides=8, flat=1.0)
+    o.group("glow"); o.mat("cyan")
+    o.hull(-0.04, 0.03, 0.80, 0.80, sides=8, flat=1.0, caps=False)
+    o.group("body"); o.mat("hull")
+    o.hull(0.34, L - 0.7, 0.70, 0.78, sides=8, flat=1.0)
+    o.group("bands"); o.mat("bronze")
+    for z in (1.0, 1.7, 2.4):
+        o.hull(z, z + 0.09, 0.80, 0.80, sides=8, flat=1.0, caps=False)
+    o.group("intake"); o.mat("black")
+    o.hull(L - 0.7, L - 0.5, 0.78, 0.74, sides=8, flat=1.0)
+    o.group("mount"); o.mat("gunmetal")
+    o.hull(L - 0.5, L, 0.74, HULL_R * 0.92, sides=8, flat=1.0)
+    o.group("pumps"); o.mat("steel")
+    for i in range(4):
+        a = math.pi / 4 + math.pi * i / 2
+        o.tube_axis((0.86 * math.cos(a), 0.86 * math.sin(a), 0.6),
+                    (0.86 * math.cos(a), 0.86 * math.sin(a), 2.6), 0.075, 0.075, 4)
+    nodes = [node((0, 0, L), (0, 0, 1), "Stack")]
+    stats = {"role": "Engine", "mass_kg": 420, "thrust_n": 280000, "fuel_per_s": 26,
+             "tier": "T3", "recipe": "bronze 8 + iron 6 + circuit 1",
+             "blurb": "280 kN on the centreline. Stack it behind the hull and it pushes straight."}
+    return o, nodes, "Heavy Nacelle", stats
+
+
+def attitude_bank():
+    """Twin counter-rotating gyros. Without one, a big hull will not turn."""
+    o = Obj("attitude_bank")
+    L, R = 1.7, HULL_R * 0.96
+    o.group("case"); o.mat("gunmetal")
+    o.hull(0.0, L, R, R, flat=FLAT)
+    o.group("windows"); o.mat("black")
+    for sx in (-1, 1):
+        for z in (0.48, 1.22):
+            o.box((sx * R * 0.82, 0.0, z), (0.06, 0.24, 0.26))
+    o.group("wheels"); o.mat("brass")
+    for z in (0.48, 1.22):
+        seg, rr = 14, 0.44
+        for i in range(seg):
+            a0 = 2.0 * math.pi * i / seg
+            a1 = 2.0 * math.pi * (i + 1) / seg
+            o.tube_axis((rr * math.cos(a0), rr * math.sin(a0) * 0.88, z),
+                        (rr * math.cos(a1), rr * math.sin(a1) * 0.88, z), 0.08, 0.08, 4)
+    o.group("spine"); o.mat("steel")
+    o.tube_axis((0.0, 0.0, 0.1), (0.0, 0.0, L - 0.1), 0.10, 0.10, 5)
+    o.group("status"); o.mat("green_led")
+    for z in (0.48, 1.22):
+        o.box((0.0, R * FLAT * 0.88, z), (0.09, 0.05, 0.07))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    stats = {"role": "Gyro", "mass_kg": 260, "torque_nm": 180000, "tier": "T4",
+             "recipe": "iron 10 + copper 8 + circuit 4",
+             "blurb": "180 kN-m, no fuel. A 6-tonne hull turns at 0.6 rad/s with one and 0.14 without."}
+    return o, nodes, "Attitude Bank", stats
+
+
+def fuel_bunker():
+    """Four cells in one slot - the part-cap-efficient way to carry range."""
+    o = Obj("fuel_bunker")
+    L, R = 4.0, HULL_R * 1.08
+    o.group("shell"); o.mat("hull_dark")
+    o.hull(0.0, L, R, R, flat=FLAT)
+    o.group("cells"); o.mat("orange")
+    for sx in (-1, 1):
+        for z in (0.95, 3.05):
+            o.box((sx * R * 0.54, 0.0, z), (0.30, R * FLAT * 0.74, 0.85))
+    o.group("straps"); o.mat("gunmetal")
+    for z in (0.5, 2.0, 3.5):
+        o.hull(z, z + 0.11, R * 1.03, R * 1.03, flat=FLAT, caps=False)
+    o.group("manifold"); o.mat("bronze")
+    o.tube_axis((0.0, R * FLAT * 0.78, 0.3), (0.0, R * FLAT * 0.78, L - 0.3), 0.075, 0.075, 5)
+    o.group("gauges"); o.mat("amber")
+    for z in (0.95, 3.05):
+        o.box((0.0, R * FLAT * 0.9, z), (0.12, 0.05, 0.24))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack"),
+             node((R, 0, L * 0.5), (1, 0, 0), "Radial"),
+             node((-R, 0, L * 0.5), (-1, 0, 0), "Radial")]
+    stats = {"role": "Tank", "mass_kg": 1500, "dry_mass_kg": 220, "fuel_cap": 320,
+             "tier": "T3", "recipe": "iron 12 + bronze 4",
+             "blurb": "320 units in one slot. Three Fuel Cells cost three slots and carry less."}
+    return o, nodes, "Fuel Bunker", stats
+
+
+def bulk_hold():
+    """A freighter's reason to exist."""
+    o = Obj("bulk_hold")
+    L, R = 5.0, HULL_R * 1.34
+    o.group("shell"); o.mat("olive")
+    o.hull(0.0, L, R, R, flat=FLAT * 0.98)
+    o.group("ribs"); o.mat("gunmetal")
+    for f in (0.16, 0.38, 0.62, 0.84):
+        o.hull(L * f, L * f + 0.12, R + 0.04, R + 0.04, flat=FLAT * 0.98, caps=False)
+    o.group("doors"); o.mat("hull_dark")
+    for sx in (-1, 1):
+        o.box((sx * R * 0.86, 0.0, L * 0.5), (0.07, R * FLAT * 0.62, L * 0.30))
+    o.group("stencil"); o.mat("white")
+    o.box((0.0, R * FLAT * 0.96, L * 0.5), (R * 0.46, 0.04, 0.34))
+    o.group("chevrons"); o.mat("hazard")
+    for sx in (-1, 1):
+        o.box((sx * R * 0.88, 0.0, L * 0.5), (0.045, 0.14, L * 0.31))
+    o.group("locks"); o.mat("black")
+    for i in range(6):
+        a = 2.0 * math.pi * i / 6
+        for z in (0.28, L - 0.28):
+            o.box((R * 0.94 * math.cos(a), R * FLAT * 0.94 * math.sin(a), z), (0.10, 0.10, 0.10))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack"),
+             node((0, -R * FLAT, L * 0.5), (0, -1, 0), "Radial"),
+             node((0, R * FLAT, L * 0.5), (0, 1, 0), "Radial")]
+    stats = {"role": "Cargo", "mass_kg": 420, "cargo": 24, "tier": "T4",
+             "recipe": "iron 14 + bronze 8",
+             "blurb": "Twenty-four slots. Fill it and watch your thrust-to-weight collapse."}
+    return o, nodes, "Bulk Hold", stats
+
+
+def heavy_cradle():
+    """Landing gear rated for a freighter."""
+    o = Obj("heavy_cradle")
+    o.group("boss"); o.mat("bronze")
+    o.box((0.0, -0.08, 0.0), (0.26, 0.14, 0.40))
+    o.group("legs"); o.mat("steel")
+    for dz in (-0.34, 0.34):
+        for sx in (0.0, 0.62):
+            o.tube_axis((sx * 0.3, -0.16, dz), (0.62, -1.55, dz * 1.25), 0.085, 0.07, 5)
+    o.group("damper"); o.mat("chrome")
+    o.tube_axis((0.0, -0.18, 0.0), (0.40, -0.92, 0.0), 0.085, 0.085, 6)
+    o.group("pad"); o.mat("black")
+    o.box((0.62, -1.64, 0.0), (0.26, 0.10, 0.62))
+    o.group("tread"); o.mat("hazard")
+    o.box((0.62, -1.53, 0.0), (0.20, 0.03, 0.50))
+    nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
+    stats = {"role": "Gear", "mass_kg": 140, "impact_tolerance_mps": 9, "tier": "T3",
+             "recipe": "iron 7 + bronze 3",
+             "blurb": "Rated for a loaded freighter, but it lands slower - 9 m/s, not 12."}
+    return o, nodes, "Heavy Cradle", stats
+
+
+PARTS = [cockpit, bridge, fuselage_bay, spine_truss, hull_junction, thrust_spar,
+         cargo_bay, bulk_hold, fuel_cell, fuel_bunker, wing, nacelle,
+         heavy_nacelle, tail_fin, rcs_block, reaction_wheel, attitude_bank,
+         landing_skid, heavy_cradle, docking_collar]
 
 # Per-part camera yaw for the icon / sheet. Flat and radial parts read as
 # slivers at the default three-quarter angle, so they get their own view.
 YAW = {"wing": 0.95, "tail_fin": 1.30, "landing_skid": 1.25,
-       "rcs_block": 0.85, "docking_collar": 0.70}
+       "rcs_block": 0.85, "docking_collar": 0.70, "heavy_cradle": 1.25,
+       "thrust_spar": 1.05, "hull_junction": 0.55}
 
 
 # ---------------------------------------------------------------------- #

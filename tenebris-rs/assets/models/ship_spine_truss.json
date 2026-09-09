@@ -1,0 +1,122 @@
+{
+ "role": "Structure",
+ "mass_kg": 140,
+ "tier": "T3",
+ "recipe": "iron 6 + bronze 3",
+ "blurb": "Six metres of hull for 140 kg and one part slot - the cheapest length you can buy.",
+ "label": "Spine Truss",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    6.0
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0.72,
+    0,
+    1.6
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.72,
+    0,
+    1.6
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0.72,
+    0,
+    4.4
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.72,
+    0,
+    4.4
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    0.576,
+    3.0
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    -0.576,
+    3.0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ],
+ "texture": "ship_spine_truss.png",
+ "atlas_px": 320,
+ "uv_islands": 31
+}
