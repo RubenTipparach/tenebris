@@ -26,5 +26,8 @@
    ],
    "kind": "Radial"
   }
- ]
+ ],
+ "texture": "ship_rcs_block.png",
+ "atlas_px": 256,
+ "uv_islands": 6
 }

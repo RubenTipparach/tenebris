@@ -25,5 +25,8 @@
    ],
    "kind": "Radial"
   }
- ]
+ ],
+ "texture": "ship_landing_skid.png",
+ "atlas_px": 256,
+ "uv_islands": 5
 }

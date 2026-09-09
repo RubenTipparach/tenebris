@@ -26,5 +26,8 @@
    ],
    "kind": "Hardpoint"
   }
- ]
+ ],
+ "texture": "ship_nacelle.png",
+ "atlas_px": 256,
+ "uv_islands": 8
 }

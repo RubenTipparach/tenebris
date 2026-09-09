@@ -38,5 +38,8 @@
    ],
    "kind": "Stack"
   }
- ]
+ ],
+ "texture": "ship_reaction_wheel.png",
+ "atlas_px": 256,
+ "uv_islands": 18
 }

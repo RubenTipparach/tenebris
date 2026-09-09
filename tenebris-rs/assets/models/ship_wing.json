@@ -39,5 +39,8 @@
    ],
    "kind": "Hardpoint"
   }
- ]
+ ],
+ "texture": "ship_wing.png",
+ "atlas_px": 256,
+ "uv_islands": 5
 }

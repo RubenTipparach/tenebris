@@ -89,5 +89,8 @@
    ],
    "kind": "Radial"
   }
- ]
+ ],
+ "texture": "ship_fuselage_bay.png",
+ "atlas_px": 320,
+ "uv_islands": 7
 }

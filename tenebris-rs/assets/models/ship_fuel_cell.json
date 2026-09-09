@@ -39,5 +39,8 @@
    ],
    "kind": "Stack"
   }
- ]
+ ],
+ "texture": "ship_fuel_cell.png",
+ "atlas_px": 256,
+ "uv_islands": 5
 }
