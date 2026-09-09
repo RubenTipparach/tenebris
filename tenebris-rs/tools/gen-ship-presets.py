@@ -237,15 +237,15 @@ def analyse(ship):
 #   reaction_wheel / attitude_bank   0 aft | 1 fore
 FLEET = [
  # ---- combat -----------------------------------------------------------
- ("Wasp", "Interceptor", "combat", "cockpit", [
+ ("Wasp", "Interceptor", "combat", "bubble_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
    (1,4,'tail_fin'), (1,5,'landing_skid')]),
- ("Harrier", "Strike Fighter", "combat", "cockpit", [
+ ("Harrier", "Strike Fighter", "combat", "armoured_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
    (1,4,'tail_fin'), (1,5,'landing_skid'), (3,1,'rcs_block')]),
- ("Bastion", "Gunship", "combat", "cockpit", [
+ ("Bastion", "Gunship", "combat", "armoured_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'fuel_cell'), (2,1,'attitude_bank'),
    (3,1,'thrust_spar'), (4,1,'heavy_nacelle'), (4,2,'heavy_nacelle'),
    (1,2,'wing'), (1,3,'wing'), (1,4,'tail_fin'), (1,5,'landing_skid')]),
@@ -283,7 +283,7 @@ FLEET = [
    (1,6,'docking_collar'), (0,2,'landing_skid')]),
 
  # ---- mining -----------------------------------------------------------
- ("Ferret", "Prospector", "mining", "cockpit", [
+ ("Ferret", "Prospector", "mining", "tandem_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'cargo_bay'),
    (3,1,'fuel_cell'), (1,2,'wing'), (1,3,'wing'),
    (5,1,'nacelle'), (6,1,'nacelle'),
@@ -314,11 +314,11 @@ FLEET = [
    (0,1,'docking_collar'), (0,2,'landing_skid')]),
 
  # ---- exploration ------------------------------------------------------
- ("Kite", "Scout", "exploration", "cockpit", [
+ ("Kite", "Scout", "exploration", "bubble_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
    (1,4,'tail_fin'), (1,5,'landing_skid')]),
- ("Wayfarer", "Pathfinder", "exploration", "cockpit", [
+ ("Wayfarer", "Pathfinder", "exploration", "tandem_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
    (1,2,'wing'), (1,3,'wing'),
    (4,1,'nacelle'), (5,1,'nacelle'),
@@ -332,7 +332,7 @@ FLEET = [
    (1,4,'rcs_block'), (1,5,'rcs_block')]),
 
  # ---- science ----------------------------------------------------------
- ("Lantern", "Survey Ship", "science", "cockpit", [
+ ("Lantern", "Survey Ship", "science", "bubble_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'cargo_bay'), (2,1,'fuel_cell'),
    (3,1,'reaction_wheel'), (1,2,'wing'), (1,3,'wing'),
    (5,1,'nacelle'), (6,1,'nacelle'),

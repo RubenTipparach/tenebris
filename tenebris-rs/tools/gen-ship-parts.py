@@ -299,6 +299,47 @@ FLAT = 0.62       # vertical squash - the airframe cross-section
 # the parts. each returns (obj, nodes, label, stats)                      #
 # ---------------------------------------------------------------------- #
 
+
+def _canopy(o, surf, zA, zB, rise=0.13, lo_w=0.88, hi_w=0.56, inset=0.06,
+            glass="glass", frame="gunmetal", mullions=0):
+    """Faired canopy sunk into a tapering roof.
+
+    Orientation matters and was wrong once already: +Z is the NOSE, so zB
+    (the larger z) is the FORE end. The heavy windscreen bow arches over
+    THAT edge - a bow at the aft edge reads as a canopy fitted backwards.
+    Returns the two end stations so callers can hang detail off them."""
+    yA, wA, _, _ = surf(zA)
+    yB, wB, _, _ = surf(zB)
+    lo = [(-wA * lo_w, yA - inset, zA), (wA * lo_w, yA - inset, zA),
+          (wB * lo_w, yB - inset, zB), (-wB * lo_w, yB - inset, zB)]
+    hi = [(-wA * hi_w, yA + rise, zA + 0.16), (wA * hi_w, yA + rise, zA + 0.16),
+          (wB * hi_w * 0.90, yB + rise * 0.80, zB - 0.18),
+          (-wB * hi_w * 0.90, yB + rise * 0.80, zB - 0.18)]
+    o.group("canopy"); o.mat(glass)
+    o.wedge(lo, hi)
+
+    o.group("frame"); o.mat(frame)
+    r = 0.038
+    # sills, running fore-aft along the canopy base
+    for sx in (-1, 1):
+        o.tube_axis((sx * wA * (lo_w + 0.02), yA - 0.05, zA),
+                    (sx * wB * (lo_w + 0.02), yB - 0.05, zB), r, r * 0.85, 4)
+    # WINDSCREEN BOW: arches over the FORE edge - up one side, across, down
+    o.tube_axis(lo[3], hi[3], r * 1.35, r * 1.2, 4)
+    o.tube_axis(hi[3], hi[2], r * 1.2, r * 1.2, 4)
+    o.tube_axis(hi[2], lo[2], r * 1.2, r * 1.35, 4)
+    # lighter closing hoop aft
+    o.tube_axis(lo[0], hi[0], r * 0.8, r * 0.8, 4)
+    o.tube_axis(hi[0], hi[1], r * 0.8, r * 0.8, 4)
+    o.tube_axis(hi[1], lo[1], r * 0.8, r * 0.8, 4)
+    for k in range(mullions):
+        f = (k + 1) / (mullions + 1)
+        a = [lo[3][i] + (lo[2][i] - lo[3][i]) * f for i in range(3)]
+        b = [hi[3][i] + (hi[2][i] - hi[3][i]) * f for i in range(3)]
+        o.tube_axis(a, b, r * 0.7, r * 0.7, 4)
+    return (yA, wA), (yB, wB)
+
+
 def cockpit():
     """Forward crew module: tapered nose with a faired-in canopy."""
     o = Obj("cockpit")
@@ -312,24 +353,7 @@ def cockpit():
     for (z0, z1, r0, r1, f) in SEGS:
         o.hull(z0, z1, r0, r1, flat=f)
 
-    # Canopy: a faired bubble whose base is SUNK into the roof and whose
-    # plan follows the taper, instead of a constant-height slab that
-    # overhung the shoulders and floated clear of the nose.
-    zA, zB = 1.35, 2.55
-    yA, wA, _, _ = surf(zA)
-    yB, wB, _, _ = surf(zB)
-    lo = [(-wA * 0.88, yA - 0.06, zA), (wA * 0.88, yA - 0.06, zA),
-          (wB * 0.88, yB - 0.06, zB), (-wB * 0.88, yB - 0.06, zB)]
-    hi = [(-wA * 0.60, yA + 0.13, zA + 0.16), (wA * 0.60, yA + 0.13, zA + 0.16),
-          (wB * 0.52, yB + 0.10, zB - 0.18), (-wB * 0.52, yB + 0.10, zB - 0.18)]
-    o.group("canopy"); o.mat("glass")
-    o.wedge(lo, hi)
-
-    o.group("frame"); o.mat("gunmetal")
-    for sx in (-1, 1):
-        o.tube_axis((sx * wA * 0.90, yA - 0.05, zA), (sx * wB * 0.90, yB - 0.05, zB),
-                    0.040, 0.032, 4)
-    o.tube_axis((-wA * 0.90, yA - 0.05, zA), (wA * 0.90, yA - 0.05, zA), 0.040, 0.040, 4)
+    _canopy(o, surf, 1.35, 2.55, rise=0.13, lo_w=0.88, hi_w=0.56, mullions=1)
 
     # Chin sensor block: inside the belly's flat, just proud of it.
     yc, wc, _, _ = surf(1.95)
@@ -347,6 +371,103 @@ def cockpit():
              "tier": "T3", "recipe": "copper 4 + iron 3 + circuit 1",
              "blurb": "Crew module and the ship's root part. Every ship needs exactly one."}
     return o, nodes, "Cockpit", stats
+
+
+
+def bubble_cockpit():
+    """All-round glass on a stubby nose. The scout / survey option: light,
+    the best view in the kit, and almost no structure to hide behind."""
+    o = Obj("bubble_cockpit")
+    L = 2.6
+    SEGS = [(0.0, 0.9, HULL_R, HULL_R * 0.90, FLAT),
+            (0.9, 1.7, HULL_R * 0.90, HULL_R * 0.74, FLAT * 0.96),
+            (1.7, L, HULL_R * 0.74, HULL_R * 0.30, FLAT * 0.90)]
+    surf = taper(SEGS)
+    o.group("nose"); o.mat("hull")
+    for (z0, z1, r0, r1, f) in SEGS:
+        o.hull(z0, z1, r0, r1, flat=f)
+    # tall, wide and barely framed - the dome is the part
+    _canopy(o, surf, 0.60, 2.10, rise=0.46, lo_w=0.94, hi_w=0.78,
+            inset=0.10, mullions=2)
+    o.group("ring"); o.mat("bronze")
+    yA, wA, rA, fA = surf(0.60)
+    o.hull(0.52, 0.62, rA * 1.02, rA * 1.02, flat=fA, caps=False)
+    y8, w8, r8, f8 = surf(2.35)
+    o.group("lights"); o.mat("white")
+    for sx in (-1, 1):
+        o.box((sx * r8 * 0.60, -r8 * f8 * 0.40, 2.35), (0.07, 0.06, 0.06))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    stats = {"role": "Cockpit", "mass_kg": 170, "torque_nm": 5500, "cargo": 2,
+             "tier": "T3", "recipe": "copper 3 + iron 2 + glass 4 + circuit 1",
+             "blurb": "Lightest crew module and the best visibility - 170 kg, and nothing between you and the sky."}
+    return o, nodes, "Bubble Cockpit", stats
+
+
+def armoured_cockpit():
+    """Blunt, plated, and squinting through a visor slit. Heavy, but the
+    only crew module that survives hitting something."""
+    o = Obj("armoured_cockpit")
+    L = 3.0
+    SEGS = [(0.0, 1.2, HULL_R * 1.06, HULL_R * 1.02, FLAT),
+            (1.2, 2.3, HULL_R * 1.02, HULL_R * 0.86, FLAT * 0.94),
+            (2.3, L, HULL_R * 0.86, HULL_R * 0.50, FLAT * 0.88)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("hull_dark")
+    for (z0, z1, r0, r1, f) in SEGS:
+        o.hull(z0, z1, r0, r1, flat=f)
+    # a slit, not a bubble: shallow rise, narrow, heavily mullioned
+    _canopy(o, surf, 1.55, 2.45, rise=0.11, lo_w=0.80, hi_w=0.62,
+            inset=0.02, frame="steel", mullions=3)
+    o.group("plates"); o.mat("steel")
+    for z in (0.55, 1.15, 1.85):
+        yz, wz, rz, fz = surf(z)
+        o.hull(z, z + 0.13, rz * 1.04, rz * 1.04, flat=fz, caps=False)
+    o.group("brow"); o.mat("gunmetal")
+    yb, wb, _, _ = surf(2.50)
+    o.box((0.0, yb + 0.02, 2.50), (wb * 0.86, 0.09, 0.22))
+    yc, wc, _, _ = surf(1.80)
+    o.group("chin"); o.mat("hull_dark")
+    o.box((0.0, -yc + 0.02, 1.80), (wc * 0.86, 0.14, 0.85))
+    o.group("hazard"); o.mat("hazard")
+    o.box((0.0, yb + 0.06, 2.50), (wb * 0.30, 0.05, 0.07))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    stats = {"role": "Cockpit", "mass_kg": 430, "torque_nm": 9000, "cargo": 2,
+             "impact_tolerance_mps": 22, "tier": "T4",
+             "recipe": "iron 10 + copper 4 + bronze 4 + circuit 2",
+             "blurb": "Twice the mass of a Cockpit for a slit of a view - and it walks away from impacts that fold the others."}
+    return o, nodes, "Armoured Cockpit", stats
+
+
+def tandem_cockpit():
+    """Two seats in line under separate canopies - pilot forward, operator
+    aft. The long nose that makes a ship look crewed."""
+    o = Obj("tandem_cockpit")
+    L = 4.4
+    SEGS = [(0.0, 1.4, HULL_R, HULL_R * 0.97, FLAT),
+            (1.4, 3.4, HULL_R * 0.97, HULL_R * 0.72, FLAT * 0.93),
+            (3.4, L, HULL_R * 0.72, HULL_R * 0.24, FLAT * 0.86)]
+    surf = taper(SEGS)
+    o.group("nose"); o.mat("hull")
+    for (z0, z1, r0, r1, f) in SEGS:
+        o.hull(z0, z1, r0, r1, flat=f)
+    # two canopies with a spine between them
+    _canopy(o, surf, 1.25, 2.35, rise=0.26, lo_w=0.88, hi_w=0.58, mullions=1)
+    _canopy(o, surf, 2.55, 3.55, rise=0.17, lo_w=0.86, hi_w=0.54, mullions=1)
+    o.group("spine"); o.mat("gunmetal")
+    ys, ws, _, _ = surf(2.45)
+    o.box((0.0, ys + 0.02, 2.45), (ws * 0.52, 0.09, 0.13))
+    yc, wc, _, _ = surf(2.30)
+    o.group("chin"); o.mat("hull_dark")
+    o.box((0.0, -yc + 0.02, 2.30), (wc * 0.80, 0.11, 1.05))
+    y8, w8, r8, f8 = surf(4.05)
+    o.group("lights"); o.mat("white")
+    for sx in (-1, 1):
+        o.box((sx * r8 * 0.62, -r8 * f8 * 0.42, 4.05), (0.07, 0.06, 0.06))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    stats = {"role": "Cockpit", "mass_kg": 330, "torque_nm": 11000, "cargo": 5,
+             "tier": "T3", "recipe": "copper 6 + iron 5 + circuit 2 + wire 2",
+             "blurb": "Two crew in line: more torque and more hold than a Cockpit, and 4.4 m of nose to carry it."}
+    return o, nodes, "Tandem Cockpit", stats
 
 
 def fuselage_bay():
@@ -897,7 +1018,7 @@ def heavy_cradle():
     return o, nodes, "Heavy Cradle", stats
 
 
-PARTS = [cockpit, bridge, fuselage_bay, spine_truss, hull_junction, thrust_spar,
+PARTS = [cockpit, bubble_cockpit, armoured_cockpit, tandem_cockpit, bridge, fuselage_bay, spine_truss, hull_junction, thrust_spar,
          cargo_bay, bulk_hold, fuel_cell, fuel_bunker, wing, nacelle,
          heavy_nacelle, tail_fin, rcs_block, reaction_wheel, attitude_bank,
          landing_skid, heavy_cradle, docking_collar]
@@ -1064,9 +1185,12 @@ def main():
     json_path = sys.argv[sys.argv.index("--json") + 1] if "--json" in sys.argv else None
 
     cells, blob = [], []
-    for pi, fn in enumerate(PARTS):
+    for fn in PARTS:
         obj, nodes, label, stats = fn()
-        obj.finish(seed=1000 + pi * 37)          # pack the atlas + paint it
+        # Seed off the part's NAME, not its index in PARTS: an index seed
+        # repaints every texture downstream of an insertion, so adding one
+        # cockpit rewrites twenty unrelated atlases.
+        obj.finish(seed=1000 + (zlib.crc32(obj.name.encode()) & 0xFFFF))
         stem = os.path.join(MODELS, "ship_%s.obj" % obj.name)
         obj.write(stem)                          # .obj + .mtl + .png
         side = dict(stats)

@@ -29,5 +29,5 @@
  ],
  "texture": "ship_cockpit.png",
  "atlas_px": 320,
- "uv_islands": 10
+ "uv_islands": 16
 }

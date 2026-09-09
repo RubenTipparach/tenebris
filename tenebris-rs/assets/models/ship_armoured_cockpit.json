@@ -1,0 +1,34 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 430,
+ "torque_nm": 9000,
+ "cargo": 2,
+ "impact_tolerance_mps": 22,
+ "tier": "T4",
+ "recipe": "iron 10 + copper 4 + bronze 4 + circuit 2",
+ "blurb": "Twice the mass of a Cockpit for a slit of a view - and it walks away from impacts that fold the others.",
+ "label": "Armoured Cockpit",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_armoured_cockpit.png",
+ "atlas_px": 320,
+ "uv_islands": 21
+}
