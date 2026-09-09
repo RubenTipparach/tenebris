@@ -636,7 +636,7 @@ def wing():
     o.group("leading_edge"); o.mat("bronze")
     o.tube_axis((0.20, 0.0, root_c), (span, 0.0, root_c * 0.72), 0.07, 0.045, 4)
     o.group("pylon"); o.mat("steel")
-    o.box((span * 0.62, 0.26, root_c * 0.52), (0.16, 0.26, 0.20))
+    o.box((span * 0.62, 0.12, root_c * 0.52), (0.16, 0.18, 0.20))
     o.group("tip_light"); o.mat("green_led")
     o.box((span - 0.04, 0.0, root_c * 0.30), (0.07, 0.06, 0.10))
     nodes = [
@@ -689,7 +689,7 @@ def tail_fin():
     o = Obj("tail_fin")
     h, root_c, tip_c = 1.9, 1.9, 0.85
     o.group("root"); o.mat("gunmetal")
-    o.box((0.0, 0.12, root_c * 0.5), (0.16, 0.14, root_c * 0.42))
+    o.box((0.0, 0.12, root_c * 0.5), (0.13, 0.14, root_c * 0.42))
     o.group("skin"); o.mat("hull")
     lo = [(-0.08, 0.20, 0.05), (-0.08, 0.20, root_c), (-0.05, h, root_c * 0.66),
           (-0.05, h, root_c * 0.66 - tip_c)]
@@ -876,6 +876,14 @@ def hull_junction():
     return o, nodes, "Hull Junction", stats
 
 
+# Engine stations along the spar, as a fraction of its half-span. Spacing is
+# a CLEARANCE constraint, not a taste one: the widest engine (Heavy Nacelle,
+# 0.92 m radius) needs 1.84 m between centres, both across the centreline
+# and between the inner and outer station on one side. At the old 0.52 the
+# inner and outer pods were 1.39 m apart and grew through each other.
+STATIONS = (0.34, 1.0)
+
+
 def thrust_spar():
     """Carries engines WIDE but at hull-axis height, so they stop pitching
     the nose. The direct answer to off-axis thrust torque."""
@@ -889,7 +897,7 @@ def thrust_spar():
     for sx in (-1, 1):
         o.tube_axis((sx * span, 0.0, 0.0), (sx * (span + 0.16), 0.0, 0.0), 0.21, 0.15, 6)
     o.group("mounts"); o.mat("steel")
-    for f in (0.52, 1.0):
+    for f in STATIONS:
         for sx in (-1, 1):
             o.box((sx * span * f, 0.0, -0.26), (0.26, 0.26, 0.10))
     o.group("stripe"); o.mat("hazard")
@@ -905,7 +913,7 @@ def thrust_spar():
     # Ordered so nodes (1,2) and (3,4) are each a MIRROR PAIR. Grouping by
     # side instead would put the two "first" stations both to port, and two
     # engines on one side is 17x more yaw than the ship can hold.
-    for f in (0.52, 1.0):
+    for f in STATIONS:
         for sx in (-1, 1):
             nodes.append(node((sx * span * f, 0.0, -0.34), (0, 0, -1), "Stack"))
     stats = {"role": "Structure", "mass_kg": 180, "tier": "T3",
@@ -1147,8 +1155,8 @@ def mining_cockpit():
         o.box((sx * r8 * 0.66, r8 * f8 * 0.30, 3.10), (0.09, 0.08, 0.07))
     yD, wD, rD, fD = surf(L)
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
-             node((-rD * 0.52, -0.10, L), (0, 0, 1), "Drill"),
-             node((rD * 0.52, -0.10, L), (0, 0, 1), "Drill")]
+             node((-rD * 0.80, -0.10, L), (0, 0, 1), "Drill"),
+             node((rD * 0.80, -0.10, L), (0, 0, 1), "Drill")]
     stats = {"role": "Cockpit", "mass_kg": 380, "torque_nm": 8000, "cargo": 4,
              "tier": "T3", "recipe": "iron 8 + copper 4 + bronze 3 + circuit 1",
              "blurb": "Mining cab. Two forward drill mounts, an ore chute and a cage - the only hull a drill will fit."}
@@ -1373,7 +1381,7 @@ def make_sensor(pid, label, tier, mass, rng, recipe, kind):
     def build():
         o = Obj(pid)
         o.group("base"); o.mat("gunmetal")
-        o.box((0.0, 0.07, 0.0), (0.26, 0.07, 0.26))
+        o.box((0.0, 0.07, 0.0), (0.23, 0.07, 0.23))
         if kind == "panel":
             o.group("post"); o.mat("steel")
             o.tube_axis((0, 0.14, 0), (0, 0.42, 0), 0.045, 0.040, 5)
