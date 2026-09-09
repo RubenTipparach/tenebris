@@ -552,10 +552,93 @@ function removeAt(idx) {
   rebuild();
 }
 
+/* ---------------- landing stance ---------------- */
+/* A ship stands up if its centre of mass falls inside the polygon its feet
+ * make on the ground - nothing else matters. Counting skids cannot see
+ * that: one centred leg is three-quarters of "three or more" and still
+ * topples in every direction, and a long hull with all its gear amidships
+ * sits down on its tail however many feet it has. So solve the real thing:
+ * take each foot's ground contact, hull them, and ask how far inside that
+ * polygon the centre of mass sits. */
+
+/* Ground contact of one gear part: the centroid of its lowest vertices. */
+function footOf(def, t) {
+  const wv = def.mesh.v.map(v => V(v).applyQuaternion(t.quat).add(t.pos));
+  let low = Infinity;
+  wv.forEach(p => { if (p.y < low) low = p.y; });
+  const pad = wv.filter(p => p.y < low + 0.06);
+  let x = 0, z = 0;
+  pad.forEach(p => { x += p.x; z += p.z; });
+  return { x: x / pad.length, z: z / pad.length, y: low };
+}
+
+/* Convex hull (monotone chain) of the contact points in the ground plane. */
+function hull2(pts) {
+  if (pts.length < 3) return pts.slice();
+  const p = pts.slice().sort((a, b) => a.x - b.x || a.z - b.z);
+  const cr = (o, a, b) => (a.x - o.x) * (b.z - o.z) - (a.z - o.z) * (b.x - o.x);
+  const half = src => {
+    const out = [];
+    src.forEach(q => {
+      while (out.length >= 2 && cr(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+      out.push(q);
+    });
+    out.pop();
+    return out;
+  };
+  return half(p).concat(half(p.slice().reverse()));
+}
+
+/* Signed distance from the centre of mass to the support polygon: positive
+ * inside (the margin before it tips), negative outside (it is already
+ * falling). Also names the direction it goes over, because "unstable" on
+ * its own does not tell you which end to put a leg under. */
+function stanceOf(contacts, com) {
+  if (!contacts.length) return { feet: 0, margin: null, dir: '' };
+  const groundY = Math.min(...contacts.map(c => c.y));
+  /* A foot parked well above the lowest one never reaches the ground, so it
+   * cannot hold the ship up and must not count toward the polygon. */
+  const feet = contacts.filter(c => c.y < groundY + 0.25);
+  const h = hull2(feet);
+  const name = (dx, dz) => (Math.abs(dz) >= Math.abs(dx)
+    ? (dz > 0 ? 'onto its nose' : 'onto its tail')
+    : (dx > 0 ? 'to starboard' : 'to port'));
+
+  if (h.length < 3) {
+    /* One foot, or a row of them: no area to stand on. With two or more in
+     * a line the ship topples about that line; report the way it falls. */
+    let dx = 0, dz = 0;
+    if (h.length === 2) {
+      const ex = h[1].x - h[0].x, ez = h[1].z - h[0].z;
+      const L = Math.hypot(ex, ez) || 1;
+      const side = ((com.x - h[0].x) * ez - (com.z - h[0].z) * ex) / L;
+      dx = -ez / L * Math.sign(side || 1); dz = ex / L * Math.sign(side || 1);
+    } else if (h.length === 1) {
+      dx = com.x - h[0].x; dz = com.z - h[0].z;
+    }
+    return { feet: feet.length, margin: 0, degenerate: true,
+             dir: name(dx, dz) };
+  }
+
+  let margin = Infinity, dir = '';
+  for (let i = 0; i < h.length; i++) {
+    const a = h[i], b = h[(i + 1) % h.length];
+    const ex = b.x - a.x, ez = b.z - a.z;
+    const L = Math.hypot(ex, ez) || 1;
+    /* hull2 returns counter-clockwise, so inside is a positive cross of
+     * (b-a) x (p-a). Verified against a unit square: centre = +1, a point
+     * three units out = -2. The outward normal of a CCW edge is (ez, -ex). */
+    const d = (ex * (com.z - a.z) - ez * (com.x - a.x)) / L;
+    if (d < margin) { margin = d; dir = name(ez / L, -ex / L); }
+  }
+  return { feet: feet.length, margin, degenerate: false, dir };
+}
+
 /* ---------------- mass properties ---------------- */
 function analyse(poses) {
   let mass = 0, thrust = 0, torque = 0, fuelCap = 0, burn = 0, cargo = 0;
   let hasDock = false, hasGear = 0, lift = 0;
+  const contacts = [];
   /* Tool output. Rates SUM (two drills cut twice as fast); scan range
    * takes the BEST fit, because range is not additive - a second dish
    * does not see further than the better one alone. */
@@ -591,11 +674,12 @@ function analyse(poses) {
     pumpRate += def.pump_rate_l_s || 0;
     scanRange = Math.max(scanRange, def.scan_range_m || 0);
     if (def.has_dock) hasDock = true;
-    if (def.role === 'Gear') hasGear++;
+    if (def.role === 'Gear') { hasGear++; contacts.push(footOf(def, t)); }
     lift += (def.lift_area_m2 || 0) * (def.lift_coef || 0);
   });
 
   if (mass > 0) com.multiplyScalar(1 / mass);
+  const stance = stanceOf(contacts, com);
 
   /* Inertia about the pitch axis: each part a solid box about its own
    * centre plus parallel-axis to the ship CoM (plan section 2.3). */
@@ -637,7 +721,7 @@ function analyse(poses) {
 
   return { mass, thrust: F.length(), twr, aMax, cruise, torque, I, turn,
            fuelCap, burn, cargo, hasDock, hasGear, lift, com,
-           mineRate, loadRate, pumpRate, scanRange,
+           mineRate, loadRate, pumpRate, scanRange, stance,
            tau: tau.length(), tauVec: tau, offDeg, t90: 2.3 / CFG.kLin };
 }
 
@@ -670,8 +754,24 @@ function faultsOf(s) {
   if (s.turn < 0.15 && ship.length > 2) f.push(['warn',
       'Turns at ' + s.turn.toFixed(2) + ' rad/s. Add a reaction wheel or RCS blocks.']);
   if (!s.hasDock) f.push(['warn', 'No docking collar - this ship cannot dock at the station.']);
-  if (s.hasGear > 0 && s.hasGear < 3) f.push(['warn', 'Only ' + s.hasGear +
-      ' landing skid' + (s.hasGear > 1 ? 's' : '') + '. Three or more give a stable stance.']);
+  /* Stance, judged on the support polygon rather than a skid count. */
+  if (s.hasGear > 0) {
+    const st = s.stance;
+    if (st.feet < s.hasGear) f.push(['warn', (s.hasGear - st.feet) + ' of ' +
+        s.hasGear + ' feet hang too high to reach the ground.']);
+    if (st.degenerate) {
+      f.push(['bad', st.feet < 2
+        ? 'One foot on the ground - it falls ' + st.dir + ' the moment it lands. Gear off the centreline needs its mirror; gear on it needs a second set fore or aft.'
+        : st.feet + ' feet in a straight line - no base. It topples ' + st.dir + '. Spread them across the hull, not along one axis.']);
+    } else if (st.margin <= 0) {
+      f.push(['bad', 'Centre of mass falls outside the feet by ' +
+        Math.abs(st.margin).toFixed(2) + ' m - it goes over ' + st.dir +
+        '. Add a set of legs at that end.']);
+    } else if (st.margin < 0.4) {
+      f.push(['warn', 'Only ' + st.margin.toFixed(2) + ' m of stance margin ' +
+        st.dir + '. A long hull wants a second set of legs toward that end.']);
+    }
+  }
   /* An empty tool mount is the whole point of the class hull going unused,
    * so name it by family rather than leaving the ship silently useless. */
   const EMPTY = { Drill: ['no drill fitted - it cannot mine', 'Drill'],
@@ -1048,6 +1148,12 @@ function renderReadout(s) {
   if (s.scanRange > 0) rows.push(['Scan range', fmt(s.scanRange, 0) + ' <small>m</small>', 'good']);
   if (s.loadRate > 0) rows.push(['Load rate', fmt(s.loadRate, 1) + ' <small>t/s</small>', 'good']);
   if (s.pumpRate > 0) rows.push(['Transfer rate', fmt(s.pumpRate, 0) + ' <small>L/s</small>', 'good']);
+  if (s.hasGear > 0) {
+    const st = s.stance;
+    rows.push(['Stance margin',
+      st.degenerate ? 'no base' : fmt(st.margin, 2) + ' <small>m</small>',
+      (st.degenerate || st.margin <= 0) ? 'warn' : st.margin < 0.4 ? 'warn' : 'good']);
+  }
   const host = document.getElementById('rows');
   host.textContent = '';
   rows.forEach(([k, v, cls]) => {

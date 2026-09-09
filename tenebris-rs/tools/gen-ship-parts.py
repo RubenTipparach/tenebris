@@ -352,6 +352,25 @@ def mates(parent_kind, child_kind):
     return parent_kind == child_kind
 
 
+def gear_pair(r, flat, z, inset=1.18, x=None, y=None):
+    """A MIRRORED PAIR of landing-gear mounts on the belly's flat face.
+
+    Gear mounts are only ever emitted in pairs, because a leg off the
+    centreline needs its opposite number or the ship stands on one side and
+    falls over. A single centreline leg is no better - one contact point is
+    not a base - so there is deliberately no way to mount one.
+
+    The hex cross-section's bottom face runs between the 240 and 300 degree
+    vertices, so it spans x = +-r/2 at y = -r*flat*sin(60). Sit the mounts
+    inside that, on the flat, rather than out on the shoulder curve."""
+    if y is None:
+        y = -r * flat * math.sin(math.pi / 3)
+    if x is None:
+        x = r * 0.5 * inset
+    return [node((-x, y, z), (0, -1, 0), "Gear"),
+            node((x, y, z), (0, -1, 0), "Gear")]
+
+
 def hull_chain(o, segs, sides=6, cap_start=True, cap_end=True):
     """Emit a run of hull segments as ONE closed solid: only the two ends of
     the whole chain get a disc, never the internal joints. Every tapering
@@ -567,6 +586,7 @@ def fuselage_bay():
         node((0, HULL_R * FLAT, HULL_L * 0.55), (0, 1, 0), "Radial"),
         node((0, -HULL_R * FLAT, HULL_L * 0.45), (0, -1, 0), "Radial"),
     ]
+    nodes += gear_pair(HULL_R, FLAT, HULL_L * 0.25, y=GEAR_Y) + gear_pair(HULL_R, FLAT, HULL_L * 0.78, y=GEAR_Y)
     stats = {"role": "Structure", "mass_kg": 90, "tier": "T2",
              "recipe": "iron 4 + bronze 1",
              "blurb": "Hull spine. Extends the ship and carries the wing / gear mounts."}
@@ -594,6 +614,7 @@ def cargo_bay():
         node((-R, 0, HULL_L * 0.5), (-1, 0, 0), "Radial"),
         node((0, -R * FLAT, HULL_L * 0.5), (0, -1, 0), "Radial"),
     ]
+    nodes += gear_pair(R, FLAT * 0.95, HULL_L * 0.5, y=GEAR_Y)
     stats = {"role": "Cargo", "mass_kg": 130, "cargo": 9, "tier": "T3",
              "recipe": "iron 5 + bronze 3",
              "blurb": "Nine slots of hold. Cargo mass counts against your thrust."}
@@ -745,6 +766,7 @@ def reaction_wheel():
     o.group("status"); o.mat("amber")
     o.box((0.0, HULL_R * FLAT * 0.84, 0.2), (0.10, 0.05, 0.07))
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    nodes += gear_pair(0, 0, L * 0.5, x=HULL_R * 0.92 * 0.5, y=GEAR_Y)
     stats = {"role": "Gyro", "mass_kg": 85, "torque_nm": 40000, "tier": "T3",
              "recipe": "iron 4 + copper 3 + circuit 2",
              "blurb": "40 kN-m on every axis and it burns no fuel. Heavy hulls need one."}
@@ -765,7 +787,7 @@ def landing_skid():
     o.box((0.34, -1.16, 0.0), (0.13, 0.07, 0.42))
     # dir points AWAY from the part and this one hangs BELOW its mount, so
     # +Y. With -Y the mate flips 180 and the legs fold up into the hull.
-    nodes = [node((0, 0, 0), (0, 1, 0), "Radial")]
+    nodes = [node((0, 0, 0), (0, 1, 0), "Gear")]
     stats = {"role": "Gear", "mass_kg": 50, "impact_tolerance_mps": 12, "tier": "T2",
              "recipe": "iron 3 + bronze 1",
              "blurb": "Three or more give a stable stance. Without gear you land on the hull."}
@@ -847,6 +869,7 @@ def spine_truss():
         nodes.append(node((-R, 0, z), (-1, 0, 0), "Radial"))
     nodes.append(node((0, R * 0.8, 3.0), (0, 1, 0), "Radial"))
     nodes.append(node((0, -R * 0.8, 3.0), (0, -1, 0), "Radial"))
+    nodes += gear_pair(R, 0.8, L * 0.20, y=GEAR_Y) + gear_pair(R, 0.8, L * 0.78, y=GEAR_Y)
     stats = {"role": "Structure", "mass_kg": 140, "tier": "T3",
              "recipe": "iron 6 + bronze 3",
              "blurb": "Six metres of hull for 140 kg and one part slot - the cheapest length you can buy."}
@@ -870,6 +893,7 @@ def hull_junction():
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
     for dx in (0.0, 1.28, -1.28):
         nodes.append(node((dx, 0, L), (0, 0, 1), "Stack"))
+    nodes += gear_pair(HULL_R * 1.5, FLAT * 0.86, L * 0.5, y=GEAR_Y)
     stats = {"role": "Structure", "mass_kg": 160, "tier": "T3",
              "recipe": "iron 8 + bronze 4",
              "blurb": "Splits one spine into three. The only part that lets a hull grow sideways."}
@@ -882,6 +906,10 @@ def hull_junction():
 # and between the inner and outer station on one side. At the old 0.52 the
 # inner and outer pods were 1.39 m apart and grew through each other.
 STATIONS = (0.34, 1.0)
+
+# The common belly plane every landing-gear mount sits on, so that any two
+# gear stations on a ship are level and their feet touch down together.
+GEAR_Y = -0.49
 
 
 def thrust_spar():
@@ -916,6 +944,11 @@ def thrust_spar():
     for f in STATIONS:
         for sx in (-1, 1):
             nodes.append(node((sx * span * f, 0.0, -0.34), (0, 0, -1), "Stack"))
+    o.group("gear_struts"); o.mat("gunmetal")
+    for sx in (-1, 1):
+        o.tube_axis((sx * span * 0.66, -0.16, -0.10),
+                    (sx * span * 0.66, GEAR_Y, -0.10), 0.075, 0.065, 4)
+    nodes += gear_pair(0, 0, -0.10, x=span * 0.66, y=GEAR_Y)
     stats = {"role": "Structure", "mass_kg": 180, "tier": "T3",
              "recipe": "iron 7 + bronze 3",
              "blurb": "Four engine stations spread wide but ON the thrust axis - stack-mounted drives here push straight, not up."}
@@ -1028,6 +1061,7 @@ def attitude_bank():
     for z in (0.48, 1.22):
         o.box((0.0, R * FLAT * 0.88, z), (0.09, 0.05, 0.07))
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    nodes += gear_pair(0, 0, L * 0.55, x=R * 0.5, y=GEAR_Y)
     stats = {"role": "Gyro", "mass_kg": 260, "torque_nm": 180000, "tier": "T4",
              "recipe": "iron 10 + copper 8 + circuit 4",
              "blurb": "180 kN-m, no fuel. A 6-tonne hull turns at 0.6 rad/s with one and 0.14 without."}
@@ -1055,6 +1089,7 @@ def fuel_bunker():
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack"),
              node((R, 0, L * 0.5), (1, 0, 0), "Radial"),
              node((-R, 0, L * 0.5), (-1, 0, 0), "Radial")]
+    nodes += gear_pair(R, FLAT, L * 0.30, y=GEAR_Y) + gear_pair(R, FLAT, L * 0.72, y=GEAR_Y)
     stats = {"role": "Tank", "mass_kg": 1500, "dry_mass_kg": 220, "fuel_cap": 320,
              "tier": "T3", "recipe": "iron 12 + bronze 4",
              "blurb": "320 units in one slot. Three Fuel Cells cost three slots and carry less."}
@@ -1086,6 +1121,7 @@ def bulk_hold():
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack"),
              node((0, -R * FLAT, L * 0.5), (0, -1, 0), "Radial"),
              node((0, R * FLAT, L * 0.5), (0, 1, 0), "Radial")]
+    nodes += gear_pair(R, FLAT * 0.98, L * 0.28, y=GEAR_Y) + gear_pair(R, FLAT * 0.98, L * 0.74, y=GEAR_Y)
     stats = {"role": "Cargo", "mass_kg": 420, "cargo": 24, "tier": "T4",
              "recipe": "iron 14 + bronze 8",
              "blurb": "Twenty-four slots. Fill it and watch your thrust-to-weight collapse."}
@@ -1107,7 +1143,7 @@ def heavy_cradle():
     o.box((0.62, -1.64, 0.0), (0.26, 0.10, 0.62))
     o.group("tread"); o.mat("hazard")
     o.box((0.62, -1.53, 0.0), (0.20, 0.03, 0.50))
-    nodes = [node((0, 0, 0), (0, 1, 0), "Radial")]   # see landing_skid
+    nodes = [node((0, 0, 0), (0, 1, 0), "Gear")]   # see landing_skid
     stats = {"role": "Gear", "mass_kg": 140, "impact_tolerance_mps": 9, "tier": "T3",
              "recipe": "iron 7 + bronze 3",
              "blurb": "Rated for a loaded freighter, but it lands slower - 9 m/s, not 12."}

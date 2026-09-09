@@ -92,6 +92,7 @@ def load_parts():
         lo = [min(v[i] for v in verts) for i in range(3)]
         hi = [max(v[i] for v in verts) for i in range(3)]
         d["id"] = pid
+        d["verts"] = verts
         d["centroid"] = [(lo[i] + hi[i]) * 0.5 for i in range(3)]
         d["size"] = [hi[i] - lo[i] for i in range(3)]
         parts[pid] = d
@@ -120,6 +121,8 @@ def mirrored(p):
 
 
 MIRR = {k: mirrored(v) for k, v in PARTS.items()}
+for _k, _m in MIRR.items():
+    _m["verts"] = [[-v[0], v[1], v[2]] for v in PARTS[_k]["verts"]]
 
 
 def defof(inst):
@@ -183,11 +186,64 @@ def build(root, mates):
     return ship
 
 
+def hull2(pts):
+    """Convex hull (monotone chain) of ground-contact points, in XZ."""
+    if len(pts) < 3:
+        return list(pts)
+    p = sorted(set(pts))
+    if len(p) < 3:
+        return p
+
+    def cr(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+    def half(src):
+        out = []
+        for q in src:
+            while len(out) >= 2 and cr(out[-2], out[-1], q) <= 0:
+                out.pop()
+            out.append(q)
+        out.pop()
+        return out
+
+    return half(p) + half(p[::-1])
+
+
+def stance(contacts, com):
+    """Signed distance from the centre of mass to the support polygon:
+    positive inside (margin before it tips), negative or zero outside.
+
+    A ship stands up if its centre of mass falls inside the polygon its feet
+    make on the ground. Counting legs cannot see that - one centred leg is
+    not a base, and a long hull with all its gear amidships sits down on its
+    tail however many feet it has."""
+    if not contacts:
+        return None, 0
+    ground = min(c[1] for c in contacts)
+    # a foot parked well above the lowest one never reaches the ground
+    feet = [(c[0], c[2]) for c in contacts if c[1] < ground + 0.25]
+    h = hull2(feet)
+    if len(h) < 3:
+        # A point or a line is not a base at all. Report it as such rather
+        # than as a zero margin, or anything choosing gear by margin will
+        # happily rank "no base" above a stance that is merely marginal.
+        return None, len(feet)
+    margin = float("inf")
+    for i in range(len(h)):
+        a, b = h[i], h[(i + 1) % len(h)]
+        ex, ez = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(ex, ez) or 1.0
+        # inside is a positive cross of (b-a) x (p-a) for a CCW hull
+        margin = min(margin, (ex*(com[2]-a[1]) - ez*(com[0]-a[0])) / L)
+    return margin, len(feet)
+
+
 def analyse(ship):
     poses = solve(ship)
     mass = thrust_scalar = torque = fuel = burn = cargo = 0.0
     lift = 0.0
     gear = 0
+    contacts = []
     has_dock = False
     pts = []
     F = [0.0, 0.0, 0.0]
@@ -206,6 +262,11 @@ def analyse(ship):
             has_dock = True
         if d.get("role") == "Gear":
             gear += 1
+            wv = [vadd(q_rot(t["quat"], v), t["pos"]) for v in defof(inst)["verts"]]
+            low = min(v[1] for v in wv)
+            pad = [v for v in wv if v[1] < low + 0.06]
+            contacts.append((sum(v[0] for v in pad) / len(pad), low,
+                             sum(v[2] for v in pad) / len(pad)))
         if d.get("thrust_n"):
             thrust_scalar += d["thrust_n"]
             burn += d.get("fuel_per_s", 0)
@@ -224,6 +285,7 @@ def analyse(ship):
     tau = [0.0, 0.0, 0.0]
     for (c, f) in tau_parts:
         tau = vadd(tau, vcross(vsub(c, com), f))
+    margin, feet = stance(contacts, com)
     thrust = vlen(F)
     a_max = thrust / mass if mass else 0.0
     cruise = ((-K_LIN + math.sqrt(K_LIN**2 + 4 * K_QUAD * a_max)) / (2 * K_QUAD)) if a_max > 0 else 0
@@ -232,7 +294,8 @@ def analyse(ship):
             "cruise": cruise, "turn": min(MAX_ANG, torque / (I * K_ANG)) if I else 0,
             "I": I, "torque": torque, "fuel": fuel,
             "burn": fuel / burn if burn else 0, "cargo": cargo,
-            "lift": lift, "gear": gear, "dock": has_dock, "tau": vlen(tau)}
+            "lift": lift, "gear": gear, "dock": has_dock, "tau": vlen(tau),
+            "margin": margin, "feet": feet}
 
 
 # ------------------------------ the fleet -------------------------------- #
@@ -250,164 +313,157 @@ def analyse(ship):
 #   wing           0 root | 1 hardpoint
 #   reaction_wheel / attitude_bank   0 aft | 1 fore
 FLEET = [
- # ---- combat -----------------------------------------------------------
+ # ---- combat ------------------------------------------------------------
  ("Wasp", "Interceptor", "combat", "bubble_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
-   (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid')]),
+  (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (1,4,'tail_fin'), (2,2,'landing_skid'), (2,3,'landing_skid'),
+  (1,8,'landing_skid'), (1,9,'landing_skid'), (1,6,'landing_skid'),
+  (1,7,'landing_skid')]),
  ("Harrier", "Strike Fighter", "combat", "armoured_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
-   (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid'), (3,1,'rcs_block')]),
+  (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (1,4,'tail_fin'), (3,1,'rcs_block'), (2,2,'landing_skid'),
+  (2,3,'landing_skid'), (1,8,'landing_skid'), (1,9,'landing_skid'),
+  (1,6,'landing_skid'), (1,7,'landing_skid')]),
  ("Bastion", "Gunship", "combat", "armoured_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'fuel_cell'), (2,1,'attitude_bank'),
-   (3,1,'thrust_spar'), (4,1,'heavy_nacelle'), (4,2,'heavy_nacelle'),
-   (1,2,'wing'), (1,3,'wing'), (1,4,'tail_fin'), (1,5,'landing_skid')]),
+  (0,0,'fuselage_bay'), (1,1,'fuel_cell'), (2,1,'attitude_bank'),
+  (3,1,'thrust_spar'), (4,1,'heavy_nacelle'), (4,2,'heavy_nacelle'),
+  (1,2,'wing'), (1,3,'wing'), (1,4,'tail_fin'), (4,5,'landing_skid'),
+  (4,6,'landing_skid'), (3,2,'landing_skid'), (3,3,'landing_skid'),
+  (1,6,'landing_skid'), (1,7,'landing_skid')]),
  ("Rampart", "Heavy Corvette", "combat", "bridge", [
-   (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'attitude_bank'),
-   (3,1,'thrust_spar'), (4,1,'heavy_nacelle'), (4,2,'heavy_nacelle'),
-   (4,3,'heavy_nacelle'), (4,4,'heavy_nacelle'),
-   (1,2,'wing'), (1,3,'wing'), (1,4,'tail_fin'),
-   (2,2,'rcs_block'), (2,3,'rcs_block'), (1,5,'heavy_cradle'),
-   (0,1,'docking_collar')]),
-
- # ---- transport --------------------------------------------------------
+  (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'attitude_bank'),
+  (3,1,'thrust_spar'), (4,1,'heavy_nacelle'), (4,2,'heavy_nacelle'),
+  (4,3,'heavy_nacelle'), (4,4,'heavy_nacelle'), (1,2,'wing'),
+  (1,3,'wing'), (1,4,'tail_fin'), (2,2,'rcs_block'), (2,3,'rcs_block'),
+  (0,1,'docking_collar'), (4,5,'heavy_cradle'), (4,6,'heavy_cradle'),
+  (3,2,'heavy_cradle'), (3,3,'heavy_cradle'), (1,6,'heavy_cradle'),
+  (1,7,'heavy_cradle')]),
+ # ---- transport ---------------------------------------------------------
  ("Ferry", "Shuttle", "transport", "freight_cockpit", [
-   (0,0,'cargo_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
-   (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'landing_skid'), (3,1,'docking_collar'),
-   (0,1,'clamp_arm'),
-   (0,2,'clamp_arm')]),
+  (0,0,'cargo_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (3,1,'docking_collar'), (0,1,'clamp_arm'), (0,2,'clamp_arm'),
+  (2,2,'landing_skid'), (2,3,'landing_skid'), (1,5,'landing_skid'),
+  (1,6,'landing_skid')]),
  ("Drover", "Freighter", "transport", "freight_cockpit", [
-   (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
-   (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
-   (1,2,'landing_skid'), (1,3,'landing_skid'),
-   (2,2,'heavy_cradle'), (1,6,'docking_collar'),
-   (1,4,'rcs_block'), (1,5,'rcs_block'),
-   (0,1,'container_rack'),
-   (0,2,'container_rack')]),
+  (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
+  (3,1,'attitude_bank'), (4,1,'heavy_nacelle'), (1,6,'docking_collar'),
+  (1,4,'rcs_block'), (1,5,'rcs_block'), (0,1,'container_rack'),
+  (0,2,'container_rack'), (4,2,'heavy_cradle'), (4,3,'heavy_cradle'),
+  (2,6,'heavy_cradle'), (2,7,'heavy_cradle'), (2,4,'heavy_cradle'),
+  (2,5,'heavy_cradle')]),
  ("Colossus", "Heavy Hauler", "transport", "freight_cockpit", [
-   (0,0,'hull_junction'), (1,1,'bulk_hold'), (1,2,'fuel_bunker'),
-   (1,3,'fuel_bunker'), (2,1,'attitude_bank'), (5,1,'thrust_spar'),
-   (6,1,'heavy_nacelle'), (6,2,'heavy_nacelle'),
-   (6,3,'heavy_nacelle'), (6,4,'heavy_nacelle'),
-   (2,2,'heavy_cradle'), (2,3,'docking_collar'),
-   (3,2,'rcs_block'), (4,2,'rcs_block'),
-   (0,1,'gantry_loader'),
-   (0,2,'gantry_loader')]),
+  (0,0,'hull_junction'), (1,1,'bulk_hold'), (1,2,'fuel_bunker'),
+  (1,3,'fuel_bunker'), (2,1,'attitude_bank'), (5,1,'thrust_spar'),
+  (6,1,'heavy_nacelle'), (6,2,'heavy_nacelle'), (6,3,'heavy_nacelle'),
+  (6,4,'heavy_nacelle'), (2,3,'docking_collar'), (3,2,'rcs_block'),
+  (4,2,'rcs_block'), (0,1,'gantry_loader'), (0,2,'gantry_loader'),
+  (6,5,'heavy_cradle'), (6,6,'heavy_cradle'), (4,6,'heavy_cradle'),
+  (4,7,'heavy_cradle'), (3,4,'heavy_cradle'), (3,5,'heavy_cradle')]),
  ("Caravan", "Container Liner", "transport", "freight_cockpit", [
-   (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'bulk_hold'),
-   (3,1,'fuel_bunker'), (4,1,'attitude_bank'), (5,1,'heavy_nacelle'),
-   (1,2,'rcs_block'), (1,3,'rcs_block'),
-   (2,2,'heavy_cradle'), (3,2,'heavy_cradle'),
-   (1,6,'docking_collar'), (1,4,'landing_skid'),
-   (0,1,'container_rack'),
-   (0,2,'container_rack')]),
-
- # ---- mining -----------------------------------------------------------
+  (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'bulk_hold'),
+  (3,1,'fuel_bunker'), (4,1,'attitude_bank'), (5,1,'heavy_nacelle'),
+  (1,2,'rcs_block'), (1,3,'rcs_block'), (1,6,'docking_collar'),
+  (0,1,'container_rack'), (0,2,'container_rack'), (3,6,'heavy_cradle'),
+  (3,7,'heavy_cradle'), (2,4,'heavy_cradle'), (2,5,'heavy_cradle'),
+  (1,10,'heavy_cradle'), (1,11,'heavy_cradle')]),
+ # ---- mining ------------------------------------------------------------
  ("Ferret", "Prospector", "mining", "mining_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'cargo_bay'),
-   (3,1,'fuel_cell'), (1,2,'wing'), (1,3,'wing'),
-   (5,1,'nacelle'), (6,1,'nacelle'),
-   (1,5,'landing_skid'), (3,4,'landing_skid'),
-   (0,1,'auger_drill'),
-   (0,2,'auger_drill')]),
+  (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'cargo_bay'),
+  (3,1,'fuel_cell'), (1,2,'wing'), (1,3,'wing'), (5,1,'nacelle'),
+  (6,1,'nacelle'), (0,1,'auger_drill'), (0,2,'auger_drill'),
+  (3,5,'landing_skid'), (3,6,'landing_skid'), (2,2,'landing_skid'),
+  (2,3,'landing_skid'), (1,6,'landing_skid'), (1,7,'landing_skid')]),
  ("Quarry", "Ore Hauler", "mining", "mining_cockpit", [
-   (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
-   (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
-   (1,2,'heavy_cradle'), (1,3,'heavy_cradle'), (2,2,'heavy_cradle'),
-   (1,4,'rcs_block'), (1,5,'rcs_block'), (1,6,'docking_collar'),
-   (0,1,'rotary_drill'),
-   (0,2,'rotary_drill')]),
+  (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
+  (3,1,'attitude_bank'), (4,1,'heavy_nacelle'), (1,4,'rcs_block'),
+  (1,5,'rcs_block'), (1,6,'docking_collar'), (0,1,'rotary_drill'),
+  (0,2,'rotary_drill'), (4,2,'heavy_cradle'), (4,3,'heavy_cradle'),
+  (2,6,'heavy_cradle'), (2,7,'heavy_cradle'), (2,4,'heavy_cradle'),
+  (2,5,'heavy_cradle')]),
  ("Deepcore", "Mining Rig", "mining", "mining_cockpit", [
-   (0,0,'hull_junction'), (1,1,'spine_truss'), (1,2,'bulk_hold'),
-   (1,3,'bulk_hold'), (2,1,'fuel_bunker'), (5,1,'attitude_bank'),
-   (6,1,'heavy_nacelle'),
-   (2,2,'heavy_cradle'), (2,3,'heavy_cradle'),
-   (2,4,'rcs_block'), (2,5,'rcs_block'), (2,6,'docking_collar'),
-   (3,2,'landing_skid'), (4,2,'landing_skid'),
-   (0,1,'plasma_bore'),
-   (0,2,'plasma_bore')]),
-
- # ---- tanker -----------------------------------------------------------
+  (0,0,'hull_junction'), (1,1,'spine_truss'), (1,2,'bulk_hold'),
+  (1,3,'bulk_hold'), (2,1,'fuel_bunker'), (5,1,'attitude_bank'),
+  (6,1,'heavy_nacelle'), (2,4,'rcs_block'), (2,5,'rcs_block'),
+  (2,6,'docking_collar'), (0,1,'plasma_bore'), (0,2,'plasma_bore'),
+  (6,2,'heavy_cradle'), (6,3,'heavy_cradle'), (3,6,'heavy_cradle'),
+  (3,7,'heavy_cradle'), (1,4,'heavy_cradle'), (1,5,'heavy_cradle')]),
+ # ---- tanker ------------------------------------------------------------
  ("Ladle", "Fuel Tender", "tanker", "tanker_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
-   (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,5,'landing_skid'), (3,1,'docking_collar'), (1,4,'rcs_block'),
-   (0,1,'transfer_pump'),
-   (0,2,'transfer_pump')]),
+  (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (3,1,'docking_collar'), (1,4,'rcs_block'), (0,1,'transfer_pump'),
+  (0,2,'transfer_pump'), (3,2,'landing_skid'), (3,3,'landing_skid'),
+  (2,4,'landing_skid'), (2,5,'landing_skid'), (1,6,'landing_skid'),
+  (1,7,'landing_skid')]),
  ("Cistern", "Bulk Tanker", "tanker", "tanker_cockpit", [
-   (0,0,'fuel_bunker'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
-   (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
-   (1,2,'rcs_block'), (1,3,'rcs_block'),
-   (2,2,'heavy_cradle'), (2,3,'heavy_cradle'),
-   (3,2,'docking_collar'), (3,3,'landing_skid'),
-   (0,1,'cryo_trunk'),
-   (0,2,'cryo_trunk')]),
-
- # ---- exploration ------------------------------------------------------
+  (0,0,'fuel_bunker'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
+  (3,1,'attitude_bank'), (4,1,'heavy_nacelle'), (1,2,'rcs_block'),
+  (1,3,'rcs_block'), (3,2,'docking_collar'), (0,1,'cryo_trunk'),
+  (0,2,'cryo_trunk'), (4,2,'heavy_cradle'), (4,3,'heavy_cradle'),
+  (3,6,'heavy_cradle'), (3,7,'heavy_cradle'), (2,4,'heavy_cradle'),
+  (2,5,'heavy_cradle')]),
+ # ---- exploration -------------------------------------------------------
  ("Kite", "Scout", "exploration", "survey_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
-   (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid'),
-   (0,1,'radar_array'),
-   (0,2,'radar_array')]),
+  (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (1,4,'tail_fin'), (0,1,'radar_array'), (0,2,'radar_array'),
+  (2,2,'landing_skid'), (2,3,'landing_skid'), (1,8,'landing_skid'),
+  (1,9,'landing_skid'), (1,6,'landing_skid'), (1,7,'landing_skid')]),
  ("Wayfarer", "Pathfinder", "exploration", "survey_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
-   (1,2,'wing'), (1,3,'wing'),
-   (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid'), (2,2,'docking_collar'),
-   (0,1,'dish_antenna'),
-   (0,2,'radar_array')]),
+  (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
+  (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
+  (1,4,'tail_fin'), (2,2,'docking_collar'), (0,1,'dish_antenna'),
+  (0,2,'radar_array'), (3,2,'landing_skid'), (3,3,'landing_skid'),
+  (2,4,'landing_skid'), (2,5,'landing_skid'), (1,6,'landing_skid'),
+  (1,7,'landing_skid')]),
  ("Odyssey", "Long Ranger", "exploration", "survey_cockpit", [
-   (0,0,'spine_truss'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
-   (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
-   (1,2,'wing'), (1,3,'wing'), (6,1,'nacelle'),
-   (7,1,'nacelle'),
-   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (2,2,'landing_skid'),
-   (1,4,'rcs_block'), (1,5,'rcs_block'),
-   (0,1,'phased_array'),
-   (0,2,'dish_antenna')]),
-
- # ---- science ----------------------------------------------------------
+  (0,0,'spine_truss'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
+  (3,1,'attitude_bank'), (4,1,'heavy_nacelle'), (1,2,'wing'),
+  (1,3,'wing'), (6,1,'nacelle'), (7,1,'nacelle'), (1,6,'docking_collar'),
+  (1,4,'rcs_block'), (1,5,'rcs_block'), (0,1,'phased_array'),
+  (0,2,'dish_antenna'), (3,6,'heavy_cradle'), (3,7,'heavy_cradle'),
+  (2,4,'heavy_cradle'), (2,5,'heavy_cradle'), (1,10,'heavy_cradle'),
+  (1,11,'heavy_cradle')]),
+ # ---- science -----------------------------------------------------------
  ("Lantern", "Survey Ship", "science", "survey_cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'cargo_bay'), (2,1,'fuel_cell'),
-   (3,1,'reaction_wheel'), (1,2,'wing'), (1,3,'wing'),
-   (5,1,'nacelle'), (6,1,'nacelle'),
-   (1,4,'rcs_block'), (1,5,'landing_skid'), (2,4,'landing_skid'),
-   (0,1,'dish_antenna'),
-   (0,2,'radar_array')]),
+  (0,0,'fuselage_bay'), (1,1,'cargo_bay'), (2,1,'fuel_cell'),
+  (3,1,'reaction_wheel'), (1,2,'wing'), (1,3,'wing'), (5,1,'nacelle'),
+  (6,1,'nacelle'), (1,4,'rcs_block'), (0,1,'dish_antenna'),
+  (0,2,'radar_array'), (4,2,'landing_skid'), (4,3,'landing_skid'),
+  (2,5,'landing_skid'), (2,6,'landing_skid'), (1,6,'landing_skid'),
+  (1,7,'landing_skid')]),
  ("Astrolabe", "Laboratory", "science", "lab_cockpit", [
-   (0,0,'spine_truss'), (1,1,'cargo_bay'), (2,1,'fuel_bunker'),
-   (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
-   (1,2,'rcs_block'), (1,3,'rcs_block'), (1,4,'rcs_block'), (1,5,'rcs_block'),
-   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (2,2,'landing_skid'),
-   (0,1,'phased_array'),
-   (0,2,'dish_antenna'),
-   (0,3,'container_rack')]),
+  (0,0,'spine_truss'), (1,1,'cargo_bay'), (2,1,'fuel_bunker'),
+  (3,1,'attitude_bank'), (4,1,'heavy_nacelle'), (1,2,'rcs_block'),
+  (1,3,'rcs_block'), (1,4,'rcs_block'), (1,5,'rcs_block'),
+  (1,6,'docking_collar'), (0,1,'phased_array'), (0,2,'dish_antenna'),
+  (0,3,'container_rack'), (3,6,'heavy_cradle'), (3,7,'heavy_cradle'),
+  (2,5,'heavy_cradle'), (2,6,'heavy_cradle'), (1,10,'heavy_cradle'),
+  (1,11,'heavy_cradle')]),
  ("Oculus", "Sensor Platform", "science", "lab_cockpit", [
-   (0,0,'hull_junction'), (1,1,'fuel_bunker'), (1,2,'fuel_cell'),
-   (1,3,'fuel_cell'), (2,1,'attitude_bank'), (5,1,'heavy_nacelle'),
-   (2,2,'rcs_block'), (2,3,'rcs_block'),
-   (3,1,'docking_collar'), (4,1,'landing_skid'),
-   (0,1,'phased_array'),
-   (0,2,'phased_array'),
-   (0,3,'clamp_arm')]),
-
- # ---- utility ----------------------------------------------------------
+  (0,0,'hull_junction'), (1,1,'fuel_bunker'), (1,2,'fuel_cell'),
+  (1,3,'fuel_cell'), (2,1,'attitude_bank'), (5,1,'heavy_nacelle'),
+  (2,2,'rcs_block'), (2,3,'rcs_block'), (3,1,'docking_collar'),
+  (0,1,'phased_array'), (0,2,'phased_array'), (0,3,'clamp_arm'),
+  (2,6,'heavy_cradle'), (2,7,'heavy_cradle'), (2,4,'heavy_cradle'),
+  (2,5,'heavy_cradle'), (1,4,'heavy_cradle'), (1,5,'heavy_cradle')]),
+ # ---- utility -----------------------------------------------------------
  ("Mule", "Station Tug", "utility", "cockpit", [
-   (0,0,'fuselage_bay'), (1,1,'fuel_cell'), (2,1,'reaction_wheel'),
-   (3,1,'heavy_nacelle'),
-   (1,2,'rcs_block'), (1,3,'rcs_block'), (1,4,'docking_collar'),
-   (1,5,'landing_skid')]),
+  (0,0,'fuselage_bay'), (1,1,'fuel_cell'), (2,1,'reaction_wheel'),
+  (3,1,'heavy_nacelle'), (1,2,'rcs_block'), (1,3,'rcs_block'),
+  (1,4,'docking_collar'), (3,2,'landing_skid'), (3,3,'landing_skid'),
+  (1,8,'landing_skid'), (1,9,'landing_skid'), (1,6,'landing_skid'),
+  (1,7,'landing_skid')]),
 ]
-
 
 def main():
     out = []
     bad = 0
     print("%-12s %-18s %5s %8s %7s %6s %7s %6s %5s" %
-          ("name", "class", "parts", "mass", "thrust", "TWR", "cruise", "turn", "fuel"))
+          ("name", "class", "parts", "mass", "thrust", "TWR", "cruise", "turn", "stance"))
     for (name, klass, role, root, mates) in FLEET:
         try:
             ship = build(root, mates)
@@ -421,18 +477,26 @@ def main():
             flag += " SLUGGISH"
         if s["thrust"] <= 0:
             flag += " NO-ENGINE"
+        # A preset that falls over on the pad is not a shippable preset.
+        if s["gear"] > 0 and s["margin"] is None:
+            flag += " NO-STANCE(%d feet in a line)" % s["feet"]
+        elif s["gear"] > 0 and s["margin"] <= 0:
+            flag += " TIPS(margin %+.2fm)" % s["margin"]
         if s["torque"] > 0 and s["tau"] / s["torque"] > 1.0:
             flag += " THRUST-TORQUE>%.1fx" % (s["tau"] / s["torque"])
         if flag:
             print("  !! %-12s %s" % (name, flag.strip())); bad += 1
-        print("%-12s %-18s %5d %8.0f %7.0f %6.2f %7.0f %6.2f %5.0f" %
+        print("%-12s %-18s %5d %8.0f %7.0f %6.2f %7.0f %6.2f %5s" %
               (name, klass, s["parts"], s["mass"], s["thrust"] / 1000,
-               s["twr"], s["cruise"], s["turn"], s["fuel"]))
+               s["twr"], s["cruise"], s["turn"],
+               "none" if s["margin"] is None else "%+.2f" % s["margin"]))
         out.append({"name": name, "klass": klass, "role": role,
                     "graph": [{"part": i["part"], "parent": i["parent"],
                                "node": i["node"], "roll": 0,
                                "mir": bool(i["mir"]), "twin": -1} for i in ship],
                     "twr": round(s["twr"], 2), "mass": round(s["mass"]),
+                    "margin": None if s["margin"] is None else round(s["margin"], 2),
+                    "feet": s["feet"],
                     "cruise": round(s["cruise"]), "turn": round(s["turn"], 2)})
     print("\n%d ships, %d rejected" % (len(out), bad))
     if "--json" in sys.argv:
