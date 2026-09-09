@@ -703,16 +703,44 @@ CLAUDE.md static-asset pipeline) that emits, for each of the eleven parts:
 | output | purpose |
 |---|---|
 | `assets/models/ship_<part>.obj` | geometry, one `o` group per sub-piece - the exact OBJ subset `baked_model.rs` parses (`o` / `usemtl` / `v` / `f` / `mtllib`) |
-| `assets/models/ship_<part>.mtl` | per-group `Kd` colours |
-| `assets/models/ship_<part>.json` | pivot, **attachment nodes**, and the part's stats - this file IS the node spec section 4.1 mates parts on, so the art and the physics graph cannot disagree |
-| `assets/textures/items/<part>.png` | 32x32 RGBA inventory icon |
+| `assets/models/ship_<part>.mtl` | per-group `Kd` colours plus `map_Kd` pointing at the atlas |
+| `assets/models/ship_<part>.png` | the **baked texture atlas** for that part |
+| `assets/models/ship_<part>.json` | pivot, **attachment nodes**, stats, and the atlas size / island count - this file IS the node spec section 4.1 mates parts on, so the art and the physics graph cannot disagree |
+| `assets/textures/items/<part>.png` | 32x32 RGBA inventory icon, texture-sampled from the model |
 
-The icons are **rendered from the models** by the software rasterizer at the
-bottom of the generator, using the game's own load-time shading rule
-(`baked_model.rs::shade_from_normal`). One source of truth: an icon cannot
-drift from the part it depicts.
+### UV unwrapping without Blender
 
-Authoring conventions:
+Blender is not available in the build environment, so `tools/shipuv.py`
+unwraps **analytically** instead - and for procedural geometry that is the
+better tool, not a fallback. Every surface here comes from a known
+primitive, so the seam is known exactly: each face is projected into its
+own plane (exact, zero stretch) and a primitive's faces are laid out as a
+single island. An automatic unwrap has to *infer* seams from face angles,
+which on a 6-sided hull tube produces arbitrary cuts and uneven texel
+density. Here texel density is uniform across the entire kit from one knob
+(`shipuv.PPM`, texels per metre), and the output is deterministic - the
+same input always produces the same atlas, which a hand unwrap is not.
+
+Islands are shelf-packed into the smallest power-of-two sheet that fits,
+with a two-texel gutter bled outward so mips never sample the background.
+Painting is per-island and material-driven: panel seams on the real-world
+grid, rivets, edge contact shading, wear streaks, plus per-material
+treatments (hazard chevrons, soot gradients, glass sheen, LED bloom).
+Detail is keyed off each island's REAL size, so a 3 m hull flank gets a
+believable plate count and a 20 cm thruster block does not get the same
+grid crammed into it.
+
+**These atlases do not render in-game yet.** `baked_model.rs::parse_obj`
+takes only the position index from each `f` token
+(`crates/tenebris-client/src/baked_model.rs:110-113`) and the renderer
+shades from face normals against a per-part `Kd` - there is no texture
+sampling anywhere in that path. Making the kit look in-game the way it
+looks in the playground needs, in step 9: parse `vt`, carry UVs on `Tri`,
+upload one `sg::Image` per part (or a merged kit atlas), and sample it in
+the model shader. Until then the models degrade gracefully - the `Kd`
+colours are still correct, so parts render exactly as they did before.
+
+Authoring conventions:Authoring conventions:
 
 - units are metres; a hull module is 3 m long and ~1.8 m across
 - **+Z is the nose** (forward, and the main thrust axis), +Y up, +X
@@ -751,7 +779,8 @@ the mirrored definition and keeping whichever needs the smaller rotation;
 without that, attaching to the port node first yields a forward-swept wing.
 The in-game builder needs the same rule.
 
-These are **mockups**: they establish silhouette, palette, scale and the
-node layout. If the plan is accepted they become the real assets in step 9,
-at which point the parts want a texture pass (the models carry flat
-per-group colours, not sampled textures).
+These are **mockups**, but they are now real assets in every respect except
+that the engine cannot yet sample them: unwrapped, textured, and validated
+(every OBJ index 1-based and in range for both `v` and `vt` - worth pinning,
+since `parse_obj` silently drops any index below 1, so an off-by-one there
+eats whole faces rather than erroring).
