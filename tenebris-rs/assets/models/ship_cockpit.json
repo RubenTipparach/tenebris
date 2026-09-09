@@ -1,0 +1,30 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 220,
+ "torque_nm": 7000,
+ "cargo": 3,
+ "tier": "T3",
+ "recipe": "copper 4 + iron 3 + circuit 1",
+ "blurb": "Crew module and the ship's root part. Every ship needs exactly one.",
+ "label": "Cockpit",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  }
+ ]
+}

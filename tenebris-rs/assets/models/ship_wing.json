@@ -1,0 +1,43 @@
+{
+ "role": "Aero",
+ "mass_kg": 70,
+ "lift_area_m2": 3.0,
+ "lift_coef": 0.9,
+ "tier": "T2",
+ "recipe": "iron 2 + bronze 1",
+ "blurb": "Lift in atmosphere, a nacelle hardpoint everywhere. Mirrors in symmetry mode.",
+ "label": "Wing",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    1.15
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    1.612,
+    -0.24,
+    1.196
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Hardpoint"
+  }
+ ]
+}

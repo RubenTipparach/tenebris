@@ -1,0 +1,93 @@
+{
+ "role": "Structure",
+ "mass_kg": 90,
+ "tier": "T2",
+ "recipe": "iron 4 + bronze 1",
+ "blurb": "Hull spine. Extends the ship and carries the wing / gear mounts.",
+ "label": "Fuselage Bay",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    3.0
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0.92,
+    0,
+    1.5
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.92,
+    0,
+    1.5
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    0.5704,
+    1.65
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    -0.5704,
+    1.35
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ]
+}

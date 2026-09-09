@@ -6,8 +6,8 @@ writes, deterministically and with stdlib + zlib only:
 
   assets/models/ship_<part>.obj    geometry, one `o` group per sub-piece
   assets/models/ship_<part>.mtl    per-group Kd colours
-  assets/models/ship_<part>.json   pivot + ATTACHMENT NODES (the data the
-                                   ship part-graph mates parts on)
+  assets/models/ship_<part>.json   pivot + ATTACHMENT NODES + stats (the
+                                   data the ship part-graph mates on)
   assets/textures/items/<part>.png 32x32 RGBA inventory icon
 
 The icon is RENDERED FROM THE MODEL by the little software rasterizer at
@@ -16,14 +16,26 @@ baked_model.rs applies at load (shade_from_normal: top faces bright,
 undersides dark). One source of truth: the icon cannot drift from the
 model it depicts.
 
-Conventions (match the existing assets/models/rocket_*.obj set):
-  - units are metres; a standard hull module is 2 m long, ~2 m across
-  - the part runs along +Y with its AFT mating face at y = 0, so parts
-    stack by translating along +Y (rocket_fuel_tank.obj is y = 0..2)
-  - attachment nodes carry a position + an outward direction; node 0 is
-    the part's own mating node (the one that meets its parent)
+THESE ARE SPACESHIPS, NOT ROCKETS. The kit is a horizontal airframe -
+cockpit up front, a fuselage spine you extend backwards, wings carrying
+engine nacelles, a tail fin - flown nose-first like a normal ship. It is
+deliberately NOT a vertical stack of tanks with a capsule on top.
 
-Run from tenebris-rs/:  python tools/gen-ship-parts.py [--sheet OUT.png]
+Conventions:
+  - units are metres
+  - +Z is the NOSE (forward, and the main thrust axis), +Y is up,
+    +X is starboard. This matches the in-game convention in
+    MODULAR_SHIP_PLAN.md section 2.1, so a part's model axes and its
+    physics axes are the same axes.
+  - a hull module is 3 m long and ~1.8 m across, its aft mating face at
+    z = 0 and its nose at z = +len, so the spine grows by translating
+    along +Z
+  - node 0 is the part's own mating node - the one that meets its parent
+    - and its `dir` points AWAY from the part, so mating a child means
+    anti-aligning child node 0 with the parent's chosen node
+
+Run from tenebris-rs/:
+    python tools/gen-ship-parts.py [--sheet OUT.png] [--json OUT.json]
 """
 
 import json
@@ -40,13 +52,14 @@ ICONS = os.path.join("assets", "textures", "items")
 # palette - one entry per usemtl name emitted below                       #
 # ---------------------------------------------------------------------- #
 MTL = {
+    "hull":       (0.74, 0.75, 0.77),
+    "hull_dark":  (0.42, 0.45, 0.50),
     "gunmetal":   (0.28, 0.30, 0.34),
     "steel":      (0.55, 0.57, 0.60),
     "bronze":     (0.62, 0.44, 0.22),
     "brass":      (0.78, 0.62, 0.28),
-    "ceramic":    (0.86, 0.85, 0.80),
-    "white":      (0.92, 0.92, 0.94),
     "black":      (0.10, 0.10, 0.12),
+    "glass":      (0.22, 0.34, 0.44),
     "hazard":     (0.86, 0.70, 0.12),
     "orange":     (0.80, 0.42, 0.14),
     "olive":      (0.36, 0.38, 0.24),
@@ -55,8 +68,7 @@ MTL = {
     "amber":      (0.90, 0.62, 0.15),
     "cyan":       (0.30, 0.78, 0.85),
     "green_led":  (0.35, 0.85, 0.40),
-    "glass":      (0.30, 0.34, 0.40),
-    "nickel":     (0.66, 0.64, 0.58),
+    "white":      (0.92, 0.92, 0.94),
 }
 
 
@@ -85,8 +97,7 @@ class Obj:
         self.n += len(verts)
 
     def box(self, c, h, rot=None):
-        """Axis-aligned box at centre c with half-extents h, optional
-        (axis, degrees) rotation about its own centre baked in."""
+        """Axis-aligned box, optional (axis, degrees) rotation baked in."""
         verts = []
         for dz in (-h[2], h[2]):
             for dy in (-h[1], h[1]):
@@ -95,17 +106,17 @@ class Obj:
                     if rot:
                         p = _rot(p, rot[0], rot[1])
                     verts.append((c[0] + p[0], c[1] + p[1], c[2] + p[2]))
-        # 0=(-,-,-) 1=(+,-,-) 2=(-,+,-) 3=(+,+,-) 4..7 = same at +z
         self._emit(verts, [(0, 1, 3, 2), (5, 4, 6, 7), (4, 5, 1, 0),
                            (2, 3, 7, 6), (4, 0, 2, 6), (1, 5, 7, 3)])
 
-    def tube(self, y0, y1, r0, r1, sides=6, cx=0.0, cz=0.0, caps=True, phase=0.0):
-        """Prism / frustum along +Y. sides=6 gives the house hex look."""
+    def hull(self, z0, z1, r0, r1, sides=6, flat=0.62, caps=True, phase=0.0):
+        """Prism / frustum along +Z, squashed vertically by `flat` so the
+        cross-section reads as an airframe rather than a rocket tube."""
         ring0, ring1 = [], []
         for i in range(sides):
             a = phase + 2.0 * math.pi * i / sides
-            ring0.append((cx + r0 * math.cos(a), y0, cz + r0 * math.sin(a)))
-            ring1.append((cx + r1 * math.cos(a), y1, cz + r1 * math.sin(a)))
+            ring0.append((r0 * math.cos(a), r0 * flat * math.sin(a), z0))
+            ring1.append((r1 * math.cos(a), r1 * flat * math.sin(a), z1))
         verts = ring0 + ring1
         faces = []
         for i in range(sides):
@@ -117,7 +128,7 @@ class Obj:
         self._emit(verts, faces)
 
     def tube_axis(self, p0, p1, r0, r1, sides=6, caps=True):
-        """Prism between two arbitrary points (struts, coils, hooks)."""
+        """Prism between two arbitrary points (struts, rails, nozzles)."""
         d = [p1[i] - p0[i] for i in range(3)]
         L = math.sqrt(sum(x * x for x in d)) or 1e-6
         ax = [x / L for x in d]
@@ -138,6 +149,12 @@ class Obj:
             faces.append(tuple(range(sides - 1, -1, -1)))
             faces.append(tuple(range(sides, 2 * sides)))
         self._emit(verts, faces)
+
+    def wedge(self, pts_lo, pts_hi):
+        """Solid between two matching 4-point outlines (a thick wing)."""
+        self._emit(list(pts_lo) + list(pts_hi),
+                   [(0, 1, 2, 3), (7, 6, 5, 4),
+                    (0, 4, 5, 1), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 4, 0)])
 
     def write(self, path):
         open(path, "w").write("\n".join(self.lines) + "\n")
@@ -172,252 +189,289 @@ def node(pos, dir_, kind):
     return {"pos": [round(v, 4) for v in pos], "dir": [round(v, 4) for v in dir_], "kind": kind}
 
 
+HULL_R = 0.92     # hull half-width
+HULL_L = 3.0      # one spine module
+FLAT = 0.62       # vertical squash - the airframe cross-section
+
+
 # ---------------------------------------------------------------------- #
-# the parts                                                               #
+# the parts. each returns (obj, nodes, label, stats)                      #
 # ---------------------------------------------------------------------- #
 
-def hull_truss():
-    """Open hex lattice: six longerons + X-bracing between bronze collars."""
-    o = Obj("hull_truss")
-    R, L = 0.85, 2.0
-    o.group("collars"); o.mat("bronze")
-    o.tube(0.0, 0.12, R + 0.06, R + 0.06, caps=False)
-    o.tube(L - 0.12, L, R + 0.06, R + 0.06, caps=False)
-    o.group("longerons"); o.mat("gunmetal")
-    pts = []
-    for i in range(6):
-        a = 2.0 * math.pi * i / 6
-        p = (R * math.cos(a), 0.0, R * math.sin(a))
-        pts.append(p)
-        o.tube_axis((p[0], 0.06, p[2]), (p[0], L - 0.06, p[2]), 0.055, 0.055, 4)
-    o.group("bracing"); o.mat("steel")
-    for i in range(6):
-        p, q = pts[i], pts[(i + 1) % 6]
-        o.tube_axis((p[0], 0.25, p[2]), (q[0], L - 0.25, q[2]), 0.028, 0.028, 3)
-        o.tube_axis((q[0], 0.25, q[2]), (p[0], L - 0.25, p[2]), 0.028, 0.028, 3)
-    o.group("chevron"); o.mat("hazard")
-    o.tube(0.12, 0.17, R + 0.062, R + 0.062, caps=False)
-    nodes = [node((0, 0, 0), (0, -1, 0), "Stack"), node((0, L, 0), (0, 1, 0), "Stack")]
-    for i in range(4):
-        a = 2.0 * math.pi * i / 4
-        nodes.append(node((R * math.cos(a), L * 0.5, R * math.sin(a)),
-                          (math.cos(a), 0, math.sin(a)), "Radial"))
-    return o, nodes, "Hull Truss"
+def cockpit():
+    """Forward crew module: tapered nose with a wrap-around canopy."""
+    o = Obj("cockpit")
+    L = 3.2
+    o.group("nose"); o.mat("hull")
+    o.hull(0.0, 1.1, HULL_R, HULL_R * 0.94, flat=FLAT)
+    o.hull(1.1, 2.4, HULL_R * 0.94, HULL_R * 0.66, flat=FLAT * 0.92)
+    o.hull(2.4, L, HULL_R * 0.66, HULL_R * 0.22, flat=FLAT * 0.85)
+    o.group("canopy"); o.mat("glass")
+    o.box((0.0, HULL_R * FLAT * 0.72, 2.0), (0.46, 0.10, 0.78), rot=("x", -8))
+    o.group("frame"); o.mat("gunmetal")
+    o.box((0.0, HULL_R * FLAT * 0.74, 1.22), (0.50, 0.08, 0.07))
+    for sx in (-1, 1):
+        o.box((sx * 0.48, HULL_R * FLAT * 0.70, 2.0), (0.05, 0.10, 0.80))
+    o.group("chin"); o.mat("hull_dark")
+    o.box((0.0, -HULL_R * FLAT * 0.72, 1.9), (0.42, 0.12, 0.85))
+    o.group("lights"); o.mat("white")
+    for sx in (-1, 1):
+        o.box((sx * 0.55, -HULL_R * FLAT * 0.42, 2.85), (0.08, 0.07, 0.07))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    stats = {"role": "Cockpit", "mass_kg": 220, "torque_nm": 7000, "cargo": 3,
+             "tier": "T3", "recipe": "copper 4 + iron 3 + circuit 1",
+             "blurb": "Crew module and the ship's root part. Every ship needs exactly one."}
+    return o, nodes, "Cockpit", stats
 
 
-def hull_plate():
-    """Solid riveted hex module - the armoured counterpart to the truss."""
-    o = Obj("hull_plate")
-    R, L = 0.88, 2.0
-    o.group("shell"); o.mat("ceramic")
-    o.tube(0.05, L - 0.05, R, R)
-    o.group("aft_scorch"); o.mat("soot")
-    o.tube(0.0, 0.05, R * 0.99, R * 0.99)
-    o.group("rivet_strips"); o.mat("bronze")
-    for i in range(6):
-        a = 2.0 * math.pi * (i + 0.5) / 6
-        o.tube_axis((R * 0.96 * math.cos(a), 0.08, R * 0.96 * math.sin(a)),
-                    (R * 0.96 * math.cos(a), L - 0.08, R * 0.96 * math.sin(a)),
-                    0.045, 0.045, 4)
-    o.group("collars"); o.mat("steel")
-    o.tube(L - 0.05, L, R + 0.03, R + 0.03, caps=False)
-    nodes = [node((0, 0, 0), (0, -1, 0), "Stack"), node((0, L, 0), (0, 1, 0), "Stack")]
-    for i in range(4):
-        a = 2.0 * math.pi * i / 4
-        nodes.append(node((R * math.cos(a), L * 0.5, R * math.sin(a)),
-                          (math.cos(a), 0, math.sin(a)), "Radial"))
-    return o, nodes, "Hull Plate"
+def fuselage_bay():
+    """Spine module: the part that makes a ship LONG and gives it flanks."""
+    o = Obj("fuselage_bay")
+    o.group("shell"); o.mat("hull")
+    o.hull(0.0, HULL_L, HULL_R, HULL_R, flat=FLAT)
+    o.group("frames"); o.mat("hull_dark")
+    for z in (0.55, 1.5, 2.45):
+        o.hull(z, z + 0.10, HULL_R * 1.03, HULL_R * 1.03, flat=FLAT, caps=False)
+    o.group("spine"); o.mat("gunmetal")
+    o.box((0.0, HULL_R * FLAT * 0.95, HULL_L * 0.5), (0.16, 0.07, HULL_L * 0.44))
+    o.group("vents"); o.mat("black")
+    for sx in (-1, 1):
+        o.box((sx * HULL_R * 0.86, 0.0, 2.1), (0.06, 0.16, 0.42))
+    nodes = [
+        node((0, 0, 0), (0, 0, -1), "Stack"),
+        node((0, 0, HULL_L), (0, 0, 1), "Stack"),
+        node((HULL_R, 0, HULL_L * 0.5), (1, 0, 0), "Radial"),
+        node((-HULL_R, 0, HULL_L * 0.5), (-1, 0, 0), "Radial"),
+        node((0, HULL_R * FLAT, HULL_L * 0.55), (0, 1, 0), "Radial"),
+        node((0, -HULL_R * FLAT, HULL_L * 0.45), (0, -1, 0), "Radial"),
+    ]
+    stats = {"role": "Structure", "mass_kg": 90, "tier": "T2",
+             "recipe": "iron 4 + bronze 1",
+             "blurb": "Hull spine. Extends the ship and carries the wing / gear mounts."}
+    return o, nodes, "Fuselage Bay", stats
 
 
-def radial_tank():
-    """Stubby side-mount propellant pod on a clamp collar."""
-    o = Obj("radial_tank")
-    o.group("clamp"); o.mat("steel")
-    o.tube(0.0, 0.14, 0.30, 0.30)
-    o.group("body"); o.mat("orange")
-    o.tube(0.14, 1.05, 0.36, 0.36)
-    o.group("nose"); o.mat("orange")
-    o.tube(1.05, 1.22, 0.36, 0.16)
-    o.group("stripe"); o.mat("white")
-    o.tube_axis((0.0, 0.18, 0.355), (0.0, 1.02, 0.355), 0.05, 0.05, 3)
-    o.group("bands"); o.mat("gunmetal")
-    o.tube(0.30, 0.36, 0.372, 0.372, caps=False)
-    o.tube(0.84, 0.90, 0.372, 0.372, caps=False)
-    return o, [node((0, 0, 0), (0, -1, 0), "Radial")], "Radial Tank"
+def cargo_bay():
+    """Wider spine module with clamshell doors."""
+    o = Obj("cargo_bay")
+    R = HULL_R * 1.16
+    o.group("shell"); o.mat("olive")
+    o.hull(0.0, HULL_L, R, R, flat=FLAT * 0.95)
+    o.group("door"); o.mat("hull_dark")
+    o.box((0.0, R * FLAT * 0.86, HULL_L * 0.5), (R * 0.60, 0.07, HULL_L * 0.34))
+    o.group("door_seam"); o.mat("hazard")
+    o.box((0.0, R * FLAT * 0.90, HULL_L * 0.5), (0.04, 0.05, HULL_L * 0.34))
+    o.group("locks"); o.mat("black")
+    for sz in (0.42, 2.58):
+        for sx in (-1, 1):
+            o.box((sx * R * 0.80, R * FLAT * 0.55, sz), (0.10, 0.10, 0.10))
+    nodes = [
+        node((0, 0, 0), (0, 0, -1), "Stack"),
+        node((0, 0, HULL_L), (0, 0, 1), "Stack"),
+        node((R, 0, HULL_L * 0.5), (1, 0, 0), "Radial"),
+        node((-R, 0, HULL_L * 0.5), (-1, 0, 0), "Radial"),
+        node((0, -R * FLAT, HULL_L * 0.5), (0, -1, 0), "Radial"),
+    ]
+    stats = {"role": "Cargo", "mass_kg": 130, "cargo": 9, "tier": "T3",
+             "recipe": "iron 5 + bronze 3",
+             "blurb": "Nine slots of hold. Cargo mass counts against your thrust."}
+    return o, nodes, "Cargo Bay", stats
 
 
-def rcs_quad():
-    """Chamfered cube with four 90-degree thruster cones."""
-    o = Obj("rcs_quad")
-    s = 0.20
+def fuel_cell():
+    """Internal propellant module - a spine segment, not a strapped-on tank."""
+    o = Obj("fuel_cell")
+    L = 2.2
+    o.group("shell"); o.mat("hull_dark")
+    o.hull(0.0, L, HULL_R * 0.98, HULL_R * 0.98, flat=FLAT)
+    o.group("cells"); o.mat("orange")
+    for sx in (-1, 1):
+        o.box((sx * HULL_R * 0.52, 0.0, L * 0.5), (0.26, HULL_R * FLAT * 0.72, L * 0.40))
+    o.group("plumbing"); o.mat("bronze")
+    o.tube_axis((0.0, HULL_R * FLAT * 0.70, 0.25), (0.0, HULL_R * FLAT * 0.70, L - 0.25),
+                0.055, 0.055, 5)
+    o.group("gauge"); o.mat("amber")
+    o.box((0.0, HULL_R * FLAT * 0.86, L * 0.5), (0.13, 0.05, 0.30))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    stats = {"role": "Tank", "mass_kg": 480, "dry_mass_kg": 60, "fuel_cap": 100,
+             "tier": "T2", "recipe": "iron 5",
+             "blurb": "100 units of propellant, drawn from one ship-wide pool."}
+    return o, nodes, "Fuel Cell", stats
+
+
+def wing():
+    """Swept wing with an under-slung hardpoint for a nacelle."""
+    o = Obj("wing")
+    span, root_c, tip_c = 2.6, 2.3, 1.0
+    o.group("root"); o.mat("gunmetal")
+    o.box((0.10, 0.0, root_c * 0.5), (0.12, 0.20, root_c * 0.42))
+    o.group("skin"); o.mat("hull")
+    lo = [(0.20, -0.10, 0.05), (0.20, -0.10, root_c), (span, -0.05, root_c * 0.72),
+          (span, -0.05, root_c * 0.72 - tip_c)]
+    hi = [(0.20, 0.10, 0.05), (0.20, 0.10, root_c), (span, 0.05, root_c * 0.72),
+          (span, 0.05, root_c * 0.72 - tip_c)]
+    o.wedge(lo, hi)
+    o.group("leading_edge"); o.mat("bronze")
+    o.tube_axis((0.20, 0.0, root_c), (span, 0.0, root_c * 0.72), 0.07, 0.045, 4)
+    o.group("hardpoint"); o.mat("steel")
+    o.box((span * 0.62, -0.16, root_c * 0.52), (0.20, 0.08, 0.24))
+    o.group("tip_light"); o.mat("green_led")
+    o.box((span - 0.04, 0.0, root_c * 0.30), (0.07, 0.06, 0.10))
+    nodes = [
+        node((0, 0, root_c * 0.5), (-1, 0, 0), "Radial"),
+        node((span * 0.62, -0.24, root_c * 0.52), (0, -1, 0), "Hardpoint"),
+    ]
+    stats = {"role": "Aero", "mass_kg": 70, "lift_area_m2": 3.0, "lift_coef": 0.9,
+             "tier": "T2", "recipe": "iron 2 + bronze 1",
+             "blurb": "Lift in atmosphere, a nacelle hardpoint everywhere. Mirrors in symmetry mode."}
+    return o, nodes, "Wing", stats
+
+
+def nacelle():
+    """Main drive pod. Mounts under a wing or straight onto the hull."""
+    o = Obj("nacelle")
+    L = 2.6
+    o.group("pylon"); o.mat("gunmetal")
+    o.box((0.0, 0.26, L * 0.42), (0.11, 0.26, 0.34))
+    o.group("body"); o.mat("hull")
+    o.hull(0.20, L - 0.55, 0.40, 0.46, sides=8, flat=1.0)
+    o.group("intake"); o.mat("black")
+    o.hull(L - 0.55, L - 0.42, 0.46, 0.44, sides=8, flat=1.0)
+    o.group("cowl"); o.mat("hull_dark")
+    o.hull(L - 0.42, L, 0.44, 0.34, sides=8, flat=1.0)
+    o.group("bell"); o.mat("soot")
+    o.hull(0.0, 0.20, 0.52, 0.40, sides=8, flat=1.0)
+    o.group("glow"); o.mat("cyan")
+    o.hull(-0.03, 0.02, 0.44, 0.44, sides=8, flat=1.0, caps=False)
+    o.group("rails"); o.mat("bronze")
+    for sx in (-1, 1):
+        o.tube_axis((sx * 0.42, 0.0, 0.4), (sx * 0.42, 0.0, L - 0.7), 0.045, 0.045, 4)
+    nodes = [node((0, 0.52, L * 0.42), (0, 1, 0), "Hardpoint")]
+    stats = {"role": "Engine", "mass_kg": 140, "thrust_n": 90000, "fuel_per_s": 9,
+             "tier": "T2", "recipe": "bronze 3 + iron 2",
+             "blurb": "90 kN of thrust. Off-centre nacelles torque the ship - keep them balanced."}
+    return o, nodes, "Engine Nacelle", stats
+
+
+def tail_fin():
+    """Vertical stabiliser - the silhouette that says 'ship', not 'rocket'."""
+    o = Obj("tail_fin")
+    h, root_c, tip_c = 1.9, 1.9, 0.85
+    o.group("root"); o.mat("gunmetal")
+    o.box((0.0, 0.12, root_c * 0.5), (0.16, 0.14, root_c * 0.42))
+    o.group("skin"); o.mat("hull")
+    lo = [(-0.08, 0.20, 0.05), (-0.08, 0.20, root_c), (-0.05, h, root_c * 0.66),
+          (-0.05, h, root_c * 0.66 - tip_c)]
+    hi = [(0.08, 0.20, 0.05), (0.08, 0.20, root_c), (0.05, h, root_c * 0.66),
+          (0.05, h, root_c * 0.66 - tip_c)]
+    o.wedge(lo, hi)
+    o.group("leading_edge"); o.mat("bronze")
+    o.tube_axis((0.0, 0.20, root_c), (0.0, h, root_c * 0.66), 0.06, 0.04, 4)
+    o.group("beacon"); o.mat("amber")
+    o.box((0.0, h - 0.06, root_c * 0.30), (0.07, 0.08, 0.10))
+    nodes = [node((0, 0, root_c * 0.5), (0, -1, 0), "Radial")]
+    stats = {"role": "Aero", "mass_kg": 45, "lift_area_m2": 1.4, "lift_coef": 0.7,
+             "tier": "T2", "recipe": "iron 2",
+             "blurb": "Yaw damping in atmosphere. Mostly it makes the ship read as a ship."}
+    return o, nodes, "Tail Fin", stats
+
+
+def rcs_block():
+    """Maneuvering thruster block - torque scales with distance from CoM."""
+    o = Obj("rcs_block")
+    s = 0.19
     o.group("body"); o.mat("white")
-    o.box((0, s, 0), (s, s, s))
-    o.group("chevron"); o.mat("hazard")
-    o.box((0, 0.03, 0), (s * 1.01, 0.03, s * 1.01))
+    o.box((0.0, s, 0.0), (s, s, s))
+    o.group("band"); o.mat("hazard")
+    o.box((0.0, 0.035, 0.0), (s * 1.01, 0.035, s * 1.01))
     o.group("nozzles"); o.mat("black")
-    for i in range(4):
-        a = 2.0 * math.pi * i / 4
-        d = (math.cos(a), 0.0, math.sin(a))
-        base = (d[0] * s, s, d[2] * s)
-        tip = (d[0] * (s + 0.13), s, d[2] * (s + 0.13))
-        o.tube_axis(base, tip, 0.045, 0.085, 6)
-    return o, [node((0, 0, 0), (0, -1, 0), "Radial")], "RCS Quad"
+    for (dx, dz) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        o.tube_axis((dx * s, s, dz * s), (dx * (s + 0.12), s, dz * (s + 0.12)),
+                    0.042, 0.078, 6)
+    nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
+    stats = {"role": "Rcs", "mass_kg": 22, "torque_nm": 3000, "fuel_per_s": 0.15,
+             "tier": "T3", "recipe": "bronze 2 + wire 2",
+             "blurb": "Attitude authority. Mount them far from the centre of mass."}
+    return o, nodes, "RCS Block", stats
 
 
-def gyro():
-    """Caged flywheel: brass ring on a gimbal yoke inside a windowed drum."""
-    o = Obj("gyro")
-    R, L = 0.80, 0.90
-    o.group("drum"); o.mat("gunmetal")
-    o.tube(0.0, 0.16, R, R)
-    o.tube(L - 0.16, L, R, R)
-    o.group("cage"); o.mat("steel")
-    for i in range(6):
-        a = 2.0 * math.pi * i / 6
-        p = (R * 0.92 * math.cos(a), 0.0, R * 0.92 * math.sin(a))
-        o.tube_axis((p[0], 0.16, p[2]), (p[0], L - 0.16, p[2]), 0.06, 0.06, 4)
-    o.group("yoke"); o.mat("black")
-    o.tube_axis((-R * 0.55, L * 0.5, 0.0), (R * 0.55, L * 0.5, 0.0), 0.05, 0.05, 5)
-    o.group("flywheel"); o.mat("brass")
-    # ring built from short chords so it reads as a spinning hoop
-    seg = 16
-    rr = R * 0.52
+def reaction_wheel():
+    """Internal gyro: torque with no fuel, the fix for a heavy hull."""
+    o = Obj("reaction_wheel")
+    L = 1.0
+    o.group("case"); o.mat("gunmetal")
+    o.hull(0.0, L, HULL_R * 0.92, HULL_R * 0.92, flat=FLAT)
+    o.group("window"); o.mat("black")
+    for sx in (-1, 1):
+        o.box((sx * HULL_R * 0.80, 0.0, L * 0.5), (0.06, 0.26, 0.30))
+    o.group("wheel"); o.mat("brass")
+    seg, rr = 14, 0.42
     for i in range(seg):
         a0 = 2.0 * math.pi * i / seg
         a1 = 2.0 * math.pi * (i + 1) / seg
-        o.tube_axis((rr * math.cos(a0), L * 0.5, rr * math.sin(a0)),
-                    (rr * math.cos(a1), L * 0.5, rr * math.sin(a1)), 0.075, 0.075, 4)
+        o.tube_axis((rr * math.cos(a0), rr * math.sin(a0) * 0.9, L * 0.5),
+                    (rr * math.cos(a1), rr * math.sin(a1) * 0.9, L * 0.5), 0.075, 0.075, 4)
     o.group("status"); o.mat("amber")
-    for sgn in (-1, 1):
-        o.box((sgn * R * 0.5, 0.09, R * 0.75), (0.07, 0.04, 0.05))
-    return o, [node((0, 0, 0), (0, -1, 0), "Stack"), node((0, L, 0), (0, 1, 0), "Stack")], "Gyro Stabiliser"
+    o.box((0.0, HULL_R * FLAT * 0.84, 0.2), (0.10, 0.05, 0.07))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"), node((0, 0, L), (0, 0, 1), "Stack")]
+    stats = {"role": "Gyro", "mass_kg": 85, "torque_nm": 40000, "tier": "T3",
+             "recipe": "iron 4 + copper 3 + circuit 2",
+             "blurb": "40 kN-m on every axis and it burns no fuel. Heavy hulls need one."}
+    return o, nodes, "Reaction Wheel", stats
 
 
-def control_fin():
-    """Swept delta with a bronze leading edge and a hinged trailing flap."""
-    o = Obj("control_fin")
-    o.group("root"); o.mat("gunmetal")
-    o.box((0, 0.08, 0), (0.22, 0.08, 0.16))
-    o.group("blade"); o.mat("gunmetal")
-    span, chord = 2.2, 0.95
-    # swept delta as a stack of shrinking, rearward-shifting slabs
-    steps = 7
-    for i in range(steps):
-        f0 = i / steps
-        f1 = (i + 1) / steps
-        y = 0.16 + span * (f0 + f1) * 0.5
-        c = chord * (1.0 - 0.62 * (f0 + f1) * 0.5)
-        shift = 0.30 * (f0 + f1) * 0.5
-        o.box((0, y, shift), (0.045, span / (2 * steps), c * 0.5))
-    o.group("leading_edge"); o.mat("bronze")
-    o.tube_axis((0.0, 0.16, -chord * 0.5), (0.0, 0.16 + span, -chord * 0.19 + 0.30), 0.05, 0.03, 4)
-    o.group("flap"); o.mat("steel")
-    o.box((0, 0.16 + span * 0.45, chord * 0.42), (0.038, span * 0.30, 0.10), rot=("x", 12))
-    return o, [node((0, 0, 0), (0, -1, 0), "Radial")], "Control Fin"
-
-
-def landing_strut():
-    """Folded A-frame on a round foot pad, with a visible damper piston."""
-    o = Obj("landing_strut")
+def landing_skid():
+    """Belly gear. Supplies the contact points the ship lands on."""
+    o = Obj("landing_skid")
     o.group("boss"); o.mat("bronze")
-    o.tube(0.0, 0.16, 0.16, 0.16)
-    foot = (0.55, -1.40, 0.0)
-    o.group("struts"); o.mat("steel")
-    for dz in (-0.20, 0.20):
-        o.tube_axis((0.0, 0.10, dz), (foot[0], foot[1] + 0.12, dz), 0.062, 0.05, 5)
+    o.box((0.0, -0.06, 0.0), (0.17, 0.10, 0.24))
+    o.group("legs"); o.mat("steel")
+    for dz in (-0.22, 0.22):
+        o.tube_axis((0.0, -0.12, dz), (0.34, -1.10, dz), 0.06, 0.05, 5)
     o.group("damper"); o.mat("chrome")
-    o.tube_axis((0.0, 0.12, 0.0), (foot[0] * 0.55, foot[1] * 0.5, 0.0), 0.055, 0.055, 5)
-    o.group("pad"); o.mat("black")
-    o.tube(foot[1], foot[1] + 0.12, 0.34, 0.30, sides=8, cx=foot[0])
-    return o, [node((0, 0, 0), (0, -1, 0), "Radial")], "Landing Strut"
+    o.tube_axis((0.0, -0.14, 0.0), (0.19, -0.62, 0.0), 0.055, 0.055, 5)
+    o.group("skid"); o.mat("black")
+    o.box((0.34, -1.16, 0.0), (0.13, 0.07, 0.42))
+    nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
+    stats = {"role": "Gear", "mass_kg": 50, "impact_tolerance_mps": 12, "tier": "T2",
+             "recipe": "iron 3 + bronze 1",
+             "blurb": "Three or more give a stable stance. Without gear you land on the hull."}
+    return o, nodes, "Landing Skid", stats
 
 
-def docking_clamp():
-    """Androgynous ring collar: annulus, three latch hooks, LED ring."""
-    o = Obj("docking_clamp")
-    R, L = 0.78, 0.34
+def docking_collar():
+    """Androgynous ring. Gates station capture in the plan's frame handoff."""
+    o = Obj("docking_collar")
+    L = 0.34
     o.group("collar"); o.mat("steel")
-    o.tube(0.0, L, R, R)
+    o.hull(0.0, L, 0.74, 0.74, sides=8, flat=1.0)
     o.group("seal"); o.mat("black")
-    o.tube(L, L + 0.06, R * 0.98, R * 0.90)
+    o.hull(L, L + 0.06, 0.72, 0.66, sides=8, flat=1.0)
     o.group("bore"); o.mat("gunmetal")
-    o.tube(0.0, L + 0.06, R * 0.55, R * 0.55)
+    o.hull(0.0, L + 0.06, 0.42, 0.42, sides=8, flat=1.0)
     o.group("hooks"); o.mat("chrome")
     for i in range(3):
         a = 2.0 * math.pi * i / 3
-        p0 = (R * 0.72 * math.cos(a), L + 0.02, R * 0.72 * math.sin(a))
-        p1 = (R * 0.44 * math.cos(a), L + 0.20, R * 0.44 * math.sin(a))
-        o.tube_axis(p0, p1, 0.07, 0.045, 4)
+        o.tube_axis((0.56 * math.cos(a), 0.56 * math.sin(a), L + 0.02),
+                    (0.34 * math.cos(a), 0.34 * math.sin(a), L + 0.20), 0.065, 0.042, 4)
     o.group("leds"); o.mat("green_led")
     for i in range(8):
         a = 2.0 * math.pi * i / 8
-        o.box((R * 0.86 * math.cos(a), L * 0.5, R * 0.86 * math.sin(a)), (0.05, 0.05, 0.05))
-    return o, [node((0, 0, 0), (0, -1, 0), "Stack"),
-               node((0, L + 0.06, 0), (0, 1, 0), "Hardpoint")], "Docking Clamp"
+        o.box((0.80 * math.cos(a), 0.80 * math.sin(a), L * 0.5), (0.05, 0.05, 0.05))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
+    stats = {"role": "Dock", "mass_kg": 65, "has_dock": True, "tier": "T3",
+             "recipe": "iron 3 + copper 2 + circuit 1",
+             "blurb": "Required to dock at the station. Green ring means capture."}
+    return o, nodes, "Docking Collar", stats
 
 
-def cargo_pod():
-    """Ribbed hex container with corner locks and a chevroned end door."""
-    o = Obj("cargo_pod")
-    R, L = 0.92, 2.8
-    o.group("shell"); o.mat("olive")
-    o.tube(0.0, L, R, R)
-    o.group("ribs"); o.mat("gunmetal")
-    for f in (0.22, 0.45, 0.68):
-        o.tube(L * f, L * f + 0.09, R + 0.035, R + 0.035, caps=False)
-    o.group("stripe"); o.mat("white")
-    o.tube(L * 0.52, L * 0.62, R + 0.02, R + 0.02, caps=False)
-    o.group("door"); o.mat("steel")
-    o.tube(L - 0.07, L, R * 0.86, R * 0.86)
-    o.group("door_chevron"); o.mat("hazard")
-    o.box((0, L - 0.02, 0), (0.30, 0.05, 0.09), rot=("y", 45))
-    o.group("corner_locks"); o.mat("black")
-    for i in range(6):
-        a = 2.0 * math.pi * i / 6
-        for y in (0.16, L - 0.16):
-            o.box((R * 0.94 * math.cos(a), y, R * 0.94 * math.sin(a)), (0.09, 0.09, 0.09))
-    nodes = [node((0, 0, 0), (0, -1, 0), "Stack"), node((0, L, 0), (0, 1, 0), "Stack")]
-    for i in range(2):
-        a = math.pi * i
-        nodes.append(node((R * math.cos(a), L * 0.5, R * math.sin(a)),
-                          (math.cos(a), 0, math.sin(a)), "Radial"))
-    return o, nodes, "Cargo Pod"
+PARTS = [cockpit, fuselage_bay, cargo_bay, fuel_cell, wing, nacelle,
+         tail_fin, rcs_block, reaction_wheel, landing_skid, docking_collar]
 
-
-def cruise_thruster():
-    """Long slender vacuum nozzle - must read thin beside the fat main bell.
-
-    Engine convention: the BELL faces aft at y = 0 (that is where exhaust
-    leaves) and the mating node is at the fore end, so the part hangs below
-    the tank it mounts to, matching assets/models/rocket_engine.obj.
-    """
-    o = Obj("cruise_thruster")
-    L = 2.12
-    o.group("lip"); o.mat("soot")
-    o.tube(0.0, 0.07, 0.52, 0.50, caps=False)
-    o.group("throat"); o.mat("ceramic")
-    o.tube(0.07, 0.57, 0.50, 0.26)
-    o.group("barrel"); o.mat("nickel")
-    o.tube(0.57, 1.83, 0.26, 0.34)
-    o.group("coils"); o.mat("bronze")
-    for i in range(7):
-        y = 0.70 + i * 0.16
-        r = 0.26 + (y - 0.57) * 0.064
-        o.tube(y, y + 0.05, r + 0.035, r + 0.035, caps=False)
-    o.group("igniter"); o.mat("cyan")
-    o.tube(1.83, 1.90, 0.40, 0.40, caps=False)
-    o.group("mount"); o.mat("gunmetal")
-    o.tube(1.90, L, 0.38, 0.42)
-    return o, [node((0, L, 0), (0, 1, 0), "Stack")], "Cruise Thruster"
-
-
-PARTS = [hull_truss, hull_plate, radial_tank, rcs_quad, gyro,
-         control_fin, landing_strut, docking_clamp, cargo_pod, cruise_thruster]
-
-# Per-part camera yaw. Flat parts (the fin) and radially-mounted ones read as
+# Per-part camera yaw for the icon / sheet. Flat and radial parts read as
 # slivers at the default three-quarter angle, so they get their own view.
-YAW = {"control_fin": 1.57, "landing_strut": 1.25, "docking_clamp": 0.75,
-       "radial_tank": 0.9, "rcs_quad": 0.85}
+YAW = {"wing": 0.95, "tail_fin": 1.30, "landing_skid": 1.25,
+       "rcs_block": 0.85, "docking_collar": 0.70}
 
 
 # ---------------------------------------------------------------------- #
@@ -425,7 +479,6 @@ YAW = {"control_fin": 1.57, "landing_strut": 1.25, "docking_clamp": 0.75,
 # ---------------------------------------------------------------------- #
 
 def tris_of(obj):
-    """Re-read the emitted lines into triangles + colours."""
     verts, tris, cur = [], [], (0.75, 0.75, 0.78)
     for line in obj.lines:
         p = line.split()
@@ -443,7 +496,6 @@ def tris_of(obj):
 
 
 def render(tris, w, h, yaw=0.62, pitch=0.30, ss=3, bg=None):
-    """Supersampled render. bg=None -> transparent (icons)."""
     W, H = w * ss, h * ss
     pts = [v for t in tris for v in t[:3]]
     lo = [min(p[i] for p in pts) for i in range(3)]
@@ -457,8 +509,7 @@ def render(tris, w, h, yaw=0.62, pitch=0.30, ss=3, bg=None):
     fwd = _norm([ctr[i] - eye[i] for i in range(3)])
     right = _norm([fwd[2], 0.0, -fwd[0]])
     # cross(fwd, right), NOT cross(right, fwd) - the latter yields -Y and
-    # renders every model upside down (the cruise thruster's bell ends up
-    # at the top, the landing strut stands on its foot pad).
+    # renders every model upside down.
     up = _norm(_cross(fwd, right))
     fl = 1.55 * min(W, H) * 0.5
     light = _norm([-0.45, 0.80, 0.40])
@@ -477,7 +528,7 @@ def render(tris, w, h, yaw=0.62, pitch=0.30, ss=3, bg=None):
         e1 = [b[i] - a[i] for i in range(3)]
         e2 = [c[i] - a[i] for i in range(3)]
         n = _norm(_cross(e1, e2))
-        shade = 0.55 + 0.45 * (0.5 + 0.5 * max(-1.0, min(1.0, n[1])))  # baked_model.rs
+        shade = 0.55 + 0.45 * (0.5 + 0.5 * max(-1.0, min(1.0, n[1])))
         key = max(0.0, sum(n[i] * light[i] for i in range(3)))
         lit = min(1.0, shade * (0.70 + 0.58 * key))
         rgb = tuple(int(max(0, min(255, 255 * col[i] * lit))) for i in range(3)) + (255,)
@@ -503,7 +554,6 @@ def render(tris, w, h, yaw=0.62, pitch=0.30, ss=3, bg=None):
                 if z < zb[yy][xx]:
                     zb[yy][xx] = z
                     px[yy][xx] = rgb
-    # box-filter down
     out = []
     for y in range(h):
         row = []
@@ -547,34 +597,60 @@ def write_png(path, rows):
                            + chunk(b"IEND", b""))
 
 
+def mesh_of(obj):
+    """Flat vertex/face/colour arrays for the HTML playground."""
+    verts, faces, cur = [], [], "#bfc0c4"
+    for line in obj.lines:
+        p = line.split()
+        if not p:
+            continue
+        if p[0] == "v":
+            verts.append([round(float(p[1]), 3), round(float(p[2]), 3), round(float(p[3]), 3)])
+        elif p[0] == "usemtl":
+            r, g, b = MTL[p[1]]
+            cur = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+        elif p[0] == "f":
+            idx = [int(t.split("/")[0]) - 1 for t in p[1:]]
+            for k in range(1, len(idx) - 1):
+                faces.append([idx[0], idx[k], idx[k + 1], cur])
+    return {"v": verts, "f": faces}
+
+
 def main():
     os.makedirs(MODELS, exist_ok=True)
     os.makedirs(ICONS, exist_ok=True)
-    sheet_path = None
-    if "--sheet" in sys.argv:
-        sheet_path = sys.argv[sys.argv.index("--sheet") + 1]
+    sheet_path = sys.argv[sys.argv.index("--sheet") + 1] if "--sheet" in sys.argv else None
+    json_path = sys.argv[sys.argv.index("--json") + 1] if "--json" in sys.argv else None
 
-    cells = []
+    cells, blob = [], []
     for fn in PARTS:
-        obj, nodes, label = fn()
+        obj, nodes, label, stats = fn()
         stem = os.path.join(MODELS, "ship_%s.obj" % obj.name)
         obj.write(stem)
-        json.dump({"label": label, "pivot": [0.0, 0.0, 0.0], "nodes": nodes},
-                  open(stem[:-4] + ".json", "w"), indent=1)
+        side = dict(stats)
+        side.update({"label": label, "pivot": [0.0, 0.0, 0.0], "nodes": nodes})
+        json.dump(side, open(stem[:-4] + ".json", "w"), indent=1)
         tris = tris_of(obj)
         yaw = YAW.get(obj.name, 0.62)
         write_png(os.path.join(ICONS, "%s.png" % obj.name), render(tris, 32, 32, yaw=yaw, ss=4))
-        print("wrote ship_%s.obj/.mtl/.json + %s.png (%d tris, %d nodes)"
-              % (obj.name, obj.name, len(tris), len(nodes)))
+        print("wrote ship_%s (%d tris, %d nodes)" % (obj.name, len(tris), len(nodes)))
+        if json_path:
+            entry = {"id": obj.name, "label": label, "nodes": nodes}
+            entry.update(stats)
+            entry["mesh"] = mesh_of(obj)
+            blob.append(entry)
         if sheet_path:
-            cells.append((label, render(tris, 300, 300, yaw=yaw, ss=2, bg=(24, 27, 34))))
+            cells.append(render(tris, 300, 300, yaw=yaw, ss=2, bg=(24, 27, 34)))
+
+    if json_path:
+        json.dump(blob, open(json_path, "w"), separators=(",", ":"))
+        print("wrote", json_path, os.path.getsize(json_path), "bytes")
 
     if sheet_path:
-        cols = 5
+        cols, S = 4, 300
         rows_n = (len(cells) + cols - 1) // cols
-        S = 300
         sheet = [[(24, 27, 34, 255)] * (cols * S) for _ in range(rows_n * S)]
-        for i, (_, cell) in enumerate(cells):
+        for i, cell in enumerate(cells):
             ox, oy = (i % cols) * S, (i // cols) * S
             for y in range(S):
                 sheet[oy + y][ox:ox + S] = cell[y]

@@ -1,0 +1,42 @@
+{
+ "role": "Gyro",
+ "mass_kg": 85,
+ "torque_nm": 40000,
+ "tier": "T3",
+ "recipe": "iron 4 + copper 3 + circuit 2",
+ "blurb": "40 kN-m on every axis and it burns no fuel. Heavy hulls need one.",
+ "label": "Reaction Wheel",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    1.0
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  }
+ ]
+}

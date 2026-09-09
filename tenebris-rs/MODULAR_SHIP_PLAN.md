@@ -484,29 +484,43 @@ Deleted from this screen: `draw_flight_panel` (`rocket_screen.rs:389-436`) and t
 
 ## 6. Part roster
 
-Existing ids keep their items and recipes. New ids start at **163** (150-155 are fish; max live id is `ROCK = 162`). All ten land far below the 192-slot `tech_tree::Discovered` bitset ceiling (`tech_tree.rs:39`, `DISCO_WORDS = 3`). Every part ships its `.obj`, world texture and 32×32 icon **in the same change** (static-asset + item-visuals rules), generated deterministically by a new `tools/gen-ship-parts.py`.
+**Revised after the user's note that they want a normal spaceship, not a
+rocket.** The kit is a horizontal airframe flown nose-first - cockpit up
+front, a fuselage spine you extend backwards, wings carrying engine
+nacelles, a tail fin - not a vertical stack of tanks under a capsule. The
+existing `ROCKET_ENGINE` / `FUEL_TANK` / `COMMAND_MODULE` items keep their
+ids and recipes and are re-skinned into the Nacelle / Fuel Cell / Cockpit
+roles; everything else is new from **163** (150-155 are fish, `ROCK = 162`
+is the highest live id, and all of these sit far below the 192-slot
+`tech_tree::Discovered` bitset ceiling at `tech_tree.rs:39`).
 
-| Part | id | Role · Tier | Key stats | Attach nodes | Visual |
-|---|---|---|---|---|---|
-| **Cockpit Module** | 114 *(existing)* | Cockpit · T3<br>copper 4 + iron 3 + circuit 1 | 200 kg · torque **6 kN·m** all axes · 3 cargo slots · seat at (0,0,0.4) | 1 Stack aft, 4 Radial | Existing `rocket_command_module.obj`, retextured: blunt off-white hex capsule, smoked-amber canopy band across the +Y (roll-reference) face so "up" reads at a glance, two bronze grab rails, black RCS ports on the shoulders. |
-| **Hull Truss** | **163** | Structure · T2<br>iron 3 + bronze 1 | 40 kg · no stats · this is the part that makes ships **wide** | 2 Stack (fore/aft) + 4 Radial mid-span | Open hex lattice 2 m long: six gunmetal longerons with X-bracing, pale-bronze machined end collars, one yellow/black hazard chevron on the fore collar. Deliberately visually quiet — it is scaffolding. |
-| **Hull Plate** | **164** | Structure · T2<br>iron 6 + bronze 2 | 120 kg · +0.010 linear damp · +0.05 angular damp | 6 (all Stack/Radial) | Solid 2 m riveted box: off-white ceramic panels on a fine seam grid, bronze rivet strip down each edge, scorch gradient on the aft face so a stack shows re-entry wear. |
-| **Fuel Tank** | 113 *(existing)* | Tank · T2<br>iron 5 | cap 100 · wet 500 / dry 50 kg | 2 Stack | Existing `rocket_fuel_tank.obj`: brushed-aluminium hex cylinder, two dark strap bands, orange fill-port decal, frost patches near the base. |
-| **Radial Tank** | **165** | Tank · T2<br>iron 3 | cap 40 · wet 190 / dry 22 kg · +0.006 linear damp | 1 Radial | Stubby capsule pod, half the main tank's length, matte orange with one white spine stripe, grey clamp-ring collar at the mount and a rounded nose cap. |
-| **Main Thruster** | 112 *(existing)* | Engine · T2<br>bronze 3 + iron 2 | 75 kN · 10 fuel/s · 100 kg · atmo_eff 1.0 | 1 Stack fore | Existing `rocket_engine.obj`: short wide bell, soot-darkened rim grading to scorched copper at the throat, four turbopump lines wrapping the shoulder. |
-| **Cruise Thruster** | 149 *(existing — closes two gaps)* | Engine · T3<br>**NEW recipe:** bronze 2 + iron 3 + circuit 1 | 30 kN · 3 fuel/s · 80 kg · atmo_eff 0.45 | 1 Stack fore | **NEW `ship_cruise_thruster.obj`** — today it cheats by reusing the main engine at 0.62 scale (`rocket_fx.rs:476-481`) and has **no crafting recipe anywhere**. Long slender nozzle, ~1.6× the main engine's length at half its mouth: pale ceramic throat, nickel regenerative-cooling coils spiralling the barrel, cyan igniter ring. Must read "long and thin" beside the main engine's "short and fat". |
-| **RCS Quad** | **166** | Rcs · T3<br>bronze 2 + wire 2 | torque **3 kN·m**/axis · lateral 4 kN · 0.15 fuel/s · 25 kg. Torque scales with `\|r − com\|`, so quads on the extremities out-turn quads bunched at the middle | 1 Radial | 40 cm chamfered cube, four short cones at 90°, white body with black nozzle throats and a yellow/black chevron band at the mount face. Fires a 0.15-scale puff through the existing plume path. |
-| **Gyro Stabiliser** | **167** | Gyro · T3<br>iron 4 + copper 3 + circuit 2 | torque **40 kN·m** all axes · +0.9 angular damp · **no fuel** · 90 kg. The part that makes a heavy hull controllable | 2 Stack | Caged flywheel: grey drum with large cut-away windows showing a polished brass ring on a dark gimbal yoke, two amber status lights. The ring spins in-render at a rate proportional to `\|ω\|` so the part visibly does its job. |
-| **Control Fin** | **168** | Aero · T2<br>iron 2 + bronze 1 | lift_area 2.4 m² · lift_coef 0.9 · +0.35 roll damp *in atmosphere only* · +0.020 linear damp · 45 kg | 1 Radial (mirrors in symmetry mode) | Swept delta ~2.2 m span: dark grey composite with a chordwise rib pattern, polished bronze leading edge, a lighter hinged trailing flap that deflects in-render with roll input. |
-| **Landing Strut** | **169** | Gear · T2<br>iron 3 + bronze 1 | 55 kg · contact_radius 0.35 m · foot 1.4 m below mount · impact tolerance 12 m/s. **Supplies the contact points §2.6 resolves against** | 1 Radial (3+ for a stable stance) | Folded A-frame: two grey tubular struts on a black round foot pad, bronze pivot boss, visible hydraulic damper with a chrome piston. Stows flush, extends below a config altitude. |
-| **Docking Clamp** | **170** | Dock · T3<br>iron 3 + copper 2 + circuit 1 | 70 kg · `has_dock` gates station capture | 2 Stack (mate face + hull) | Androgynous ring collar: grey annulus, three inward latch hooks at 120°, rubberised black seal face, ring of white guide LEDs that go amber inside the station SOI and solid green on capture. |
-| **Cargo Pod** | **171** | Cargo · T3<br>iron 5 + bronze 3 | 90 kg empty · **+9 slots** · cargo mass adds to `mass_kg` | 2 Stack + 2 Radial | Ribbed hex container 2.8 m long: olive-drab panels, broad white horizontal stripe, four recessed corner lock fittings, hinged end door with a black chevron and a stencilled load-rating decal. |
+| Part | Role · Tier | Key stats | Nodes | Visual |
+|---|---|---|---|---|
+| **Cockpit** | Cockpit · T3<br>copper 4 + iron 3 + circuit 1 | 220 kg · torque 7 kN·m · 3 cargo | 1 Stack aft | Tapered nose, wrap-around smoked canopy on a gunmetal frame, dark chin sensor block, two landing lights. The ship's root part. |
+| **Fuselage Bay** | Structure · T2<br>iron 4 + bronze 1 | 90 kg · 3 m long | 2 Stack + 4 Radial | Flattened hex hull with three ring frames, a dorsal spine rail and dark flank vents. The part that makes a ship long and gives it flanks to hang things off. |
+| **Cargo Bay** | Cargo · T3<br>iron 5 + bronze 3 | 130 kg · +9 slots | 2 Stack + 3 Radial | Wider olive-drab hull segment, dorsal clamshell doors with a hazard seam, four corner locks. |
+| **Fuel Cell** | Tank · T2<br>iron 5 | wet 480 / dry 60 kg · cap 100 | 2 Stack | Dark hull segment with two orange propellant cells visible inboard, a bronze feed line and an amber level gauge. Internal, not a strapped-on tank. |
+| **Wing** | Aero · T2<br>iron 2 + bronze 1 | 70 kg · lift 3.0 m² @ 0.9 | 1 Radial + 1 **Hardpoint** | Swept delta with a bronze leading edge, an under-slung hardpoint box and a green tip light. Mirrors in symmetry mode. |
+| **Engine Nacelle** | Engine · T2<br>bronze 3 + iron 2 | 90 kN · 9 fuel/s · 140 kg | 1 Hardpoint | Slung pod: soot-rimmed bell aft with a cyan glow ring, ribbed body, dark intake and cowl forward, bronze rails along the flanks. |
+| **Tail Fin** | Aero · T2<br>iron 2 | 45 kg · lift 1.4 m² @ 0.7 | 1 Radial | Swept vertical stabiliser, bronze leading edge, amber beacon at the tip. Mostly it is what makes the silhouette read as a ship. |
+| **RCS Block** | Rcs · T3<br>bronze 2 + wire 2 | torque 3 kN·m · 0.15 fuel/s · 22 kg | 1 Radial | Small white block with a hazard band and four 90° nozzles. Torque scales with distance from the CoM, so corners beat the centreline. |
+| **Reaction Wheel** | Gyro · T3<br>iron 4 + copper 3 + circuit 2 | torque 40 kN·m · **no fuel** · 85 kg | 2 Stack | Hull segment with cut-away windows showing a brass flywheel on a dark yoke, amber status lamp. The fix for a hull too heavy to turn. |
+| **Landing Skid** | Gear · T2<br>iron 3 + bronze 1 | 50 kg · impact tolerance 12 m/s | 1 Radial | Belly A-frame on a black skid pad with a chrome damper. Supplies the contact points §2.6 resolves against. |
+| **Docking Collar** | Dock · T3<br>iron 3 + copper 2 + circuit 1 | 65 kg · `has_dock` | 1 Stack | Ring collar, three inward latch hooks at 120°, rubber seal face, ring of LEDs that go green on capture. |
 
-**Cargo Pod is not a stat line.** It is a new world-mutating store and must ship with: a slot-grid panel showing **hotbar + bag** alongside the pod (the hotbar rule), all movement through `bag::available`/`give`, a `cargo` trailing group in the ride save, and a `sp_save_now()` on every mutation. If that is out of scope for the milestone, ship the pod as +mass with no slots and add the store later — do **not** half-wire it.
+**Cargo Bay is not a stat line.** It is a new world-mutating store and must
+ship with a slot-grid panel showing **hotbar + bag** alongside the hold (the
+standing hotbar rule), all movement through `bag::available`/`give`, a
+`cargo` trailing group in the ride save, and a `sp_save_now()` on every
+mutation. If that is out of scope for the milestone, ship it as +mass and
++silhouette with no slots and add the store later - do **not** half-wire it.
 
-**Also fix while here:** `items::print_recipes` (`items.rs:543`) is a second recipe authority whose costs already **disagree** with `recipes.yaml` (rocket-engine bronze 4 vs 3, fuel-tank iron 6 vs 5, launch-pad iron4+stone4 vs iron4+bronze2). Fold it into `recipes.yaml` with a station tag before adding ten parts to two drifted tables.
+**Also fix while here:** `items::print_recipes` (`items.rs:543`) is a second
+recipe authority whose costs already **disagree** with `recipes.yaml`
+(rocket-engine bronze 4 vs 3, fuel-tank iron 6 vs 5, launch-pad iron4+stone4
+vs iron4+bronze2). Fold it into `recipes.yaml` before adding parts to two
+drifted tables.
 
----
 
 ## 7. What gets ripped
 
@@ -681,37 +695,63 @@ The frame model supports it for free (a ship frame nests exactly like the statio
 
 ---
 
-## 11. Mockup assets (built, in-tree)
+## 11. Mockup assets + the drydock playground (built, in-tree)
 
 `tools/gen-ship-parts.py` is a deterministic stdlib+zlib generator (the
-CLAUDE.md static-asset pipeline) that emits, for each of the ten new parts:
+CLAUDE.md static-asset pipeline) that emits, for each of the eleven parts:
 
 | output | purpose |
 |---|---|
 | `assets/models/ship_<part>.obj` | geometry, one `o` group per sub-piece - the exact OBJ subset `baked_model.rs` parses (`o` / `usemtl` / `v` / `f` / `mtllib`) |
 | `assets/models/ship_<part>.mtl` | per-group `Kd` colours |
-| `assets/models/ship_<part>.json` | pivot **plus the attachment nodes** - this file IS the node spec section 4.1 mates parts on, so the art and the physics graph cannot disagree |
+| `assets/models/ship_<part>.json` | pivot, **attachment nodes**, and the part's stats - this file IS the node spec section 4.1 mates parts on, so the art and the physics graph cannot disagree |
 | `assets/textures/items/<part>.png` | 32x32 RGBA inventory icon |
 
-The icons are **rendered from the models** by the small software rasterizer at
-the bottom of the generator, using the same shading rule the game applies at
-load (`baked_model.rs::shade_from_normal` - top faces bright, undersides dark).
-One source of truth: an icon cannot drift from the part it depicts.
+The icons are **rendered from the models** by the software rasterizer at the
+bottom of the generator, using the game's own load-time shading rule
+(`baked_model.rs::shade_from_normal`). One source of truth: an icon cannot
+drift from the part it depicts.
 
-Authoring conventions, matching the existing `assets/models/rocket_*.obj` set:
+Authoring conventions:
 
-- units are metres; a standard hull module is 2 m long and ~2 m across
-- a part runs along **+Y with its aft mating face at y = 0**
-  (`rocket_fuel_tank.obj` is y = 0..2), so parts stack by translating +Y
-- **engines are the exception and are authored bell-aft** (bell at y = 0,
-  mating node at the fore end) so the part hangs below what it mounts to
-- node 0 is the part's own mating node - the one that meets its parent
+- units are metres; a hull module is 3 m long and ~1.8 m across
+- **+Z is the nose** (forward, and the main thrust axis), +Y up, +X
+  starboard - the same axes section 2.1 gives the physics, so a part's
+  model axes and its physics axes are one set of axes
+- a part's aft mating face sits at z = 0, so the spine grows by translating
+  along +Z; node 0 is the part's own mating node and its `dir` points away
+  from the part
+- engines are the exception and are authored **bell-aft**, so a nacelle
+  hangs below what it mounts to
 
-Regenerate with `python tools/gen-ship-parts.py`, or
-`python tools/gen-ship-parts.py --sheet out.png` to also write a contact sheet.
+`python tools/gen-ship-parts.py` regenerates everything;
+`--sheet OUT.png` also writes a contact sheet and `--json OUT.json` writes
+the combined mesh+stats blob the playground embeds.
 
-These are **mockups for the proposal**, not final art: they establish
-silhouette, palette, scale and the node layout. If the plan is accepted they
-become the real assets in step 9, at which point the parts want a texture pass
-(the models currently carry flat per-group colours, not sampled textures) and
-the icons may want hand-pixel polish over the rendered baseline.
+### The drydock playground
+
+A published, interactive assembly bay built on the same generated part data:
+click a part, click a glowing node, watch the ship take shape, with mass,
+CoM, thrust, TWR, cruise speed, turn rate and the fault list computed live
+from **this document's formulas** (section 2.2's damping solve, 2.3's
+parallel-axis inertia, 2.9's `[ship]` constants and the planet's real
+`g = 25 m/s²`). Symmetry mirrors radial parts across the centreline, and the
+export box shows the section 4.5 `:m:` flat-int pad encoding for whatever
+you have built.
+
+It exists to pressure-test the design before any of it is implemented: if a
+part roster or a damping constant produces a ship that is miserable to
+assemble or reads wrong in the readout, that is far cheaper to learn here
+than in `player_ctrl.rs`.
+
+Chirality note worth carrying into the real builder: a swept wing is
+**chiral**, and no rotation turns a starboard copy into a port one - only a
+reflection does. The playground mates a part by trying both the plain and
+the mirrored definition and keeping whichever needs the smaller rotation;
+without that, attaching to the port node first yields a forward-swept wing.
+The in-game builder needs the same rule.
+
+These are **mockups**: they establish silhouette, palette, scale and the
+node layout. If the plan is accepted they become the real assets in step 9,
+at which point the parts want a texture pass (the models carry flat
+per-group colours, not sampled textures).

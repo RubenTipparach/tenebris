@@ -1,0 +1,30 @@
+{
+ "role": "Rcs",
+ "mass_kg": 22,
+ "torque_nm": 3000,
+ "fuel_per_s": 0.15,
+ "tier": "T3",
+ "recipe": "bronze 2 + wire 2",
+ "blurb": "Attitude authority. Mount them far from the centre of mass.",
+ "label": "RCS Block",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ]
+}
