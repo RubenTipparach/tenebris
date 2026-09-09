@@ -325,6 +325,21 @@ const PARTS_RAW = __PARTS_JSON__;
  * nodes do not exist, whose TWR is under 1, or that cannot turn. */
 const FLEET = __FLEET_JSON__;
 
+/* Rules shared with the generator, exported as data by
+ * tools/gen-ship-parts.py --meta so neither side can drift:
+ *   structural_kinds - mounts that interchange freely
+ *   emissive_colors  - materials drawn as a light, not shaded */
+const META = __META_JSON__;
+const EMISSIVE = new Set(META.emissive_colors.map(c => c.toLowerCase()));
+const STRUCTURAL = new Set(META.structural_kinds);
+
+/* Structural mounts interchange; every other kind is a TOOL mount and is
+ * exclusive, so a drill only ever lands on a Drill node. */
+function mates(parentKind, childKind) {
+  if (STRUCTURAL.has(parentKind) && STRUCTURAL.has(childKind)) return true;
+  return parentKind === childKind;
+}
+
 /* Flight constants: MODULAR_SHIP_PLAN.md section 2.9 [ship] plus the
  * planet's real surface gravity (planet.rs SURFACE_GRAVITY_MPS2_PER_G).
  * The readout below is those formulas, not invented numbers. */
@@ -541,6 +556,10 @@ function removeAt(idx) {
 function analyse(poses) {
   let mass = 0, thrust = 0, torque = 0, fuelCap = 0, burn = 0, cargo = 0;
   let hasDock = false, hasGear = 0, lift = 0;
+  /* Tool output. Rates SUM (two drills cut twice as fast); scan range
+   * takes the BEST fit, because range is not additive - a second dish
+   * does not see further than the better one alone. */
+  let mineRate = 0, loadRate = 0, pumpRate = 0, scanRange = 0;
   const com = new THREE.Vector3();
   const parts = [];
 
@@ -567,6 +586,10 @@ function analyse(poses) {
     fuelCap += def.fuel_cap || 0;
     if (def.role === 'Rcs') burn += 0;             // RCS only burns while steering
     cargo += def.cargo || 0;
+    mineRate += def.mine_rate_m3_s || 0;
+    loadRate += def.load_rate_t_s || 0;
+    pumpRate += def.pump_rate_l_s || 0;
+    scanRange = Math.max(scanRange, def.scan_range_m || 0);
     if (def.has_dock) hasDock = true;
     if (def.role === 'Gear') hasGear++;
     lift += (def.lift_area_m2 || 0) * (def.lift_coef || 0);
@@ -614,6 +637,7 @@ function analyse(poses) {
 
   return { mass, thrust: F.length(), twr, aMax, cruise, torque, I, turn,
            fuelCap, burn, cargo, hasDock, hasGear, lift, com,
+           mineRate, loadRate, pumpRate, scanRange,
            tau: tau.length(), tauVec: tau, offDeg, t90: 2.3 / CFG.kLin };
 }
 
@@ -648,6 +672,27 @@ function faultsOf(s) {
   if (!s.hasDock) f.push(['warn', 'No docking collar - this ship cannot dock at the station.']);
   if (s.hasGear > 0 && s.hasGear < 3) f.push(['warn', 'Only ' + s.hasGear +
       ' landing skid' + (s.hasGear > 1 ? 's' : '') + '. Three or more give a stable stance.']);
+  /* An empty tool mount is the whole point of the class hull going unused,
+   * so name it by family rather than leaving the ship silently useless. */
+  const EMPTY = { Drill: ['no drill fitted - it cannot mine', 'Drill'],
+                  Sensor: ['no sensor fitted - it cannot scan', 'Sensor'],
+                  Cargo: ['no handling gear fitted', 'Cargo'],
+                  Fluid: ['no transfer gear fitted', 'Fluid'] };
+  const taken = new Set();
+  ship.forEach(i => { if (i.parent >= 0) taken.add(i.parent + ':' + i.node); });
+  const openKinds = {};
+  ship.forEach((inst, i) => {
+    PARTS[inst.part].nodes.forEach((n, ni) => {
+      if (ni === 0 && inst.parent >= 0) return;
+      if (taken.has(i + ':' + ni)) return;
+      if (EMPTY[n.kind]) openKinds[n.kind] = (openKinds[n.kind] || 0) + 1;
+    });
+  });
+  Object.keys(openKinds).forEach(k => {
+    const fitted = ship.some(i => PARTS[i.part].nodes[0].kind === k && i.parent >= 0);
+    if (!fitted) f.push(['warn', 'This hull has ' + openKinds[k] + ' ' + EMPTY[k][1] +
+        ' mount' + (openKinds[k] > 1 ? 's' : '') + ' and ' + EMPTY[k][0] + '.']);
+  });
   if (ship.length >= CFG.maxParts) f.push(['warn', 'At the ' + CFG.maxParts + '-part limit.']);
   if (!f.length) f.push(['ok', 'Flightworthy. No faults.']);
   return f;
@@ -733,17 +778,24 @@ function buildMeshes(poses) {
      * pure tint: white normally, amber for the selection, dimmed for the
      * rest of the ship while something is selected. */
     const dim = (selected >= 0 && selected !== i);
+    /* Emissive faces (engine exhaust, running lights) go into a SECOND
+     * buffer drawn unlit at full brightness. Shaded like the hull they
+     * resolved to a dark disc at the back of the ship - an engine bell has
+     * to read as lit from inside, and no lambert term will do that. */
+    const ePos = [], eCol = [], eUv = [];
     def.mesh.f.forEach(f => {
+      const lit = EMISSIVE.has(String(f[6]).toLowerCase());
       let c = new THREE.Color(0xffffff);
-      if (tx === null) c = new THREE.Color(f[6]);      // no atlas: flat colour
+      if (tx === null || lit) c = new THREE.Color(f[6]);
       if (dim) c.multiplyScalar(0.55);
-      else if (selected === i) c.lerp(new THREE.Color(0xffc266), 0.45);
+      else if (selected === i && !lit) c.lerp(new THREE.Color(0xffc266), 0.45);
+      const P = lit ? ePos : pos, C = lit ? eCol : col, U = lit ? eUv : uv;
       for (let k = 0; k < 3; k++) {
         const v = wv[f[k]];
-        pos.push(v.x, v.y, v.z);
-        col.push(c.r, c.g, c.b);
+        P.push(v.x, v.y, v.z);
+        C.push(c.r, c.g, c.b);
         const t2 = def.mesh.t[f[3 + k]];
-        uv.push(t2 ? t2[0] : 0, t2 ? t2[1] : 0);
+        U.push(t2 ? t2[0] : 0, t2 ? t2[1] : 0);
       }
     });
     const g = new THREE.BufferGeometry();
@@ -752,13 +804,29 @@ function buildMeshes(poses) {
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     g.computeVertexNormals();
     const mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({
-      map: tx || null, vertexColors: true, flatShading: true, side: THREE.DoubleSide
+      map: tx || null, vertexColors: true, flatShading: true, side: THREE.FrontSide
     }));
     mesh.userData.inst = i;
     shipGroup.add(mesh);
+    if (ePos.length) {
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute('position', new THREE.Float32BufferAttribute(ePos, 3));
+      eg.setAttribute('color', new THREE.Float32BufferAttribute(eCol, 3));
+      eg.setAttribute('uv', new THREE.Float32BufferAttribute(eUv, 2));
+      const em = new THREE.Mesh(eg, new THREE.MeshBasicMaterial({
+        vertexColors: true, side: THREE.DoubleSide
+      }));
+      em.userData.inst = i;
+      shipGroup.add(em);
+    }
   });
 }
 
+/* One colour per mount family, so a Drill node never reads as a Stack. */
+const MOUNT_COLOR = {
+  Stack: 0xd99a3c, Radial: 0xd99a3c, Hardpoint: 0x4dc9d6,
+  Drill: 0xe0653c, Sensor: 0x5fbf7d, Cargo: 0xd9c23c, Fluid: 0x9a7bd9
+};
 let nodeHandles = [];
 function buildNodes(free) {
   while (nodeGroup.children.length) {
@@ -767,10 +835,15 @@ function buildNodes(free) {
   }
   nodeHandles = [];
   if (!held) return;
+  /* Only light up mounts this part actually fits, so an exclusive tool
+   * mount reads as "nothing else goes here" rather than as a mount the
+   * click silently refuses. */
+  const childKind = PARTS[held].nodes[0].kind;
+  free = free.filter(f => mates(f.kind, childKind));
   free.forEach(f => {
     const g = new THREE.SphereGeometry(0.19, 12, 8);
     const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
-      color: f.kind === 'Hardpoint' ? 0x4dc9d6 : 0xd99a3c,
+      color: MOUNT_COLOR[f.kind] || 0xd99a3c,
       transparent: true, opacity: 0.9
     }));
     m.position.copy(f.pos);
@@ -969,6 +1042,12 @@ function renderReadout(s) {
     ['Lift area', fmt(s.lift, 1) + ' <small>m²</small>', ''],
     ['Docking', s.hasDock ? 'fitted' : 'none', s.hasDock ? 'good' : 'warn']
   ];
+  /* Class output only appears when the ship actually carries the gear -
+   * a fighter has no business showing an empty "mining rate" row. */
+  if (s.mineRate > 0) rows.push(['Mining rate', fmt(s.mineRate, 1) + ' <small>m³/s</small>', 'good']);
+  if (s.scanRange > 0) rows.push(['Scan range', fmt(s.scanRange, 0) + ' <small>m</small>', 'good']);
+  if (s.loadRate > 0) rows.push(['Load rate', fmt(s.loadRate, 1) + ' <small>t/s</small>', 'good']);
+  if (s.pumpRate > 0) rows.push(['Transfer rate', fmt(s.pumpRate, 0) + ' <small>L/s</small>', 'good']);
   const host = document.getElementById('rows');
   host.textContent = '';
   rows.forEach(([k, v, cls]) => {

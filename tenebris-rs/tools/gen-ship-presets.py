@@ -11,6 +11,7 @@ floor. A preset that ships is a preset that flies.
 Run from tenebris-rs/:  python tools/gen-ship-presets.py [--json OUT.json]
 """
 
+import importlib.util
 import json
 import math
 import os
@@ -99,6 +100,15 @@ def load_parts():
 
 PARTS = load_parts()
 
+# The mount rule lives in gen-ship-parts.py; import it rather than restating
+# it, so the validator and the playground can never disagree about what fits.
+_spec = importlib.util.spec_from_file_location(
+    "gen_ship_parts", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "gen-ship-parts.py"))
+_gsp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_gsp)
+mount_fits = _gsp.mates      # `mates` is already a local: the list of mate tuples
+
 
 def mirrored(p):
     m = dict(p)
@@ -161,6 +171,10 @@ def build(root, mates):
         used.add((parent, nodeidx))
         poses = solve(ship)
         pn = pdef["nodes"][nodeidx]
+        ck = PARTS[part]["nodes"][0]["kind"]
+        if not mount_fits(pn["kind"], ck):
+            raise ValueError("%s (%s) does not fit a %s mount"
+                             % (part, ck, pn["kind"]))
         wd = vnorm(q_rot(poses[parent]["quat"], pn["dir"]))
         ship.append({"part": part, "parent": parent, "node": nodeidx,
                      "roll": 0, "mir": best_mir(part, wd)})
@@ -258,96 +272,127 @@ FLEET = [
    (0,1,'docking_collar')]),
 
  # ---- transport --------------------------------------------------------
- ("Ferry", "Shuttle", "transport", "cockpit", [
+ ("Ferry", "Shuttle", "transport", "freight_cockpit", [
    (0,0,'cargo_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'landing_skid'), (3,1,'docking_collar')]),
- ("Drover", "Freighter", "transport", "cockpit", [
+   (1,4,'landing_skid'), (3,1,'docking_collar'),
+   (0,1,'clamp_arm'),
+   (0,2,'clamp_arm')]),
+ ("Drover", "Freighter", "transport", "freight_cockpit", [
    (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
    (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
    (1,2,'landing_skid'), (1,3,'landing_skid'),
    (2,2,'heavy_cradle'), (1,6,'docking_collar'),
-   (1,4,'rcs_block'), (1,5,'rcs_block')]),
- ("Colossus", "Heavy Hauler", "transport", "bridge", [
+   (1,4,'rcs_block'), (1,5,'rcs_block'),
+   (0,1,'container_rack'),
+   (0,2,'container_rack')]),
+ ("Colossus", "Heavy Hauler", "transport", "freight_cockpit", [
    (0,0,'hull_junction'), (1,1,'bulk_hold'), (1,2,'fuel_bunker'),
    (1,3,'fuel_bunker'), (2,1,'attitude_bank'), (5,1,'thrust_spar'),
    (6,1,'heavy_nacelle'), (6,2,'heavy_nacelle'),
    (6,3,'heavy_nacelle'), (6,4,'heavy_nacelle'),
    (2,2,'heavy_cradle'), (2,3,'docking_collar'),
-   (3,2,'rcs_block'), (4,2,'rcs_block')]),
- ("Caravan", "Container Liner", "transport", "bridge", [
+   (3,2,'rcs_block'), (4,2,'rcs_block'),
+   (0,1,'gantry_loader'),
+   (0,2,'gantry_loader')]),
+ ("Caravan", "Container Liner", "transport", "freight_cockpit", [
    (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'bulk_hold'),
    (3,1,'fuel_bunker'), (4,1,'attitude_bank'), (5,1,'heavy_nacelle'),
    (1,2,'rcs_block'), (1,3,'rcs_block'),
    (2,2,'heavy_cradle'), (3,2,'heavy_cradle'),
-   (1,6,'docking_collar'), (0,2,'landing_skid')]),
+   (1,6,'docking_collar'), (1,4,'landing_skid'),
+   (0,1,'container_rack'),
+   (0,2,'container_rack')]),
 
  # ---- mining -----------------------------------------------------------
- ("Ferret", "Prospector", "mining", "tandem_cockpit", [
+ ("Ferret", "Prospector", "mining", "mining_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'cargo_bay'),
    (3,1,'fuel_cell'), (1,2,'wing'), (1,3,'wing'),
    (5,1,'nacelle'), (6,1,'nacelle'),
-   (1,5,'landing_skid'), (3,4,'landing_skid')]),
- ("Quarry", "Ore Hauler", "mining", "cockpit", [
+   (1,5,'landing_skid'), (3,4,'landing_skid'),
+   (0,1,'auger_drill'),
+   (0,2,'auger_drill')]),
+ ("Quarry", "Ore Hauler", "mining", "mining_cockpit", [
    (0,0,'spine_truss'), (1,1,'bulk_hold'), (2,1,'fuel_bunker'),
    (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
    (1,2,'heavy_cradle'), (1,3,'heavy_cradle'), (2,2,'heavy_cradle'),
-   (1,4,'rcs_block'), (1,5,'rcs_block'), (1,6,'docking_collar')]),
- ("Deepcore", "Mining Rig", "mining", "bridge", [
+   (1,4,'rcs_block'), (1,5,'rcs_block'), (1,6,'docking_collar'),
+   (0,1,'rotary_drill'),
+   (0,2,'rotary_drill')]),
+ ("Deepcore", "Mining Rig", "mining", "mining_cockpit", [
    (0,0,'hull_junction'), (1,1,'spine_truss'), (1,2,'bulk_hold'),
    (1,3,'bulk_hold'), (2,1,'fuel_bunker'), (5,1,'attitude_bank'),
    (6,1,'heavy_nacelle'),
    (2,2,'heavy_cradle'), (2,3,'heavy_cradle'),
    (2,4,'rcs_block'), (2,5,'rcs_block'), (2,6,'docking_collar'),
-   (3,2,'landing_skid'), (4,2,'landing_skid')]),
+   (3,2,'landing_skid'), (4,2,'landing_skid'),
+   (0,1,'plasma_bore'),
+   (0,2,'plasma_bore')]),
 
  # ---- tanker -----------------------------------------------------------
- ("Ladle", "Fuel Tender", "tanker", "cockpit", [
+ ("Ladle", "Fuel Tender", "tanker", "tanker_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,5,'landing_skid'), (3,1,'docking_collar'), (1,4,'rcs_block')]),
- ("Cistern", "Bulk Tanker", "tanker", "bridge", [
+   (1,5,'landing_skid'), (3,1,'docking_collar'), (1,4,'rcs_block'),
+   (0,1,'transfer_pump'),
+   (0,2,'transfer_pump')]),
+ ("Cistern", "Bulk Tanker", "tanker", "tanker_cockpit", [
    (0,0,'fuel_bunker'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
    (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
    (1,2,'rcs_block'), (1,3,'rcs_block'),
    (2,2,'heavy_cradle'), (2,3,'heavy_cradle'),
-   (0,1,'docking_collar'), (0,2,'landing_skid')]),
+   (3,2,'docking_collar'), (3,3,'landing_skid'),
+   (0,1,'cryo_trunk'),
+   (0,2,'cryo_trunk')]),
 
  # ---- exploration ------------------------------------------------------
- ("Kite", "Scout", "exploration", "bubble_cockpit", [
+ ("Kite", "Scout", "exploration", "survey_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'reaction_wheel'), (2,1,'fuel_cell'),
    (1,2,'wing'), (1,3,'wing'), (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid')]),
- ("Wayfarer", "Pathfinder", "exploration", "tandem_cockpit", [
+   (1,4,'tail_fin'), (1,5,'landing_skid'),
+   (0,1,'radar_array'),
+   (0,2,'radar_array')]),
+ ("Wayfarer", "Pathfinder", "exploration", "survey_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'fuel_bunker'), (2,1,'reaction_wheel'),
    (1,2,'wing'), (1,3,'wing'),
    (4,1,'nacelle'), (5,1,'nacelle'),
-   (1,4,'tail_fin'), (1,5,'landing_skid'), (2,2,'docking_collar')]),
- ("Odyssey", "Long Ranger", "exploration", "bridge", [
+   (1,4,'tail_fin'), (1,5,'landing_skid'), (2,2,'docking_collar'),
+   (0,1,'dish_antenna'),
+   (0,2,'radar_array')]),
+ ("Odyssey", "Long Ranger", "exploration", "survey_cockpit", [
    (0,0,'spine_truss'), (1,1,'fuel_bunker'), (2,1,'fuel_bunker'),
    (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
    (1,2,'wing'), (1,3,'wing'), (6,1,'nacelle'),
    (7,1,'nacelle'),
-   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (0,2,'landing_skid'),
-   (1,4,'rcs_block'), (1,5,'rcs_block')]),
+   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (2,2,'landing_skid'),
+   (1,4,'rcs_block'), (1,5,'rcs_block'),
+   (0,1,'phased_array'),
+   (0,2,'dish_antenna')]),
 
  # ---- science ----------------------------------------------------------
- ("Lantern", "Survey Ship", "science", "bubble_cockpit", [
+ ("Lantern", "Survey Ship", "science", "survey_cockpit", [
    (0,0,'fuselage_bay'), (1,1,'cargo_bay'), (2,1,'fuel_cell'),
    (3,1,'reaction_wheel'), (1,2,'wing'), (1,3,'wing'),
    (5,1,'nacelle'), (6,1,'nacelle'),
-   (1,4,'rcs_block'), (1,5,'landing_skid'), (2,4,'landing_skid')]),
- ("Astrolabe", "Laboratory", "science", "bridge", [
+   (1,4,'rcs_block'), (1,5,'landing_skid'), (2,4,'landing_skid'),
+   (0,1,'dish_antenna'),
+   (0,2,'radar_array')]),
+ ("Astrolabe", "Laboratory", "science", "lab_cockpit", [
    (0,0,'spine_truss'), (1,1,'cargo_bay'), (2,1,'fuel_bunker'),
    (3,1,'attitude_bank'), (4,1,'heavy_nacelle'),
    (1,2,'rcs_block'), (1,3,'rcs_block'), (1,4,'rcs_block'), (1,5,'rcs_block'),
-   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (0,2,'landing_skid')]),
- ("Oculus", "Sensor Platform", "science", "bridge", [
+   (1,6,'docking_collar'), (1,7,'heavy_cradle'), (2,2,'landing_skid'),
+   (0,1,'phased_array'),
+   (0,2,'dish_antenna'),
+   (0,3,'container_rack')]),
+ ("Oculus", "Sensor Platform", "science", "lab_cockpit", [
    (0,0,'hull_junction'), (1,1,'fuel_bunker'), (1,2,'fuel_cell'),
    (1,3,'fuel_cell'), (2,1,'attitude_bank'), (5,1,'heavy_nacelle'),
-   (0,1,'docking_collar'), (0,2,'landing_skid'),
    (2,2,'rcs_block'), (2,3,'rcs_block'),
-   (3,1,'rcs_block'), (4,1,'rcs_block')]),
+   (3,1,'docking_collar'), (4,1,'landing_skid'),
+   (0,1,'phased_array'),
+   (0,2,'phased_array'),
+   (0,3,'clamp_arm')]),
 
  # ---- utility ----------------------------------------------------------
  ("Mule", "Station Tug", "utility", "cockpit", [

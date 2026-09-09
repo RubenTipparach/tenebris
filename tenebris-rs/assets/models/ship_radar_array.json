@@ -1,0 +1,32 @@
+{
+ "role": "Sensor",
+ "mass_kg": 80,
+ "scan_range_m": 400,
+ "tier": "T2",
+ "recipe": "copper 4 + iron 2 + circuit 1",
+ "blurb": "Radar Array. Scans to 400 m. Fits a Sensor mount - Survey and Laboratory cabs.",
+ "label": "Radar Array",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Sensor"
+  }
+ ],
+ "texture": "ship_radar_array.png",
+ "atlas_px": 256,
+ "uv_islands": 6
+}

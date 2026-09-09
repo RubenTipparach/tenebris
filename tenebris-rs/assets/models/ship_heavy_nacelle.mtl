@@ -12,6 +12,10 @@ newmtl cyan
 Kd 0.3000 0.7800 0.8500
 map_Kd ship_heavy_nacelle.png
 
+newmtl exhaust
+Kd 0.6200 0.8600 1.0000
+map_Kd ship_heavy_nacelle.png
+
 newmtl gunmetal
 Kd 0.2800 0.3000 0.3400
 map_Kd ship_heavy_nacelle.png

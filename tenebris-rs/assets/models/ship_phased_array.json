@@ -1,0 +1,32 @@
+{
+ "role": "Sensor",
+ "mass_kg": 280,
+ "scan_range_m": 3200,
+ "tier": "T4",
+ "recipe": "copper 10 + iron 5 + circuit 4 + wire 4",
+ "blurb": "Phased Array. Scans to 3200 m. Fits a Sensor mount - Survey and Laboratory cabs.",
+ "label": "Phased Array",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Sensor"
+  }
+ ],
+ "texture": "ship_phased_array.png",
+ "atlas_px": 256,
+ "uv_islands": 11
+}

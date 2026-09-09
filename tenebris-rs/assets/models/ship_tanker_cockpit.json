@@ -1,0 +1,59 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 360,
+ "torque_nm": 8500,
+ "cargo": 3,
+ "tier": "T3",
+ "recipe": "iron 6 + bronze 5 + copper 3 + circuit 1",
+ "blurb": "Tanker bridge. Trunk lines down both flanks and a transfer mount on each - the only hull a pump will fit.",
+ "label": "Tanker Bridge",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -0.8648,
+    -0.18,
+    1.55
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Fluid"
+  },
+  {
+   "pos": [
+    0.8648,
+    -0.18,
+    1.55
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Fluid"
+  }
+ ],
+ "texture": "ship_tanker_cockpit.png",
+ "atlas_px": 320,
+ "uv_islands": 18
+}

@@ -28,5 +28,5 @@
  ],
  "texture": "ship_docking_collar.png",
  "atlas_px": 256,
- "uv_islands": 14
+ "uv_islands": 15
 }

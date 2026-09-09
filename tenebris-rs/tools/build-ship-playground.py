@@ -7,7 +7,8 @@ build product; the sources are
 
     tools/ship-playground.shell.html   markup, styles, the whole viewer
     tools/gen-ship-parts.py            the part catalogue  (__PARTS_JSON__)
-    tools/gen-ship-presets.py          the 20 test ships   (__FLEET_JSON__)
+                                       + the shared rules  (__META_JSON__)
+    tools/gen-ship-presets.py          the test ships      (__FLEET_JSON__)
 
 Edit the shell (or either generator) and re-run this; never hand-edit the
 built ship-playground.html - the next build overwrites it.
@@ -27,10 +28,10 @@ SHELL = os.path.join(HERE, "ship-playground.shell.html")
 OUT = os.path.join(HERE, "ship-playground.html")
 
 
-def generate(script, out_path):
+def generate(script, out_path, *extra):
     """Run one of the tools/gen-*.py generators into a JSON file."""
     subprocess.run([sys.executable, os.path.join(HERE, script),
-                    "--json", out_path],
+                    "--json", out_path, *extra],
                    cwd=os.path.dirname(HERE), check=True,
                    stdout=subprocess.DEVNULL)
     with open(out_path) as f:
@@ -40,8 +41,11 @@ def generate(script, out_path):
 def main():
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else OUT
     with tempfile.TemporaryDirectory() as tmp:
-        parts = generate("gen-ship-parts.py", os.path.join(tmp, "parts.json"))
+        meta_path = os.path.join(tmp, "meta.json")
+        parts = generate("gen-ship-parts.py", os.path.join(tmp, "parts.json"),
+                         "--meta", meta_path)
         fleet = generate("gen-ship-presets.py", os.path.join(tmp, "fleet.json"))
+        meta = open(meta_path).read()
 
     # sanity: both must parse, and the fleet may only name parts that exist
     catalogue = {p["id"] for p in json.loads(parts)}
@@ -52,7 +56,8 @@ def main():
                                  % (ship["name"], part["part"]))
 
     html = open(SHELL, encoding="utf-8").read()
-    for token, payload in (("__PARTS_JSON__", parts), ("__FLEET_JSON__", fleet)):
+    for token, payload in (("__PARTS_JSON__", parts), ("__FLEET_JSON__", fleet),
+                          ("__META_JSON__", meta)):
         if token not in html:
             raise SystemExit("shell is missing %s" % token)
         html = html.replace(token, payload.strip())

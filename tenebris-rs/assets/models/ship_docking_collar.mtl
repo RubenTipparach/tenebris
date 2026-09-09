@@ -16,6 +16,10 @@ newmtl gunmetal
 Kd 0.2800 0.3000 0.3400
 map_Kd ship_docking_collar.png
 
+newmtl hull_dark
+Kd 0.4200 0.4500 0.5000
+map_Kd ship_docking_collar.png
+
 newmtl steel
 Kd 0.5500 0.5700 0.6000
 map_Kd ship_docking_collar.png

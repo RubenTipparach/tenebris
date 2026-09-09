@@ -1,0 +1,32 @@
+{
+ "role": "Drill",
+ "mass_kg": 340,
+ "mine_rate_m3_s": 1.5,
+ "tier": "T3",
+ "recipe": "iron 10 + bronze 4 + circuit 1",
+ "blurb": "Rotary Drill. Cuts 1.5 m3/s. Fits a Drill mount - Prospector Cab only.",
+ "label": "Rotary Drill",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Drill"
+  }
+ ],
+ "texture": "ship_rotary_drill.png",
+ "atlas_px": 256,
+ "uv_islands": 10
+}

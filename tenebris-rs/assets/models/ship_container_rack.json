@@ -1,0 +1,33 @@
+{
+ "role": "Cargo gear",
+ "mass_kg": 260,
+ "load_rate_t_s": 1.0,
+ "cargo": 6,
+ "tier": "T3",
+ "recipe": "iron 9 + bronze 3 + circuit 1",
+ "blurb": "Container Rack. Moves 1.0 t/s and carries 6 slots. Fits a Cargo mount - Freight and Laboratory cabs.",
+ "label": "Container Rack",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Cargo"
+  }
+ ],
+ "texture": "ship_container_rack.png",
+ "atlas_px": 256,
+ "uv_islands": 7
+}

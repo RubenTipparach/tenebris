@@ -36,6 +36,7 @@ Conventions:
 
 Run from tenebris-rs/:
     python tools/gen-ship-parts.py [--sheet OUT.png] [--json OUT.json]
+                                   [--meta OUT.json]
 """
 
 import base64
@@ -72,7 +73,14 @@ MTL = {
     "cyan":       (0.30, 0.78, 0.85),
     "green_led":  (0.35, 0.85, 0.40),
     "white":      (0.92, 0.92, 0.94),
+    "exhaust":    (0.62, 0.86, 1.00),
 }
+
+# Materials that READ AS A LIGHT SOURCE. The playground draws these
+# unlit at full brightness instead of shading them, so an engine bell
+# actually glows rather than resolving to a dark disc at the back of the
+# ship. Exported to the playground so the list has one home.
+EMISSIVE_MATS = ("exhaust", "cyan", "amber", "green_led")
 
 
 class Obj:
@@ -157,7 +165,13 @@ class Obj:
 
     def hull(self, z0, z1, r0, r1, sides=6, flat=0.62, caps=True, phase=0.0):
         """Prism / frustum along +Z, squashed vertically by `flat` so the
-        cross-section reads as an airframe rather than a rocket tube."""
+        cross-section reads as an airframe rather than a rocket tube.
+
+        `caps` is True/False for both ends, or a (start, end) pair. Butt two
+        capped prisms together and their end discs land in the SAME plane;
+        the depth buffer has no way to order them and the seam tears into
+        swimming streaks. Suppress the cap on each side of an internal joint
+        - see hull_chain()."""
         ring0, ring1 = [], []
         for i in range(sides):
             a = phase + 2.0 * math.pi * i / sides
@@ -168,13 +182,16 @@ class Obj:
         for i in range(sides):
             j = (i + 1) % sides
             faces.append((i, j, sides + j, sides + i))
-        if caps:
+        c0, c1 = caps if isinstance(caps, tuple) else (caps, caps)
+        if c0:
             faces.append(tuple(range(sides - 1, -1, -1)))
+        if c1:
             faces.append(tuple(range(sides, 2 * sides)))
         self._emit(verts, faces)
 
     def tube_axis(self, p0, p1, r0, r1, sides=6, caps=True):
-        """Prism between two arbitrary points (struts, rails, nozzles)."""
+        """Prism between two arbitrary points (struts, rails, nozzles).
+        `caps` takes a (start, end) pair too - same coplanar-seam reason."""
         d = [p1[i] - p0[i] for i in range(3)]
         L = math.sqrt(sum(x * x for x in d)) or 1e-6
         ax = [x / L for x in d]
@@ -191,8 +208,10 @@ class Obj:
         for i in range(sides):
             j = (i + 1) % sides
             faces.append((i, j, sides + j, sides + i))
-        if caps:
+        c0, c1 = caps if isinstance(caps, tuple) else (caps, caps)
+        if c0:
             faces.append(tuple(range(sides - 1, -1, -1)))
+        if c1:
             faces.append(tuple(range(sides, 2 * sides)))
         self._emit(verts, faces)
 
@@ -286,6 +305,36 @@ def taper(segs):
     return surf
 
 
+# Structural mounts are PERMISSIVE - they interchange freely, which is how
+# the kit already builds (a Stack-rooted nacelle hangs off a wing Hardpoint,
+# a Radial skid off a Stack node). Every other kind is a TOOL mount and is
+# EXCLUSIVE: a Drill fits a Drill node and nothing else, so a mining drill
+# cannot end up bolted to a survey cab. One rule, one place - the playground
+# and the preset validator both read STRUCTURAL_KINDS from here.
+STRUCTURAL_KINDS = ("Stack", "Radial", "Hardpoint")
+
+
+def mates(parent_kind, child_kind):
+    """May a part whose node 0 is `child_kind` mount on a `parent_kind` node?"""
+    if parent_kind in STRUCTURAL_KINDS and child_kind in STRUCTURAL_KINDS:
+        return True
+    return parent_kind == child_kind
+
+
+def hull_chain(o, segs, sides=6, cap_start=True, cap_end=True):
+    """Emit a run of hull segments as ONE closed solid: only the two ends of
+    the whole chain get a disc, never the internal joints. Every tapering
+    body in the kit is such a chain, and capping each segment buried a pair
+    of coincident discs at every waist."""
+    n = len(segs)
+    for k, seg in enumerate(segs):
+        z0, z1, r0, r1 = seg[0], seg[1], seg[2], seg[3]
+        f = seg[4] if len(seg) > 4 else 0.62
+        o.hull(z0, z1, r0, r1, sides=sides, flat=f,
+               caps=(cap_start if k == 0 else False,
+                     cap_end if k == n - 1 else False))
+
+
 def node(pos, dir_, kind):
     return {"pos": [round(v, 4) for v in pos], "dir": [round(v, 4) for v in dir_], "kind": kind}
 
@@ -350,8 +399,7 @@ def cockpit():
     surf = taper(SEGS)
 
     o.group("nose"); o.mat("hull")
-    for (z0, z1, r0, r1, f) in SEGS:
-        o.hull(z0, z1, r0, r1, flat=f)
+    hull_chain(o, SEGS)
 
     _canopy(o, surf, 1.35, 2.55, rise=0.13, lo_w=0.88, hi_w=0.56, mullions=1)
 
@@ -384,8 +432,7 @@ def bubble_cockpit():
             (1.7, L, HULL_R * 0.74, HULL_R * 0.30, FLAT * 0.90)]
     surf = taper(SEGS)
     o.group("nose"); o.mat("hull")
-    for (z0, z1, r0, r1, f) in SEGS:
-        o.hull(z0, z1, r0, r1, flat=f)
+    hull_chain(o, SEGS)
     # tall, wide and barely framed - the dome is the part
     _canopy(o, surf, 0.60, 2.10, rise=0.46, lo_w=0.94, hi_w=0.78,
             inset=0.10, mullions=2)
@@ -413,8 +460,7 @@ def armoured_cockpit():
             (2.3, L, HULL_R * 0.86, HULL_R * 0.50, FLAT * 0.88)]
     surf = taper(SEGS)
     o.group("hull"); o.mat("hull_dark")
-    for (z0, z1, r0, r1, f) in SEGS:
-        o.hull(z0, z1, r0, r1, flat=f)
+    hull_chain(o, SEGS)
     # a slit, not a bubble: shallow rise, narrow, heavily mullioned
     _canopy(o, surf, 1.55, 2.45, rise=0.11, lo_w=0.80, hi_w=0.62,
             inset=0.02, frame="steel", mullions=3)
@@ -448,8 +494,7 @@ def tandem_cockpit():
             (3.4, L, HULL_R * 0.72, HULL_R * 0.24, FLAT * 0.86)]
     surf = taper(SEGS)
     o.group("nose"); o.mat("hull")
-    for (z0, z1, r0, r1, f) in SEGS:
-        o.hull(z0, z1, r0, r1, flat=f)
+    hull_chain(o, SEGS)
     # two canopies with a spine between them
     _canopy(o, surf, 1.25, 2.35, rise=0.26, lo_w=0.88, hi_w=0.58, mullions=1)
     _canopy(o, surf, 2.55, 3.55, rise=0.17, lo_w=0.86, hi_w=0.54, mullions=1)
@@ -589,10 +634,15 @@ def nacelle():
     o.hull(L - 0.55, L - 0.42, 0.46, 0.44, sides=8, flat=1.0)
     o.group("cowl"); o.mat("hull_dark")
     o.hull(L - 0.42, L, 0.44, 0.34, sides=8, flat=1.0)
+    # Open bell: capped, its aft disc was a flat soot octagon - the engine
+    # read as a dead hole. Now you see into the throat, and the exhaust
+    # disc sits recessed inside it, lit.
     o.group("bell"); o.mat("soot")
-    o.hull(0.0, 0.20, 0.52, 0.40, sides=8, flat=1.0)
+    o.hull(0.0, 0.20, 0.52, 0.40, sides=8, flat=1.0, caps=False)
+    o.group("exhaust"); o.mat("exhaust")
+    o.hull(0.11, 0.13, 0.37, 0.37, sides=8, flat=1.0)
     o.group("glow"); o.mat("cyan")
-    o.hull(-0.03, 0.02, 0.44, 0.44, sides=8, flat=1.0, caps=False)
+    o.hull(-0.03, 0.02, 0.46, 0.46, sides=8, flat=1.0, caps=False)
     o.group("rails"); o.mat("bronze")
     for sx in (-1, 1):
         o.tube_axis((sx * 0.42, 0.0, 0.4), (sx * 0.42, 0.0, L - 0.7), 0.045, 0.045, 4)
@@ -699,8 +749,14 @@ def docking_collar():
     o.hull(0.0, L, 0.74, 0.74, sides=8, flat=1.0)
     o.group("seal"); o.mat("black")
     o.hull(L, L + 0.06, 0.72, 0.66, sides=8, flat=1.0)
+    # The bore is a HOLE. Capped, its end disc sat exactly coplanar with the
+    # seal's cap at z=L+0.06 and the two z-fought into streaks across the
+    # hatch. Open tube + a back plate set well behind the face: you now look
+    # INTO a recess, and no two filled faces share a plane.
     o.group("bore"); o.mat("gunmetal")
-    o.hull(0.0, L + 0.06, 0.42, 0.42, sides=8, flat=1.0)
+    o.hull(0.0, L + 0.06, 0.42, 0.42, sides=8, flat=1.0, caps=False)
+    o.group("hatch"); o.mat("hull_dark")
+    o.hull(0.05, 0.09, 0.40, 0.40, sides=8, flat=1.0)
     o.group("hooks"); o.mat("chrome")
     for i in range(3):
         a = 2.0 * math.pi * i / 3
@@ -837,8 +893,7 @@ def bridge():
     surf = taper(SEGS)
 
     o.group("hull"); o.mat("hull")
-    for (z0, z1, r0, r1, f) in SEGS:
-        o.hull(z0, z1, r0, r1, flat=f)
+    hull_chain(o, SEGS)
 
     # Viewband follows the roof line, same fix as the cockpit canopy.
     zA, zB = 2.05, 3.15
@@ -884,9 +939,11 @@ def heavy_nacelle():
     o = Obj("heavy_nacelle")
     L = 3.4
     o.group("bell"); o.mat("soot")
-    o.hull(0.0, 0.34, 0.92, 0.70, sides=8, flat=1.0)
+    o.hull(0.0, 0.34, 0.92, 0.70, sides=8, flat=1.0, caps=False)
+    o.group("exhaust"); o.mat("exhaust")
+    o.hull(0.18, 0.21, 0.66, 0.66, sides=8, flat=1.0)
     o.group("glow"); o.mat("cyan")
-    o.hull(-0.04, 0.03, 0.80, 0.80, sides=8, flat=1.0, caps=False)
+    o.hull(-0.04, 0.03, 0.84, 0.84, sides=8, flat=1.0, caps=False)
     o.group("body"); o.mat("hull")
     o.hull(0.34, L - 0.7, 0.70, 0.78, sides=8, flat=1.0)
     o.group("bands"); o.mat("bronze")
@@ -1018,10 +1075,424 @@ def heavy_cradle():
     return o, nodes, "Heavy Cradle", stats
 
 
-PARTS = [cockpit, bubble_cockpit, armoured_cockpit, tandem_cockpit, bridge, fuselage_bay, spine_truss, hull_junction, thrust_spar,
-         cargo_bay, bulk_hold, fuel_cell, fuel_bunker, wing, nacelle,
-         heavy_nacelle, tail_fin, rcs_block, reaction_wheel, attitude_bank,
-         landing_skid, heavy_cradle, docking_collar]
+
+# ---------------------------------------------------------------------- #
+# class cabs - a role-specific crew module carrying its OWN tool mounts    #
+#                                                                         #
+# A mining ship is not a cargo ship with a different sticker: the cab is   #
+# where the difference lives. Each one below carries exclusive mounts that #
+# only its family of tools will fit (see mates() above), so the hull you   #
+# pick decides what work the ship can do.                                  #
+# ---------------------------------------------------------------------- #
+def mining_cockpit():
+    """Prospector Cab: armoured chin, ore sight, and two forward drill
+    mounts. The only cab a drill will fit."""
+    o = Obj("mining_cockpit")
+    L = 3.4
+    SEGS = [(0.0, 1.3, HULL_R * 1.04, HULL_R, FLAT),
+            (1.3, 2.5, HULL_R, HULL_R * 0.82, FLAT * 0.95),
+            (2.5, L, HULL_R * 0.82, HULL_R * 0.58, FLAT * 0.90)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("olive")
+    hull_chain(o, SEGS)
+    _canopy(o, surf, 1.45, 2.45, rise=0.14, lo_w=0.84, hi_w=0.60,
+            frame="steel", mullions=2)
+    # roll cage over the canopy - it works under a rock face
+    o.group("cage"); o.mat("gunmetal")
+    for z in (1.50, 2.40):
+        yz, wz, rz, fz = surf(z)
+        o.tube_axis((-wz * 0.94, yz + 0.02, z), (wz * 0.94, yz + 0.02, z), 0.05, 0.05, 4)
+    # ore chute along the belly, feeding aft into the hold
+    yc, wc, _, _ = surf(1.90)
+    o.group("chute"); o.mat("hull_dark")
+    o.box((0.0, -yc - 0.03, 1.90), (wc * 0.72, 0.16, 1.25))
+    o.group("hazard"); o.mat("hazard")
+    for sx in (-1, 1):
+        o.box((sx * wc * 0.74, -yc - 0.03, 1.90), (0.04, 0.10, 1.10))
+    # floodlights on the shoulders
+    y8, w8, r8, f8 = surf(3.10)
+    o.group("lights"); o.mat("white")
+    for sx in (-1, 1):
+        o.box((sx * r8 * 0.66, r8 * f8 * 0.30, 3.10), (0.09, 0.08, 0.07))
+    yD, wD, rD, fD = surf(L)
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((-rD * 0.52, -0.10, L), (0, 0, 1), "Drill"),
+             node((rD * 0.52, -0.10, L), (0, 0, 1), "Drill")]
+    stats = {"role": "Cockpit", "mass_kg": 380, "torque_nm": 8000, "cargo": 4,
+             "tier": "T3", "recipe": "iron 8 + copper 4 + bronze 3 + circuit 1",
+             "blurb": "Mining cab. Two forward drill mounts, an ore chute and a cage - the only hull a drill will fit."}
+    return o, nodes, "Prospector Cab", stats
+
+
+def freight_cockpit():
+    """Freight Cab: the cab rides high over a low spine so the loaders have
+    a clear run down both flanks."""
+    o = Obj("freight_cockpit")
+    L = 3.2
+    SEGS = [(0.0, 1.2, HULL_R * 1.02, HULL_R * 0.98, FLAT * 0.86),
+            (1.2, 2.4, HULL_R * 0.98, HULL_R * 0.88, FLAT * 0.84),
+            (2.4, L, HULL_R * 0.88, HULL_R * 0.52, FLAT * 0.80)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("hull")
+    hull_chain(o, SEGS)
+    # the cab sits on a raised plinth - high seat, long view over the load
+    yP, wP, rP, fP = surf(1.95)
+    o.group("plinth"); o.mat("hull_dark")
+    o.box((0.0, yP + 0.11, 1.95), (wP * 0.66, 0.11, 0.62))
+    o.group("cab"); o.mat("gunmetal")
+    lo = [(-wP * 0.62, yP + 0.22, 1.40), (wP * 0.62, yP + 0.22, 1.40),
+          (wP * 0.62, yP + 0.22, 2.50), (-wP * 0.62, yP + 0.22, 2.50)]
+    hi = [(-wP * 0.46, yP + 0.62, 1.52), (wP * 0.46, yP + 0.62, 1.52),
+          (wP * 0.42, yP + 0.58, 2.38), (-wP * 0.42, yP + 0.58, 2.38)]
+    o.wedge(lo, hi)
+    o.group("glass"); o.mat("glass")
+    o.box((0.0, yP + 0.44, 2.46), (wP * 0.44, 0.16, 0.03))
+    for sx in (-1, 1):
+        o.box((sx * wP * 0.55, yP + 0.44, 1.95), (0.03, 0.15, 0.44))
+    o.group("beacon"); o.mat("amber")
+    o.box((0.0, yP + 0.70, 1.95), (0.07, 0.06, 0.07))
+    yc, wc, _, _ = surf(1.60)
+    o.group("deck"); o.mat("steel")
+    o.box((0.0, -yc + 0.02, 1.60), (wc * 0.88, 0.07, 1.30))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((-HULL_R * 0.96, 0.0, 1.70), (-1, 0, 0), "Cargo"),
+             node((HULL_R * 0.96, 0.0, 1.70), (1, 0, 0), "Cargo")]
+    stats = {"role": "Cockpit", "mass_kg": 340, "torque_nm": 9500, "cargo": 8,
+             "tier": "T3", "recipe": "iron 7 + copper 4 + circuit 1 + wire 2",
+             "blurb": "Freight cab. A high seat over a flat deck and a handling mount down each flank."}
+    return o, nodes, "Freight Cab", stats
+
+
+def tanker_cockpit():
+    """Tanker Bridge: squat, plumbed, and mounting the transfer gear low
+    where the trunk lines run."""
+    o = Obj("tanker_cockpit")
+    L = 3.0
+    SEGS = [(0.0, 1.2, HULL_R * 1.02, HULL_R, FLAT * 0.92),
+            (1.2, 2.2, HULL_R, HULL_R * 0.90, FLAT * 0.90),
+            (2.2, L, HULL_R * 0.90, HULL_R * 0.62, FLAT * 0.86)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("steel")
+    hull_chain(o, SEGS)
+    _canopy(o, surf, 1.60, 2.45, rise=0.18, lo_w=0.78, hi_w=0.56,
+            frame="bronze", mullions=1)
+    # trunk lines running the length of the roof into the tank aft
+    o.group("pipes"); o.mat("bronze")
+    for sx in (-1, 1):
+        yA, wA, _, _ = surf(0.30)
+        yB, wB, _, _ = surf(2.20)
+        o.tube_axis((sx * wA * 0.70, yA - 0.04, 0.20), (sx * wB * 0.70, yB - 0.04, 2.20),
+                    0.07, 0.06, 6)
+    o.group("valves"); o.mat("brass")
+    for sx in (-1, 1):
+        yV, wV, _, _ = surf(1.10)
+        o.box((sx * wV * 0.70, yV + 0.02, 1.10), (0.10, 0.09, 0.10))
+    o.group("hazard"); o.mat("hazard")
+    yh, wh, _, _ = surf(0.70)
+    o.hull(0.66, 0.80, HULL_R * 1.03, HULL_R * 1.03, flat=FLAT * 0.92, caps=False)
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((-HULL_R * 0.94, -0.18, 1.55), (-1, 0, 0), "Fluid"),
+             node((HULL_R * 0.94, -0.18, 1.55), (1, 0, 0), "Fluid")]
+    stats = {"role": "Cockpit", "mass_kg": 360, "torque_nm": 8500, "cargo": 3,
+             "tier": "T3", "recipe": "iron 6 + bronze 5 + copper 3 + circuit 1",
+             "blurb": "Tanker bridge. Trunk lines down both flanks and a transfer mount on each - the only hull a pump will fit."}
+    return o, nodes, "Tanker Bridge", stats
+
+
+def survey_cockpit():
+    """Survey Cab: glass forward, instruments aft. Three sensor mounts, and
+    the only hull a dish or an array will fit."""
+    o = Obj("survey_cockpit")
+    L = 3.0
+    SEGS = [(0.0, 1.0, HULL_R, HULL_R * 0.94, FLAT),
+            (1.0, 2.0, HULL_R * 0.94, HULL_R * 0.78, FLAT * 0.95),
+            (2.0, L, HULL_R * 0.78, HULL_R * 0.34, FLAT * 0.88)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("white")
+    hull_chain(o, SEGS)
+    _canopy(o, surf, 1.55, 2.55, rise=0.34, lo_w=0.90, hi_w=0.70,
+            inset=0.08, frame="gunmetal", mullions=2)
+    # instrument spine aft of the canopy - where the mounts bolt down
+    yS, wS, _, _ = surf(0.90)
+    o.group("spine"); o.mat("gunmetal")
+    o.box((0.0, yS + 0.06, 0.90), (wS * 0.60, 0.07, 0.62))
+    o.group("rails"); o.mat("chrome")
+    for sx in (-1, 1):
+        o.tube_axis((sx * wS * 0.54, yS + 0.10, 0.34), (sx * wS * 0.54, yS + 0.10, 1.46),
+                    0.030, 0.030, 4)
+    o.group("leds"); o.mat("cyan")
+    o.box((0.0, yS + 0.13, 0.90), (wS * 0.24, 0.03, 0.05))
+    y8, w8, r8, f8 = surf(2.80)
+    o.group("probe"); o.mat("chrome")
+    o.tube_axis((0.0, 0.0, 2.80), (0.0, 0.0, 3.45), 0.035, 0.012, 5)
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((0, yS + 0.13, 0.62), (0, 1, 0), "Sensor"),
+             node((0, yS + 0.13, 1.18), (0, 1, 0), "Sensor"),
+             node((0, -yS - 0.02, 1.30), (0, -1, 0), "Sensor")]
+    stats = {"role": "Cockpit", "mass_kg": 250, "torque_nm": 7500, "cargo": 3,
+             "tier": "T3", "recipe": "copper 5 + iron 3 + glass 3 + circuit 2",
+             "blurb": "Survey cab. Three sensor mounts on an instrument spine - the only hull a dish or array will fit."}
+    return o, nodes, "Survey Cab", stats
+
+
+def lab_cockpit():
+    """Laboratory Cab: a survey cab that gave up the view for a sample bay -
+    two sensor mounts plus stowage for what you bring home."""
+    o = Obj("lab_cockpit")
+    L = 3.6
+    SEGS = [(0.0, 1.4, HULL_R * 1.02, HULL_R * 0.98, FLAT * 0.94),
+            (1.4, 2.6, HULL_R * 0.98, HULL_R * 0.84, FLAT * 0.92),
+            (2.6, L, HULL_R * 0.84, HULL_R * 0.44, FLAT * 0.88)]
+    surf = taper(SEGS)
+    o.group("hull"); o.mat("white")
+    hull_chain(o, SEGS)
+    _canopy(o, surf, 2.20, 3.00, rise=0.16, lo_w=0.80, hi_w=0.58,
+            frame="gunmetal", mullions=2)
+    # sample bay: a lit, ribbed drum let into the roof forward of the cab
+    o.group("bay"); o.mat("hull_dark")
+    yB, wB, _, _ = surf(1.30)
+    o.box((0.0, yB + 0.10, 1.30), (wB * 0.68, 0.11, 0.78))
+    o.group("ribs"); o.mat("chrome")
+    for z in (0.95, 1.30, 1.65):
+        yz, wz, _, _ = surf(z)
+        o.tube_axis((-wz * 0.70, yz + 0.10, z), (wz * 0.70, yz + 0.10, z), 0.032, 0.032, 4)
+    o.group("leds"); o.mat("green_led")
+    o.box((0.0, yB + 0.20, 1.30), (wB * 0.30, 0.03, 0.05))
+    yc, wc, _, _ = surf(1.90)
+    o.group("radiator"); o.mat("gunmetal")
+    for sx in (-1, 1):
+        o.box((sx * wc * 1.02, 0.02, 1.90), (0.05, 0.24, 0.70))
+    nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
+             node((0, yB + 0.21, 0.80), (0, 1, 0), "Sensor"),
+             node((0, yB + 0.21, 1.80), (0, 1, 0), "Sensor"),
+             node((0, -yB - 0.02, 1.30), (0, -1, 0), "Cargo")]
+    stats = {"role": "Cockpit", "mass_kg": 420, "torque_nm": 10000, "cargo": 6,
+             "tier": "T4", "recipe": "copper 7 + iron 5 + glass 4 + circuit 3",
+             "blurb": "Laboratory cab. Two sensor mounts, a lit sample bay and stowage under the floor."}
+    return o, nodes, "Laboratory Cab", stats
+
+
+# ---------------------------------------------------------------------- #
+# tool families - one builder per family, tier is a PARAMETER              #
+#                                                                         #
+# Three tiers of each fit the same exclusive mount, so upgrading a ship is #
+# swapping the tool, not rebuilding the hull. Rate scales faster than mass #
+# so a higher tier is a real gain, and the recipe is what stops you simply #
+# fitting T4 on your first hull.                                          #
+# ---------------------------------------------------------------------- #
+DRILLS = [
+    # (id, label, tier, len, rad, mass, m3/s, recipe, body mat, bit mat)
+    ("auger_drill",  "Auger Drill",  "T2", 1.30, 0.20, 180, 0.6,
+     "iron 6 + bronze 2", "steel", "bronze"),
+    ("rotary_drill", "Rotary Drill", "T3", 1.75, 0.27, 340, 1.5,
+     "iron 10 + bronze 4 + circuit 1", "gunmetal", "chrome"),
+    ("plasma_bore",  "Plasma Bore",  "T4", 2.20, 0.34, 600, 3.4,
+     "iron 14 + bronze 6 + circuit 3 + wire 3", "hull_dark", "cyan"),
+]
+
+
+def make_drill(pid, label, tier, L, R, mass, rate, recipe, body, bit):
+    """Bores along +Z, so it mounts on a forward-facing Drill node and looks
+    where the ship is going."""
+    def build():
+        o = Obj(pid)
+        o.group("collar"); o.mat("gunmetal")
+        o.hull(0.0, 0.16, R * 1.15, R * 1.10, flat=1.0)
+        o.group("barrel"); o.mat(body)
+        o.hull(0.16, L * 0.72, R, R * 0.94, flat=1.0)
+        # auger flights: stacked rings, each a little proud of the barrel
+        o.group("flights"); o.mat("steel")
+        rings = 3 if tier == "T2" else (4 if tier == "T3" else 5)
+        for k in range(rings):
+            z = 0.26 + (L * 0.72 - 0.36) * k / max(rings - 1, 1)
+            o.hull(z, z + 0.06, R * 1.26, R * 1.26, flat=1.0, caps=False)
+        o.group("bit"); o.mat(bit)
+        o.tube_axis((0, 0, L * 0.72), (0, 0, L), R * 0.94, R * 0.10, 6)
+        # motor housing behind the collar, off the axis so it reads as gear
+        o.group("motor"); o.mat("hull_dark")
+        o.box((0.0, R * 1.05, 0.42), (R * 0.52, R * 0.34, 0.30))
+        if tier != "T2":
+            o.group("hoses"); o.mat("black")
+            for sx in (-1, 1):
+                o.tube_axis((sx * R * 0.9, R * 0.5, 0.30), (sx * R * 0.9, R * 0.5, L * 0.60),
+                            0.035, 0.035, 4)
+        nodes = [node((0, 0, 0), (0, 0, -1), "Drill")]
+        stats = {"role": "Drill", "mass_kg": mass, "mine_rate_m3_s": rate,
+                 "tier": tier, "recipe": recipe,
+                 "blurb": "%s. Cuts %.1f m3/s. Fits a Drill mount - Prospector Cab only." % (label, rate)}
+        return o, nodes, label, stats
+    build.__name__ = pid
+    return build
+
+
+SENSORS = [
+    # (id, label, tier, mass, range m, recipe, kind)
+    ("radar_array",  "Radar Array",   "T2",  80,  400,
+     "copper 4 + iron 2 + circuit 1", "panel"),
+    ("dish_antenna", "Dish Antenna",  "T3", 150, 1200,
+     "copper 6 + iron 3 + circuit 2 + wire 2", "dish"),
+    ("phased_array", "Phased Array",  "T4", 280, 3200,
+     "copper 10 + iron 5 + circuit 4 + wire 4", "phased"),
+]
+
+
+def make_sensor(pid, label, tier, mass, rng, recipe, kind):
+    """Sits on a dorsal (or ventral) Sensor mount and looks outward along
+    the mount normal - built along +Y so an upward mount aims at the sky."""
+    def build():
+        o = Obj(pid)
+        o.group("base"); o.mat("gunmetal")
+        o.box((0.0, 0.07, 0.0), (0.26, 0.07, 0.26))
+        if kind == "panel":
+            o.group("post"); o.mat("steel")
+            o.tube_axis((0, 0.14, 0), (0, 0.42, 0), 0.045, 0.040, 5)
+            o.group("panel"); o.mat("hull_dark")
+            o.box((0.0, 0.62, 0.02), (0.40, 0.22, 0.035), rot=("x", 18.0))
+            o.group("grid"); o.mat("chrome")
+            for k in (-1, 0, 1):
+                o.box((k * 0.22, 0.62, 0.06), (0.02, 0.20, 0.010), rot=("x", 18.0))
+        elif kind == "dish":
+            o.group("post"); o.mat("steel")
+            o.tube_axis((0, 0.14, 0), (0, 0.40, 0), 0.050, 0.045, 5)
+            # paraboloid as stacked rings - widening, then the rim
+            o.group("dish"); o.mat("white")
+            for k in range(4):
+                t0, t1 = k / 4.0, (k + 1) / 4.0
+                o.tube_axis((0, 0.40 + 0.30 * t0, 0.0), (0, 0.40 + 0.30 * t1, 0.0),
+                            0.16 + 0.34 * t0, 0.16 + 0.34 * t1, 8, caps=False)
+            o.group("rim"); o.mat("chrome")
+            o.tube_axis((0, 0.70, 0), (0, 0.73, 0), 0.50, 0.50, 8, caps=False)
+            o.group("feed"); o.mat("amber")
+            o.tube_axis((0, 0.52, 0), (0, 0.92, 0), 0.030, 0.045, 4)
+        else:
+            o.group("post"); o.mat("steel")
+            o.tube_axis((0, 0.14, 0), (0, 0.34, 0), 0.060, 0.055, 5)
+            o.group("slab"); o.mat("hull_dark")
+            o.box((0.0, 0.66, 0.0), (0.52, 0.32, 0.06), rot=("x", 12.0))
+            o.group("emitters"); o.mat("cyan")
+            for kx in (-1, 0, 1):
+                for ky in (-1, 1):
+                    o.box((kx * 0.30, 0.66 + ky * 0.15, 0.08),
+                          (0.10, 0.09, 0.012), rot=("x", 12.0))
+            o.group("cooling"); o.mat("chrome")
+            for sx in (-1, 1):
+                o.tube_axis((sx * 0.46, 0.34, 0.0), (sx * 0.46, 0.90, 0.0), 0.028, 0.024, 4)
+        nodes = [node((0, 0, 0), (0, -1, 0), "Sensor")]
+        stats = {"role": "Sensor", "mass_kg": mass, "scan_range_m": rng,
+                 "tier": tier, "recipe": recipe,
+                 "blurb": "%s. Scans to %d m. Fits a Sensor mount - Survey and Laboratory cabs." % (label, rng)}
+        return o, nodes, label, stats
+    build.__name__ = pid
+    return build
+
+
+CARGO_GEAR = [
+    # (id, label, tier, mass, t/s, slots, recipe)
+    ("clamp_arm",      "Clamp Arm",      "T2", 120, 0.4,  2, "iron 5 + bronze 2"),
+    ("container_rack", "Container Rack", "T3", 260, 1.0,  6, "iron 9 + bronze 3 + circuit 1"),
+    ("gantry_loader",  "Gantry Loader",  "T4", 480, 2.4, 12,
+     "iron 14 + bronze 5 + circuit 2 + wire 3"),
+]
+
+
+def make_cargo_gear(pid, label, tier, mass, rate, slots, recipe):
+    """Reaches outboard along +X from a flank Cargo mount."""
+    def build():
+        o = Obj(pid)
+        reach = 0.55 + 0.35 * (0 if tier == "T2" else (1 if tier == "T3" else 2))
+        o.group("base"); o.mat("gunmetal")
+        o.box((0.10, 0.0, 0.0), (0.10, 0.26, 0.30))
+        o.group("arm"); o.mat("steel")
+        o.tube_axis((0.20, 0.0, 0.0), (reach, 0.0, 0.0), 0.09, 0.075, 5)
+        if tier == "T2":
+            # Jaws have to OVERLAP the arm end, not touch it: at y=+-0.14
+            # against a 0.09 arm they met on a single edge and read as two
+            # boxes floating in front of the ship.
+            o.group("wrist"); o.mat("gunmetal")
+            o.tube_axis((reach, 0.0, 0.0), (reach + 0.10, 0.0, 0.0), 0.11, 0.11, 5)
+            o.group("jaws"); o.mat("hull_dark")
+            for sy in (-1, 1):
+                o.box((reach + 0.18, sy * 0.09, 0.0), (0.18, 0.055, 0.20))
+        else:
+            o.group("frame"); o.mat("hull_dark")
+            o.box((reach * 0.72, 0.0, 0.0), (reach * 0.34, 0.30, 0.34))
+            o.group("rails"); o.mat("chrome")
+            for sy in (-1, 1):
+                o.tube_axis((0.24, sy * 0.30, 0.0), (reach + 0.10, sy * 0.30, 0.0),
+                            0.032, 0.032, 4)
+            o.group("crate"); o.mat("orange")
+            o.box((reach + 0.20, 0.0, 0.0), (0.22, 0.24, 0.26))
+        if tier == "T4":
+            o.group("hoist"); o.mat("brass")
+            o.tube_axis((reach * 0.72, 0.34, 0.0), (reach * 0.72, -0.20, 0.0), 0.030, 0.030, 4)
+        o.group("hazard"); o.mat("hazard")
+        o.box((0.20, 0.28, 0.0), (0.09, 0.03, 0.22))
+        nodes = [node((0, 0, 0), (-1, 0, 0), "Cargo")]
+        stats = {"role": "Cargo gear", "mass_kg": mass, "load_rate_t_s": rate,
+                 "cargo": slots, "tier": tier, "recipe": recipe,
+                 "blurb": "%s. Moves %.1f t/s and carries %d slots. Fits a Cargo mount - Freight and Laboratory cabs." % (label, rate, slots)}
+        return o, nodes, label, stats
+    build.__name__ = pid
+    return build
+
+
+FLUID_GEAR = [
+    # (id, label, tier, mass, L/s, recipe)
+    ("transfer_pump", "Transfer Pump", "T2", 110,  40, "iron 4 + bronze 3"),
+    ("manifold_boom", "Manifold Boom", "T3", 240, 120, "iron 8 + bronze 5 + circuit 1"),
+    ("cryo_trunk",    "Cryo Trunk",    "T4", 430, 300,
+     "iron 12 + bronze 7 + circuit 2 + wire 2"),
+]
+
+
+def make_fluid_gear(pid, label, tier, mass, rate, recipe):
+    """Reaches outboard along +X from a flank Fluid mount."""
+    def build():
+        o = Obj(pid)
+        reach = 0.50 + 0.30 * (0 if tier == "T2" else (1 if tier == "T3" else 2))
+        o.group("base"); o.mat("gunmetal")
+        o.box((0.09, 0.0, 0.0), (0.09, 0.24, 0.26))
+        o.group("body"); o.mat("bronze")
+        o.tube_axis((0.18, 0.0, 0.0), (reach, 0.0, 0.0), 0.17, 0.15, 6)
+        o.group("valve"); o.mat("brass")
+        o.tube_axis((reach * 0.55, 0.0, 0.0), (reach * 0.55, 0.34, 0.0), 0.06, 0.08, 5)
+        o.group("nozzle"); o.mat("chrome")
+        o.tube_axis((reach, 0.0, 0.0), (reach + 0.22, 0.0, 0.0), 0.12, 0.07, 6)
+        if tier != "T2":
+            o.group("lines"); o.mat("black")
+            for sz in (-1, 1):
+                o.tube_axis((0.24, -0.10, sz * 0.16), (reach + 0.05, -0.10, sz * 0.16),
+                            0.035, 0.035, 4)
+        if tier == "T4":
+            o.group("fins"); o.mat("chrome")
+            for k in range(3):
+                x = 0.30 + (reach - 0.40) * k / 2.0
+                o.tube_axis((x - 0.02, 0.0, 0.0), (x + 0.02, 0.0, 0.0), 0.26, 0.26, 6, caps=False)
+        o.group("hazard"); o.mat("hazard")
+        o.box((0.18, 0.26, 0.0), (0.08, 0.03, 0.20))
+        nodes = [node((0, 0, 0), (-1, 0, 0), "Fluid")]
+        stats = {"role": "Fluid gear", "mass_kg": mass, "pump_rate_l_s": rate,
+                 "tier": tier, "recipe": recipe,
+                 "blurb": "%s. Transfers %d L/s. Fits a Fluid mount - Tanker Bridge only." % (label, rate)}
+        return o, nodes, label, stats
+    build.__name__ = pid
+    return build
+
+
+DRILL_PARTS = [make_drill(*d) for d in DRILLS]
+SENSOR_PARTS = [make_sensor(*s) for s in SENSORS]
+CARGO_PARTS = [make_cargo_gear(*c) for c in CARGO_GEAR]
+FLUID_PARTS = [make_fluid_gear(*f) for f in FLUID_GEAR]
+
+
+PARTS = ([cockpit, bubble_cockpit, armoured_cockpit, tandem_cockpit, bridge,
+          mining_cockpit, freight_cockpit, tanker_cockpit, survey_cockpit,
+          lab_cockpit,
+          fuselage_bay, spine_truss, hull_junction, thrust_spar,
+          cargo_bay, bulk_hold, fuel_cell, fuel_bunker, wing, nacelle,
+          heavy_nacelle, tail_fin, rcs_block, reaction_wheel, attitude_bank,
+          landing_skid, heavy_cradle, docking_collar]
+         + DRILL_PARTS + SENSOR_PARTS + CARGO_PARTS + FLUID_PARTS)
 
 # Per-part camera yaw for the icon / sheet. Flat and radial parts read as
 # slivers at the default three-quarter angle, so they get their own view.
@@ -1183,6 +1654,17 @@ def main():
     os.makedirs(ICONS, exist_ok=True)
     sheet_path = sys.argv[sys.argv.index("--sheet") + 1] if "--sheet" in sys.argv else None
     json_path = sys.argv[sys.argv.index("--json") + 1] if "--json" in sys.argv else None
+    meta_path = sys.argv[sys.argv.index("--meta") + 1] if "--meta" in sys.argv else None
+
+    if meta_path:
+        # The two rules the playground has to agree with us on. Exported as
+        # DATA so there is one home for each: which mounts interchange, and
+        # which materials draw as a light instead of being shaded.
+        json.dump({"structural_kinds": list(STRUCTURAL_KINDS),
+                   "emissive_colors": ["#%02x%02x%02x" % tuple(int(c * 255)
+                                       for c in MTL[m]) for m in EMISSIVE_MATS]},
+                  open(meta_path, "w"), indent=1)
+        print("wrote", meta_path)
 
     cells, blob = [], []
     for fn in PARTS:

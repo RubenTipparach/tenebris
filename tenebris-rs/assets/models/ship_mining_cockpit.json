@@ -1,0 +1,59 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 380,
+ "torque_nm": 8000,
+ "cargo": 4,
+ "tier": "T3",
+ "recipe": "iron 8 + copper 4 + bronze 3 + circuit 1",
+ "blurb": "Mining cab. Two forward drill mounts, an ore chute and a cage - the only hull a drill will fit.",
+ "label": "Prospector Cab",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -0.2775,
+    -0.1,
+    3.4
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Drill"
+  },
+  {
+   "pos": [
+    0.2775,
+    -0.1,
+    3.4
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Drill"
+  }
+ ],
+ "texture": "ship_mining_cockpit.png",
+ "atlas_px": 384,
+ "uv_islands": 21
+}
