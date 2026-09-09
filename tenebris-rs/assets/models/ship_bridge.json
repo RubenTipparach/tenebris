@@ -54,6 +54,6 @@
   }
  ],
  "texture": "ship_bridge.png",
- "atlas_px": 512,
+ "atlas_px": 384,
  "uv_islands": 14
 }

@@ -259,6 +259,33 @@ def _rot(p, axis, deg):
     return [x * c - y * s, x * s + y * c, z]
 
 
+def hex_top(r, flat):
+    """Top face of a 6-sided hull ring: its height, and its HALF-WIDTH.
+
+    The flat top runs between the 60 and 120 degree vertices, so it is only
+    `r` across - half the ring's full width. Anything mounted on the roof
+    has to respect that and the ring's taper, or it overhangs the shoulders
+    and floats off the nose. (That is exactly what the cockpit canopy did:
+    a fixed-height box on a body whose roof drops from y=0.41 to y=0.23.)"""
+    return r * flat * math.sin(math.pi / 3), r * math.cos(math.pi / 3)
+
+
+def taper(segs):
+    """Return surf(z) -> (top_y, top_half_width, r, flat) for a stack of
+    (z0, z1, r0, r1, flat) hull segments."""
+    def surf(z):
+        for (z0, z1, r0, r1, f) in segs:
+            if z0 <= z <= z1:
+                t = (z - z0) / (z1 - z0) if z1 > z0 else 0.0
+                r = r0 + (r1 - r0) * t
+                ty, hw = hex_top(r, f)
+                return ty, hw, r, f
+        z0, z1, r0, r1, f = segs[-1]
+        ty, hw = hex_top(r1, f)
+        return ty, hw, r1, f
+    return surf
+
+
 def node(pos, dir_, kind):
     return {"pos": [round(v, 4) for v in pos], "dir": [round(v, 4) for v in dir_], "kind": kind}
 
@@ -273,24 +300,48 @@ FLAT = 0.62       # vertical squash - the airframe cross-section
 # ---------------------------------------------------------------------- #
 
 def cockpit():
-    """Forward crew module: tapered nose with a wrap-around canopy."""
+    """Forward crew module: tapered nose with a faired-in canopy."""
     o = Obj("cockpit")
     L = 3.2
+    SEGS = [(0.0, 1.1, HULL_R, HULL_R * 0.94, FLAT),
+            (1.1, 2.4, HULL_R * 0.94, HULL_R * 0.66, FLAT * 0.92),
+            (2.4, L, HULL_R * 0.66, HULL_R * 0.22, FLAT * 0.85)]
+    surf = taper(SEGS)
+
     o.group("nose"); o.mat("hull")
-    o.hull(0.0, 1.1, HULL_R, HULL_R * 0.94, flat=FLAT)
-    o.hull(1.1, 2.4, HULL_R * 0.94, HULL_R * 0.66, flat=FLAT * 0.92)
-    o.hull(2.4, L, HULL_R * 0.66, HULL_R * 0.22, flat=FLAT * 0.85)
+    for (z0, z1, r0, r1, f) in SEGS:
+        o.hull(z0, z1, r0, r1, flat=f)
+
+    # Canopy: a faired bubble whose base is SUNK into the roof and whose
+    # plan follows the taper, instead of a constant-height slab that
+    # overhung the shoulders and floated clear of the nose.
+    zA, zB = 1.35, 2.55
+    yA, wA, _, _ = surf(zA)
+    yB, wB, _, _ = surf(zB)
+    lo = [(-wA * 0.88, yA - 0.06, zA), (wA * 0.88, yA - 0.06, zA),
+          (wB * 0.88, yB - 0.06, zB), (-wB * 0.88, yB - 0.06, zB)]
+    hi = [(-wA * 0.60, yA + 0.13, zA + 0.16), (wA * 0.60, yA + 0.13, zA + 0.16),
+          (wB * 0.52, yB + 0.10, zB - 0.18), (-wB * 0.52, yB + 0.10, zB - 0.18)]
     o.group("canopy"); o.mat("glass")
-    o.box((0.0, HULL_R * FLAT * 0.72, 2.0), (0.46, 0.10, 0.78), rot=("x", -8))
+    o.wedge(lo, hi)
+
     o.group("frame"); o.mat("gunmetal")
-    o.box((0.0, HULL_R * FLAT * 0.74, 1.22), (0.50, 0.08, 0.07))
     for sx in (-1, 1):
-        o.box((sx * 0.48, HULL_R * FLAT * 0.70, 2.0), (0.05, 0.10, 0.80))
+        o.tube_axis((sx * wA * 0.90, yA - 0.05, zA), (sx * wB * 0.90, yB - 0.05, zB),
+                    0.040, 0.032, 4)
+    o.tube_axis((-wA * 0.90, yA - 0.05, zA), (wA * 0.90, yA - 0.05, zA), 0.040, 0.040, 4)
+
+    # Chin sensor block: inside the belly's flat, just proud of it.
+    yc, wc, _, _ = surf(1.95)
     o.group("chin"); o.mat("hull_dark")
-    o.box((0.0, -HULL_R * FLAT * 0.72, 1.9), (0.42, 0.12, 0.85))
+    o.box((0.0, -yc + 0.02, 1.95), (wc * 0.82, 0.10, 0.80))
+
+    # Landing lights sit ON the lower shoulders of the nose, not beside it.
+    y8, w8, r8, f8 = surf(2.80)
     o.group("lights"); o.mat("white")
     for sx in (-1, 1):
-        o.box((sx * 0.55, -HULL_R * FLAT * 0.42, 2.85), (0.08, 0.07, 0.07))
+        o.box((sx * r8 * 0.62, -r8 * f8 * 0.42, 2.80), (0.07, 0.06, 0.06))
+
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack")]
     stats = {"role": "Cockpit", "mass_kg": 220, "torque_nm": 7000, "cargo": 3,
              "tier": "T3", "recipe": "copper 4 + iron 3 + circuit 1",
@@ -387,13 +438,17 @@ def wing():
     o.wedge(lo, hi)
     o.group("leading_edge"); o.mat("bronze")
     o.tube_axis((0.20, 0.0, root_c), (span, 0.0, root_c * 0.72), 0.07, 0.045, 4)
-    o.group("hardpoint"); o.mat("steel")
-    o.box((span * 0.62, -0.16, root_c * 0.52), (0.20, 0.08, 0.24))
+    o.group("pylon"); o.mat("steel")
+    o.box((span * 0.62, 0.26, root_c * 0.52), (0.16, 0.26, 0.20))
     o.group("tip_light"); o.mat("green_led")
     o.box((span - 0.04, 0.0, root_c * 0.30), (0.07, 0.06, 0.10))
     nodes = [
         node((0, 0, root_c * 0.5), (-1, 0, 0), "Radial"),
-        node((span * 0.62, -0.24, root_c * 0.52), (0, -1, 0), "Hardpoint"),
+        # 0.52 ABOVE the wing plane, because a pod's mating node sits on its
+        # crown: mate at the wing's own level and the pod centres half a
+        # metre low, which pitches the nose up under power. Here the pod
+        # straddles the wing and its thrust line lands on the hull axis.
+        node((span * 0.62, 0.52, root_c * 0.52), (0, -1, 0), "Hardpoint"),
     ]
     stats = {"role": "Aero", "mass_kg": 70, "lift_area_m2": 3.0, "lift_coef": 0.9,
              "tier": "T2", "recipe": "iron 2 + bronze 1",
@@ -465,7 +520,7 @@ def rcs_block():
     nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
     stats = {"role": "Rcs", "mass_kg": 22, "torque_nm": 3000, "fuel_per_s": 0.15,
              "tier": "T3", "recipe": "bronze 2 + wire 2",
-             "blurb": "Attitude authority. Mount them far from the centre of mass."}
+             "blurb": "Flat attitude authority - 3 kN-m wherever you bolt it. Cheap, but you need a lot of them."}
     return o, nodes, "RCS Block", stats
 
 
@@ -506,7 +561,9 @@ def landing_skid():
     o.tube_axis((0.0, -0.14, 0.0), (0.19, -0.62, 0.0), 0.055, 0.055, 5)
     o.group("skid"); o.mat("black")
     o.box((0.34, -1.16, 0.0), (0.13, 0.07, 0.42))
-    nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
+    # dir points AWAY from the part and this one hangs BELOW its mount, so
+    # +Y. With -Y the mate flips 180 and the legs fold up into the hull.
+    nodes = [node((0, 0, 0), (0, 1, 0), "Radial")]
     stats = {"role": "Gear", "mass_kg": 50, "impact_tolerance_mps": 12, "tier": "T2",
              "recipe": "iron 3 + bronze 1",
              "blurb": "Three or more give a stable stance. Without gear you land on the hull."}
@@ -623,20 +680,29 @@ def thrust_spar():
     o.group("caps"); o.mat("hull_dark")
     for sx in (-1, 1):
         o.tube_axis((sx * span, 0.0, 0.0), (sx * (span + 0.16), 0.0, 0.0), 0.21, 0.15, 6)
-    o.group("hardpoints"); o.mat("steel")
-    for sx in (-1, 1):
-        for f in (0.52, 1.0):
-            o.box((sx * span * f, -0.24, 0.0), (0.20, 0.10, 0.22))
+    o.group("mounts"); o.mat("steel")
+    for f in (0.52, 1.0):
+        for sx in (-1, 1):
+            o.box((sx * span * f, 0.0, -0.26), (0.26, 0.26, 0.10))
     o.group("stripe"); o.mat("hazard")
     for sx in (-1, 1):
         o.tube_axis((sx * span * 0.74, 0.0, 0.0), (sx * span * 0.80, 0.0, 0.0), 0.205, 0.205, 6)
+    # Engine stations are AFT-FACING STACK nodes ON the hull axis (y = 0),
+    # not hardpoints slung underneath. A pod hung below the beam puts its
+    # thrust line ~0.9 m under the centre of mass and pitches the nose up -
+    # which is the exact problem this part exists to solve, so mounting it
+    # the wrong way round would make the part a lie. Takes stack-mounted
+    # engines (Heavy Nacelle); a Hardpoint pod belongs under a wing.
     nodes = [node((0, 0, 0.34), (0, 0, 1), "Stack")]
-    for sx in (-1, 1):
-        for f in (0.52, 1.0):
-            nodes.append(node((sx * span * f, -0.34, 0.0), (0, -1, 0), "Hardpoint"))
+    # Ordered so nodes (1,2) and (3,4) are each a MIRROR PAIR. Grouping by
+    # side instead would put the two "first" stations both to port, and two
+    # engines on one side is 17x more yaw than the ship can hold.
+    for f in (0.52, 1.0):
+        for sx in (-1, 1):
+            nodes.append(node((sx * span * f, 0.0, -0.34), (0, 0, -1), "Stack"))
     stats = {"role": "Structure", "mass_kg": 180, "tier": "T3",
              "recipe": "iron 7 + bronze 3",
-             "blurb": "Four hardpoints spread wide at hull-axis height - engines here push straight, not up."}
+             "blurb": "Four engine stations spread wide but ON the thrust axis - stack-mounted drives here push straight, not up."}
     return o, nodes, "Thrust Spar", stats
 
 
@@ -644,24 +710,45 @@ def bridge():
     """Command deck. The cockpit for a ship too big for a canopy."""
     o = Obj("bridge")
     L, R = 4.2, HULL_R * 1.5
+    SEGS = [(0.0, 1.5, R, R * 0.96, FLAT * 0.9),
+            (1.5, 3.2, R * 0.96, R * 0.72, FLAT * 0.86),
+            (3.2, L, R * 0.72, R * 0.30, FLAT * 0.8)]
+    surf = taper(SEGS)
+
     o.group("hull"); o.mat("hull")
-    o.hull(0.0, 1.5, R, R * 0.96, flat=FLAT * 0.9)
-    o.hull(1.5, 3.2, R * 0.96, R * 0.72, flat=FLAT * 0.86)
-    o.hull(3.2, L, R * 0.72, R * 0.30, flat=FLAT * 0.8)
+    for (z0, z1, r0, r1, f) in SEGS:
+        o.hull(z0, z1, r0, r1, flat=f)
+
+    # Viewband follows the roof line, same fix as the cockpit canopy.
+    zA, zB = 2.05, 3.15
+    yA, wA, _, _ = surf(zA)
+    yB, wB, _, _ = surf(zB)
+    lo = [(-wA * 0.90, yA - 0.07, zA), (wA * 0.90, yA - 0.07, zA),
+          (wB * 0.90, yB - 0.07, zB), (-wB * 0.90, yB - 0.07, zB)]
+    hi = [(-wA * 0.72, yA + 0.16, zA + 0.14), (wA * 0.72, yA + 0.16, zA + 0.14),
+          (wB * 0.66, yB + 0.14, zB - 0.14), (-wB * 0.66, yB + 0.14, zB - 0.14)]
     o.group("viewband"); o.mat("glass")
-    o.box((0.0, R * FLAT * 0.62, 2.6), (R * 0.66, 0.16, 0.62), rot=("x", -6))
+    o.wedge(lo, hi)
+
     o.group("mullions"); o.mat("gunmetal")
-    for sx in (-2, -1, 0, 1, 2):
-        o.box((sx * 0.30, R * FLAT * 0.62, 2.6), (0.035, 0.17, 0.63))
+    for k in (-2, -1, 0, 1, 2):
+        f = k / 2.0
+        o.tube_axis((f * wA * 0.86, yA - 0.05, zA + 0.02),
+                    (f * wB * 0.80, yB + 0.13, zB - 0.14), 0.035, 0.030, 4)
+
+    yd, wd, _, _ = surf(2.2)
     o.group("deck"); o.mat("hull_dark")
-    o.box((0.0, -R * FLAT * 0.74, 2.2), (R * 0.62, 0.14, 1.1))
+    o.box((0.0, -yd + 0.03, 2.2), (wd * 0.84, 0.12, 1.05))
+
+    ym, wm, rm, fm = surf(0.9)
     o.group("masts"); o.mat("steel")
     for sx in (-1, 1):
-        o.tube_axis((sx * R * 0.5, R * FLAT * 0.8, 0.9), (sx * R * 0.62, R * FLAT * 1.5, 0.7),
+        o.tube_axis((sx * wm * 0.7, ym - 0.02, 0.9), (sx * wm * 0.9, ym + 0.62, 0.72),
                     0.05, 0.03, 4)
     o.group("beacons"); o.mat("amber")
     for sx in (-1, 1):
-        o.box((sx * R * 0.62, R * FLAT * 1.52, 0.7), (0.07, 0.07, 0.07))
+        o.box((sx * wm * 0.9, ym + 0.64, 0.72), (0.07, 0.07, 0.07))
+
     nodes = [node((0, 0, 0), (0, 0, -1), "Stack"),
              node((0, R * FLAT * 0.9, 1.0), (0, 1, 0), "Radial"),
              node((0, -R * FLAT * 0.9, 1.1), (0, -1, 0), "Radial")]
@@ -803,7 +890,7 @@ def heavy_cradle():
     o.box((0.62, -1.64, 0.0), (0.26, 0.10, 0.62))
     o.group("tread"); o.mat("hazard")
     o.box((0.62, -1.53, 0.0), (0.20, 0.03, 0.50))
-    nodes = [node((0, 0, 0), (0, -1, 0), "Radial")]
+    nodes = [node((0, 0, 0), (0, 1, 0), "Radial")]   # see landing_skid
     stats = {"role": "Gear", "mass_kg": 140, "impact_tolerance_mps": 9, "tier": "T3",
              "recipe": "iron 7 + bronze 3",
              "blurb": "Rated for a loaded freighter, but it lands slower - 9 m/s, not 12."}

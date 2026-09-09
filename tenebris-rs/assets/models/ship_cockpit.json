@@ -28,6 +28,6 @@
   }
  ],
  "texture": "ship_cockpit.png",
- "atlas_px": 384,
+ "atlas_px": 320,
  "uv_islands": 10
 }

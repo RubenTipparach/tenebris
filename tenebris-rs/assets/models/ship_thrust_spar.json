@@ -3,7 +3,7 @@
  "mass_kg": 180,
  "tier": "T3",
  "recipe": "iron 7 + bronze 3",
- "blurb": "Four hardpoints spread wide at hull-axis height - engines here push straight, not up.",
+ "blurb": "Four engine stations spread wide but ON the thrust axis - stack-mounted drives here push straight, not up.",
  "label": "Thrust Spar",
  "pivot": [
   0.0,
@@ -27,54 +27,54 @@
   {
    "pos": [
     -1.508,
-    -0.34,
-    0.0
+    0.0,
+    -0.34
    ],
    "dir": [
     0,
-    -1,
-    0
-   ],
-   "kind": "Hardpoint"
-  },
-  {
-   "pos": [
-    -2.9,
-    -0.34,
-    0.0
-   ],
-   "dir": [
     0,
-    -1,
-    0
+    -1
    ],
-   "kind": "Hardpoint"
+   "kind": "Stack"
   },
   {
    "pos": [
     1.508,
-    -0.34,
-    0.0
+    0.0,
+    -0.34
    ],
    "dir": [
     0,
-    -1,
-    0
+    0,
+    -1
    ],
-   "kind": "Hardpoint"
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -2.9,
+    0.0,
+    -0.34
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
   },
   {
    "pos": [
     2.9,
-    -0.34,
-    0.0
+    0.0,
+    -0.34
    ],
    "dir": [
     0,
-    -1,
-    0
+    0,
+    -1
    ],
-   "kind": "Hardpoint"
+   "kind": "Stack"
   }
  ],
  "texture": "ship_thrust_spar.png",

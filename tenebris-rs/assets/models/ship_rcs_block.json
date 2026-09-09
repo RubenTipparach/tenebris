@@ -5,7 +5,7 @@
  "fuel_per_s": 0.15,
  "tier": "T3",
  "recipe": "bronze 2 + wire 2",
- "blurb": "Attitude authority. Mount them far from the centre of mass.",
+ "blurb": "Flat attitude authority - 3 kN-m wherever you bolt it. Cheap, but you need a lot of them.",
  "label": "RCS Block",
  "pivot": [
   0.0,
