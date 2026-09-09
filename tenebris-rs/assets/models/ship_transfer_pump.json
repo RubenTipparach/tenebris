@@ -1,0 +1,32 @@
+{
+ "role": "Fluid gear",
+ "mass_kg": 110,
+ "pump_rate_l_s": 40,
+ "tier": "T2",
+ "recipe": "iron 4 + bronze 3",
+ "blurb": "Transfer Pump. Transfers 40 L/s. Fits a Fluid mount - Tanker Bridge only.",
+ "label": "Transfer Pump",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Fluid"
+  }
+ ],
+ "texture": "ship_transfer_pump.png",
+ "atlas_px": 256,
+ "uv_islands": 5
+}

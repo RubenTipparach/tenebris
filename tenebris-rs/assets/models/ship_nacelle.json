@@ -1,0 +1,33 @@
+{
+ "role": "Engine",
+ "mass_kg": 140,
+ "thrust_n": 90000,
+ "fuel_per_s": 9,
+ "tier": "T2",
+ "recipe": "bronze 3 + iron 2",
+ "blurb": "90 kN of thrust. Off-centre nacelles torque the ship - keep them balanced.",
+ "label": "Engine Nacelle",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0.52,
+    1.092
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Hardpoint"
+  }
+ ],
+ "texture": "ship_nacelle.png",
+ "atlas_px": 256,
+ "uv_islands": 9
+}

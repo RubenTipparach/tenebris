@@ -1,0 +1,72 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 250,
+ "torque_nm": 7500,
+ "cargo": 3,
+ "tier": "T3",
+ "recipe": "copper 5 + iron 3 + glass 3 + circuit 2",
+ "blurb": "Survey cab. Three sensor mounts on an instrument spine - the only hull a dish or array will fit.",
+ "label": "Survey Cab",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0.5973,
+    0.62
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Sensor"
+  },
+  {
+   "pos": [
+    0,
+    0.5973,
+    1.18
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Sensor"
+  },
+  {
+   "pos": [
+    0,
+    -0.4873,
+    1.3
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Sensor"
+  }
+ ],
+ "texture": "ship_survey_cockpit.png",
+ "atlas_px": 256,
+ "uv_islands": 19
+}

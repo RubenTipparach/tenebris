@@ -1,0 +1,59 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 480,
+ "torque_nm": 22000,
+ "cargo": 6,
+ "tier": "T4",
+ "recipe": "copper 8 + iron 6 + circuit 3 + wire 4",
+ "blurb": "Heavy crew module: three times the torque of a cockpit, and it looks like a ship's bridge.",
+ "label": "Bridge",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0.77,
+    1.0
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    -0.77,
+    1.1
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ],
+ "texture": "ship_bridge.png",
+ "atlas_px": 320,
+ "uv_islands": 14
+}

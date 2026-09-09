@@ -1,0 +1,32 @@
+{
+ "role": "Fluid gear",
+ "mass_kg": 240,
+ "pump_rate_l_s": 120,
+ "tier": "T3",
+ "recipe": "iron 8 + bronze 5 + circuit 1",
+ "blurb": "Manifold Boom. Transfers 120 L/s. Fits a Fluid mount - Tanker Bridge only.",
+ "label": "Manifold Boom",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Fluid"
+  }
+ ],
+ "texture": "ship_manifold_boom.png",
+ "atlas_px": 256,
+ "uv_islands": 7
+}

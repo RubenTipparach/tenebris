@@ -1,0 +1,32 @@
+{
+ "role": "Dock",
+ "mass_kg": 65,
+ "has_dock": true,
+ "tier": "T3",
+ "recipe": "iron 3 + copper 2 + circuit 1",
+ "blurb": "Required to dock at the station. Green ring means capture.",
+ "label": "Docking Collar",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_docking_collar.png",
+ "atlas_px": 256,
+ "uv_islands": 15
+}

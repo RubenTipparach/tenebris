@@ -1,0 +1,32 @@
+{
+ "role": "Sensor",
+ "mass_kg": 150,
+ "scan_range_m": 1200,
+ "tier": "T3",
+ "recipe": "copper 6 + iron 3 + circuit 2 + wire 2",
+ "blurb": "Dish Antenna. Scans to 1200 m. Fits a Sensor mount - Survey and Laboratory cabs.",
+ "label": "Dish Antenna",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Sensor"
+  }
+ ],
+ "texture": "ship_dish_antenna.png",
+ "atlas_px": 256,
+ "uv_islands": 8
+}

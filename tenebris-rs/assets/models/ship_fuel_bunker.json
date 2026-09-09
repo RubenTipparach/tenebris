@@ -1,0 +1,124 @@
+{
+ "role": "Tank",
+ "mass_kg": 1500,
+ "dry_mass_kg": 220,
+ "fuel_cap": 320,
+ "tier": "T3",
+ "recipe": "iron 12 + bronze 4",
+ "blurb": "320 units in one slot. Three Fuel Cells cost three slots and carry less.",
+ "label": "Fuel Bunker",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    4.0
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0.9936,
+    0,
+    2.0
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.9936,
+    0,
+    2.0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.5862,
+    -0.49,
+    1.2
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    0.5862,
+    -0.49,
+    1.2
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    -0.5862,
+    -0.49,
+    2.88
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    0.5862,
+    -0.49,
+    2.88
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  }
+ ],
+ "texture": "ship_fuel_bunker.png",
+ "atlas_px": 512,
+ "uv_islands": 11
+}

@@ -1,0 +1,123 @@
+{
+ "role": "Cargo",
+ "mass_kg": 420,
+ "cargo": 24,
+ "tier": "T4",
+ "recipe": "iron 14 + bronze 8",
+ "blurb": "Twenty-four slots. Fill it and watch your thrust-to-weight collapse.",
+ "label": "Bulk Hold",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    5.0
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    -0.7643,
+    2.5
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    0,
+    0.7643,
+    2.5
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Radial"
+  },
+  {
+   "pos": [
+    -0.7274,
+    -0.49,
+    1.4
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    0.7274,
+    -0.49,
+    1.4
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    -0.7274,
+    -0.49,
+    3.7
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    0.7274,
+    -0.49,
+    3.7
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  }
+ ],
+ "texture": "ship_bulk_hold.png",
+ "atlas_px": 640,
+ "uv_islands": 22
+}

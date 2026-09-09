@@ -1,0 +1,33 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 330,
+ "torque_nm": 11000,
+ "cargo": 5,
+ "tier": "T3",
+ "recipe": "copper 6 + iron 5 + circuit 2 + wire 2",
+ "blurb": "Two crew in line: more torque and more hold than a Cockpit, and 4.4 m of nose to carry it.",
+ "label": "Tandem Cockpit",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_tandem_cockpit.png",
+ "atlas_px": 384,
+ "uv_islands": 27
+}
