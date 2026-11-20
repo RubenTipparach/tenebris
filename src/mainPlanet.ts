@@ -282,6 +282,7 @@ class PlanetGame {
       const removedTreesData = gameStorage.getRemovedTrees('earth');
       const removedTiles = new Set(removedTreesData.map(t => t.tileIndex));
 
+      this.treeManager.setChunkLookup((tileIndex) => this.earth.getTileChunkIndex(tileIndex));
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
@@ -724,8 +725,7 @@ class PlanetGame {
     if (this.earth.isInOrbitView()) {
       this.treeManager.setAllVisible(false);
     } else {
-      const visibleTiles = this.earth.getVisibleTilesForTrees();
-      this.treeManager.updateVisibility(visibleTiles);
+      this.treeManager.updateVisibility(this.earth.getVisibleTreeChunks());
     }
 
     // Same visibility handling for Sequoia's mushroom trees (only if Sequoia is initialized)
@@ -733,8 +733,7 @@ class PlanetGame {
       if (this.sequoia.isInOrbitView()) {
         this.mushroomTreeManager.setAllVisible(false);
       } else {
-        const visibleTiles = this.sequoia.getVisibleTilesForTrees();
-        this.mushroomTreeManager.updateVisibility(visibleTiles);
+        this.mushroomTreeManager.updateVisibility(this.sequoia.getVisibleTreeChunks());
       }
     }
   }
@@ -779,6 +778,7 @@ class PlanetGame {
     this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
     const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
     const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
+    this.mushroomTreeManager.setChunkLookup((tileIndex) => this.sequoia.getTileChunkIndex(tileIndex));
     this.mushroomTreeManager.scatterTrees(
       this.sequoia.center,
       this.sequoia.radius,

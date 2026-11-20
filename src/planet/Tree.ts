@@ -254,6 +254,180 @@ export class TreeBuilder {
   }
 }
 
+// Batched tree rendering, one merged mesh per LOD chunk. Each chunk's mesh is
+// built once (and again only if a tree in it is added or removed) and then
+// just shown or hidden with the chunk. The old single batch was rebuilt -
+// cloning and merging every visible tree - whenever the visible tile set
+// changed, which at altitude was nearly every frame.
+class TreeBatcher {
+  private scene: THREE.Scene;
+  private material: THREE.ShaderMaterial;
+  private chunkOf: (tileIndex: number) => number = () => 0;
+  private treesByChunk: Map<number, THREE.Group[]> = new Map();
+  private meshes: Map<number, THREE.Mesh> = new Map();
+  private dirty: Set<number> = new Set();
+  private lastChunks: Set<number> | null = null;
+  private showingAll: boolean | null = null;
+
+  constructor(scene: THREE.Scene, material: THREE.ShaderMaterial) {
+    this.scene = scene;
+    this.material = material;
+  }
+
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.chunkOf = chunkOf;
+  }
+
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.material.uniforms.planetCenter.value.copy(center);
+  }
+
+  // Trees without a tile go in chunk -1, which is always shown
+  private chunkFor(tree: THREE.Group): number {
+    const tileIndex = tree.userData.tileIndex;
+    return tileIndex === undefined ? -1 : this.chunkOf(tileIndex);
+  }
+
+  public add(tree: THREE.Group): void {
+    const chunk = this.chunkFor(tree);
+    tree.userData.treeChunk = chunk;
+    let list = this.treesByChunk.get(chunk);
+    if (!list) {
+      list = [];
+      this.treesByChunk.set(chunk, list);
+    }
+    list.push(tree);
+    this.dirty.add(chunk);
+    this.lastChunks = null;
+  }
+
+  public remove(tree: THREE.Group): void {
+    const chunk = tree.userData.treeChunk as number | undefined;
+    if (chunk === undefined) return;
+    const list = this.treesByChunk.get(chunk);
+    if (list) {
+      const i = list.indexOf(tree);
+      if (i >= 0) list.splice(i, 1);
+    }
+    this.dirty.add(chunk);
+    this.lastChunks = null;
+  }
+
+  private build(chunk: number): void {
+    const old = this.meshes.get(chunk);
+    if (old) {
+      this.scene.remove(old);
+      old.geometry.dispose();
+      this.meshes.delete(chunk);
+    }
+    this.dirty.delete(chunk);
+
+    const geometries: THREE.BufferGeometry[] = [];
+    for (const tree of this.treesByChunk.get(chunk) ?? []) {
+      tree.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          const geom = child.geometry.clone();
+          child.updateWorldMatrix(true, false);
+          geom.applyMatrix4(child.matrixWorld);
+          geometries.push(geom);
+        }
+      });
+    }
+    if (geometries.length === 0) return;
+
+    const merged = BufferGeometryUtils.mergeGeometries(geometries);
+    for (const geom of geometries) geom.dispose();
+    if (!merged) return;
+    merged.computeBoundingSphere();
+
+    const mesh = new THREE.Mesh(merged, this.material);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrixWorldAutoUpdate = false;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    this.meshes.set(chunk, mesh);
+  }
+
+  // Show exactly the given chunks (plus chunk -1). Same Set object as last
+  // time and nothing changed = no work.
+  public showChunks(chunks: Set<number>): void {
+    if (chunks === this.lastChunks && this.dirty.size === 0 && this.showingAll === null) return;
+    this.lastChunks = chunks;
+    this.showingAll = null;
+    for (const chunk of this.treesByChunk.keys()) {
+      const visible = chunk === -1 || chunks.has(chunk);
+      if (visible && (this.dirty.has(chunk) || !this.meshes.has(chunk))) this.build(chunk);
+      const mesh = this.meshes.get(chunk);
+      if (mesh) mesh.visible = visible;
+    }
+  }
+
+  public showAll(visible: boolean): void {
+    if (this.showingAll === visible && this.dirty.size === 0) return;
+    this.showingAll = visible;
+    this.lastChunks = null;
+    for (const chunk of this.treesByChunk.keys()) {
+      if (visible && (this.dirty.has(chunk) || !this.meshes.has(chunk))) this.build(chunk);
+      const mesh = this.meshes.get(chunk);
+      if (mesh) mesh.visible = visible;
+    }
+  }
+}
+
+// Shared shader for batched trees. planetCenter makes the day/night term use
+// the direction from the tree's own planet; it used normalize(worldPos),
+// which only works for a planet at the origin (wrong on Sequoia and the Moon).
+function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      sunDirection: { value: sunDirection.clone().normalize() },
+      planetCenter: { value: new THREE.Vector3() },
+      ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+      directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+    },
+    vertexShader: `
+      attribute vec3 color;
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+
+      void main() {
+        vColor = color;
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPos.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 sunDirection;
+      uniform vec3 planetCenter;
+      uniform float ambientIntensity;
+      uniform float directionalIntensity;
+
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+
+      void main() {
+        vec3 surfaceNormal = normalize(vWorldPosition - planetCenter);
+        float planetSunFacing = dot(surfaceNormal, sunDirection);
+        float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
+        vec3 n = normalize(vNormal);
+        if (!gl_FrontFacing) n = -n;
+        float meshDiffuse = max(0.0, dot(n, sunDirection));
+        float directional = meshDiffuse * shadowFactor * directionalIntensity;
+        vec3 finalColor = vColor * (ambientIntensity + directional);
+        gl_FragColor = vec4(finalColor, 1.0);
+      }
+    `,
+    side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    polygonOffset: doubleSided,
+    polygonOffsetFactor: doubleSided ? 1 : 0,
+    polygonOffsetUnits: doubleSided ? 1 : 0,
+  });
+}
+
 // Tree manager for a planet - now with geometry batching for performance
 export class PlanetTreeManager {
   private trees: THREE.Group[] = [];
@@ -261,13 +435,7 @@ export class PlanetTreeManager {
   private treeBuilder: TreeBuilder;
   private scene: THREE.Scene;
 
-  // Batched rendering
-  private batchedMesh: THREE.Mesh | null = null;
-  private batchedMaterial: THREE.ShaderMaterial | null = null;
-  private currentVisibleTiles: Set<number> = new Set();
-  // The visible-tile Set passed last frame; reset whenever trees or
-  // visibility change so the next updateVisibility() does the full pass.
-  private lastVisibleTileSet: Set<number> | null = null;
+  private batcher: TreeBatcher;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -278,11 +446,11 @@ export class PlanetTreeManager {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
+    this.batcher = new TreeBatcher(scene, createBatchedTreeMaterial(this.sunDirection, false));
   }
 
   // Place a tree at a specific world position
   public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<TreeConfig>, tileIndex?: number): THREE.Group {
-    this.lastVisibleTileSet = null;
     // Calculate up direction (away from planet center)
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
 
@@ -300,19 +468,22 @@ export class PlanetTreeManager {
       this.treesByTile.get(tileIndex)!.push(tree);
     }
 
+    // Drawn by the batcher; the individual tree stays for raycasts
+    tree.visible = false;
     this.trees.push(tree);
     this.scene.add(tree);
+    this.batcher.add(tree);
 
     return tree;
   }
 
   // Remove a tree
   public removeTree(tree: THREE.Group): void {
-    this.lastVisibleTileSet = null;
     const index = this.trees.indexOf(tree);
     if (index >= 0) {
       this.trees.splice(index, 1);
       this.scene.remove(tree);
+      this.batcher.remove(tree);
 
       // Remove from treesByTile map
       const tileIndex = tree.userData.tileIndex;
@@ -368,6 +539,7 @@ export class PlanetTreeManager {
     getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
     removedTiles?: Set<number>
   ): void {
+    this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
     let placed = 0;
     let attempts = 0;
@@ -437,154 +609,19 @@ export class PlanetTreeManager {
     }
   }
 
-  // Update tree visibility based on which tiles are visible (near player)
-  // Uses batched rendering for better performance
-  public updateVisibility(visibleTileIndices: Set<number>): void {
-    // Same Set object as last frame = nothing changed (Planet caches it)
-    if (visibleTileIndices === this.lastVisibleTileSet) return;
-    this.lastVisibleTileSet = visibleTileIndices;
-
-    // Check if visible tiles changed
-    let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
-    if (!changed) {
-      for (const tileIndex of visibleTileIndices) {
-        if (!this.currentVisibleTiles.has(tileIndex)) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
-    if (changed) {
-      this.currentVisibleTiles = new Set(visibleTileIndices);
-      this.rebuildBatchedMesh();
-    }
-
-    // Hide individual trees (batched mesh handles rendering)
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // Show batched mesh
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = true;
-    }
+  // Which LOD chunks' trees are drawn (Planet.getVisibleTreeChunks())
+  public updateVisibility(visibleChunks: Set<number>): void {
+    this.batcher.showChunks(visibleChunks);
   }
 
-  // Set visibility for all trees at once (for LOD/orbit mode transitions)
+  // Show or hide every tree (orbit view)
   public setAllVisible(visible: boolean): void {
-    this.lastVisibleTileSet = null;
-    // Hide batched mesh and individual trees
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = false;
-    }
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // If showing all, rebuild batch with all tiles
-    if (visible) {
-      this.currentVisibleTiles = new Set(this.treesByTile.keys());
-      this.rebuildBatchedMesh();
-      if (this.batchedMesh) {
-        this.batchedMesh.visible = true;
-      }
-    }
+    this.batcher.showAll(visible);
   }
 
-  // Rebuild the batched mesh with currently visible trees
-  private rebuildBatchedMesh(): void {
-    // Remove old batched mesh
-    if (this.batchedMesh) {
-      this.scene.remove(this.batchedMesh);
-      this.batchedMesh.geometry.dispose();
-      this.batchedMesh = null;
-    }
-
-    // Collect geometries from visible trees
-    const geometries: THREE.BufferGeometry[] = [];
-
-    for (const tileIndex of this.currentVisibleTiles) {
-      const tileTrees = this.treesByTile.get(tileIndex);
-      if (!tileTrees) continue;
-
-      for (const tree of tileTrees) {
-        tree.traverse((child) => {
-          if (child instanceof THREE.Mesh && child.geometry) {
-            // Clone geometry and apply tree's world transform
-            const clonedGeom = child.geometry.clone();
-
-            // Apply the tree group's transform to the geometry
-            const matrix = new THREE.Matrix4();
-            child.updateWorldMatrix(true, false);
-            matrix.copy(child.matrixWorld);
-            clonedGeom.applyMatrix4(matrix);
-
-            geometries.push(clonedGeom);
-          }
-        });
-      }
-    }
-
-    if (geometries.length === 0) return;
-
-    // Merge all geometries into one
-    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
-
-    // Clean up cloned geometries
-    for (const geom of geometries) {
-      geom.dispose();
-    }
-
-    // Create material if not exists
-    if (!this.batchedMaterial) {
-      this.batchedMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-          sunDirection: { value: this.sunDirection.clone().normalize() },
-          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        },
-        vertexShader: `
-          attribute vec3 color;
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vColor = color;
-            vNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 sunDirection;
-          uniform float ambientIntensity;
-          uniform float directionalIntensity;
-
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vec3 surfaceNormal = normalize(vWorldPosition);
-            float planetSunFacing = dot(surfaceNormal, sunDirection);
-            float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
-            float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
-            float directional = meshDiffuse * shadowFactor * directionalIntensity;
-            float ambient = ambientIntensity;
-            vec3 finalColor = vColor * (ambient + directional);
-            gl_FragColor = vec4(finalColor, 1.0);
-          }
-        `,
-      });
-    }
-
-    // Create batched mesh
-    this.batchedMesh = new THREE.Mesh(mergedGeom, this.batchedMaterial);
-    this.batchedMesh.frustumCulled = false; // Trees are spread across planet, don't cull the batch
-    this.scene.add(this.batchedMesh);
+  // Map a tile to its LOD chunk; set before scattering trees
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.batcher.setChunkLookup(chunkOf);
   }
 
   public getTrees(): THREE.Group[] {
@@ -773,13 +810,7 @@ export class MushroomTreeManager {
   private treeBuilder: MushroomTreeBuilder;
   private scene: THREE.Scene;
 
-  // Batched rendering
-  private batchedMesh: THREE.Mesh | null = null;
-  private batchedMaterial: THREE.ShaderMaterial | null = null;
-  private currentVisibleTiles: Set<number> = new Set();
-  // The visible-tile Set passed last frame; reset whenever trees or
-  // visibility change so the next updateVisibility() does the full pass.
-  private lastVisibleTileSet: Set<number> | null = null;
+  private batcher: TreeBatcher;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -790,11 +821,11 @@ export class MushroomTreeManager {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
+    this.batcher = new TreeBatcher(scene, createBatchedTreeMaterial(this.sunDirection, true));
   }
 
   // Place a mushroom at a specific world position
   public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<MushroomTreeConfig>, tileIndex?: number): THREE.Group {
-    this.lastVisibleTileSet = null;
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
     const tree = this.treeBuilder.createTree(worldPosition, upDirection, config);
 
@@ -806,18 +837,21 @@ export class MushroomTreeManager {
       this.treesByTile.get(tileIndex)!.push(tree);
     }
 
+    // Drawn by the batcher; the individual tree stays for raycasts
+    tree.visible = false;
     this.trees.push(tree);
     this.scene.add(tree);
+    this.batcher.add(tree);
     return tree;
   }
 
   // Remove a mushroom tree
   public removeTree(tree: THREE.Group): void {
-    this.lastVisibleTileSet = null;
     const index = this.trees.indexOf(tree);
     if (index >= 0) {
       this.trees.splice(index, 1);
       this.scene.remove(tree);
+      this.batcher.remove(tree);
 
       const tileIndex = tree.userData.tileIndex;
       if (tileIndex !== undefined && this.treesByTile.has(tileIndex)) {
@@ -871,6 +905,7 @@ export class MushroomTreeManager {
     _getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
     removedTreeTiles?: Set<number>
   ): void {
+    this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 98765);  // Different offset from regular trees
 
     let placed = 0;
@@ -921,157 +956,19 @@ export class MushroomTreeManager {
     }
   }
 
-  // Update visibility based on visible tiles - uses batched rendering
-  public updateVisibility(visibleTileIndices: Set<number>): void {
-    // Same Set object as last frame = nothing changed (Planet caches it)
-    if (visibleTileIndices === this.lastVisibleTileSet) return;
-    this.lastVisibleTileSet = visibleTileIndices;
-
-    // Check if visible tiles changed
-    let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
-    if (!changed) {
-      for (const tileIndex of visibleTileIndices) {
-        if (!this.currentVisibleTiles.has(tileIndex)) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
-    if (changed) {
-      this.currentVisibleTiles = new Set(visibleTileIndices);
-      this.rebuildBatchedMesh();
-    }
-
-    // Hide individual trees (batched mesh handles rendering)
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // Show batched mesh
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = true;
-    }
+  // Which LOD chunks' trees are drawn (Planet.getVisibleTreeChunks())
+  public updateVisibility(visibleChunks: Set<number>): void {
+    this.batcher.showChunks(visibleChunks);
   }
 
-  // Set visibility for all trees at once
+  // Show or hide every tree (orbit view)
   public setAllVisible(visible: boolean): void {
-    this.lastVisibleTileSet = null;
-    // Hide batched mesh and individual trees
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = false;
-    }
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // If showing all, rebuild batch with all tiles
-    if (visible) {
-      this.currentVisibleTiles = new Set(this.treesByTile.keys());
-      this.rebuildBatchedMesh();
-      if (this.batchedMesh) {
-        this.batchedMesh.visible = true;
-      }
-    }
+    this.batcher.showAll(visible);
   }
 
-  // Rebuild the batched mesh with currently visible mushroom trees
-  private rebuildBatchedMesh(): void {
-    // Remove old batched mesh
-    if (this.batchedMesh) {
-      this.scene.remove(this.batchedMesh);
-      this.batchedMesh.geometry.dispose();
-      this.batchedMesh = null;
-    }
-
-    // Collect geometries from visible trees
-    const geometries: THREE.BufferGeometry[] = [];
-
-    for (const tileIndex of this.currentVisibleTiles) {
-      const tileTrees = this.treesByTile.get(tileIndex);
-      if (!tileTrees) continue;
-
-      for (const tree of tileTrees) {
-        tree.traverse((child) => {
-          if (child instanceof THREE.Mesh && child.geometry) {
-            // Clone geometry and apply tree's world transform
-            const clonedGeom = child.geometry.clone();
-
-            // Apply the tree group's transform to the geometry
-            const matrix = new THREE.Matrix4();
-            child.updateWorldMatrix(true, false);
-            matrix.copy(child.matrixWorld);
-            clonedGeom.applyMatrix4(matrix);
-
-            geometries.push(clonedGeom);
-          }
-        });
-      }
-    }
-
-    if (geometries.length === 0) return;
-
-    // Merge all geometries into one
-    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
-
-    // Clean up cloned geometries
-    for (const geom of geometries) {
-      geom.dispose();
-    }
-
-    // Create material if not exists
-    if (!this.batchedMaterial) {
-      this.batchedMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-          sunDirection: { value: this.sunDirection.clone().normalize() },
-          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        },
-        vertexShader: `
-          attribute vec3 color;
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vColor = color;
-            vNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 sunDirection;
-          uniform float ambientIntensity;
-          uniform float directionalIntensity;
-
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vec3 surfaceNormal = normalize(vWorldPosition);
-            float planetSunFacing = dot(surfaceNormal, sunDirection);
-            float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
-            float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
-            float directional = meshDiffuse * shadowFactor * directionalIntensity;
-            float ambient = ambientIntensity;
-            vec3 finalColor = vColor * (ambient + directional);
-            gl_FragColor = vec4(finalColor, 1.0);
-          }
-        `,
-        side: THREE.DoubleSide,  // For mushroom cap underside
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
-      });
-    }
-
-    // Create batched mesh
-    this.batchedMesh = new THREE.Mesh(mergedGeom, this.batchedMaterial);
-    this.batchedMesh.frustumCulled = false; // Trees are spread across planet
-    this.scene.add(this.batchedMesh);
+  // Map a tile to its LOD chunk; set before scattering trees
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.batcher.setChunkLookup(chunkOf);
   }
 
   public getTrees(): THREE.Group[] {

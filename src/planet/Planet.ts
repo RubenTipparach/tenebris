@@ -895,15 +895,35 @@ export class Planet {
 
     // Now remove old meshes (they were already replaced by new ones above)
     // Collect references first to avoid modifying children array while iterating
-    const oldMeshes: THREE.Mesh[] = [];
+    const oldMeshes: THREE.Object3D[] = [];
     for (const child of this.batchedMeshGroup.children) {
       if (!newMeshes.includes(child as THREE.Mesh)) {
-        oldMeshes.push(child as THREE.Mesh);
+        oldMeshes.push(child);
       }
     }
-    for (const oldMesh of oldMeshes) {
-      this.batchedMeshGroup.remove(oldMesh);
-      this.pendingMeshDisposals.push(oldMesh);
+    for (const old of oldMeshes) {
+      this.batchedMeshGroup.remove(old);
+      if (old instanceof THREE.Mesh) {
+        this.pendingMeshDisposals.push(old);
+      } else {
+        // A per-chunk detail group from an earlier chunk rebuild
+        old.traverse((child) => {
+          if (child instanceof THREE.Mesh) this.pendingMeshDisposals.push(child);
+        });
+      }
+    }
+
+    // A full (flat) build replaces every per-chunk detail group, so go back
+    // to flat mode. Staying in chunk mode here left the next chunk rebuild
+    // adding its chunk on top of these flat meshes: the same terrain drawn
+    // twice, z-fighting into flickering see-through triangles.
+    if (this.hasTransitionedToChunkMeshes) {
+      for (const waterMesh of this.chunkDetailWaterMeshes.values()) {
+        this.waterMeshCallback?.(waterMesh, false);
+      }
+      this.chunkDetailWaterMeshes.clear();
+      this.chunkDetailMeshes.clear();
+      this.hasTransitionedToChunkMeshes = false;
     }
 
     profiler.end('Planet.workerResult.swap');
@@ -992,6 +1012,20 @@ export class Planet {
       { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 },
       { dataKey: 'moonRockData', materialKey: 'moonRock' },
     ];
+
+    // A chunk result that lands while the terrain is in flat mode (a full
+    // build finished in between) only covers some chunks; applying it would
+    // wipe the flat meshes and leave holes. Re-queue those chunks instead:
+    // rebuildDirtyColumns() then does the full flat -> per-chunk switch.
+    if (!this.hasTransitionedToChunkMeshes) {
+      for (const chunkIndex of data.chunksRebuilt) {
+        this.immediateRebuildChunks.add(chunkIndex);
+      }
+      this.pendingChunkWorkerTiles.clear();
+      this.chunksBeingRebuilt = [];
+      this.isChunkWorkerBuildActive = false;
+      return;
+    }
 
     // On first chunk rebuild, clear all old flat meshes from initial build
     // The initial build creates flat meshes, but chunk rebuilds use per-chunk groups
@@ -5987,38 +6021,38 @@ export class Planet {
 
   // Get all tiles that should have visible trees
   // This includes nearby tiles (detailed terrain) AND tiles on visible LOD chunks
-  // Tiles whose trees should be drawn: the detailed area plus every visible
-  // LOD chunk. Called every frame for each planet, so the result is cached
-  // and only rebuilt when the detailed area or the chunk visibility changes.
-  // (It used to copy the detailed set and rescan every tile of the planet
-  // once per visible chunk, every frame - the top JS cost on Sequoia.)
-  // Callers get the same Set object back while nothing changed.
-  private visibleTreeTiles: Set<number> = new Set();
-  private visibleTreeTilesKey: string = '';
-  private visibleTreeTilesSource: Set<number> | null = null;
+  // LOD chunks whose trees should be drawn: every chunk holding detailed
+  // tiles plus every visible LOD chunk. Called every frame per planet, so the
+  // Set is cached and only rebuilt when the detailed area or the chunk
+  // visibility changes; callers get the same Set object back otherwise.
+  private visibleTreeChunks: Set<number> = new Set();
+  private visibleTreeChunksKey: string = '';
+  private visibleTreeChunksSource: Set<number> | null = null;
+  private detailChunks: Set<number> = new Set();
 
-  public getVisibleTilesForTrees(): Set<number> {
+  public getVisibleTreeChunks(): Set<number> {
+    if (this.visibleTreeChunksSource !== this.cachedNearbyTiles || this.cachedNearbyTiles.size === 0) {
+      this.detailChunks = new Set();
+      for (const tileIndex of this.cachedNearbyTiles) {
+        const chunk = this.tileToChunk.get(tileIndex);
+        if (chunk !== undefined) this.detailChunks.add(chunk);
+      }
+    }
     let key = `${this.cachedNearbyTiles.size}:`;
     for (let i = 0; i < this.lodChunks.length; i++) {
       key += this.lodChunks[i].visible ? '1' : '0';
     }
-    if (key === this.visibleTreeTilesKey && this.visibleTreeTilesSource === this.cachedNearbyTiles) {
-      return this.visibleTreeTiles;
+    if (key === this.visibleTreeChunksKey && this.visibleTreeChunksSource === this.cachedNearbyTiles) {
+      return this.visibleTreeChunks;
     }
 
-    const result = new Set(this.cachedNearbyTiles);
+    const result = new Set(this.detailChunks);
     for (let i = 0; i < this.lodChunks.length; i++) {
-      if (!this.lodChunks[i].visible) continue;
-      const chunkTiles = this.chunkToTiles.get(i);
-      if (!chunkTiles) continue;
-      for (const tileIndex of chunkTiles) {
-        result.add(tileIndex);
-      }
+      if (this.lodChunks[i].visible) result.add(i);
     }
-
-    this.visibleTreeTiles = result;
-    this.visibleTreeTilesKey = key;
-    this.visibleTreeTilesSource = this.cachedNearbyTiles;
+    this.visibleTreeChunks = result;
+    this.visibleTreeChunksKey = key;
+    this.visibleTreeChunksSource = this.cachedNearbyTiles;
     return result;
   }
 
