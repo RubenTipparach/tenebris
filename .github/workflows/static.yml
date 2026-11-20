@@ -2,14 +2,11 @@
 #
 # Every push to every branch builds the JS client (the dist/ landing
 # build, the heavyphoton.com/tenebris/ build and the itch.io zip) and
-# checks the JS multiplayer server. Deploys (itch.io, heavyphoton.com,
-# the Fly server) live in js-deploy.yml and run from main. GitHub Pages
-# auto-deploy is DISABLED (the Pages `deploy` job was removed by
-# request) - the build still produces dist/ and uploads it as a
-# downloadable artifact, but nothing publishes it to
-# rubentipparach.github.io. Re-enable by restoring the `deploy` job +
-# its pages-artifact upload + the `pages: write` / `id-token: write`
-# permissions.
+# checks the JS multiplayer server, and publishes dist/ to GitHub Pages
+# (https://rubentipparach.github.io/tenebris/) so every commit can be
+# played - from any branch, the last push wins. Deploys to itch.io,
+# heavyphoton.com and the Fly server live in js-deploy.yml and run from
+# main.
 #
 # THE C / WASM CLIENT IS NO LONGER BUILT HERE. tenebris-c/ is a frozen
 # archive (see CLAUDE.md) and all work happens in tenebris-rs/, which
@@ -44,10 +41,11 @@ on:
         required: false
         default: ''
 
-# GitHub Pages deploy is disabled, so the `pages: write` / `id-token: write`
-# permissions it needed are dropped; the build only reads the repo.
+# The Pages deploy job needs pages: write + id-token: write
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 # One deploy at a time across the whole repo, not per-ref, so a newer
 # push cleanly supersedes an older in-flight run.
@@ -137,9 +135,12 @@ jobs:
           path: dist
           retention-days: 3
 
-      # GitHub Pages publish disabled by request: no upload-pages-artifact
-      # step and no `deploy` job. dist/ ships only as the downloadable
-      # tenebris-dist artifact above.
+      # Publish dist/ (landing page + game) to GitHub Pages - see the
+      # `pages` job below.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
 
       # The JS multiplayer server (server-js/) - install and syntax-check it
       # here; js-deploy.yml deploys it to the 'tenebris-c' Fly app from main.
@@ -160,7 +161,17 @@ jobs:
   # dropped rather than fixed. Nothing depended on it - it was
   # continue-on-error with no dependents.
 
-  # GitHub Pages `deploy` job removed by request - the site no longer
-  # auto-publishes to rubentipparach.github.io on push. To re-enable,
-  # restore this job (needs: build), the pages-artifact upload in the
-  # build job, and the pages/id-token permissions at the top.
+  # Every push publishes its build to https://rubentipparach.github.io/tenebris/
+  # so any commit can be played. Branches deploy too (last push wins); if
+  # GitHub refuses a branch, allow it under Settings > Environments >
+  # github-pages > Deployment branches.
+  pages:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
