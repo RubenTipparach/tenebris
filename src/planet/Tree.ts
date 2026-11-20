@@ -901,7 +901,10 @@ export class PlanetTreeManager {
     seed: number = PlayerConfig.TERRAIN_SEED,
     getTileIndex?: (direction: THREE.Vector3) => number | null,
     getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
-    removedTiles?: Set<number>
+    removedTiles?: Set<number>,
+    // Biome mockup: which species grows on a tile (null = nothing grows
+    // there, undefined = the usual mix)
+    speciesAt?: (tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined
   ): void {
     this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
@@ -968,6 +971,11 @@ export class PlanetTreeManager {
         leafTaper: 0.6 + rng.next() * 0.2, // 0.6 to 0.8 for shape variation
       };
 
+      if (speciesAt && tileIndex !== null) {
+        const species = speciesAt(tileIndex, rng.next());
+        if (species === null) continue;
+        if (species) config.species = species;
+      }
       this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
       placed++;
     }

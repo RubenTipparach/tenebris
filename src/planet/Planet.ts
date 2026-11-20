@@ -439,6 +439,7 @@ export class Planet {
           [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
           [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
         } : undefined,
+        biomes: this.config.tileset !== SEQUOIA_TILESET && !this.config.texturePath && this.config.hasWater !== false && biomeMockupOn(),
         seed: this.seed,
         maxDepth: this.MAX_DEPTH,
         seaLevel: this.SEA_LEVEL,
@@ -6165,4 +6166,9 @@ export class Planet {
   public getNeedsRebatch(): boolean {
     return this.needsRebatch;
   }
+}
+
+// Debug-tab biome mockup (read at terrain generation, so it needs a reload)
+function biomeMockupOn(): boolean {
+  try { return localStorage.getItem('tenebris_mock_biomes') === '1'; } catch { return false; }
 }

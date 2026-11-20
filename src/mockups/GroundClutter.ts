@@ -1,0 +1,341 @@
+import * as THREE from 'three';
+import { Planet } from '../planet/Planet';
+import { HexBlockType } from '../shared/blockTypes';
+import { getAssetPath } from '../utils/assetPath';
+
+/**
+ * Biome mockup: ground clutter around the player, after Pale Blue Dot's
+ * foliage playground.
+ *
+ * - Grass tufts: nine one-pixel blades on a 16 px card, dark root to light
+ *   tip, on two crossed cards, in the ground tile's own three tones (the
+ *   grass texture's texels sorted by brightness and split in thirds). They
+ *   sway in the wind. Tundra grows sparse straw tufts, the desert dry ones.
+ * - Rocks and pebbles: lumpy flat-shaded stones in the stone texture's
+ *   colour, on bare rock and in the tundra, the odd pebble in the desert.
+ *
+ * Instanced (one draw call each), placed per tile from a hash of the tile
+ * index so it never changes as you walk, and rebuilt around the player
+ * when they move or the ground under it is edited.
+ */
+
+const RADIUS = 30;              // how far round the player clutter grows
+const REBUILD_MOVE = 4;         // rebuild after moving this far...
+const REBUILD_EVERY_S = 1.5;    // ...or this often (picks up block edits)
+const MAX_TUFTS = 9000;
+const MAX_ROCKS = 1500;
+const TUFT_WIDTH = 0.55;
+const TUFT_HEIGHT = 0.42;
+const WIND = 0.06;
+
+interface Tones { dark: THREE.Color; mid: THREE.Color; light: THREE.Color }
+
+export class GroundClutter {
+  private tufts: THREE.InstancedMesh;
+  private rocks: THREE.InstancedMesh;
+  private tuftMaterial: THREE.ShaderMaterial;
+  private rockMaterial: THREE.ShaderMaterial;
+  private grass: Tones = fallbackTones(0x2f7d2a, 0x4fae3a, 0x86d45a);
+  private stone = new THREE.Color(0x8a8780);
+  private lastCenter = new THREE.Vector3(1e9, 0, 0);
+  private lastPlanet: Planet | null = null;
+  private sinceBuild = 0;
+  private time = 0;
+  private enabled = false;
+
+  constructor(scene: THREE.Scene) {
+    this.tuftMaterial = makeMaterial(true);
+    this.rockMaterial = makeMaterial(false);
+    this.tufts = new THREE.InstancedMesh(tuftGeometry(), this.tuftMaterial, MAX_TUFTS);
+    this.rocks = new THREE.InstancedMesh(rockGeometry(), this.rockMaterial, MAX_ROCKS);
+    for (const m of [this.tufts, this.rocks]) {
+      m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.count * 3), 3);
+      m.count = 0;
+      m.frustumCulled = false;
+      m.visible = false;
+      scene.add(m);
+    }
+    sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
+  }
+
+  public setEnabled(on: boolean): void {
+    this.enabled = on;
+    this.tufts.visible = on;
+    this.rocks.visible = on;
+    this.lastPlanet = null;
+  }
+
+  /** planet: the world the player stands on (null in space). */
+  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3): void {
+    if (!this.enabled) return;
+    this.time += dt;
+    this.sinceBuild += dt;
+    for (const mat of [this.tuftMaterial, this.rockMaterial]) {
+      mat.uniforms.time.value = this.time;
+      mat.uniforms.sunDirection.value.copy(sunDirection);
+      if (planet) mat.uniforms.planetCenter.value.copy(planet.center);
+    }
+    const show = !!planet;
+    this.tufts.visible = show;
+    this.rocks.visible = show;
+    if (!planet) { this.lastPlanet = null; return; }
+    if (planet === this.lastPlanet && player.distanceTo(this.lastCenter) < REBUILD_MOVE && this.sinceBuild < REBUILD_EVERY_S) return;
+    this.rebuild(player, planet);
+  }
+
+  private rebuild(player: THREE.Vector3, planet: Planet): void {
+    this.lastPlanet = planet;
+    this.lastCenter.copy(player);
+    this.sinceBuild = 0;
+    const start = planet.getTileAtPoint(player);
+    let nTufts = 0, nRocks = 0;
+    if (start) {
+      const maxDepth = planet.getMaxDepth();
+      const seen = new Set<number>([start.index]);
+      let frontier = [start.index];
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion();
+      const yaw = new THREE.Quaternion();
+      const Y = new THREE.Vector3(0, 1, 0);
+      const pos = new THREE.Vector3();
+      const scale = new THREE.Vector3();
+      const col = new THREE.Color();
+      while (frontier.length) {
+        const next: number[] = [];
+        for (const ti of frontier) {
+          const tile = planet.getTileByIndex(ti);
+          if (!tile) continue;
+          const dir = tile.center.clone().normalize();
+          let top = -1, block: number = HexBlockType.AIR;
+          for (let d = maxDepth - 1; d >= 0; d--) {
+            const b = planet.getBlock(ti, d);
+            if (b !== HexBlockType.AIR) { top = d; block = b; break; }
+          }
+          const ground = top >= 0 ? planet.depthToRadius(top) : 0;
+          const tileWorld = planet.center.clone().addScaledVector(dir, ground);
+          if (tileWorld.distanceTo(player) > RADIUS) continue;
+          for (const n of tile.neighbors) if (!seen.has(n)) { seen.add(n); next.push(n); }
+          if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) continue;
+
+          const plan = clutterFor(block);
+          if (!plan) continue;
+          let seed = hash(ti);
+          const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+          q.setFromUnitVectors(Y, dir);
+          const place = () => {
+            // random point inside the hex: towards a corner, scaled down
+            const v = tile.vertices[Math.floor(rnd() * tile.vertices.length)];
+            const t = Math.sqrt(rnd()) * 0.82;
+            const p = tile.center.clone().lerp(v, t).normalize();
+            pos.copy(planet.center).addScaledVector(p, ground);
+            yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
+            return q.clone().multiply(yaw);
+          };
+          const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
+          for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
+            const rot = place();
+            const s = 0.7 + rnd() * 0.6;
+            scale.set(s, s * (0.8 + rnd() * 0.5), s);
+            m.compose(pos, rot, scale);
+            this.tufts.setMatrixAt(nTufts, m);
+            const r = rnd();
+            const tone = plan.straw ? STRAW : this.grass;
+            col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
+            this.tufts.setColorAt(nTufts, col);
+            nTufts++;
+          }
+          const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
+          for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
+            const rot = place();
+            const big = rnd() < 0.25;
+            const s = big ? 0.35 + rnd() * 0.35 : 0.08 + rnd() * 0.12;
+            scale.set(s * (0.8 + rnd() * 0.5), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.5));
+            pos.addScaledVector(dir, -s * 0.15); // sink in a little
+            m.compose(pos, rot, scale);
+            this.rocks.setMatrixAt(nRocks, m);
+            col.copy(this.stone).multiplyScalar(0.8 + rnd() * 0.35);
+            this.rocks.setColorAt(nRocks, col);
+            nRocks++;
+          }
+        }
+        frontier = next;
+      }
+    }
+    this.tufts.count = nTufts;
+    this.rocks.count = nRocks;
+    this.tufts.instanceMatrix.needsUpdate = true;
+    this.rocks.instanceMatrix.needsUpdate = true;
+    if (this.tufts.instanceColor) this.tufts.instanceColor.needsUpdate = true;
+    if (this.rocks.instanceColor) this.rocks.instanceColor.needsUpdate = true;
+  }
+}
+
+const STRAW: Tones = fallbackTones(0x8a7240, 0xb39a5c, 0xd6c389);
+
+interface Plan { tufts: number; tuftsRand: number; straw: boolean; rockChance: number; rocks: number }
+
+function clutterFor(block: number): Plan | null {
+  switch (block) {
+    case HexBlockType.GRASS: return { tufts: 4, tuftsRand: 5, straw: false, rockChance: 0.08, rocks: 1 };
+    case HexBlockType.DIRT_SNOW: return { tufts: 0, tuftsRand: 3, straw: true, rockChance: 0.35, rocks: 3 };
+    case HexBlockType.STONE: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.7, rocks: 4 };
+    case HexBlockType.SAND: return { tufts: 0, tuftsRand: 1.4, straw: true, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
+    default: return null;
+  }
+}
+
+function hash(n: number): number {
+  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
+function fallbackTones(d: number, m: number, l: number): Tones {
+  return { dark: new THREE.Color(d), mid: new THREE.Color(m), light: new THREE.Color(l) };
+}
+
+/** A texture's dark, mid and light tones: texels sorted by brightness, split in thirds, each third's mean. */
+async function sampleTones(url: string): Promise<Tones | null> {
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const ctx = c.getContext('2d')!;
+    ctx.drawImage(img, 0, 0);
+    // top cell only for atlas-style textures (top face on the left)
+    const w = Math.min(img.width, img.height);
+    const data = ctx.getImageData(0, 0, w, img.height).data;
+    const px: number[][] = [];
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 128) px.push([data[i], data[i + 1], data[i + 2]]);
+    if (px.length < 3) return null;
+    px.sort((a, b) => (a[0] * 0.3 + a[1] * 0.59 + a[2] * 0.11) - (b[0] * 0.3 + b[1] * 0.59 + b[2] * 0.11));
+    const third = (k: number) => {
+      const part = px.slice(Math.floor(px.length * k / 3), Math.floor(px.length * (k + 1) / 3));
+      const s = [0, 0, 0];
+      for (const p of part) { s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; }
+      return new THREE.Color(s[0] / part.length / 255, s[1] / part.length / 255, s[2] / part.length / 255);
+    };
+    return { dark: third(0), mid: third(1), light: third(2) };
+  } catch {
+    return null;
+  }
+}
+
+/** Nine one-pixel blades on a 16 px card, dark root to light tip (grey, tinted per instance). */
+function tuftTexture(): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = 16;
+  c.height = 16;
+  const ctx = c.getContext('2d')!;
+  const blades = [[1, 7], [3, 11], [4, 6], [6, 14], [7, 9], [9, 12], [11, 8], [12, 13], [14, 6]];
+  for (const [x, h] of blades) {
+    for (let y = 0; y < h; y++) {
+      const v = Math.round(165 + 90 * (y / h));
+      ctx.fillStyle = `rgb(${v},${v},${v})`;
+      // a lean on the upper blade
+      const lean = y > h * 0.6 ? (x < 8 ? -1 : 1) : 0;
+      ctx.fillRect(x + lean, 15 - y, 1, 1);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter;
+  t.minFilter = THREE.NearestFilter;
+  return t;
+}
+
+function tuftGeometry(): THREE.BufferGeometry {
+  const a = new THREE.PlaneGeometry(TUFT_WIDTH, TUFT_HEIGHT);
+  a.translate(0, TUFT_HEIGHT / 2, 0);
+  const b = a.clone();
+  b.rotateY(Math.PI / 2);
+  const pos: number[] = [], uv: number[] = [], nrm: number[] = [];
+  for (const g of [a, b]) {
+    const ng = g.toNonIndexed();
+    pos.push(...ng.getAttribute('position').array);
+    uv.push(...ng.getAttribute('uv').array);
+    for (let i = 0; i < ng.getAttribute('position').count; i++) nrm.push(0, 1, 0); // lit like the ground
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  return g;
+}
+
+function rockGeometry(): THREE.BufferGeometry {
+  const g = new THREE.IcosahedronGeometry(1, 0);
+  const p = g.getAttribute('position');
+  // lumpy, flat bottom
+  for (let i = 0; i < p.count; i++) {
+    const k = 0.75 + 0.5 * Math.abs(Math.sin(i * 12.9898) * 43758.5453 % 1);
+    p.setXYZ(i, p.getX(i) * k, Math.max(p.getY(i) * k, -0.2), p.getZ(i) * k);
+  }
+  const ng = g.toNonIndexed();
+  ng.computeVertexNormals();
+  const uv = new Float32Array(ng.getAttribute('position').count * 2);
+  ng.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return ng;
+}
+
+function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      map: { value: tuft ? tuftTexture() : null },
+      time: { value: 0 },
+      sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+      planetCenter: { value: new THREE.Vector3() },
+    },
+    defines: tuft ? { TUFT: 1 } : {},
+    side: tuft ? THREE.DoubleSide : THREE.FrontSide,
+    vertexShader: `
+      uniform float time;
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      void main() {
+        vUv = uv;
+        vColor = vec3(1.0);
+        #ifdef USE_INSTANCING_COLOR
+          vColor = instanceColor;
+        #endif
+        vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
+        #ifdef TUFT
+          // sway: the tip moves, the root stays
+          float sway = sin(time * 1.7 + w.x * 0.9 + w.z * 0.7) * ${WIND.toFixed(3)} * uv.y * uv.y;
+          w.xyz += normalize(cross(vec3(0.0, 1.0, 0.3), normalize(mat3(instanceMatrix) * vec3(0.0, 1.0, 0.0)))) * sway;
+        #endif
+        vNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D map;
+      uniform vec3 sunDirection;
+      uniform vec3 planetCenter;
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorld;
+      void main() {
+        vec3 c = vColor;
+        #ifdef TUFT
+          vec4 t = texture2D(map, vUv);
+          if (t.a < 0.5) discard;
+          c *= t.rgb;
+        #endif
+        vec3 up = normalize(vWorld - planetCenter);
+        float day = smoothstep(-0.1, 0.2, dot(up, sunDirection));
+        float diff = max(0.0, dot(normalize(vNormal), sunDirection));
+        gl_FragColor = vec4(c * (0.55 + 0.6 * diff * day), 1.0);
+      }
+    `,
+  });
+}

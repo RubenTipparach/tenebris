@@ -4,7 +4,8 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
-import { PlanetTreeManager, MushroomTreeManager } from './planet/Tree';
+import { PlanetTreeManager, MushroomTreeManager, EarthTreeSpecies } from './planet/Tree';
+import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
@@ -19,6 +20,7 @@ import { ItemType } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer, DEFAULT_SERVER } from './net/Multiplayer';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
+import { GroundClutter } from './mockups/GroundClutter';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
@@ -72,6 +74,7 @@ class PlanetGame {
 
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
+  private groundClutter: GroundClutter | null = null;
   private daytimeSkyMockup = false;
 
   // Shared frustum for all planet updates (calculated once per frame)
@@ -317,7 +320,8 @@ class PlanetGame {
         PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
         (direction) => this.earth.getTileIndexInDirection(direction), // For visibility tracking
         (direction) => this.earth.getTileCenterInDirection(direction), // For centering trees on tiles
-        removedTiles // Skip tiles where trees were previously removed
+        removedTiles, // Skip tiles where trees were previously removed
+        this.biomeTreeSpecies(this.earth)
       );
 
       // Fishing: a catch goes into the inventory
@@ -662,6 +666,12 @@ class PlanetGame {
     MusicManager.update();
 
     this.multiplayer?.update(deltaTime);
+    if (this.groundClutter) {
+      // Biomes (and so the clutter) are Earth-only
+      const near = this.player.position.distanceTo(this.earth.center) < this.earth.radius * 1.2;
+      this.groundClutter.update(deltaTime, this.player.position, near ? this.earth : null,
+        calculateSunDirectionForPlanet(this.earth.center, this.sunPosition));
+    }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
       let inSpace = true;
@@ -1084,6 +1094,25 @@ class PlanetGame {
     if (overlay) overlay.classList.add('hidden');
   }
 
+  // Biome mockup: trees follow the ground. Temperate grass grows oak and
+  // birch with some pine, tundra grows pine, nothing grows on bare rock,
+  // alpine snow or open desert.
+  private biomeTreeSpecies(planet: Planet): ((tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined) | undefined {
+    let on = false;
+    try { on = localStorage.getItem('tenebris_mock_biomes') === '1'; } catch { /* blocked */ }
+    if (!on) return undefined;
+    return (tileIndex, roll) => {
+      let top: number = HexBlockType.AIR;
+      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+        const b = planet.getBlock(tileIndex, d);
+        if (b !== HexBlockType.AIR) { top = b; break; }
+      }
+      if (top === HexBlockType.GRASS) return roll < 0.45 ? 'oak' : roll < 0.75 ? 'birch' : 'pine';
+      if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
+      return null;
+    };
+  }
+
   // Debug-tab mockups: prototypes to judge a look before building it for real
   private setupMockups(): void {
     const bind = (id: string, key: string, apply: (on: boolean) => void) => {
@@ -1104,6 +1133,12 @@ class PlanetGame {
       if (!on) this.engine.setStarVisibility(1);
     });
     bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
+    // Terrain and tree biomes are read at load (reload to change them); the
+    // ground clutter follows the toggle live
+    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => {
+      if (on && !this.groundClutter) this.groundClutter = new GroundClutter(this.engine.scene);
+      this.groundClutter?.setEnabled(on);
+    });
     bind('toggle-mock-planets', 'tenebris_mock_planets', (on) => {
       if (on && !this.solarSystemMockup) this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
       this.solarSystemMockup?.setEnabled(on);
