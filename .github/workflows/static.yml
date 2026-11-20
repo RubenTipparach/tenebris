@@ -27,7 +27,7 @@
 # Fly deploy requires a FLY_API_TOKEN repo secret (scoped deploy
 # token from `fly tokens create deploy -a tenebris-c`, including the
 # 'FlyV1 ' prefix). Without it the deploy step fails fast.
-name: Build and deploy
+name: JS client - build + Rust server - deploy to Fly
 
 on:
   # Push covers branch commits AND PR synchronize events (a PR
@@ -124,7 +124,7 @@ jobs:
           path: tenebris-itch.zip
           retention-days: 3
 
-      # Deploying (itch.io + heavyphoton.com) lives in deploy.yml, which runs
+      # Deploying (itch.io + heavyphoton.com) lives in js-deploy.yml, which runs
       # on pushes to main.
 
       # Non-blocking: the compile + "Verify dist layout" above already gate
