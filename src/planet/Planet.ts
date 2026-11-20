@@ -14,6 +14,7 @@ import {
   BuildConfig,
   ChunkGeometryData
 } from './ChunkGeometryBuilder';
+import { PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -178,11 +179,17 @@ export class Planet {
   private detailedTerrainEnabled: boolean = false;
   private detailedTerrainInitializing: boolean = false;
 
-  // Progressive terrain generation - generate tiles on-demand as player approaches
-  private tilesWithTerrain: Set<number> = new Set(); // Tiles that have generated terrain data
-  private pendingTerrainTiles: number[] = []; // Queue of tiles waiting for terrain generation
-  private isTerrainWorkerBusy: boolean = false;
-  private terrainBatchSize: number = 500; // Generate this many tiles per worker batch
+  // Terrain generation runs once per planet, in a worker. Non-spawn planets
+  // start it in the background after the game is playable, so by the time the
+  // player arrives the columns already exist. Everything that needs terrain
+  // awaits this one promise (no second, progressive path).
+  private terrainGenerationPromise: Promise<void> | null = null;
+  private detailedTerrainPromise: Promise<void> | null = null;
+  private initializePromise: Promise<void> | null = null;
+
+  // Block edits (from a save) for columns that have not been generated yet.
+  // Applied as each column arrives from the terrain worker.
+  private pendingBlockEdits: Map<number, Map<number, HexBlockType>> = new Map();
 
   // LOD transition tracking - detects when player crosses lodSwitchAltitude
   private wasAboveLODThreshold: boolean = true;
@@ -194,14 +201,9 @@ export class Planet {
   private isIntermediateLODBuilt: boolean = false;
   private isIntermediateLODWorkerActive: boolean = false;
 
-  // Pre-serialized tile data for LOD worker (static, only needs to be built once)
-  private serializedTileData: Record<number, {
-    index: number;
-    vertices: Array<{ x: number; y: number; z: number }>;
-    center: { x: number; y: number; z: number };
-    neighbors: number[];
-  }> | null = null;
-  private serializedTileToChunk: Record<number, number> | null = null;
+  // Number of tiles whose static geometry the LOD worker already holds
+  private lodWorkerTileCount: number = 0;
+  private lodRebuildQueued: boolean = false;
 
 
   private readonly BLOCK_HEIGHT = 1;
@@ -281,7 +283,20 @@ export class Planet {
   // Terrain generation worker
   private terrainWorker: Worker | null = null;
 
-  public async initialize(): Promise<void> {
+  // Idempotent: concurrent callers (deferred init, teleport, save-restore)
+  // all share one initialization.
+  public initialize(): Promise<void> {
+    if (!this.initializePromise) {
+      this.initializePromise = this.initializeInternal();
+    }
+    return this.initializePromise;
+  }
+
+  public isInitialized(): boolean {
+    return this.lodMesh !== null && this.batchedMeshGroup !== null;
+  }
+
+  private async initializeInternal(): Promise<void> {
     const waterColors = this.config.waterColor || this.config.waterDeepColor ? {
       color: this.config.waterColor,
       deepColor: this.config.waterDeepColor,
@@ -299,7 +314,7 @@ export class Planet {
 
     if (isSpawnPlanet) {
       // Full initialization with detailed terrain
-      await this.generateTerrainAsync();
+      await this.ensureTerrainGenerated();
       this.detailedTerrainEnabled = true;
       this.initializeLODChunks();
       this.createLODMesh();
@@ -325,95 +340,36 @@ export class Planet {
     console.log(`Planet created with ${this.polyhedron.getTileCount()} tiles`);
   }
 
-  // Enable detailed terrain generation when player approaches a non-spawn planet
-  // This is called from the update loop when player gets close enough
-  public async enableDetailedTerrain(targetPosition?: THREE.Vector3): Promise<void> {
-    if (this.detailedTerrainEnabled || this.detailedTerrainInitializing) {
-      return; // Already enabled or in progress
+  // Enable detailed terrain when the player approaches (or teleports to) a
+  // non-spawn planet. Terrain data is normally already generated in the
+  // background by then; this just waits for it and builds the full LOD.
+  public enableDetailedTerrain(): Promise<void> {
+    if (this.detailedTerrainEnabled) return Promise.resolve();
+    if (!this.detailedTerrainPromise) {
+      this.detailedTerrainInitializing = true;
+      this.detailedTerrainPromise = (async () => {
+        await this.initialize();
+        await this.ensureTerrainGenerated();
+        this.detailedTerrainEnabled = true;
+        this.detailedTerrainInitializing = false;
+        // Replace the noise-based fallback LOD with the real chunked LOD
+        this.createLODMesh();
+        console.log(`[Planet] ${this.config.name || 'Unknown'}: Detailed terrain ready`);
+      })();
     }
-
-    this.detailedTerrainInitializing = true;
-    console.log(`[Planet] ${this.config.name || 'Unknown'}: Generating terrain...`);
-
-    // For spawn planets or if no target, generate all terrain at once
-    if (this.config.isSpawnPlanet || !targetPosition) {
-      await this.generateTerrainAsync();
-      this.createLODMesh();
-      this.detailedTerrainEnabled = true;
-      this.detailedTerrainInitializing = false;
-      console.log(`[Planet] ${this.config.name || 'Unknown'}: Terrain ready`);
-      return;
-    }
-
-    // For non-spawn planets, use progressive generation
-    // First generate nearby tiles only, then queue the rest
-    const nearbyTileIndices = this.getTilesNearPosition(targetPosition, PlayerConfig.TERRAIN_MAX_RENDER_DISTANCE * 2);
-    console.log(`[Planet] ${this.config.name || 'Unknown'}: Generating ${nearbyTileIndices.length} nearby tiles first...`);
-
-    // Generate nearby tiles synchronously (should be fast - ~2000 tiles)
-    await this.generateTerrainForTiles(nearbyTileIndices);
-
-    // Queue remaining tiles for background generation
-    const remainingTiles: number[] = [];
-    for (const tile of this.polyhedron.tiles) {
-      if (!this.tilesWithTerrain.has(tile.index)) {
-        remainingTiles.push(tile.index);
-      }
-    }
-    this.pendingTerrainTiles = remainingTiles;
-    console.log(`[Planet] ${this.config.name || 'Unknown'}: Queued ${remainingTiles.length} tiles for background generation`);
-
-    // Build LOD mesh with available terrain data
-    this.createLODMesh();
-
-    this.detailedTerrainEnabled = true;
-    this.detailedTerrainInitializing = false;
-    console.log(`[Planet] ${this.config.name || 'Unknown'}: Initial terrain ready, background generation continues`);
+    return this.detailedTerrainPromise;
   }
 
-  // Get tile indices near a world position
-  private getTilesNearPosition(position: THREE.Vector3, renderDistance: number): number[] {
-    const targetTile = this.getTileAtPointFast(position);
-    if (!targetTile) {
-      // Fallback: use direction to find nearest tile
-      const dir = position.clone().sub(this.center).normalize();
-      let bestTile = this.polyhedron.tiles[0];
-      let bestDot = -1;
-      for (const tile of this.polyhedron.tiles) {
-        const tileDir = tile.center.clone().normalize();
-        const dot = dir.dot(tileDir);
-        if (dot > bestDot) {
-          bestDot = dot;
-          bestTile = tile;
-        }
-      }
-      return this.getTileIndicesInRange(bestTile.index, renderDistance);
+  // Generate this planet's terrain data (once). Safe to call repeatedly.
+  public ensureTerrainGenerated(): Promise<void> {
+    if (!this.terrainGenerationPromise) {
+      this.terrainGenerationPromise = this.generateTerrainAsync();
     }
-    return this.getTileIndicesInRange(targetTile.index, renderDistance);
+    return this.terrainGenerationPromise;
   }
 
-  // Get all tile indices within render distance (BFS)
-  private getTileIndicesInRange(centerTileIndex: number, renderDistance: number): number[] {
-    const result: number[] = [];
-    const visited = new Set<number>();
-    const queue: { index: number; depth: number }[] = [{ index: centerTileIndex, depth: 0 }];
-
-    while (queue.length > 0) {
-      const { index, depth } = queue.shift()!;
-      if (visited.has(index)) continue;
-      visited.add(index);
-      result.push(index);
-
-      if (depth < renderDistance) {
-        const tile = this.polyhedron.tiles[index];
-        for (const neighborIndex of tile.neighbors) {
-          if (!visited.has(neighborIndex)) {
-            queue.push({ index: neighborIndex, depth: depth + 1 });
-          }
-        }
-      }
-    }
-    return result;
+  public getName(): string {
+    return this.config.name ?? 'earth';
   }
 
   // Check if detailed terrain is enabled for this planet
@@ -489,41 +445,48 @@ export class Planet {
         }))
       };
 
-      // Build tile lookup map once (O(n) instead of O(n²) find loops)
-      const tileMap = new Map<number, typeof this.polyhedron.tiles[0]>();
-      for (const tile of this.polyhedron.tiles) {
-        tileMap.set(tile.index, tile);
-      }
+      // Tiles are stored at their own index
+      const tileMap = { get: (index: number) => this.polyhedron.tiles[index] };
 
-      // Handle worker response
+      // Handle worker response. The worker sends 'terrainBatch' messages and
+      // a final 'terrainResult'; each is ingested in its own task.
+      const boundingRadius = this.BLOCK_HEIGHT * this.MAX_DEPTH;
+      const ingest = (columnsArray: Array<[number, number[]]>) => {
+        for (const [tileIndex, blocks] of columnsArray) {
+          const tile = tileMap.get(tileIndex);
+          if (!tile) continue;
+
+          const edits = this.pendingBlockEdits.get(tileIndex);
+          if (edits) {
+            for (const [depth, blockType] of edits) {
+              if (depth >= 0 && depth < blocks.length) blocks[depth] = blockType;
+            }
+            this.pendingBlockEdits.delete(tileIndex);
+          }
+
+          const boundingSphere = new THREE.Sphere(
+            tile.center.clone().add(this.center),
+            boundingRadius
+          );
+
+          const column: PlanetColumn = {
+            tile,
+            blocks: blocks as HexBlockType[],
+            isDirty: true,
+            boundingSphere
+          };
+
+          this.columns.set(tileIndex, column);
+        }
+      };
+
       this.terrainWorker.onmessage = (e) => {
         const { type, columns } = e.data;
 
-        if (type === 'terrainResult') {
-          // Convert array back to columns with full PlanetColumn data
-          const columnsArray = columns as Array<[number, number[]]>;
-
-          // Pre-compute shared bounding sphere radius
-          const boundingRadius = this.BLOCK_HEIGHT * this.MAX_DEPTH;
-
-          for (const [tileIndex, blocks] of columnsArray) {
-            const tile = tileMap.get(tileIndex);
-            if (!tile) continue;
-
-            const boundingSphere = new THREE.Sphere(
-              tile.center.clone().add(this.center),
-              boundingRadius
-            );
-
-            const column: PlanetColumn = {
-              tile,
-              blocks: blocks as HexBlockType[],
-              isDirty: true,
-              boundingSphere
-            };
-
-            this.columns.set(tileIndex, column);
-          }
+        if (type === 'terrainBatch') {
+          ingest(columns as Array<[number, number[]]>);
+        } else if (type === 'terrainResult') {
+          ingest(columns as Array<[number, number[]]>);
 
           // Terminate worker
           this.terrainWorker?.terminate();
@@ -549,135 +512,6 @@ export class Planet {
         tiles,
         config
       });
-    });
-  }
-
-  // Generate terrain for specific tiles only (for progressive loading)
-  private async generateTerrainForTiles(tileIndices: number[]): Promise<void> {
-    if (tileIndices.length === 0) return;
-
-    return new Promise((resolve) => {
-      // Create terrain worker
-      const worker = new Worker(
-        new URL('../workers/terrainGenerationWorker.ts', import.meta.url),
-        { type: 'module' }
-      );
-
-      // Prepare tile data for only the requested tiles
-      const tileIndexSet = new Set(tileIndices);
-      const tiles = this.polyhedron.tiles
-        .filter(tile => tileIndexSet.has(tile.index))
-        .map(tile => ({
-          index: tile.index,
-          center: { x: tile.center.x, y: tile.center.y, z: tile.center.z },
-          neighbors: tile.neighbors
-        }));
-
-      // Prepare config for worker
-      const config = {
-        seed: this.seed,
-        maxDepth: this.MAX_DEPTH,
-        seaLevel: this.SEA_LEVEL,
-        maxHeight: this.MAX_HEIGHT,
-        hasWater: this.config.hasWater !== false && !this.config.texturePath,
-        isSingleTexturePlanet: !!this.config.texturePath,
-        heightVariation: this.config.heightVariation ?? 1.0,
-        polarThreshold: PlayerConfig.POLAR_THRESHOLD,
-        continentScale: PlayerConfig.TERRAIN_CONTINENT_SCALE,
-        mountainScale: PlayerConfig.TERRAIN_MOUNTAIN_SCALE,
-        hillScale: PlayerConfig.TERRAIN_HILL_SCALE,
-        detailScale: PlayerConfig.TERRAIN_DETAIL_SCALE,
-        continentWeight: PlayerConfig.TERRAIN_CONTINENT_WEIGHT,
-        mountainHeight: PlayerConfig.TERRAIN_MOUNTAIN_HEIGHT,
-        hillWeight: PlayerConfig.TERRAIN_HILL_WEIGHT,
-        detailWeight: PlayerConfig.TERRAIN_DETAIL_WEIGHT,
-        oceanDepthPower: PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER,
-        terrainMaxDepth: PlayerConfig.TERRAIN_MAX_DEPTH,
-        oreConfigs: this.ORE_CONFIGS.map(ore => ({
-          type: ore.type as number,
-          minDepth: ore.minDepth,
-          maxDepth: ore.maxDepth,
-          veinChance: ore.veinChance,
-          veinSize: ore.veinSize,
-          spreadFactor: ore.spreadFactor
-        }))
-      };
-
-      // Build tile lookup map
-      const tileMap = new Map<number, typeof this.polyhedron.tiles[0]>();
-      for (const tile of this.polyhedron.tiles) {
-        tileMap.set(tile.index, tile);
-      }
-
-      // Handle worker response
-      worker.onmessage = (e) => {
-        const { type, columns } = e.data;
-
-        if (type === 'terrainResult') {
-          const columnsArray = columns as Array<[number, number[]]>;
-          const boundingRadius = this.BLOCK_HEIGHT * this.MAX_DEPTH;
-
-          for (const [tileIndex, blocks] of columnsArray) {
-            const tile = tileMap.get(tileIndex);
-            if (!tile) continue;
-
-            const boundingSphere = new THREE.Sphere(
-              tile.center.clone().add(this.center),
-              boundingRadius
-            );
-
-            const column: PlanetColumn = {
-              tile,
-              blocks: blocks as HexBlockType[],
-              isDirty: true,
-              boundingSphere
-            };
-
-            this.columns.set(tileIndex, column);
-            this.tilesWithTerrain.add(tileIndex);
-          }
-
-          worker.terminate();
-          console.log(`[Planet] Generated terrain for ${columnsArray.length} tiles`);
-          resolve();
-        }
-      };
-
-      worker.onerror = (error) => {
-        console.error('[Planet] Terrain worker error:', error);
-        worker.terminate();
-        resolve();
-      };
-
-      // Start worker
-      worker.postMessage({
-        type: 'generateTerrain',
-        tiles,
-        config
-      });
-    });
-  }
-
-  // Process pending terrain generation in background (called from update loop)
-  private processBackgroundTerrainGeneration(): void {
-    if (this.isTerrainWorkerBusy || this.pendingTerrainTiles.length === 0) return;
-
-    // Get next batch of tiles to generate
-    const batch = this.pendingTerrainTiles.splice(0, this.terrainBatchSize);
-    if (batch.length === 0) return;
-
-    this.isTerrainWorkerBusy = true;
-
-    // Generate terrain for this batch
-    this.generateTerrainForTiles(batch).then(() => {
-      this.isTerrainWorkerBusy = false;
-
-      // Rebuild LOD if we have new terrain data
-      if (batch.length > 0 && this.pendingTerrainTiles.length === 0) {
-        console.log(`[Planet] ${this.config.name || 'Unknown'}: Background terrain generation complete`);
-        // Rebuild LOD to include new terrain
-        this.createLODMesh();
-      }
     });
   }
 
@@ -777,6 +611,14 @@ export class Planet {
   // Frustum cull LOD chunks - hide chunks that are behind the camera or off-screen
   // Uses chunk normal (outward direction from planet center) to cull chunks facing away
   // Also hides chunks that are covered by detailed terrain
+  // Above the detailed zone every LOD chunk is shown. cullLODChunks() (ground
+  // level only) hides the chunk under the camera and chunks that have
+  // detailed terrain; without this those stayed hidden after climbing,
+  // leaving a hole in the planet under the player.
+  private showAllLODChunks(): void {
+    for (const chunk of this.lodChunks) chunk.visible = true;
+  }
+
   private cullLODChunks(): void {
     if (!this.lodMesh || this.lodChunks.length === 0) return;
 
@@ -1283,6 +1125,7 @@ export class Planet {
     if (!hasAnyGeometry) {
       console.log(`[${this.config.name}] LOD worker returned no geometry, keeping fallback HIGH LOD`);
       this.isLODWorkerBuildActive = false;
+      this.startQueuedLODRebuild();
       // If we don't have a fallback mesh yet, create one
       if (!this.isHighLODReady()) {
         this.createFallbackHighLODMesh();
@@ -1362,6 +1205,14 @@ export class Planet {
 
     // Worker is done, but mesh creation may continue incrementally (if not initial load)
     this.isLODWorkerBuildActive = false;
+    this.startQueuedLODRebuild();
+  }
+
+  private startQueuedLODRebuild(): void {
+    if (this.lodRebuildQueued && !this.isLODWorkerBuildActive) {
+      this.lodRebuildQueued = false;
+      this.startLODWorkerBuild();
+    }
   }
 
   // Process pending LOD chunks incrementally (called from update loop)
@@ -1532,6 +1383,11 @@ export class Planet {
     const initialChunks = this.getChunksInRange(spawnTile.index, renderDistance);
     const initialTiles = this.getTilesFromChunks(initialChunks);
 
+    // Wait for a fresh detailed build around this position. For a planet that
+    // was in LOD-only mode the flag is already set, which used to make this
+    // resolve before any terrain existed under the player.
+    this.initialTerrainBuilt = false;
+
     // Update cache and trigger build
     this.cachedNearbyTiles = initialTiles;
     const bufferChunks = this.getChunksInRange(spawnTile.index, PlayerConfig.TERRAIN_BUFFER_ZONE);
@@ -1542,6 +1398,8 @@ export class Planet {
     // Start worker builds
     if (this.geometryWorker) {
       this.startWorkerBuild();
+    } else {
+      this.initialTerrainBuilt = true; // No worker: nothing to wait for
     }
     if (this.lodGeometryWorker) {
       this.startLODWorkerBuild();
@@ -1568,51 +1426,26 @@ export class Planet {
 
     profiler.begin('Planet.workerBuild.serialize');
 
-    // Prepare column data for worker
-    const columns: Array<{
-      tileIndex: number;
-      tile: {
-        index: number;
-        vertices: Array<{ x: number; y: number; z: number }>;
-        center: { x: number; y: number; z: number };
-        neighbors: number[];
-      };
-      blocks: number[];
-    }> = [];
-
-    const neighborData: Record<string, { blocks: number[]; vertices: { x: number; y: number; z: number }[] }> = {};
-
-    // Collect all tiles and their neighbors' block data (including vertices for water walls)
+    // Collect the nearby columns and their neighbours (for side-face culling
+    // and water walls), then pack them into typed arrays: posting thousands of
+    // small objects cost hundreds of ms of main-thread time per rebuild.
+    const columns: PlanetColumn[] = [];
+    const neighborColumns: PlanetColumn[] = [];
+    const seenNeighbors = new Set<number>();
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
       if (!column) continue;
-
-      columns.push({
-        tileIndex,
-        tile: {
-          index: column.tile.index,
-          vertices: column.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
-          center: { x: column.tile.center.x, y: column.tile.center.y, z: column.tile.center.z },
-          neighbors: column.tile.neighbors
-        },
-        blocks: [...column.blocks]
-      });
-
-      // Add neighbor block and vertex data for side face culling and water walls
+      columns.push(column);
       for (const neighborIndex of column.tile.neighbors) {
-        if (!neighborData[neighborIndex]) {
-          const neighborColumn = this.columns.get(neighborIndex);
-          if (neighborColumn) {
-            neighborData[neighborIndex] = {
-              blocks: [...neighborColumn.blocks],
-              vertices: neighborColumn.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z }))
-            };
-          }
-        }
+        if (seenNeighbors.has(neighborIndex)) continue;
+        seenNeighbors.add(neighborIndex);
+        const neighborColumn = this.columns.get(neighborIndex);
+        if (neighborColumn) neighborColumns.push(neighborColumn);
       }
-
       column.isDirty = false;
     }
+    const packedColumns = packColumnSet(columns);
+    const packedNeighbors = packColumnSet(neighborColumns);
 
     // Track which tiles are being built - LOD hiding happens when geometry is ready
     this.pendingWorkerTiles = new Set(this.cachedNearbyTiles);
@@ -1630,8 +1463,8 @@ export class Planet {
     profiler.begin('Planet.workerBuild.postMessage');
     this.geometryWorker.postMessage({
       type: 'buildGeometry',
-      columns,
-      neighborData,
+      packedColumns,
+      packedNeighbors,
       config: {
         radius: this.radius,
         blockHeight: this.BLOCK_HEIGHT,
@@ -1647,7 +1480,7 @@ export class Planet {
         uvScale: PlayerConfig.TERRAIN_UV_SCALE,
         torches: relevantTorches
       }
-    });
+    }, [...packedColumnSetTransferables(packedColumns), ...packedColumnSetTransferables(packedNeighbors)]);
     profiler.end('Planet.workerBuild.postMessage');
   }
 
@@ -1992,32 +1825,17 @@ export class Planet {
 
     profiler.begin('Planet.lodWorkerBuild.serialize');
 
-    // Build static tile data cache once (vertices, centers, neighbors don't change)
-    if (!this.serializedTileData) {
-      this.serializedTileData = {};
-      for (const [tileIndex, column] of this.columns) {
-        this.serializedTileData[tileIndex] = {
-          index: column.tile.index,
-          vertices: column.tile.vertices.map(v => ({ x: v.x, y: v.y, z: v.z })),
-          center: { x: column.tile.center.x, y: column.tile.center.y, z: column.tile.center.z },
-          neighbors: [...column.tile.neighbors]
-        };
-      }
+    // Tile geometry (vertices, centers, neighbors) never changes, so the
+    // worker keeps it: send it only on the first build, or again if more
+    // columns exist now than when it was sent. Blocks go every time, packed.
+    let packedTiles: PackedTileData | undefined;
+    if (this.lodWorkerTileCount !== this.columns.size) {
+      this.lodWorkerTileCount = this.columns.size;
+      const tiles: HexTile[] = [];
+      for (const column of this.columns.values()) tiles.push(column.tile);
+      packedTiles = packTiles(tiles, this.tileToChunk, this.polyhedron.tiles.length - 1);
     }
-
-    // Build tileToChunk cache once
-    if (!this.serializedTileToChunk) {
-      this.serializedTileToChunk = {};
-      for (const [tileIndex, chunkIndex] of this.tileToChunk) {
-        this.serializedTileToChunk[tileIndex] = chunkIndex;
-      }
-    }
-
-    // Only serialize blocks (the dynamic part) - use typed array for speed
-    const blockData: Record<number, number[]> = {};
-    for (const [tileIndex, column] of this.columns) {
-      blockData[tileIndex] = column.blocks;
-    }
+    const packedBlocks = packBlocks(this.columns.entries(), this.columns.size);
 
     this.isLODWorkerBuildActive = true;
     profiler.end('Planet.lodWorkerBuild.serialize');
@@ -2026,12 +1844,12 @@ export class Planet {
     // NOTE: nearbyTiles is now empty - we build complete LOD for ALL tiles.
     // Per-tile visibility toggling handles LOD vs detailed at runtime.
     profiler.begin('Planet.lodWorkerBuild.postMessage');
+    const transfers: Transferable[] = [packedBlocks.indices.buffer, packedBlocks.lengths.buffer, packedBlocks.data.buffer];
+    if (packedTiles) transfers.push(...packedTileTransferables(packedTiles));
     this.lodGeometryWorker.postMessage({
       type: 'buildLODGeometry',
-      tileData: this.serializedTileData,
-      blockData,
-      nearbyTiles: [], // Empty - build all tiles, no exclusions
-      tileToChunk: this.serializedTileToChunk,
+      packedTiles,
+      packedBlocks,
       config: {
         radius: this.radius,
         blockHeight: this.BLOCK_HEIGHT,
@@ -2042,17 +1860,21 @@ export class Planet {
         chunkCount: this.LOD_CHUNK_COUNT
       },
       torches: this.torchData
-    });
+    }, transfers);
     profiler.end('Planet.lodWorkerBuild.postMessage');
   }
 
   private createLODMesh(): void {
     this.rebuildLODMesh();
 
-    // Create boundary walls group
-    this.boundaryWallsGroup = new THREE.Group();
-    this.boundaryWallsGroup.position.copy(this.center);
-    this.scene.add(this.boundaryWallsGroup);
+    // Create the boundary walls group once. This used to be recreated on every
+    // LOD rebuild (each trip to orbit and back), leaking the old group - and
+    // its walls - into the scene, where they overlapped the new terrain.
+    if (!this.boundaryWallsGroup) {
+      this.boundaryWallsGroup = new THREE.Group();
+      this.boundaryWallsGroup.position.copy(this.center);
+      this.scene.add(this.boundaryWallsGroup);
+    }
   }
 
   // Create simplified meshes for viewing from great distances
@@ -2550,22 +2372,28 @@ export class Planet {
     // Create mesh and add to group
     const mesh = new THREE.Mesh(geometry, material);
     mesh.renderOrder = -1;
+    mesh.userData.ownsMaterial = true;
 
     const lodGroup = new THREE.Group();
     lodGroup.add(mesh);
     lodGroup.position.copy(this.center);
     this.scene.add(lodGroup);
 
-    // Clean up old lodMesh if it exists
+    // Clean up old lodMesh if it exists. Chunked LOD meshes share the
+    // planet's terrain materials with the detailed terrain - only dispose a
+    // material this mesh created itself, or the detailed terrain's shaders get
+    // thrown away and recompiled (a hitch every time).
     if (this.lodMesh) {
       this.scene.remove(this.lodMesh);
       this.lodMesh.traverse((child) => {
         if (child instanceof THREE.Mesh) {
           child.geometry.dispose();
-          if (Array.isArray(child.material)) {
-            child.material.forEach(m => m.dispose());
-          } else {
-            child.material.dispose();
+          if (child.userData.ownsMaterial) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach(m => m.dispose());
+            } else {
+              child.material.dispose();
+            }
           }
         }
       });
@@ -2588,13 +2416,19 @@ export class Planet {
       this.createFallbackHighLODMesh();
     }
 
-    // Use worker if available
-    if (this.lodGeometryWorker && !this.isLODWorkerBuildActive) {
-      this.startLODWorkerBuild();
+    // Use worker if available. If it is busy, queue one more build for when
+    // it finishes rather than building the whole planet's LOD on the main
+    // thread (a multi-second freeze on the larger planets).
+    if (this.lodGeometryWorker) {
+      if (this.isLODWorkerBuildActive) {
+        this.lodRebuildQueued = true;
+      } else {
+        this.startLODWorkerBuild();
+      }
       return;
     }
 
-    // Fallback to main thread if worker not available or busy
+    // Fallback to main thread if no worker is available
     profiler.begin('Planet.rebuildLODMesh');
 
     // Remove old LOD mesh and chunks if they exist
@@ -4490,6 +4324,7 @@ export class Planet {
       if (highLODReady) {
         // Show only HIGH LOD (no detailed terrain needed at high altitude)
         this.lodMesh!.visible = true;
+        this.showAllLODChunks();
         if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
         if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
         if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
@@ -4523,6 +4358,7 @@ export class Planet {
       } else if (highLODReady) {
         // Fallback to HIGH LOD while intermediate builds
         if (this.lodMesh) this.lodMesh.visible = true;
+        this.showAllLODChunks();
         if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
         if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
         if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
@@ -4541,19 +4377,13 @@ export class Planet {
     // Enable detailed terrain when player approaches a non-spawn planet
     // This happens once when crossing the LOD switch altitude threshold
     if (!this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
-      // Player is within LOD switch altitude - enable detailed terrain
-      // Pass player position for progressive generation (nearby tiles first)
-      this.enableDetailedTerrain(playerPosition);
-    }
-
-    // Process background terrain generation for non-spawn planets
-    if (this.pendingTerrainTiles.length > 0) {
-      this.processBackgroundTerrainGeneration();
+      this.enableDetailedTerrain();
     }
 
     // If detailed terrain isn't ready yet, only show LOD
     if (!this.detailedTerrainEnabled) {
       if (this.lodMesh) this.lodMesh.visible = true;
+        this.showAllLODChunks();
       if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
       if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
       if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
@@ -4566,6 +4396,10 @@ export class Planet {
     // Note: cullLODChunks() is called AFTER tile tracking is updated (see end of function)
     // Debug: F4 toggle can hide detailed terrain to see LOD only
     const hasChunkBasedLOD = this.lodChunks.some(chunk => chunk.children.length > 0);
+    // The distant LOD is a coarse sphere; at ground level it cuts through the
+    // detailed terrain, so it is never shown in the detailed zone.
+    this.setDistantLODVisible(-1);
+    if (this.boundaryWallsGroup) this.boundaryWallsGroup.visible = true;
     if (this.lodMesh) this.lodMesh.visible = hasChunkBasedLOD; // Only show if chunk-based (cullable)
     if (this.lodWaterMesh) this.lodWaterMesh.visible = hasChunkBasedLOD;
     if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
@@ -5467,7 +5301,20 @@ export class Planet {
 
   public setBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
     const column = this.columns.get(tileIndex);
-    if (!column || depth < 0 || depth >= column.blocks.length) return;
+    if (!column) {
+      // Terrain for this tile isn't generated yet (e.g. a saved edit on a
+      // planet that loads in the background) - apply it when it arrives.
+      if (depth >= 0 && tileIndex >= 0 && tileIndex < this.polyhedron.tiles.length) {
+        let edits = this.pendingBlockEdits.get(tileIndex);
+        if (!edits) {
+          edits = new Map();
+          this.pendingBlockEdits.set(tileIndex, edits);
+        }
+        edits.set(depth, blockType);
+      }
+      return;
+    }
+    if (depth < 0 || depth >= column.blocks.length) return;
 
     const oldBlockType = column.blocks[depth];
     column.blocks[depth] = blockType;
@@ -6324,11 +6171,22 @@ export class Planet {
   // Check if HIGH LOD (chunked) mesh is ready with actual geometry
   private isHighLODReady(): boolean {
     if (!this.lodMesh || this.lodMesh.children.length === 0) return false;
-    // Check if any child has actual vertices
+    // Check if any mesh has actual vertices. The fallback LOD holds its mesh
+    // directly; the chunked LOD holds it one level down, inside per-chunk
+    // groups. Only checking direct children made the chunked LOD read as "not
+    // ready" forever, so after a trip to orbit the distant LOD sphere stayed
+    // on at ground level, cutting through the terrain and hiding the trees.
+    const hasVertices = (obj: THREE.Object3D): boolean => {
+      if (obj instanceof THREE.Mesh && obj.geometry) {
+        const pos = obj.geometry.getAttribute('position');
+        return !!pos && pos.count > 0;
+      }
+      return false;
+    };
     for (const child of this.lodMesh.children) {
-      if (child instanceof THREE.Mesh && child.geometry) {
-        const pos = child.geometry.getAttribute('position');
-        if (pos && pos.count > 0) return true;
+      if (hasVertices(child)) return true;
+      for (const grandchild of child.children) {
+        if (hasVertices(grandchild)) return true;
       }
     }
     return false;

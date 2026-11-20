@@ -1,6 +1,8 @@
 // LOD Geometry Worker - builds LOD terrain geometry off the main thread
 // Optimized: pre-computed normalizations, cached surface data, reduced passes
 
+import { PackedTileData, PackedBlocks, unpackTiles, unpackBlocks, packFloatAttributes } from './packedTiles';
+
 // Vector3-like operations using plain objects
 interface Vec3 {
   x: number;
@@ -231,10 +233,10 @@ function getSeaLevelDepth(config: LODWorkerConfig): number {
 // Message types
 interface BuildLODGeometryMessage {
   type: 'buildLODGeometry';
-  tileData: Record<number, TileData>;
-  blockData: Record<number, number[]>;
-  nearbyTiles: number[];
-  tileToChunk: Record<number, number>;
+  // Static tile geometry: sent once per planet (and again only if the tile
+  // set changes); the worker keeps it between builds.
+  packedTiles?: PackedTileData;
+  packedBlocks: PackedBlocks;
   config: LODWorkerConfig;
   torches?: TorchData[];  // Torch positions for vertex lighting
 }
@@ -247,29 +249,42 @@ interface LODGeometryResultMessage {
 // Cached pre-computed data (persists across messages for same tile structure)
 let cachedPrecomputed: Map<number, PrecomputedTileData> | null = null;
 let cachedTileCount = 0;
+let cachedTileData: Record<number, TileData> | null = null;
+let cachedTileToChunk: Map<number, number> | null = null;
 
 // Worker message handler
 self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
-  // NOTE: nearbyTiles is now unused - we build complete LOD for ALL tiles.
-  // Kept in interface for backward compatibility, but ignored.
-  const { type, tileData, blockData, tileToChunk, config, torches = [] } = e.data;
+  const { type, packedTiles, packedBlocks, config, torches = [] } = e.data;
 
   if (type === 'buildLODGeometry') {
-    const tileToChunkMap = new Map(Object.entries(tileToChunk).map(([k, v]) => [parseInt(k), v]));
+    let tileSetChanged = false;
+    if (packedTiles) {
+      const unpacked = unpackTiles(packedTiles);
+      cachedTileData = unpacked.tileData as Record<number, TileData>;
+      cachedTileToChunk = unpacked.tileToChunk;
+      tileSetChanged = true;
+    }
+    if (!cachedTileData || !cachedTileToChunk) {
+      console.error('[LODWorker] No tile data received');
+      return;
+    }
+    const tileData = cachedTileData;
+    const tileToChunkMap = cachedTileToChunk;
+    const blockData = unpackBlocks(packedBlocks);
 
     // Reconstruct columns from separate tile and block data
     const columnsMap = new Map<number, ColumnData>();
     for (const [tileIndexStr, tile] of Object.entries(tileData)) {
       const tileIndex = parseInt(tileIndexStr);
-      const blocks = blockData[tileIndex];
+      const blocks = blockData.get(tileIndex);
       if (blocks) {
-        columnsMap.set(tileIndex, { tileIndex, tile, blocks });
+        columnsMap.set(tileIndex, { tileIndex, tile, blocks: blocks as unknown as number[] });
       }
     }
 
-    // Pre-compute normalized data if not cached or tile count changed
+    // Pre-compute normalized data if not cached or the tile set changed
     const tileCount = Object.keys(tileData).length;
-    if (!cachedPrecomputed || cachedTileCount !== tileCount) {
+    if (!cachedPrecomputed || cachedTileCount !== tileCount || tileSetChanged) {
       cachedPrecomputed = new Map();
       cachedTileCount = tileCount;
 
@@ -726,7 +741,9 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
       chunkGeometries
     };
 
-    self.postMessage(result);
+    const transfers: Transferable[] = [];
+    packFloatAttributes(result.chunkGeometries, transfers);
+    (self as unknown as Worker).postMessage(result, transfers);
   }
 };
 

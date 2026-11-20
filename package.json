@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:site": "tsc && vite build --base /tenebris/ --outDir dist-site",
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:landing": "bash scripts/build-landing.sh",
     "build:all": "npm run build && npm run build:landing",

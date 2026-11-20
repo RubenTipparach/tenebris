@@ -1,6 +1,7 @@
 // Geometry Worker - builds terrain geometry off the main thread
 // Uses plain JavaScript math instead of THREE.js (not available in workers)
 
+import { packFloatAttributes, PackedColumnSet, unpackColumnSet } from './packedTiles';
 import { HexBlockType } from '../shared/blockTypes';
 import {
   Vec3,
@@ -103,6 +104,9 @@ interface BuildGeometryMessage {
   columns: ColumnData[];
   neighborData: Record<string, NeighborData>; // tileIndex -> blocks and vertices for neighbor lookup
   config: WorkerConfig;
+  // Packed form of columns / neighborData (cheap to post); decoded below
+  packedColumns?: PackedColumnSet;
+  packedNeighbors?: PackedColumnSet;
 }
 
 // New chunk-aware build message
@@ -576,7 +580,16 @@ function buildColumnGeometry(
 
 // Worker message handler
 self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessage>) => {
-  const { type, columns, neighborData, config } = e.data;
+  const { type, config } = e.data;
+  let { columns, neighborData } = e.data;
+  if (type === 'buildGeometry' && (e.data as BuildGeometryMessage).packedColumns) {
+    const msg = e.data as BuildGeometryMessage;
+    columns = unpackColumnSet(msg.packedColumns!) as unknown as ColumnData[];
+    neighborData = {};
+    for (const n of unpackColumnSet(msg.packedNeighbors!)) {
+      neighborData[n.tileIndex] = { blocks: n.blocks, vertices: n.tile.vertices } as unknown as NeighborData;
+    }
+  }
 
   if (type === 'buildGeometry') {
     const topData = createEmptyGeometryData();
@@ -668,7 +681,9 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
     };
 
     // Transfer arrays for better performance
-    self.postMessage(result);
+    const transfers: Transferable[] = [];
+    packFloatAttributes(result, transfers);
+    (self as unknown as Worker).postMessage(result, transfers);
   } else if (type === 'buildChunkGeometry') {
     // Per-chunk geometry build - only rebuild specified chunks
     const chunkData = e.data as BuildChunkGeometryMessage;
@@ -725,7 +740,9 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
       chunksRebuilt: chunkData.chunksToRebuild
     };
 
-    self.postMessage(result);
+    const transfers: Transferable[] = [];
+    packFloatAttributes(result, transfers);
+    (self as unknown as Worker).postMessage(result, transfers);
   }
 };
 

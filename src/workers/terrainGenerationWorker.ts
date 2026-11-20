@@ -478,10 +478,18 @@ self.onmessage = (e: MessageEvent<GenerateTerrainMessage>) => {
     const elapsed = performance.now() - startTime;
     console.log(`[TerrainWorker] Generated terrain in ${elapsed.toFixed(0)}ms`);
 
-    // Convert Map to array for serialization
+    // Post the columns in batches. One giant message has to be deserialized
+    // on the main thread in a single task (hundreds of ms for a large planet);
+    // separate messages are separate tasks, so frames render in between.
+    const entries = Array.from(columns.entries());
+    const BATCH = 8192;
+    for (let i = 0; i + BATCH < entries.length; i += BATCH) {
+      self.postMessage({ type: 'terrainBatch', columns: entries.slice(i, i + BATCH) });
+    }
+    const lastStart = entries.length > BATCH ? Math.floor((entries.length - 1) / BATCH) * BATCH : 0;
     const result: SerializableTerrainResult = {
       type: 'terrainResult',
-      columns: Array.from(columns.entries())
+      columns: entries.slice(lastStart)
     };
 
     self.postMessage(result);

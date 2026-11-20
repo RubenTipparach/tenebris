@@ -1801,7 +1801,7 @@ export class PlanetBlockInteraction {
 
     // Remove furnace from save (find which planet it's on)
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeFurnace(planetId, furnace.tileIndex);
     }
 
@@ -1858,7 +1858,7 @@ export class PlanetBlockInteraction {
 
     // Remove chest from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeStorageChest(planetId, chest.tileIndex);
     }
 
@@ -1914,7 +1914,7 @@ export class PlanetBlockInteraction {
 
     // Remove pile from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeGarbagePile(planetId, pile.tileIndex);
     }
 
@@ -1969,7 +1969,7 @@ export class PlanetBlockInteraction {
 
     // Remove steam engine from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeSteamEngine(planetId, tileIndex);
     }
 
@@ -2019,7 +2019,7 @@ export class PlanetBlockInteraction {
 
     // Remove hydro generator from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeHydroGenerator(planetId, tileIndex);
     }
 
@@ -2068,7 +2068,7 @@ export class PlanetBlockInteraction {
 
     // Remove copper pipe from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeCopperPipe(planetId, pipe.tileIndex, pipe.depth);
     }
 
@@ -2116,7 +2116,7 @@ export class PlanetBlockInteraction {
 
     // Remove cable from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeCable(planetId, cable.tileIndex, cable.depth);
     }
 
@@ -2195,7 +2195,7 @@ export class PlanetBlockInteraction {
 
     // Remove electronics workbench from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeElectronicsWorkbench(planetId, workbench.tileIndex);
     }
 
@@ -2244,7 +2244,7 @@ export class PlanetBlockInteraction {
 
     // Remove computer from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeComputer(planetId, computer.tileIndex);
     }
 
@@ -2294,7 +2294,7 @@ export class PlanetBlockInteraction {
 
     // Remove 3D printer from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removePrinter3D(planetId, printer.tileIndex);
     }
 
@@ -2351,7 +2351,7 @@ export class PlanetBlockInteraction {
 
     // Remove launch pad from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeLaunchPad(planetId, launchPad.centerTileIndex);
     }
 
@@ -2387,7 +2387,7 @@ export class PlanetBlockInteraction {
 
     // Remove electric furnace from save
     for (let i = 0; i < this.planets.length; i++) {
-      const planetId = i === 0 ? 'earth' : 'moon';
+      const planetId = this.getPlanetId(this.planets[i]);
       gameStorage.removeElectricFurnace(planetId, furnace.tileIndex);
     }
 
@@ -3522,8 +3522,7 @@ export class PlanetBlockInteraction {
 
   // Get planet ID for saving (identifies which planet)
   private getPlanetId(planet: Planet): string {
-    const index = this.planets.indexOf(planet);
-    return index === 0 ? 'earth' : 'moon';
+    return planet.getName();
   }
 
   // Get neighbor tile indices for pipe connection detection
@@ -3554,7 +3553,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(engine.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3581,7 +3580,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(pad.centerTileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3611,7 +3610,7 @@ export class PlanetBlockInteraction {
         // Check if furnace tile exists on this planet
         const tile = planet.getTileByIndex(furnace.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3638,7 +3637,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(furnace.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3688,7 +3687,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(chest.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3708,7 +3707,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(pile.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3729,7 +3728,7 @@ export class PlanetBlockInteraction {
         const planet = this.planets[i];
         const tile = planet.getTileByIndex(printer.tileIndex);
         if (tile) {
-          planetId = i === 0 ? 'earth' : 'moon';
+          planetId = this.getPlanetId(this.planets[i]);
           break;
         }
       }
@@ -3793,8 +3792,8 @@ export class PlanetBlockInteraction {
     const savedTorches = gameStorage.getTorches();
     for (const savedTorch of savedTorches) {
       // Find which planet this torch belongs to
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedTorch.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedTorch.planetId
       );
       if (planet) {
         const worldPosition = new THREE.Vector3(
@@ -3832,8 +3831,8 @@ export class PlanetBlockInteraction {
     const savedFurnaces = gameStorage.getFurnaces();
     for (const savedFurnace of savedFurnaces) {
       // Find which planet this furnace belongs to
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedFurnace.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedFurnace.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3858,8 +3857,8 @@ export class PlanetBlockInteraction {
     // Load saved storage chests
     const savedStorageChests = gameStorage.getStorageChests();
     for (const savedChest of savedStorageChests) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedChest.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedChest.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3879,8 +3878,8 @@ export class PlanetBlockInteraction {
     // Load saved garbage piles
     const savedGarbagePiles = gameStorage.getGarbagePiles();
     for (const savedPile of savedGarbagePiles) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedPile.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedPile.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3900,8 +3899,8 @@ export class PlanetBlockInteraction {
     // Load saved steam engines
     const savedSteamEngines = gameStorage.getSteamEngines();
     for (const savedSteamEngine of savedSteamEngines) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedSteamEngine.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedSteamEngine.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3926,8 +3925,8 @@ export class PlanetBlockInteraction {
     // Load saved hydro generators
     const savedHydroGenerators = gameStorage.getHydroGenerators();
     for (const savedHydroGenerator of savedHydroGenerators) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedHydroGenerator.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedHydroGenerator.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3943,8 +3942,8 @@ export class PlanetBlockInteraction {
     // Load saved copper pipes
     const savedCopperPipes = gameStorage.getCopperPipes();
     for (const savedPipe of savedCopperPipes) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedPipe.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedPipe.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3962,8 +3961,8 @@ export class PlanetBlockInteraction {
     // Load saved cables
     const savedCables = gameStorage.getCables();
     for (const savedCable of savedCables) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedCable.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedCable.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -3980,8 +3979,8 @@ export class PlanetBlockInteraction {
     // Load saved electric furnaces
     const savedElectricFurnaces = gameStorage.getElectricFurnaces();
     for (const savedFurnace of savedElectricFurnaces) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedFurnace.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedFurnace.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -4005,8 +4004,8 @@ export class PlanetBlockInteraction {
     // Load saved electronics workbenches
     const savedElectronicsWorkbenches = gameStorage.getElectronicsWorkbenches();
     for (const savedWorkbench of savedElectronicsWorkbenches) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedWorkbench.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedWorkbench.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -4022,8 +4021,8 @@ export class PlanetBlockInteraction {
     // Load saved computers
     const savedComputers = gameStorage.getComputers();
     for (const savedComputer of savedComputers) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedComputer.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedComputer.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -4039,8 +4038,8 @@ export class PlanetBlockInteraction {
     // Load saved 3D printers
     const savedPrinters3D = gameStorage.getPrinters3D();
     for (const savedPrinter of savedPrinters3D) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedPrinter.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedPrinter.planetId
       );
       if (planet) {
         const savedPosition = new THREE.Vector3(
@@ -4096,8 +4095,8 @@ export class PlanetBlockInteraction {
     // Load saved launch pads
     const savedLaunchPads = gameStorage.getLaunchPads();
     for (const savedPad of savedLaunchPads) {
-      const planet = this.planets.find((_, i) =>
-        (i === 0 ? 'earth' : 'moon') === savedPad.planetId
+      const planet = this.planets.find((p) =>
+        this.getPlanetId(p) === savedPad.planetId
       );
       if (planet) {
         // Get the tile data to generate proper world-space geometry

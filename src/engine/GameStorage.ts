@@ -209,8 +209,10 @@ export interface LegacyGameSaveData {
 
 // Storage keys
 const STORAGE_KEY_PLAYER = 'tenebris_player';
-const STORAGE_KEY_EARTH = 'tenebris_earth';
-const STORAGE_KEY_MOON = 'tenebris_moon';
+// Each planet's edits live under tenebris_<planetId> (tenebris_earth,
+// tenebris_moon, tenebris_sequoia). Sequoia used to share the moon's key.
+const PLANET_IDS = ['earth', 'moon', 'sequoia'];
+const planetStorageKey = (planetId: string): string => `tenebris_${planetId}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
 const SAVE_VERSION = 2;
 
@@ -242,9 +244,10 @@ export class GameStorage {
   private onPlayerSave: (() => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } }) | null = null;
 
   constructor() {
-    // Initialize planet data for earth and moon
-    this.planetData.set('earth', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
-    this.planetData.set('moon', { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+    // Initialize planet data for every planet
+    for (const planetId of PLANET_IDS) {
+      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+    }
   }
 
   // Set callback to get current player data
@@ -728,8 +731,9 @@ export class GameStorage {
     this.loadPlayerData();
 
     // Load planet data
-    this.loadPlanetData('earth');
-    this.loadPlanetData('moon');
+    for (const planetId of PLANET_IDS) {
+      this.loadPlanetData(planetId);
+    }
 
     // Return combined data in legacy format for compatibility
     if (!this.playerData && this.inventory.length === 0) {
@@ -788,7 +792,7 @@ export class GameStorage {
   // Load planet data from storage
   private loadPlanetData(planetId: string): void {
     try {
-      const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;
+      const key = planetStorageKey(planetId);
       const saved = localStorage.getItem(key);
       if (!saved) return;
 
@@ -954,8 +958,9 @@ export class GameStorage {
 
     // Clear all storage keys
     localStorage.removeItem(STORAGE_KEY_PLAYER);
-    localStorage.removeItem(STORAGE_KEY_EARTH);
-    localStorage.removeItem(STORAGE_KEY_MOON);
+    for (const planetId of PLANET_IDS) {
+      localStorage.removeItem(planetStorageKey(planetId));
+    }
     localStorage.removeItem(LEGACY_STORAGE_KEY);
   }
 
@@ -1028,7 +1033,7 @@ export class GameStorage {
         launchPads: planet.launchPads
       };
 
-      const key = planetId === 'earth' ? STORAGE_KEY_EARTH : STORAGE_KEY_MOON;
+      const key = planetStorageKey(planetId);
       localStorage.setItem(key, JSON.stringify(data));
     } catch (error) {
       console.error(`Failed to save ${planetId} data:`, error);
@@ -1038,8 +1043,7 @@ export class GameStorage {
   // Check if there's any saved data
   public hasSavedData(): boolean {
     return localStorage.getItem(STORAGE_KEY_PLAYER) !== null ||
-           localStorage.getItem(STORAGE_KEY_EARTH) !== null ||
-           localStorage.getItem(STORAGE_KEY_MOON) !== null ||
+           PLANET_IDS.some(planetId => localStorage.getItem(planetStorageKey(planetId)) !== null) ||
            localStorage.getItem(LEGACY_STORAGE_KEY) !== null;
   }
 }
