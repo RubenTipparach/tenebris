@@ -22,6 +22,14 @@ export enum FaceType {
   SIDE = 'side'
 }
 
+// Biome surface materials: material key -> texture in /textures/biomes/
+const BIOME_TEXTURES: [string, string][] = [
+  ['forestFloor', 'forest_floor'], ['forestFloorSide', 'forest_floor_side'],
+  ['dryGrass', 'dry_grass'], ['dryGrassSide', 'dry_grass_side'],
+  ['seqMoss', 'seq_moss'], ['seqMossSide', 'seq_moss_side'],
+  ['seqDuff', 'seq_duff'], ['seqDuffSide', 'seq_duff_side'],
+];
+
 // Texture loads shared by every planet's mesh builder (see loadTexture)
 const textureCache = new Map<string, Promise<THREE.Texture>>();
 
@@ -94,6 +102,7 @@ export class HexBlockMeshBuilder {
       for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
     }
     if (singleTexturePath) wanted.add(singleTexturePath);
+    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/biomes/${file}.png`);
     await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
@@ -266,6 +275,10 @@ export class HexBlockMeshBuilder {
     this.materials.set('seqSand', createTerrainMaterial(await loadFixed(q.sand)));
     this.materials.set('seqSnow', createTerrainMaterial(await loadFixed(q.snow)));
     this.materials.set('seqSnowSide', createTerrainMaterial(await loadFixed(q.dirtSnow)));
+    // Biome surfaces (scripts/gen-biome-textures.py)
+    for (const [key, file] of BIOME_TEXTURES) {
+      this.materials.set(key, createTerrainMaterial(await loadFixed(`/textures/biomes/${file}.png`)));
+    }
     const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
     const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);
 

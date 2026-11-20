@@ -444,13 +444,17 @@ export class Planet {
       // Prepare config for worker
       const config = {
         blockRemap: this.config.tileset === SEQUOIA_TILESET ? {
-          [HexBlockType.GRASS]: HexBlockType.SEQ_GRASS,
+          // Sequoia's biomes in its own blocks: tree-fern moss lowlands,
+          // dry pale plains, redwood duff in the forest and the cold
+          [HexBlockType.GRASS]: HexBlockType.SEQ_MOSS,
+          [HexBlockType.DRY_GRASS]: HexBlockType.SEQ_GRASS,
+          [HexBlockType.FOREST_FLOOR]: HexBlockType.SEQ_DUFF,
           [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
           [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
           [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
           // Sequoia's cold lowlands are redwood forest floor, not snow;
           // its snow is only the peaks and poles
-          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DIRT,
+          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DUFF,
         } : undefined,
         // Sequoia always has its biomes (desert, rocky highlands, snow
         // beside its grassland, in its own blocks via blockRemap); on Earth
@@ -3376,7 +3380,8 @@ export class Planet {
    * Get material name for a block type (for intermediate LOD)
    */
   private getBlockMaterialName(block: HexBlockType): string {
-    switch (block) {
+    // planet variants and biome surfaces use their base block's LOD material
+    switch (baseTerrainType(block)) {
       case HexBlockType.GRASS:
         return 'grass';
       case HexBlockType.DIRT:

@@ -40,6 +40,7 @@ export class GroundClutter {
   private rockMaterial: THREE.ShaderMaterial;
   private grass: Tones = fallbackTones(0x2f7d2a, 0x4fae3a, 0x86d45a);
   private seqGrass: Tones = fallbackTones(0x6a7a2a, 0x93a33c, 0xc2cf6a);
+  private seqMoss: Tones = fallbackTones(0x24625a, 0x3a8e6c, 0x68b880);
   private stone = new THREE.Color(0x8a8780);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
@@ -60,6 +61,7 @@ export class GroundClutter {
       scene.add(m);
     }
     sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/biomes/seq_moss.png')).then(t => { if (t) { this.seqMoss = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
   }
@@ -145,7 +147,10 @@ export class GroundClutter {
             m.compose(pos, rot, scale);
             this.tufts.setMatrixAt(nTufts, m);
             const r = rnd();
-            const tone = plan.straw ? STRAW : block === HexBlockType.SEQ_GRASS ? this.seqGrass : this.grass;
+            const tone = plan.straw ? STRAW
+              : block === HexBlockType.SEQ_GRASS ? this.seqGrass
+              : block === HexBlockType.SEQ_MOSS ? this.seqMoss
+              : this.grass;
             col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
             this.tufts.setColorAt(nTufts, col);
             nTufts++;
@@ -192,6 +197,11 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.SEQ_DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
     case HexBlockType.SEQ_SAND: return { tufts: 0, tuftsRand: 1.2, straw: true, rockChance: 0.15, rocks: 2 };
     case HexBlockType.SEQ_SNOW: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
+    // Biome surfaces: lush moss, a few tufts in the forests, straw on the savanna
+    case HexBlockType.SEQ_MOSS: return { tufts: 5, tuftsRand: 5, straw: false, rockChance: 0.06, rocks: 1 };
+    case HexBlockType.SEQ_DUFF: return { tufts: 0, tuftsRand: 1.5, straw: false, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.FOREST_FLOOR: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.DRY_GRASS: return { tufts: 3, tuftsRand: 4, straw: true, rockChance: 0.1, rocks: 1 };
     default: return null;
   }
 }

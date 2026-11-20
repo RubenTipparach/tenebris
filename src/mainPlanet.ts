@@ -901,13 +901,13 @@ class PlanetGame {
         // Sequoia's biomes: ferns and lantern trees in the grassland,
         // redwoods on the snowy heights, the odd lantern tree in the
         // desert, nothing on bare rock
-        // One tree species per biome, never a mix: fern lowlands, redwood
-        // forest, a few lantern trees in the red desert; nothing on rock or
-        // snow
+        // One tree species per biome, never a mix: tree ferns on the moss
+        // lowlands, redwoods on the needle duff, scattered lantern trees on
+        // the dry plains; nothing in the desert, on rock or snow
         const top = this.topBlock(this.sequoia, tileIndex);
-        if (top === HexBlockType.SEQ_GRASS) return 'treefern';
-        if (top === HexBlockType.SEQ_DIRT) return 'redwood';
-        if (top === HexBlockType.SEQ_SAND) return roll < 0.3 ? 'lantern' : null;
+        if (top === HexBlockType.SEQ_MOSS) return 'treefern';
+        if (top === HexBlockType.SEQ_DUFF) return 'redwood';
+        if (top === HexBlockType.SEQ_GRASS) return roll < 0.3 ? 'lantern' : null;
         return null;
       }
     );
@@ -1168,11 +1168,11 @@ class PlanetGame {
     }
     return (tileIndex, roll) => {
       // One tree species per biome, never a mix: oak on temperate grass,
-      // birch on the damp forest floor, pine in the tundra; nothing on
-      // rock, snow or open desert
+      // birch on the forest floor, pine in the tundra; nothing on the
+      // savanna, rock, snow or open desert
       const top = this.topBlock(planet, tileIndex);
       if (top === HexBlockType.GRASS) return 'oak';
-      if (top === HexBlockType.DIRT) return 'birch';
+      if (top === HexBlockType.FOREST_FLOOR) return 'birch';
       if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
       return null;
     };

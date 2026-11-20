@@ -385,7 +385,9 @@ const BIOME_ROCK_ALT = 0.72;
 const BIOME_DESERT_TEMP = 0.7;
 const BIOME_DESERT_MOIST = -0.08;
 const BIOME_TUNDRA_TEMP = 0.12;
-const BIOME_FOREST_MOIST = 0.18; // damp forest floor (bare soil under a closed canopy)
+const BIOME_FOREST_MOIST = 0.18; // damp forest floor (leaf litter under a closed canopy)
+const BIOME_SAVANNA_TEMP = 0.5;  // warm and fairly dry, short of desert
+const BIOME_SAVANNA_MOIST = 0.06;
 
 function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, number[]> {
   const columns = new Map<number, number[]>();
@@ -444,7 +446,8 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       else if (altFrac > BIOME_ROCK_ALT) top = HexBlockType.STONE;
       else if (temp > BIOME_DESERT_TEMP && moisture < BIOME_DESERT_MOIST) top = HexBlockType.SAND;
       else if (temp < BIOME_TUNDRA_TEMP) top = HexBlockType.DIRT_SNOW;
-      else if (moisture > BIOME_FOREST_MOIST) top = HexBlockType.DIRT;
+      else if (moisture > BIOME_FOREST_MOIST) top = HexBlockType.FOREST_FLOOR;
+      else if (temp > BIOME_SAVANNA_TEMP && moisture < BIOME_SAVANNA_MOIST) top = HexBlockType.DRY_GRASS;
       biomeTop.set(tile.index, top);
     }
   }
