@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { getAssetPath } from '../utils/assetPath';
 
 // Simple seeded random number generator (LCG algorithm)
 class SeededRandom {
@@ -159,6 +160,7 @@ function addFoliage(
       colors[v * 3] = col.r; colors[v * 3 + 1] = col.g; colors[v * 3 + 2] = col.b;
     }
     flat.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    setTexCell(flat, TEX_LEAVES);
     parts.push(flat);
   }
 }
@@ -167,9 +169,18 @@ function shade(base: THREE.Color, k: number): THREE.Color {
   return base.clone().multiplyScalar(k);
 }
 
-function addPart(parts: THREE.BufferGeometry[], g: THREE.BufferGeometry, paint: FacePaint): void {
+// Cells of the tree detail atlas (public/textures/trees.png, baked by
+// scripts/gen-tree-textures.py): which pixel pattern a part wears
+const TEX_BARK = 0, TEX_LEAVES = 1, TEX_NEEDLES = 2, TEX_SMOOTH = 3;
+
+function setTexCell(g: THREE.BufferGeometry, cell: number): void {
+  g.setAttribute('texCell', new THREE.BufferAttribute(new Float32Array(g.getAttribute('position').count).fill(cell), 1));
+}
+
+function addPart(parts: THREE.BufferGeometry[], g: THREE.BufferGeometry, paint: FacePaint, cell = TEX_BARK): void {
   const part = prepPart(g);
   paintFaces(part, paint);
+  setTexCell(part, cell);
   parts.push(part);
 }
 
@@ -217,7 +228,7 @@ function buildPine(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numbe
       const local = Math.min(1, Math.max(0, (c.y - y) / h));      // tier bottom -> tip
       const col = dark.clone().lerp(light, 0.25 * tierLight + 0.5 * local);
       return shade(col, 0.9 + (hash3(c.x, c.y, c.z, 5) - 0.5) * 0.18);
-    });
+    }, TEX_NEEDLES);
     y += step;
   }
 }
@@ -292,70 +303,123 @@ function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numb
 
 // ---- Sequoia species --------------------------------------------------------
 
-export type SequoiaTreeSpecies = 'mushroom' | 'redwood';
+export type SequoiaTreeSpecies = 'redwood' | 'treefern' | 'lantern';
 
-/** Giant mushroom: a bent, segmented stem with a skirt, a spotted lipped dome. */
-function buildMushroom(parts: THREE.BufferGeometry[], rng: SeededRandom, cfg: MushroomTreeConfig): void {
-  const H = cfg.stemHeight;
-  const R = cfg.stemRadius;
-  const bendA = rng.next() * Math.PI * 2;
-  const bend = (0.15 + rng.next() * 0.35) * H * 0.3;
-  const bendDir = new THREE.Vector3(Math.cos(bendA), 0, Math.sin(bendA));
-  const offsetAt = (y: number) => bendDir.clone().multiplyScalar(bend * Math.pow(Math.max(0, y) / H, 2));
-
-  const stem = new THREE.CylinderGeometry(R * 0.85, R * 1.15, H, 8, 5, true);
-  stem.translate(0, H / 2, 0);
-  const sp = stem.getAttribute('position');
-  for (let v = 0; v < sp.count; v++) {
-    const y = sp.getY(v);
-    const o = offsetAt(y);
-    const bulge = 1 + 0.12 * Math.sin((y / H) * Math.PI * 5);         // segmented
-    const foot = y < 0.01 ? 1.5 : 1;                                     // bulb
-    sp.setXYZ(v, sp.getX(v) * bulge * foot + o.x, y, sp.getZ(v) * bulge * foot + o.z);
+/**
+ * A leaf or frond as a ribbon along a curve, folded into a shallow V along
+ * its midrib. `at(t)` is the midrib point at 0..1, `side` the unit vector
+ * across the leaf, `up` the fold direction, `width(t)` the full width.
+ */
+function ribbon(at: (t: number) => THREE.Vector3, side: THREE.Vector3, up: THREE.Vector3, width: (t: number) => number, steps: number): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const pts = [] as { l: THREE.Vector3; m: THREE.Vector3; r: THREE.Vector3 }[];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const m = at(t);
+    const w = width(t) / 2;
+    const dropEdge = up.clone().multiplyScalar(-w * 0.35);
+    pts.push({ l: m.clone().addScaledVector(side, -w).add(dropEdge), m, r: m.clone().addScaledVector(side, w).add(dropEdge) });
   }
-  const stemCol = new THREE.Color(0xd8cdb4);
-  addPart(parts, stem, (c) => shade(stemCol, 0.6 + 0.35 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 23) - 0.5) * 0.1));
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for (let i = 0; i < steps; i++) {
+    const p = pts[i], q = pts[i + 1];
+    tri(p.l, p.m, q.m); tri(p.l, q.m, q.l);
+    tri(p.m, p.r, q.r); tri(p.m, q.r, q.m);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
 
-  // skirt (annulus) just under the cap
-  const skirtY = H * 0.72;
-  const skirt = new THREE.CylinderGeometry(R * 1.05, R * 2.0, H * 0.12, 8, 1, true);
-  const so = offsetAt(skirtY);
-  skirt.translate(so.x, skirtY - H * 0.06, so.z);
-  addPart(parts, skirt, () => shade(stemCol, 0.82));
+/** Tree fern: a shaggy fibrous trunk under a crown of long arching fronds. */
+function buildTreeFern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const H = 4.2 * size * tall;
+  const top = new THREE.Vector3((rng.next() - 0.5) * 0.6 * size, H, (rng.next() - 0.5) * 0.6 * size);
+  const trunk = limb(new THREE.Vector3(), top, 0.34 * size, 0.24 * size, 8, 8);
+  // shaggy rings of old frond bases
+  const tp = trunk.getAttribute('position');
+  for (let v = 0; v < tp.count; v++) {
+    const k = 1 + 0.14 * Math.abs(Math.sin(tp.getY(v) * 4.5 / size));
+    tp.setXYZ(v, tp.getX(v) * k, tp.getY(v), tp.getZ(v) * k);
+  }
+  const fibre = new THREE.Color(0x4a3426);
+  addPart(parts, trunk, (c) => shade(fibre, 0.7 + 0.3 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 61) - 0.5) * 0.2));
 
-  const palette = [0xb23a2e, 0x7a3b8f, 0x2f7f86, 0xc77a1e];
-  const capCol = new THREE.Color(palette[Math.floor(rng.next() * palette.length)]);
-  const spotCol = new THREE.Color(0xf3ecd6);
-  const capR = cfg.capRadius;
-  const capH = cfg.capHeight * (1.2 + cfg.capTaper);
-  const top = offsetAt(H);
-  // dome with a lip that curls down past the equator
-  const cap = new THREE.SphereGeometry(capR, 12, 5, 0, Math.PI * 2, 0, Math.PI * 0.6);
-  cap.scale(1, capH / capR, 1);
-  cap.translate(top.x, H - capH * Math.cos(Math.PI * 0.6) * 0.0 - capH * 0.15, top.z);
-  const capBase = H - capH * 0.15;
-  addPart(parts, cap, (c, n) => {
-    const d = c.clone().sub(new THREE.Vector3(top.x, capBase, top.z)).normalize();
-    if (hash3(Math.round(d.x * 4), Math.round(d.y * 4), Math.round(d.z * 4), 29) > 0.8 && d.y > 0.2) return spotCol.clone();
-    const rim = 1 - Math.max(0, d.y);
-    return shade(capCol, (0.75 + 0.35 * Math.max(0, n.y)) * (1 - 0.25 * rim));
-  });
-  // gills: a downward-facing ring, pale with radial stripes
-  const lipY = capBase + capH * Math.cos(Math.PI * 0.6);
-  const gills = new THREE.RingGeometry(R * 1.1, capR * Math.sin(Math.PI * 0.6) * 0.98, 16, 1);
-  gills.rotateX(Math.PI / 2);
-  gills.translate(top.x, lipY + 0.04, top.z);
-  const gillCol = new THREE.Color(0xe3c9a6);
-  addPart(parts, gills, (c) => {
-    const a = Math.atan2(c.z - top.z, c.x - top.x);
-    return shade(gillCol, Math.round(a / (Math.PI / 8)) % 2 === 0 ? 0.62 : 0.48);
-  });
+  const dark = new THREE.Color(0x1d6b52);
+  const light = new THREE.Color(0x6fd08a);
+  const fronds = 8 + Math.floor(rng.next() * 4);
+  const spin = rng.next() * Math.PI * 2;
+  for (let i = 0; i < fronds; i++) {
+    const a = spin + (i / fronds) * Math.PI * 2 + (rng.next() - 0.5) * 0.3;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    const L = (2.6 + rng.next() * 0.9) * size;
+    const rise = (0.9 + rng.next() * 0.5) * size;
+    const g = ribbon(
+      (t) => top.clone().addScaledVector(out, L * t).add(new THREE.Vector3(0, rise * Math.sin(t * Math.PI * 0.75) - L * 0.55 * t * t, 0)),
+      side, new THREE.Vector3(0, 1, 0),
+      (t) => 0.75 * size * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.1)), 0.7) * (1 - 0.3 * t),
+      7);
+    addPart(parts, g, (c, n) => {
+      const along = Math.min(1, c.clone().sub(top).length() / L);
+      const col = dark.clone().lerp(light, 0.25 + 0.55 * along);
+      return shade(col, n.y < -0.2 ? 0.7 : 1);
+    }, TEX_NEEDLES);
+  }
+  // a curled fiddlehead in the middle of the crown
+  const curl = new THREE.TorusGeometry(0.22 * size, 0.07 * size, 4, 8, Math.PI * 1.5);
+  curl.rotateX(Math.PI / 2);
+  curl.rotateZ(Math.PI / 2);
+  curl.translate(top.x, top.y + 0.35 * size, top.z);
+  addPart(parts, curl, () => shade(light, 0.9), TEX_NEEDLES);
+}
+
+/** Lantern tree: a twisted trunk under drooping violet straps hung with amber pods. */
+function buildLantern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const H = 5 * size * tall;
+  const bark = new THREE.Color(0x3b3346);
+  const mid = new THREE.Vector3((rng.next() - 0.5) * 1.0 * size, H * 0.5, (rng.next() - 0.5) * 1.0 * size);
+  const top = new THREE.Vector3(-mid.x * 0.6, H, -mid.z * 0.6);
+  const barkPaint: FacePaint = (c) => shade(bark, 0.7 + 0.35 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 71) - 0.5) * 0.15);
+  addPart(parts, limb(new THREE.Vector3(), mid, 0.32 * size, 0.24 * size, 7, 3), barkPaint);
+  addPart(parts, limb(mid, top, 0.24 * size, 0.16 * size, 7, 3), barkPaint);
+
+  const leafDark = new THREE.Color(0x3a2a6e);
+  const leafLight = new THREE.Color(0x9a7ad8);
+  const podCol = new THREE.Color(0xffb347);
+  const straps = 9 + Math.floor(rng.next() * 4);
+  const spin = rng.next() * Math.PI * 2;
+  for (let i = 0; i < straps; i++) {
+    const a = spin + (i / straps) * Math.PI * 2;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    const L = (2.0 + rng.next() * 0.8) * size;
+    const g = ribbon(
+      (t) => top.clone().addScaledVector(out, L * Math.sin(t * Math.PI * 0.5)).add(new THREE.Vector3(0, 0.5 * size * (1 - t) - L * 0.8 * t * t, 0)),
+      side, new THREE.Vector3(0, 1, 0),
+      (t) => 0.5 * size * (1 - 0.6 * t),
+      6);
+    addPart(parts, g, (c, n) => {
+      const drop = Math.min(1, Math.max(0, (top.y - c.y) / L));
+      return shade(leafDark.clone().lerp(leafLight, 0.6 - 0.4 * drop), n.y < -0.2 ? 0.7 : 1);
+    }, TEX_NEEDLES);
+    // every other strap hangs a pod from under the crown
+    if (i % 2 === 0) {
+      const hang = top.clone().addScaledVector(out, L * 0.45).add(new THREE.Vector3(0, -0.3 * size, 0));
+      const drop = (0.5 + rng.next() * 0.7) * size;
+      addPart(parts, limb(hang, hang.clone().add(new THREE.Vector3(0, -drop, 0)), 0.025 * size, 0.02 * size, 3), () => shade(bark, 0.8));
+      const pod = new THREE.IcosahedronGeometry(0.2 * size, 0);
+      pod.scale(1, 1.4, 1);
+      pod.translate(hang.x, hang.y - drop - 0.2 * size, hang.z);
+      addPart(parts, pod, (_c, n) => shade(podCol, 0.85 + 0.25 * Math.max(0, n.y)), TEX_SMOOTH);
+    }
+  }
 }
 
 /** Redwood: a massive flared red trunk under a high, narrow blue-green crown. */
 function buildRedwood(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
   const H = 11 * size * tall;
-  const trunk = new THREE.CylinderGeometry(0.4 * size, 0.85 * size, H, 8, 4, true);
+  const trunk = new THREE.CylinderGeometry(0.4 * size, 0.85 * size, H, 8, 4, false);
   trunk.translate(0, H / 2, 0);
   const tp = trunk.getAttribute('position');
   for (let v = 0; v < tp.count; v++) {
@@ -387,7 +451,7 @@ function buildRedwood(parts: THREE.BufferGeometry[], rng: SeededRandom, size: nu
       if (n.y < -0.2) return shade(dark, 0.6);
       const local = Math.min(1, Math.max(0, (c.y - y0) / h));
       return shade(dark.clone().lerp(light, 0.2 * t + 0.6 * local), 0.92 + (hash3(c.x, c.y, c.z, 41) - 0.5) * 0.14);
-    });
+    }, TEX_NEEDLES);
   }
 }
 
@@ -757,6 +821,21 @@ function bakeTreeShading(tree: THREE.Group, geoms: THREE.BufferGeometry[]): void
 // Shared shader for batched trees. planetCenter makes the day/night term use
 // the direction from the tree's own planet; it used normalize(worldPos),
 // which only works for a planet at the origin (wrong on Sequoia and the Moon).
+// Atlas repeats (32 texels each) per world unit: 0.5 = 16 texels a unit,
+// close to the terrain's pixel size
+const TREE_TEXELS_PER_UNIT = 0.5;
+
+let atlasTexture: THREE.Texture | null = null;
+function treeAtlas(): THREE.Texture {
+  if (!atlasTexture) {
+    atlasTexture = new THREE.TextureLoader().load(getAssetPath('/textures/trees.png'));
+    atlasTexture.magFilter = THREE.NearestFilter;
+    atlasTexture.minFilter = THREE.NearestFilter;
+    atlasTexture.generateMipmaps = false;
+  }
+  return atlasTexture;
+}
+
 function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boolean): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
@@ -765,8 +844,11 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       improved: { value: 0 },
       ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
       directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+      treeAtlas: { value: treeAtlas() },
     },
     vertexShader: `
+      attribute float texCell;
+      varying float vTexCell;
       attribute vec3 color;
       varying vec3 vColor;
       varying vec3 vNormal;
@@ -774,6 +856,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
 
       void main() {
         vColor = color;
+        vTexCell = texCell;
         vNormal = normalize(mat3(modelMatrix) * normal);
         vec4 worldPos = modelMatrix * vec4(position, 1.0);
         vWorldPosition = worldPos.xyz;
@@ -781,6 +864,8 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       }
     `,
     fragmentShader: `
+      uniform sampler2D treeAtlas;
+      varying float vTexCell;
       uniform vec3 sunDirection;
       uniform vec3 planetCenter;
       uniform float improved;
@@ -799,10 +884,19 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         if (!gl_FrontFacing) n = -n;
         float meshDiffuse = max(0.0, dot(n, sunDirection));
         float directional = meshDiffuse * shadowFactor * directionalIntensity;
+        // Pixel detail from the tree atlas, projected along the face's
+        // dominant axis (planet-local so it stays precise far from origin),
+        // at the terrain's texel size; grey 200 = no change
+        vec3 lp = (vWorldPosition - planetCenter) * ${TREE_TEXELS_PER_UNIT.toFixed(3)};
+        vec3 an = abs(n);
+        vec2 tuv = an.x > an.y && an.x > an.z ? lp.zy : (an.y > an.z ? lp.xz : lp.xy);
+        vec2 auv = vec2((fract(tuv.x) + floor(vTexCell + 0.5)) * 0.25, fract(tuv.y));
+        vec3 detail = texture2D(treeAtlas, auv).rgb * (255.0 / 200.0);
+        vec3 tinted = vColor * detail;
         // Ambient falls to 10% on the night side, exactly as the terrain's
         // (terrain.vert/.frag), so trees don't glow against dark ground
         float nightAmbient = ambientIntensity * mix(0.1, 1.0, smoothstep(-0.1, 0.3, planetSunFacing));
-        vec3 finalColor = vColor * (nightAmbient + directional);
+        vec3 finalColor = tinted * (nightAmbient + directional);
         if (improved > 0.5) {
           // Wrap lighting (soft terminator on the canopy), sky/ground
           // hemisphere ambient, and a rim on the sun side
@@ -811,7 +905,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
           vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * nightAmbient * (0.6 + 0.4 * shadowFactor);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
           float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
-          finalColor = vColor * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
+          finalColor = tinted * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
         }
         gl_FragColor = vec4(finalColor, 1.0);
       }
@@ -1079,15 +1173,15 @@ export class MushroomTreeBuilder {
     const tree = new THREE.Group();
 
     const rng = new SeededRandom(cfg.seed ?? seedFromPosition(position));
-    const species: SequoiaTreeSpecies = cfg.species ?? (rng.next() < 0.35 ? 'redwood' : 'mushroom');
+    // Sequoia's own flora (no species shared with Earth)
+    const roll = rng.next();
+    const species: SequoiaTreeSpecies = cfg.species ?? (roll < 0.4 ? 'redwood' : roll < 0.75 ? 'treefern' : 'lantern');
     const geometries: THREE.BufferGeometry[] = [];
-    if (species === 'redwood') {
-      const size = cfg.stemRadius / DEFAULT_MUSHROOM_CONFIG.stemRadius;
-      const tall = cfg.stemHeight / (DEFAULT_MUSHROOM_CONFIG.stemHeight * Math.max(size, 0.01));
-      buildRedwood(geometries, rng, size, tall);
-    } else {
-      buildMushroom(geometries, rng, cfg);
-    }
+    const size = cfg.stemRadius / DEFAULT_MUSHROOM_CONFIG.stemRadius;
+    const tall = cfg.stemHeight / (DEFAULT_MUSHROOM_CONFIG.stemHeight * Math.max(size, 0.01));
+    if (species === 'redwood') buildRedwood(geometries, rng, size, tall);
+    else if (species === 'treefern') buildTreeFern(geometries, rng, size, tall);
+    else buildLantern(geometries, rng, size, tall);
     tree.userData.species = species;
 
     // Merge all geometries into one
