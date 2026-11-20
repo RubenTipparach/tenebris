@@ -72,6 +72,15 @@ export enum ItemType {
   SEQ_SNOW = 52,
   // Rocket fuel (hydrogen/oxygen from water ice); used when refuelling
   ROCKET_FUEL = 53,
+  // Fish (see player/Fishing.ts for which planet each lives on)
+  FISH_MINNOW = 54,
+  FISH_SILVERFIN = 55,
+  FISH_PERCH = 56,
+  FISH_RAY = 57,
+  FISH_EEL = 58,
+  FISH_REEF = 59,
+  FISH_DEEPBACK = 60,
+  FISH_SERPENT = 61,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -234,6 +243,14 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.SEQ_SAND]: { name: 'Sequoia Sand', stackSize: 64, texture: '/textures/planet_seq/planet_seq_sand.png', mineTime: 0.5 },
   [ItemType.SEQ_SNOW]: { name: 'Sequoia Snow', stackSize: 64, texture: '/textures/planet_seq/planet_seq_snow.png', mineTime: 0.5 },
   [ItemType.ROCKET_FUEL]: { name: 'Rocket Fuel', stackSize: 64, texture: '/textures/icons/rocket_fuel.png', mineTime: 0.3 },
+  [ItemType.FISH_MINNOW]: { name: 'Minnow', stackSize: 16, texture: '/textures/fish/minnow.png', mineTime: 0.3 },
+  [ItemType.FISH_SILVERFIN]: { name: 'Silverfin', stackSize: 16, texture: '/textures/fish/silverfin.png', mineTime: 0.3 },
+  [ItemType.FISH_PERCH]: { name: 'Banded Perch', stackSize: 16, texture: '/textures/fish/perch.png', mineTime: 0.3 },
+  [ItemType.FISH_RAY]: { name: 'Ray', stackSize: 16, texture: '/textures/fish/ray.png', mineTime: 0.3 },
+  [ItemType.FISH_EEL]: { name: 'Eel', stackSize: 16, texture: '/textures/fish/eel.png', mineTime: 0.3 },
+  [ItemType.FISH_REEF]: { name: 'Reef Fish', stackSize: 16, texture: '/textures/fish/reef.png', mineTime: 0.3 },
+  [ItemType.FISH_DEEPBACK]: { name: 'Deepback', stackSize: 16, texture: '/textures/fish/deepback.png', mineTime: 0.3 },
+  [ItemType.FISH_SERPENT]: { name: 'Sea Serpent', stackSize: 16, texture: '/textures/fish/serpent.png', mineTime: 0.3 },
 };
 
 // Inventory slot

@@ -16,6 +16,7 @@ import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
 import { ItemType } from './player/Inventory';
+import { FishingSystem } from './player/Fishing';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
@@ -59,6 +60,9 @@ class PlanetGame {
 
   // Rocket flight system
   private rocketFlightManager: RocketFlightManager | null = null;
+
+  // Fishing (rod in hand)
+  private fishing: FishingSystem | null = null;
 
   // Shared frustum for all planet updates (calculated once per frame)
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
@@ -304,6 +308,13 @@ class PlanetGame {
         (direction) => this.earth.getTileCenterInDirection(direction), // For centering trees on tiles
         removedTiles // Skip tiles where trees were previously removed
       );
+
+      // Fishing: a catch goes into the inventory
+      this.fishing = new FishingSystem(this.engine.scene, this.engine.camera, (item) => {
+        const left = this.blockInteraction.getInventory().addItem(item, 1);
+        this.blockInteraction.onInventoryChanged();
+        return left === 0;
+      });
 
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
@@ -667,14 +678,22 @@ class PlanetGame {
         handledRocketInteraction = this.checkLandedRocketInteraction();
       }
 
+      // Fishing takes the mouse buttons while the rod is in hand
+      const holdingRod = isGameActive &&
+        this.blockInteraction.getInventory().getSelectedItem().itemType === ItemType.FISHING_ROD;
+      const fishing = this.fishing?.update(
+        deltaTime, holdingRod, this.player.getCurrentPlanet(), this.player.position,
+        input.leftClick, input.rightClick
+      ) ?? false;
+
       // Update block interaction FIRST - this handles torch placement/removal
       // which marks tiles dirty and updates torch data on planets immediately
       profiler.begin('Block Interaction');
       const wheelDelta = this.inputManager.getWheelDelta();
       this.blockInteraction.update(
         deltaTime,
-        isGameActive && input.leftClick,
-        isGameActive && input.rightClick && !handledRocketInteraction,
+        isGameActive && input.leftClick && !fishing,
+        isGameActive && input.rightClick && !handledRocketInteraction && !fishing,
         isGameActive ? wheelDelta : 0
       );
       profiler.end('Block Interaction');
