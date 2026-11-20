@@ -126,4 +126,5 @@ export const ROCKET_INPUTS = {
   FUEL_ROCKET: 'KeyF',            // F - fuel rocket (when grounded)
   EXIT_ROCKET: 'KeyV',            // V - exit rocket
   EJECT_CAPSULE: 'KeyJ',          // J - emergency eject (hold)
+  RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
 };

@@ -375,10 +375,9 @@ class PlanetGame {
         if (container) container.requestPointerLock();
       });
 
-      // Set up respawn callback for when player crashes and respawns
-      this.rocketFlightManager.setOnRespawnCallback((respawnPosition) => {
-        // Move player to respawn position (last boarded position)
-        this.player.position.copy(respawnPosition);
+      // Crash (or manual abandon): respawn on the planet nearest the rocket
+      this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
+        this.respawnOnNearestPlanet(rocketPosition);
       });
 
       // Set up board rocket callback for boarding landed rockets
@@ -909,11 +908,20 @@ class PlanetGame {
       });
     }
 
-    // Handle teleport dropdown
+    // Handle teleport dropdown (Debug tab). Reset it afterwards so picking
+    // the same planet again still fires 'change'.
     if (teleportSelect) {
       teleportSelect.addEventListener('change', () => {
-        this.teleportToPlanet(teleportSelect.value);
+        const target = teleportSelect.value;
+        teleportSelect.value = '';
+        if (target) this.teleportToPlanet(target);
       });
+    }
+
+    // Respawn on the nearest planet's spawn point (works on foot or in flight)
+    const respawnBtn = document.getElementById('respawn-planet-btn');
+    if (respawnBtn) {
+      respawnBtn.addEventListener('click', () => this.respawnOnNearestPlanet());
     }
 
     // Handle reset game button
@@ -987,22 +995,37 @@ class PlanetGame {
     if (overlay) overlay.classList.add('hidden');
   }
 
-  private async teleportToPlanet(planetName: string): Promise<void> {
-    let planet: Planet;
+  /**
+   * Respawn the player at the spawn point of the planet nearest `from`
+   * (default: where the player or their rocket is). In flight this abandons
+   * the rocket first; the flight manager then calls back here with the
+   * rocket's position. One path for crash, manual and menu respawns.
+   */
+  private respawnOnNearestPlanet(from?: THREE.Vector3): void {
+    if (this.rocketFlightManager?.isInFlight()) {
+      this.rocketFlightManager.respawnAfterCrash();
+      return;
+    }
+    const position = from ?? this.player.position;
+    let nearest = SOLAR_SYSTEM.startingBody;
+    let bestAltitude = Infinity;
+    for (const [id, planet] of this.planets) {
+      const altitude = position.distanceTo(planet.center) - planet.radius;
+      if (altitude < bestAltitude) {
+        bestAltitude = altitude;
+        nearest = id;
+      }
+    }
+    console.log(`Respawning on ${nearest}`);
+    this.player.setEnabled(true);
+    this.teleportToPlanet(nearest);
+  }
 
-    switch (planetName) {
-      case 'earth':
-        planet = this.earth;
-        break;
-      case 'moon':
-        planet = this.moon;
-        break;
-      case 'sequoia':
-        planet = this.sequoia;
-        break;
-      default:
-        console.warn(`Unknown planet: ${planetName}`);
-        return;
+  private async teleportToPlanet(planetName: string): Promise<void> {
+    const planet = this.planets.get(planetName);
+    if (!planet) {
+      console.warn(`Unknown planet: ${planetName}`);
+      return;
     }
 
     // Ensure the landing spot has detailed terrain before teleporting. A

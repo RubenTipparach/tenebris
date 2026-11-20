@@ -1243,12 +1243,8 @@
         <button id="play-music-btn" class="play-music-btn">Play</button>
       </div>
       <div class="settings-row">
-        <label for="teleport-select">Teleport</label>
-        <select id="teleport-select" class="teleport-select">
-          <option value="earth">Earth</option>
-          <option value="moon">Moon</option>
-          <option value="sequoia">Sequoia</option>
-        </select>
+        <label>Respawn on nearest planet</label>
+        <button id="respawn-planet-btn" class="play-music-btn">Respawn</button>
       </div>
       <div class="settings-row">
         <label>Reset Game</label>
@@ -1283,6 +1279,7 @@
         <p><span class="key">SPACE</span><span>Thrust</span></p>
         <p><span class="key">C</span><span>Descend</span></p>
         <p><span class="key">V</span><span>Exit Rocket</span></p>
+        <p><span class="key">B</span><span>Abandon rocket &amp; respawn</span></p>
       </div>
     </div>
 
@@ -1301,6 +1298,15 @@
           <input type="checkbox" id="toggle-bypass-crafting">
           <span class="toggle-slider"></span>
         </div>
+      </div>
+      <div class="settings-row">
+        <label for="teleport-select">Teleport</label>
+        <select id="teleport-select" class="teleport-select">
+          <option value="" selected disabled>Choose planet</option>
+          <option value="earth">Earth</option>
+          <option value="moon">Moon</option>
+          <option value="sequoia">Sequoia</option>
+        </select>
       </div>
     </div>
 
