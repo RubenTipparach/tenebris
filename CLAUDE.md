@@ -34,6 +34,12 @@ everywhere.
   wild fruit (apple/melon/orange/kiwi - Tenebris ONLY). A new planet
   gets new plant species, gated on its tileset, never a reused one.
 
+- **Forests grow in stands, not a mix.** Within one biome, one species
+  dominates a region with only the odd neighbour at its edges - species
+  compete for the same ground, so a random mix of wildly different trees
+  is wrong. In the JS client every planet's scatter picks species through
+  `standSpecies()` in `src/planet/Tree.ts`; a new planet's flora does too.
+
 When you add a planet or a species, the checklist is: (1) give it its
 own roster branch, (2) gate it on the body/tileset so it can't appear
 elsewhere, (3) extend the disjointness test, (4) if it's a new visible
@@ -442,13 +448,34 @@ freely. It ships to two places:
   flattened paths (`npm run build:itch` -> `dist-itch/`) and zips it as
   `tenebris-itch.zip`.
 
-Both deploy automatically on every push to `main` via
-`.github/workflows/js-deploy.yml`: the `itch.io` job pushes the zip with
-butler to `ruben-tipparach/tenebris:html5` (needs a `BUTLER_API_KEY`
-secret), and the `heavyphoton.com` job pings heavyphoton.github.io,
-whose `deploy-tenebris` workflow builds main into `docs/tenebris/`
-(needs a `SITE_DISPATCH_TOKEN` secret; the site also checks hourly).
-`static.yml` builds and verifies both on every branch.
+- **Multiplayer server** - `server-js/` (Node + `ws`): hosts any number
+  of worlds (`GET/POST /worlds`, join with `ws /?world=<id>`), each with
+  its own seed and edit log under `/data/worlds/`; relays player poses and
+  block edits and appends every edit to the world's log on arrival. The
+  in-game server browser (Settings > Multiplayer: worlds) lists, creates
+  and joins worlds; a world opens as `?world=<id>`, which sets the terrain
+  seed and a separate local save slot before the game builds anything. It is deployed to the `tenebris-c` Fly app, which
+  means it REPLACES the Rust server there (and its /admin portal and tile
+  editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
+  `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
+  local server.
+
+Deploys are in `.github/workflows/js-deploy.yml`:
+
+- **heavyphoton.com** - automatic on every push to `main`: the `site` job
+  pings heavyphoton.github.io, whose `deploy-tenebris` workflow builds
+  main into `docs/tenebris/` (needs a `SITE_DISPATCH_TOKEN` secret; the
+  site also checks hourly).
+- **itch.io + the multiplayer server** - MANUAL, together: run the
+  workflow by hand (Actions > Run workflow on main). The `itch` job pushes
+  the zip with butler to `ruben-tipparach/tenebris:html5` (needs
+  `BUTLER_API_KEY`), and the `server` job runs `fly deploy` in `server-js/`
+  (needs `FLY_API_TOKEN`) only after the itch push succeeds, so the server
+  always matches the itch build.
+
+`static.yml` builds and verifies the client on every push to `main` and
+publishes it to GitHub Pages; on branches it only runs by hand (Run
+workflow), not on every push.
 
 Append `?debug` to the URL (or use the dev server) to get the game as
 `window.__tenebris` (and three.js as `window.__THREE`) in the console.
@@ -884,10 +911,10 @@ After each commit, always show these links to the user:
 
 - Play the games: https://rubentipparach.github.io/tenebris/
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
-- Operator portal: https://tenebris-c.fly.dev/admin
-- Hex structure editor: https://tenebris-c.fly.dev/admin/tile-editor
+- JS multiplayer server: https://tenebris-c.fly.dev/
 
-The `/admin` portal and the tile editor are served by the dedicated
-server itself (`tenebris-server` on Fly), so they update on the same
-push that deploys the server. The editor exports `*.template.json`
+The `/admin` operator portal and the hex structure editor were served by
+the Rust server (`tenebris-server`); while the JS server is deployed on
+`tenebris-c` they are offline (deploy `tenebris-rs/fly.toml` to bring
+them back). The editor exports `*.template.json`
 into `tenebris-rs/assets/templates/`.

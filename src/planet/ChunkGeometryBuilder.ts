@@ -2,7 +2,7 @@
 // This runs synchronously on the CPU for fast visual feedback
 
 import * as THREE from 'three';
-import { HexBlockType } from '../shared/blockTypes';
+import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
   Vec3,
   vec3Sub,
@@ -38,53 +38,19 @@ export function createEmptyGeometryData(): GeometryData {
   };
 }
 
-// Chunk geometry data - one per material type
-export interface ChunkGeometryData {
-  topData: GeometryData;
-  sideData: GeometryData;
-  grassSideData: GeometryData;
-  stoneData: GeometryData;
-  sandData: GeometryData;
-  woodData: GeometryData;
-  waterData: GeometryData;
-  oreCoalData: GeometryData;
-  oreCopperData: GeometryData;
-  oreIronData: GeometryData;
-  oreGoldData: GeometryData;
-  oreLithiumData: GeometryData;
-  oreAluminumData: GeometryData;
-  oreCobaltData: GeometryData;
-  snowData: GeometryData;
-  snowSideData: GeometryData;
-  dirtSnowData: GeometryData;
-  iceData: GeometryData;
-  glassData: GeometryData;
-  moonRockData: GeometryData;
-}
+// Chunk geometry: buffers keyed '<material>Data' (see bufferKey in
+// shared/blockTypes), created only for materials that occur
+export type ChunkGeometryData = Record<string, GeometryData>;
 
-export function createEmptyChunkGeometryData(): ChunkGeometryData {
-  return {
-    topData: createEmptyGeometryData(),
-    sideData: createEmptyGeometryData(),
-    grassSideData: createEmptyGeometryData(),
-    stoneData: createEmptyGeometryData(),
-    sandData: createEmptyGeometryData(),
-    woodData: createEmptyGeometryData(),
-    waterData: createEmptyGeometryData(),
-    oreCoalData: createEmptyGeometryData(),
-    oreCopperData: createEmptyGeometryData(),
-    oreIronData: createEmptyGeometryData(),
-    oreGoldData: createEmptyGeometryData(),
-    oreLithiumData: createEmptyGeometryData(),
-    oreAluminumData: createEmptyGeometryData(),
-    oreCobaltData: createEmptyGeometryData(),
-    snowData: createEmptyGeometryData(),
-    snowSideData: createEmptyGeometryData(),
-    dirtSnowData: createEmptyGeometryData(),
-    iceData: createEmptyGeometryData(),
-    glassData: createEmptyGeometryData(),
-    moonRockData: createEmptyGeometryData()
-  };
+// Buffer for a material key, created on first use
+export function bufferFor(out: ChunkGeometryData, materialKey: string): GeometryData {
+  const key = bufferKey(materialKey);
+  let data = out[key];
+  if (!data) {
+    data = createEmptyGeometryData();
+    out[key] = data;
+  }
+  return data;
 }
 
 // Tile data for geometry building
@@ -470,27 +436,8 @@ function buildColumnGeometry(
 
     const depthFromSurface = surfaceDepth - depth;
 
-    // Select target geometry buffer
-    let blockGeomData: GeometryData;
-    switch (blockType) {
-      case HexBlockType.ORE_COAL: blockGeomData = chunkData.oreCoalData; break;
-      case HexBlockType.ORE_COPPER: blockGeomData = chunkData.oreCopperData; break;
-      case HexBlockType.ORE_IRON: blockGeomData = chunkData.oreIronData; break;
-      case HexBlockType.ORE_GOLD: blockGeomData = chunkData.oreGoldData; break;
-      case HexBlockType.ORE_LITHIUM: blockGeomData = chunkData.oreLithiumData; break;
-      case HexBlockType.ORE_ALUMINUM: blockGeomData = chunkData.oreAluminumData; break;
-      case HexBlockType.ORE_COBALT: blockGeomData = chunkData.oreCobaltData; break;
-      case HexBlockType.STONE: blockGeomData = chunkData.stoneData; break;
-      case HexBlockType.SAND: blockGeomData = chunkData.sandData; break;
-      case HexBlockType.DIRT: blockGeomData = chunkData.sideData; break;
-      case HexBlockType.WOOD: blockGeomData = chunkData.woodData; break;
-      case HexBlockType.SNOW: blockGeomData = chunkData.snowData; break;
-      case HexBlockType.DIRT_SNOW: blockGeomData = chunkData.dirtSnowData; break;
-      case HexBlockType.ICE: blockGeomData = chunkData.iceData; break;
-      case HexBlockType.GLASS: blockGeomData = chunkData.glassData; break;
-      case HexBlockType.MOON_ROCK: blockGeomData = chunkData.moonRockData; break;
-      default: blockGeomData = chunkData.topData; break;
-    }
+    // Which material each face of this block uses (shared table)
+    const faces = blockFaces(blockType);
 
     let skyLightLevel = 1.0;
     if (depthFromSurface > 0) {
@@ -502,9 +449,9 @@ function buildColumnGeometry(
       const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false, config.uvScale);
       if (topGeom) {
         if (isWater) {
-          mergeGeometry(chunkData.waterData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
+          mergeGeometry(bufferFor(chunkData, 'water'), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
         } else {
-          mergeGeometry(blockGeomData, topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel, torches);
+          mergeGeometry(bufferFor(chunkData, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel, torches);
         }
       }
     }
@@ -514,13 +461,8 @@ function buildColumnGeometry(
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        if (blockType === HexBlockType.GRASS) {
-          mergeGeometry(chunkData.sideData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
-        } else if (blockType === HexBlockType.SNOW) {
-          mergeGeometry(chunkData.dirtSnowData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
-        } else {
-          mergeGeometry(blockGeomData, bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
-        }
+        mergeGeometry(bufferFor(chunkData, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
+
       }
     }
 
@@ -528,13 +470,8 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
-        if (blockType === HexBlockType.GRASS) {
-          mergeGeometry(chunkData.grassSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
-        } else if (blockType === HexBlockType.SNOW) {
-          mergeGeometry(chunkData.snowSideData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
-        } else {
-          mergeGeometry(blockGeomData, sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
-        }
+        mergeGeometry(bufferFor(chunkData, faces.side), sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
+
       }
     }
   }
@@ -557,7 +494,7 @@ export function buildChunkGeometryImmediate(
   neighborData: Map<number, NeighborData>,
   config: BuildConfig
 ): ChunkGeometryData {
-  const chunkData = createEmptyChunkGeometryData();
+  const chunkData: ChunkGeometryData = {};
 
   for (const column of columns) {
     buildColumnGeometry(column, neighborData, config, chunkData);
@@ -572,7 +509,7 @@ export function buildChunkGeometryImmediate(
           neighborData,
           depth,
           config,
-          chunkData.waterData
+          bufferFor(chunkData, 'water')
         );
       }
     }

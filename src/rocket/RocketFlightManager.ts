@@ -155,12 +155,14 @@ export class RocketFlightManager {
   }
 
   /**
-   * Respawn player after crash - called by UI
+   * Abandon the rocket and respawn the player - after a crash (UI button) or
+   * on demand (ROCKET_INPUTS.RESPAWN) when stranded. The callback gets the
+   * rocket's last position so the game can respawn on the nearest planet.
    */
   public respawnAfterCrash(): void {
     if (!this.rocketController) return;
 
-    const respawnPosition = this.rocketController.getLastBoardedPosition();
+    const respawnPosition = this.rocketController.getPosition().clone();
 
     // Clean up rocket
     this.flightUI.hide();
@@ -438,6 +440,11 @@ export class RocketFlightManager {
       // Handle exit key - call exitFlightMode directly
       if (e.code === ROCKET_INPUTS.EXIT_ROCKET) {
         this.exitFlightMode();
+      }
+
+      // Manual respawn: abandon the rocket (e.g. stranded in space)
+      if (e.code === ROCKET_INPUTS.RESPAWN) {
+        this.respawnAfterCrash();
       }
     });
 

@@ -28,10 +28,20 @@ export interface PlacedRocketPart {
 //  P P      <- 2 hexes (bottom row)
 // Total: 10 hexes
 
+// One of the six hexes around the rocket tile that make the pad a
+// platform: built from the pad's top down to innerRadius (the ground there,
+// so the platform never hovers over a dip).
+export interface PlatformTile {
+  center: THREE.Vector3;
+  vertices: THREE.Vector3[];
+  innerRadius: number;
+}
+
 // Launch Pad placement data
 export interface PlacedLaunchPad {
   mesh: THREE.Group;  // Group containing base + segments
   position: THREE.Vector3;  // Center of the launch pad (rocket tile position)
+  planetCenter: THREE.Vector3;  // Center of the planet this pad sits on
   // Tile tracking for 10-hex pattern
   allTileIndices: number[];  // All 10 tile indices in the pattern
   allTileCenters: THREE.Vector3[];  // World positions of all 10 hex centers
@@ -476,6 +486,15 @@ export class LaunchPadManager {
    * Matches terrain generation rules exactly (same as HexBlock.createSeparateGeometries)
    * Uses innerRadius/outerRadius to position vertices on sphere surface
    */
+  // The platform hexes around the rocket tile, level with its top
+  private addPlatform(group: THREE.Group, tiles: PlatformTile[] | undefined, outerRadius: number | undefined, planetCenter: THREE.Vector3): void {
+    if (!tiles || outerRadius === undefined || !this.baseMaterial) return;
+    for (const tile of tiles) {
+      const inner = Math.min(tile.innerRadius, outerRadius - 0.05);
+      group.add(new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, outerRadius, planetCenter), this.baseMaterial));
+    }
+  }
+
   private createHexGeometryFromTile(
     tile: { center: THREE.Vector3; vertices: THREE.Vector3[] },
     innerRadius: number,
@@ -673,7 +692,8 @@ export class LaunchPadManager {
     tileVertices?: THREE.Vector3[],
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
-    outerRadius?: number
+    outerRadius?: number,
+    platformTiles?: PlatformTile[]
   ): Promise<PlacedLaunchPad | null> {
     if (!this.baseMaterial) {
       await this.initGeometryAndMaterials();
@@ -704,6 +724,7 @@ export class LaunchPadManager {
     // Create base mesh - geometry is already in world space, no transform needed
     const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
     group.add(baseMesh);
+    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
 
     // Add to scene
     this.scene.add(group);
@@ -718,6 +739,7 @@ export class LaunchPadManager {
     const placedPad: PlacedLaunchPad = {
       mesh: group,
       position: worldPosition.clone(),
+      planetCenter: planetCenter.clone(),
       // New 10-hex pattern fields
       allTileIndices: [centerTileIndex, ...surroundingTileIndices],
       allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
@@ -763,7 +785,8 @@ export class LaunchPadManager {
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
     outerRadius?: number,
-    savedRocketParts?: { itemType: ItemType; heightIndex: number }[]
+    savedRocketParts?: { itemType: ItemType; heightIndex: number }[],
+    platformTiles?: PlatformTile[]
   ): Promise<PlacedLaunchPad | null> {
     if (!this.baseMaterial) {
       await this.initGeometryAndMaterials();
@@ -794,6 +817,7 @@ export class LaunchPadManager {
     // Create base mesh - geometry is already in world space, no transform needed
     const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
     group.add(baseMesh);
+    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
 
     // Add to scene
     this.scene.add(group);
@@ -806,6 +830,7 @@ export class LaunchPadManager {
     const placedPad: PlacedLaunchPad = {
       mesh: group,
       position: worldPosition.clone(),
+      planetCenter: planetCenter.clone(),
       // New 10-hex pattern fields
       allTileIndices: [centerTileIndex, ...surroundingTileIndices],
       allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
@@ -870,15 +895,15 @@ export class LaunchPadManager {
 
     // Stack segments radially outward from the tower tile position
     // Each segment is SEGMENT_HEIGHT tall, centered at offset from pad top
-    const towerRadialDir = towerBasePos.clone().sub(this.planetCenter).normalize();
+    const towerRadialDir = towerBasePos.clone().sub(launchPad.planetCenter).normalize();
     const heightOffset = (launchPad.segmentCount + 0.5) * this.SEGMENT_HEIGHT;
     const segmentPos = towerBasePos.clone()
       .add(towerRadialDir.clone().multiplyScalar(heightOffset));
     segmentMesh.position.copy(segmentPos);
 
     // Log tower base position info
-    const towerDistFromCenter = towerBasePos.distanceTo(this.planetCenter);
-    console.log(`[Tower Segment ${launchPad.segmentCount}] baseDistFromCenter: ${towerDistFromCenter.toFixed(3)}, heightOffset: ${heightOffset.toFixed(3)}, finalDist: ${segmentPos.distanceTo(this.planetCenter).toFixed(3)}`);
+    const towerDistFromCenter = towerBasePos.distanceTo(launchPad.planetCenter);
+    console.log(`[Tower Segment ${launchPad.segmentCount}] baseDistFromCenter: ${towerDistFromCenter.toFixed(3)}, heightOffset: ${heightOffset.toFixed(3)}, finalDist: ${segmentPos.distanceTo(launchPad.planetCenter).toFixed(3)}`);
 
     // Orient the segment so its local Y axis points along the tower's radial direction
     const up = new THREE.Vector3(0, 1, 0);
@@ -1036,7 +1061,7 @@ export class LaunchPadManager {
     // Calculate sun brightness from the launch pad position for consistent lighting
     // Always use launchPad.position as the reference - this ensures ALL parts get identical lighting
     const lightingPosition = launchPad.position.clone();
-    const surfaceDir = lightingPosition.clone().sub(this.planetCenter).normalize();
+    const surfaceDir = lightingPosition.clone().sub(launchPad.planetCenter).normalize();
     const sunFacing = surfaceDir.dot(this.sunDirection);
     const sunBrightness = this.smoothstep(-0.1, 0.3, sunFacing);
     clonedMaterial.uniforms.sunBrightness.value = sunBrightness;
@@ -1048,10 +1073,10 @@ export class LaunchPadManager {
     // Calculate position: stack parts vertically above the rocket tile
     // The rocket tile and tower tile may be at different elevations on the planet surface
     // We want the rocket to sit at the SAME surface level as the tower
-    const rocketRadialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+    const rocketRadialDir = launchPad.position.clone().sub(launchPad.planetCenter).normalize();
 
     // Get the surface level from the tower tile (same as where tower segments start)
-    const towerSurfaceDistance = launchPad.towerTileCenter.distanceTo(this.planetCenter);
+    const towerSurfaceDistance = launchPad.towerTileCenter.distanceTo(launchPad.planetCenter);
 
     // Calculate height based on existing parts
     // Each part's height is based on where the BOTTOM of the part should be
@@ -1087,14 +1112,14 @@ export class LaunchPadManager {
 
     // Position: place at tower surface level + part height, along the rocket tile's radial direction
     // This positions the rocket above the rocket tile but at the tower's surface elevation
-    const partPos = this.planetCenter.clone()
+    const partPos = launchPad.planetCenter.clone()
       .add(rocketRadialDir.clone().multiplyScalar(towerSurfaceDistance + partHeight + offsetY))
       .add(localX.clone().multiplyScalar(offsetX))
       .add(localZ.clone().multiplyScalar(offsetZ));
 
     // Log rocket part position info
-    const rocketTileDistFromCenter = launchPad.position.distanceTo(this.planetCenter);
-    console.log(`[Rocket Part ${launchPad.rocketParts.length}] rocketTileDist: ${rocketTileDistFromCenter.toFixed(3)}, towerSurfaceDist: ${towerSurfaceDistance.toFixed(3)}, partHeight: ${partHeight.toFixed(3)}, finalDist: ${partPos.distanceTo(this.planetCenter).toFixed(3)}`);
+    const rocketTileDistFromCenter = launchPad.position.distanceTo(launchPad.planetCenter);
+    console.log(`[Rocket Part ${launchPad.rocketParts.length}] rocketTileDist: ${rocketTileDistFromCenter.toFixed(3)}, towerSurfaceDist: ${towerSurfaceDistance.toFixed(3)}, partHeight: ${partHeight.toFixed(3)}, finalDist: ${partPos.distanceTo(launchPad.planetCenter).toFixed(3)}`);
 
     partGroup.position.copy(partPos);
     partGroup.quaternion.copy(quaternion);
@@ -1173,7 +1198,7 @@ export class LaunchPadManager {
     engineGroup.add(engineMesh);
 
     // Position the engine centered on the launch pad
-    const radialDir = launchPad.position.clone().sub(this.planetCenter).normalize();
+    const radialDir = launchPad.position.clone().sub(launchPad.planetCenter).normalize();
 
     // Place engine at the base height, centered on the pad
     const engineHeight = this.SEGMENT_HEIGHT * 0.5;

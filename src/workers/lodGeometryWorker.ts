@@ -2,6 +2,7 @@
 // Optimized: pre-computed normalizations, cached surface data, reduced passes
 
 import { PackedTileData, PackedBlocks, unpackTiles, unpackBlocks, packFloatAttributes } from './packedTiles';
+import { HexBlockType, baseTerrainType } from '../shared/blockTypes';
 
 // Vector3-like operations using plain objects
 interface Vec3 {
@@ -171,38 +172,6 @@ interface PrecomputedTileData {
   centerUV: { u: number; v: number };
 }
 
-// Block types (must match HexBlock.ts)
-const HexBlockType = {
-  AIR: 0,
-  STONE: 1,
-  DIRT: 2,
-  GRASS: 3,
-  WATER: 4,
-  SAND: 5,
-  WOOD: 6,
-  LEAVES: 7,
-  // Mineral ores
-  ORE_COAL: 8,
-  ORE_COPPER: 9,
-  ORE_IRON: 10,
-  ORE_GOLD: 11,
-  ORE_LITHIUM: 12,
-  ORE_ALUMINUM: 13,
-  ORE_COBALT: 14,
-  // Snow biome blocks
-  SNOW: 15,
-  DIRT_SNOW: 16,
-  ICE: 17,
-  // Technology blocks
-  FURNACE: 18,
-  // Glass
-  GLASS: 19,
-  // Advanced technology blocks
-  COMPUTER: 20,
-  PRINTER_3D: 21,
-  // Moon terrain
-  MOON_ROCK: 22
-};
 
 // Config passed from main thread
 interface LODWorkerConfig {
@@ -451,7 +420,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
           if (surfaceBlockType === HexBlockType.GRASS) {
             // First non-air block found
             surfaceDepth = d;
-            surfaceBlockType = blocks[d];
+            surfaceBlockType = baseTerrainType(blocks[d]);
           }
           if (blocks[d] !== HexBlockType.WATER) {
             // First solid (non-water) block found

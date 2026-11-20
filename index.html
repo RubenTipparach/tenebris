@@ -1243,12 +1243,23 @@
         <button id="play-music-btn" class="play-music-btn">Play</button>
       </div>
       <div class="settings-row">
-        <label for="teleport-select">Teleport</label>
-        <select id="teleport-select" class="teleport-select">
-          <option value="earth">Earth</option>
-          <option value="moon">Moon</option>
-          <option value="sequoia">Sequoia</option>
-        </select>
+        <label for="world-browser-btn" id="world-label">Multiplayer: worlds</label>
+        <button id="world-browser-btn" class="play-music-btn">Browse</button>
+      </div>
+      <div class="settings-row">
+        <label for="mp-name">Player name</label>
+        <input id="mp-name" class="teleport-select" maxlength="16" style="width:140px">
+      </div>
+      <div class="settings-row">
+        <label for="toggle-start-rocket">New games start with a rocket</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-start-rocket">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Respawn on nearest planet</label>
+        <button id="respawn-planet-btn" class="play-music-btn">Respawn</button>
       </div>
       <div class="settings-row">
         <label>Reset Game</label>
@@ -1269,6 +1280,7 @@
         <p><span class="key">Right Click</span><span>Place block</span></p>
         <p><span class="key">1-9</span><span>Select hotbar</span></p>
         <p><span class="key">E</span><span>Open inventory</span></p>
+        <p><span class="key">Rod + Left Click</span><span>Hold to cast, click on a bite, hold to reel</span></p>
         <p><span class="key">F3</span><span>Toggle profiler</span></p>
       </div>
     </div>
@@ -1283,6 +1295,7 @@
         <p><span class="key">SPACE</span><span>Thrust</span></p>
         <p><span class="key">C</span><span>Descend</span></p>
         <p><span class="key">V</span><span>Exit Rocket</span></p>
+        <p><span class="key">B</span><span>Abandon rocket &amp; respawn</span></p>
       </div>
     </div>
 
@@ -1301,6 +1314,38 @@
           <input type="checkbox" id="toggle-bypass-crafting">
           <span class="toggle-slider"></span>
         </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-mock-sky">Mockup: daytime sky</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-mock-sky">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-mock-trees">Mockup: improved tree shading</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-mock-trees">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="toggle-mock-biomes">Mockup: biomes (reload)</label>
+        <div class="toggle-switch">
+          <input type="checkbox" id="toggle-mock-biomes">
+          <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label>Rocket + launch pad here</label>
+        <button id="spawn-rocket-btn" class="play-music-btn">Spawn</button>
+      </div>
+      <div class="settings-row">
+        <label for="teleport-select">Teleport</label>
+        <select id="teleport-select" class="teleport-select">
+          <option value="" selected disabled>Choose planet</option>
+          <!-- one option per landable body, added from SolarSystemConfig -->
+        </select>
       </div>
     </div>
 

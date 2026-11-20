@@ -30,8 +30,67 @@ export enum HexBlockType {
   COMPUTER = 20,
   PRINTER_3D = 21,
   // Moon terrain block
-  MOON_ROCK = 22
+  MOON_ROCK = 22,
+  // Sequoia's native terrain. Its own block IDs, so Sequoia ground looks the
+  // same wherever it is placed, and Earth grass placed on Sequoia stays
+  // Earth grass (they used to share GRASS/DIRT/SAND/SNOW and swap texture
+  // with the planet).
+  SEQ_GRASS = 23,
+  SEQ_DIRT = 24,
+  SEQ_SAND = 25,
+  SEQ_SNOW = 26
 }
+
+// The Earth block a native planet variant behaves like (LOD colouring,
+// footstep sounds, surface classification). Identity for everything else.
+const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
+  [HexBlockType.SEQ_GRASS]: HexBlockType.GRASS,
+  [HexBlockType.SEQ_DIRT]: HexBlockType.DIRT,
+  [HexBlockType.SEQ_SAND]: HexBlockType.SAND,
+  [HexBlockType.SEQ_SNOW]: HexBlockType.SNOW,
+};
+export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
+  return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
+}
+
+// Which material each face of a block uses. One table for every mesher (the
+// worker, the main-thread chunk builder, the legacy batch builder); a new
+// block type is one row here plus its texture in HexBlockMeshBuilder.
+export interface BlockFaces { top: string; side: string; bottom: string; }
+const sameFaces = (key: string): BlockFaces => ({ top: key, side: key, bottom: key });
+const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
+  [HexBlockType.GRASS]: { top: 'top', side: 'grassSide', bottom: 'side' },
+  [HexBlockType.DIRT]: sameFaces('side'),
+  [HexBlockType.STONE]: sameFaces('stone'),
+  [HexBlockType.SAND]: sameFaces('sand'),
+  [HexBlockType.WOOD]: sameFaces('wood'),
+  [HexBlockType.ORE_COAL]: sameFaces('oreCoal'),
+  [HexBlockType.ORE_COPPER]: sameFaces('oreCopper'),
+  [HexBlockType.ORE_IRON]: sameFaces('oreIron'),
+  [HexBlockType.ORE_GOLD]: sameFaces('oreGold'),
+  [HexBlockType.ORE_LITHIUM]: sameFaces('oreLithium'),
+  [HexBlockType.ORE_ALUMINUM]: sameFaces('oreAluminum'),
+  [HexBlockType.ORE_COBALT]: sameFaces('oreCobalt'),
+  [HexBlockType.SNOW]: { top: 'snow', side: 'snowSide', bottom: 'dirtSnow' },
+  [HexBlockType.DIRT_SNOW]: sameFaces('dirtSnow'),
+  [HexBlockType.ICE]: sameFaces('ice'),
+  [HexBlockType.GLASS]: sameFaces('glass'),
+  [HexBlockType.MOON_ROCK]: sameFaces('moonRock'),
+  [HexBlockType.SEQ_GRASS]: { top: 'seqGrass', side: 'seqGrassSide', bottom: 'seqDirt' },
+  [HexBlockType.SEQ_DIRT]: sameFaces('seqDirt'),
+  [HexBlockType.SEQ_SAND]: sameFaces('seqSand'),
+  [HexBlockType.SEQ_SNOW]: { top: 'seqSnow', side: 'seqSnowSide', bottom: 'seqSnowSide' },
+};
+const DEFAULT_FACES = sameFaces('top');
+export function blockFaces(blockType: HexBlockType | number): BlockFaces {
+  return BLOCK_FACES[blockType] ?? DEFAULT_FACES;
+}
+
+// Draw order for transparent materials (opaque ones default to 0)
+export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2, glass: 3 };
+
+// Key of a material's buffer in mesher output: 'top' -> 'topData'
+export const bufferKey = (materialKey: string): string => `${materialKey}Data`;
 
 export function isSolid(blockType: HexBlockType | number): boolean {
   return blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER;

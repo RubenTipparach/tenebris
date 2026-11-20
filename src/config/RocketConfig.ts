@@ -3,6 +3,7 @@
 
 export const ROCKET_CONFIG = {
   // === FUEL SYSTEM ===
+  FUEL_PER_ITEM: 25,             // Fuel units one Rocket Fuel item adds when refuelling
   MEDIUM_FUEL_TANK: {
     fuelCapacity: 100,           // Units of fuel
     wetMass: 500,                 // kg when full
@@ -126,4 +127,5 @@ export const ROCKET_INPUTS = {
   FUEL_ROCKET: 'KeyF',            // F - fuel rocket (when grounded)
   EXIT_ROCKET: 'KeyV',            // V - exit rocket
   EJECT_CAPSULE: 'KeyJ',          // J - emergency eject (hold)
+  RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
 };

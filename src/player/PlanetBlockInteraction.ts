@@ -16,7 +16,7 @@ import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/Electri
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { ComputerManager, PlacedComputer } from '../planet/Computer';
 import { Printer3DManager, PlacedPrinter3D } from '../planet/Printer3D';
-import { LaunchPadManager, PlacedLaunchPad } from '../planet/LaunchPad';
+import { LaunchPadManager, PlacedLaunchPad, PlatformTile } from '../planet/LaunchPad';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
@@ -62,6 +62,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.PRINTER_3D: return ItemType.PRINTER_3D;
     // Moon terrain
     case HexBlockType.MOON_ROCK: return ItemType.MOON_ROCK;
+    // Sequoia terrain
+    case HexBlockType.SEQ_GRASS: return ItemType.SEQ_DIRT; // Like grass, drops its soil
+    case HexBlockType.SEQ_DIRT: return ItemType.SEQ_DIRT;
+    case HexBlockType.SEQ_SAND: return ItemType.SEQ_SAND;
+    case HexBlockType.SEQ_SNOW: return ItemType.SEQ_SNOW;
     default: return ItemType.NONE;
   }
 }
@@ -89,6 +94,10 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.GLASS: return HexBlockType.GLASS;
     // Moon terrain can be placed
     case ItemType.MOON_ROCK: return HexBlockType.MOON_ROCK;
+    // Sequoia terrain can be placed anywhere and keeps its look
+    case ItemType.SEQ_DIRT: return HexBlockType.SEQ_DIRT;
+    case ItemType.SEQ_SAND: return HexBlockType.SEQ_SAND;
+    case ItemType.SEQ_SNOW: return HexBlockType.SEQ_SNOW;
     default: return HexBlockType.AIR;
   }
 }
@@ -3370,22 +3379,24 @@ export class PlanetBlockInteraction {
     }
   }
 
-  private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+  // Place a launch pad on a hexagonal tile; depth is the air block above
+  // the surface. Shared by the player placing one and the starter rocket.
+  private async placeLaunchPadAt(planet: Planet, tileIndex: number, depth: number): Promise<PlacedLaunchPad | null> {
     // Get the tile to check for valid placement
     const tile = planet.getTileByIndex(tileIndex);
-    if (!tile) return;
+    if (!tile) return null;
 
     // Validate placement - launch pad needs 6 neighbors (hexagon, not pentagon)
     if (tile.isPentagon || tile.neighbors.length !== 6) {
       console.log('Cannot place launch pad: must be placed on a hexagonal tile with 6 neighbors');
-      return;
+      return null;
     }
 
     // Get all surrounding tiles
     const surroundingTiles = tile.neighbors.map(idx => planet.getTileByIndex(idx)).filter(t => t !== null);
     if (surroundingTiles.length !== 6) {
       console.log('Cannot place launch pad: requires 6 surrounding tiles');
-      return;
+      return null;
     }
 
     // Launch pads can be placed anywhere - no tech block distance restrictions
@@ -3414,40 +3425,126 @@ export class PlanetBlockInteraction {
       return tCenter.multiplyScalar(outerRadius).add(planet.center);
     });
 
-    // Use item from inventory
-    if (this.inventory.useSelectedItem()) {
-      // Place the launch pad with world-space geometry matching terrain
-      const placedPad = await this.launchPadManager.placeLaunchPad(
-        worldPosition,
-        planet.center,
-        tileIndex,
-        tile.neighbors,
-        surroundingTileCenters,
-        originalTileVertices,
-        originalTileCenter,
-        innerRadius,
-        outerRadius
-      );
+    const placedPad = await this.launchPadManager.placeLaunchPad(
+      worldPosition,
+      planet.center,
+      tileIndex,
+      tile.neighbors,
+      surroundingTileCenters,
+      originalTileVertices,
+      originalTileCenter,
+      innerRadius,
+      outerRadius,
+      this.launchPadPlatform(planet, tile.neighbors, depth, innerRadius, true)
+    );
+    if (placedPad) {
+      this.saveLaunchPadStates();
+    }
+    return placedPad;
+  }
 
+  /**
+   * The six hexes around a pad's rocket tile, which make it a platform level
+   * with the pad. Where the ground is higher the blocks above pad level are
+   * cleared (saved like any other edit) so the platform is flat; where it is
+   * lower each hex reaches down to the ground, so nothing - the tower
+   * included, which stands on one of these - hovers.
+   */
+  private launchPadPlatform(planet: Planet, neighbors: number[], airDepth: number, padInner: number, clearAbove: boolean): PlatformTile[] {
+    const planetId = this.getPlanetId(planet);
+    const tiles: PlatformTile[] = [];
+    for (const n of neighbors) {
+      const tile = planet.getTileByIndex(n);
+      if (!tile) continue;
+      if (clearAbove) {
+        for (let d = airDepth; d < planet.getMaxDepth(); d++) {
+          if (planet.getBlock(n, d) !== HexBlockType.AIR) {
+            planet.setBlock(n, d, HexBlockType.AIR);
+            gameStorage.saveTileChange(planetId, n, d, HexBlockType.AIR);
+          }
+        }
+      }
+      let groundRadius = planet.depthToRadius(0);
+      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+        if (planet.getBlock(n, d) !== HexBlockType.AIR) {
+          groundRadius = planet.depthToRadius(d);
+          break;
+        }
+      }
+      tiles.push({ center: tile.center, vertices: tile.vertices, innerRadius: Math.min(groundRadius, padInner) });
+    }
+    return tiles;
+  }
+
+  private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile || tile.isPentagon || tile.neighbors.length !== 6) {
+      console.log('Cannot place launch pad: must be placed on a hexagonal tile with 6 neighbors');
+      return;
+    }
+    if (this.inventory.useSelectedItem()) {
+      await this.placeLaunchPadAt(planet, tileIndex, depth);
       this.updateHotbarUI();
       this.saveInventory();
-
-      // Save launch pad placement to game storage
-      if (placedPad) {
-        const planetId = this.getPlanetId(planet);
-        gameStorage.saveLaunchPad(planetId, tileIndex, {
-          surroundingTileIndices: placedPad.surroundingTileIndices,
-          position: { x: placedPad.position.x, y: placedPad.position.y, z: placedPad.position.z },
-          rotation: placedPad.rotation,
-          segmentCount: placedPad.segmentCount,
-          rocketBlocks: placedPad.rocketBlocks,
-          rocketParts: placedPad.rocketParts.map(part => ({
-            itemType: part.itemType,
-            heightIndex: part.heightIndex
-          }))
-        });
-      }
     }
+  }
+
+  /**
+   * Build a ready-to-fly rocket on a launch pad near `near`: pad, tower and
+   * engine + fuel tank + command module. Used for "start with a rocket" and
+   * the Debug tab's spawn button. Returns false if no flat dry tile was found.
+   */
+  public async placeStarterRocket(planet: Planet, near: THREE.Vector3): Promise<boolean> {
+    const start = planet.getTileAtPoint(near);
+    if (!start) return false;
+    const surfaceDepth = (tileIndex: number): number => {
+      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+        const block = planet.getBlock(tileIndex, d);
+        if (block === HexBlockType.WATER) return -1;
+        if (block !== HexBlockType.AIR) return d;
+      }
+      return -1;
+    };
+    const occupied = new Set(this.launchPadManager.getLaunchPads().flatMap(p => [p.centerTileIndex, ...p.surroundingTileIndices]));
+
+    // Breadth-first outward from the player: first hexagonal, dry tile whose
+    // ring is all dry land within one block of it (so the pad sits flat),
+    // at least 5 tiles away so the tower clears the player.
+    const visited = new Set<number>([start.index]);
+    let frontier = [start.index];
+    for (let ring = 0; ring < 12 && frontier.length > 0; ring++) {
+      const next: number[] = [];
+      for (const tileIndex of frontier) {
+        const tile = planet.getTileByIndex(tileIndex);
+        if (!tile) continue;
+        if (ring >= 5 && !tile.isPentagon && tile.neighbors.length === 6 && !occupied.has(tileIndex)) {
+          const d = surfaceDepth(tileIndex);
+          const ringOk = d >= 0 && tile.neighbors.every(n => {
+            const nd = surfaceDepth(n);
+            return nd >= 0 && Math.abs(nd - d) <= 1 && !occupied.has(n);
+          });
+          if (ringOk) {
+            const pad = await this.placeLaunchPadAt(planet, tileIndex, d + 1);
+            if (!pad) continue;
+            const parts = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE];
+            for (let i = 0; i < parts.length; i++) this.launchPadManager.addSegment(pad);
+            for (const part of parts) await this.launchPadManager.addRocketPart(pad, part);
+            this.saveLaunchPadStates();
+            console.log(`Starter rocket placed on tile ${tileIndex}`);
+            return true;
+          }
+        }
+        for (const n of tile.neighbors) {
+          if (!visited.has(n)) {
+            visited.add(n);
+            next.push(n);
+          }
+        }
+      }
+      frontier = next;
+    }
+    console.warn('No flat dry tile found for a starter rocket');
+    return false;
   }
 
   private pickupTorch(mesh: THREE.Mesh): void {
@@ -3494,6 +3591,13 @@ export class PlanetBlockInteraction {
         }
       }
     }
+  }
+
+  // Call after changing the inventory from outside (e.g. refuelling):
+  // refreshes the hotbar and saves
+  public onInventoryChanged(): void {
+    this.updateHotbarUI();
+    this.saveInventory();
   }
 
   public getInventory(): Inventory {
@@ -3574,14 +3678,15 @@ export class PlanetBlockInteraction {
   private saveLaunchPadStates(): void {
     const launchPads = this.launchPadManager.getLaunchPads();
     for (const pad of launchPads) {
-      // Determine which planet this launch pad is on
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(pad.centerTileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
+      // The pad's planet is the one whose centre it was placed around (tile
+      // indices exist on every planet, so they can't tell planets apart)
+      let planetId = this.getPlanetId(this.planets[0]);
+      let best = Infinity;
+      for (const planet of this.planets) {
+        const d = planet.center.distanceTo(pad.planetCenter);
+        if (d < best) {
+          best = d;
+          planetId = this.getPlanetId(planet);
         }
       }
 
@@ -4141,7 +4246,10 @@ export class PlanetBlockInteraction {
           tile.center.clone(),
           innerRadius,
           outerRadius,
-          savedPad.rocketParts
+          savedPad.rocketParts,
+          // the ground was levelled when the pad was placed; rebuild the
+          // platform without touching blocks
+          this.launchPadPlatform(planet, savedPad.surroundingTileIndices, 0, innerRadius, false)
         );
       }
     }

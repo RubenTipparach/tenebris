@@ -7,10 +7,16 @@ import { isMobileDevice } from './InputManager';
 import { getTechBlocksMenu } from '../player/TechBlocksMenu';
 
 // Create starfield shader material for background
+// Far layer clip planes: from a planet's distance out past the edge of the
+// solar system
+const FAR_LAYER_NEAR = 1;
+const FAR_LAYER_FAR = 1e6;
+
 function createStarfieldMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       time: { value: 0 },
+      starVisibility: { value: 1 },
     },
     vertexShader: skyboxVert,
     fragmentShader: skyboxFrag,
@@ -24,7 +30,21 @@ export class GameEngine {
   public scene: THREE.Scene;
   public camera: THREE.PerspectiveCamera;
   public renderer: THREE.WebGLRenderer;
-  public sunDirection!: THREE.Vector3; // Normalized direction TO the sun (initialized in setupLighting)
+  public sunDirection!: THREE.Vector3;
+  /**
+   * The far layer: things too far away for the main camera's 20 km far plane
+   * (the other planets of the solar system). It is drawn first, with its own
+   * camera whose far plane reaches across the whole system, then the depth
+   * buffer is cleared and the main scene draws over it. The layer uses a
+   * floating origin: everything added to farRoot is in world coordinates,
+   * and farRoot is shifted by -camera position each frame so the far camera
+   * sits at 0,0,0 - no float precision loss at system distances.
+   * farOrigin is the world position the layer is currently rebased on.
+   */
+  public farScene = new THREE.Scene();
+  public farRoot = new THREE.Group();
+  public farCamera: THREE.PerspectiveCamera;
+  public farOrigin = new THREE.Vector3(); // Normalized direction TO the sun (initialized in setupLighting)
 
   private clock: THREE.Clock;
   private frameCount: number = 0;
@@ -60,6 +80,8 @@ export class GameEngine {
       PlayerConfig.CAMERA_FAR
     );
     this.camera.position.set(0, 20, 0);
+    this.farCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, FAR_LAYER_NEAR, FAR_LAYER_FAR);
+    this.farScene.add(this.farRoot);
 
     // Renderer setup (preserveDrawingBuffer enables screenshots)
     this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -116,7 +138,8 @@ export class GameEngine {
     this.starfield = new THREE.Mesh(starfieldGeometry, starfieldMaterial);
     this.starfield.renderOrder = -1000; // Render first (behind everything)
     this.starfield.frustumCulled = false; // Never cull the starfield
-    this.scene.add(this.starfield);
+    // The stars are behind everything, so they go in the far layer
+    this.farScene.add(this.starfield);
 
     // Create sun sphere in the sky (radius 60 for prominent appearance)
     const sunGeometry = new THREE.SphereGeometry(60, 32, 32);
@@ -127,7 +150,7 @@ export class GameEngine {
     this.sunMesh = new THREE.Mesh(sunGeometry, sunMaterial);
     // Position sun far away in sun direction
     this.sunMesh.position.copy(this.sunDirection.clone().multiplyScalar(800));
-    this.scene.add(this.sunMesh);
+    this.farRoot.add(this.sunMesh); // far layer: visible from anywhere in the system
 
     // Ambient light - low for space darkness
     const ambientLight = new THREE.AmbientLight(0xffffff, PlayerConfig.AMBIENT_LIGHT_INTENSITY);
@@ -159,6 +182,12 @@ export class GameEngine {
    * @param position The sun's world position
    * @param radius Optional radius to scale the sun mesh (default keeps existing size)
    */
+  // 0..1: how much of the starfield shows (1 = space, lower = daytime sky)
+  public setStarVisibility(v: number): void {
+    const mat = this.starfield?.material as THREE.ShaderMaterial | undefined;
+    if (mat?.uniforms.starVisibility) mat.uniforms.starVisibility.value = v;
+  }
+
   public setSunPosition(position: THREE.Vector3, radius?: number): void {
     // Update sun mesh to actual position
     if (this.sunMesh) {
@@ -194,6 +223,20 @@ export class GameEngine {
       depthBuffer: true,
       depthTexture: depthTexture,
     });
+  }
+
+  private syncFarLayer(): void {
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    cam.getWorldPosition(this.farOrigin);
+    this.farRoot.position.copy(this.farOrigin).negate();
+    this.farRoot.updateMatrixWorld(true);
+    cam.getWorldQuaternion(this.farCamera.quaternion);
+    if (this.farCamera.fov !== cam.fov || this.farCamera.aspect !== cam.aspect) {
+      this.farCamera.fov = cam.fov;
+      this.farCamera.aspect = cam.aspect;
+      this.farCamera.updateProjectionMatrix();
+    }
   }
 
   private onWindowResize(): void {
@@ -288,10 +331,8 @@ export class GameEngine {
     }
     profiler.end('Game Update');
 
-    // Keep starfield centered on camera so we never hit the edge
-    if (this.starfield) {
-      this.starfield.position.copy(this.camera.position);
-    }
+    // Rebase the far layer on the camera (the starfield stays at its origin)
+    this.syncFarLayer();
 
     // Render with depth pre-pass for underwater fog
     profiler.begin('Render');
@@ -317,8 +358,13 @@ export class GameEngine {
       }
     }
 
-    // Main render pass
+    // Far layer, then the main scene over it with a fresh depth buffer
+    this.renderer.autoClear = false;
+    this.renderer.clear();
+    this.renderer.render(this.farScene, this.farCamera);
+    this.renderer.clearDepth();
     this.renderer.render(this.scene, this.camera);
+    this.renderer.autoClear = true;
     profiler.end('Render');
 
     profiler.end('Frame Total');

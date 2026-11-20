@@ -1,3 +1,5 @@
+import { getLandableBodies } from '../config/SolarSystemConfig';
+
 // Types for saved game data
 
 // Tile change for a planet
@@ -208,11 +210,20 @@ export interface LegacyGameSaveData {
 }
 
 // Storage keys
-const STORAGE_KEY_PLAYER = 'tenebris_player';
+// A server world keeps its own local save beside the single-player one:
+// keys tenebris_w_<worldId>_player etc. Empty = the single-player save.
+let worldPrefix = '';
+/** Use a server world's save slot (call before gameStorage.load()). */
+export function setSaveWorld(worldId: string | null): void {
+  worldPrefix = worldId ? `w_${worldId.replace(/[^a-z0-9]/gi, '')}_` : '';
+}
+const STORAGE_KEY_PLAYER_BASE = 'player';
 // Each planet's edits live under tenebris_<planetId> (tenebris_earth,
-// tenebris_moon, tenebris_sequoia). Sequoia used to share the moon's key.
-const PLANET_IDS = ['earth', 'moon', 'sequoia'];
-const planetStorageKey = (planetId: string): string => `tenebris_${planetId}`;
+// tenebris_moon, tenebris_sequoia, ...). Sequoia used to share the moon's
+// key. Every landable body in the solar system config gets one.
+const PLANET_IDS = getLandableBodies().map(body => body.id);
+const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}${planetId}`;
+const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
 const SAVE_VERSION = 2;
 
@@ -274,9 +285,13 @@ export class GameStorage {
   }
 
   // Save a tile change (block placed or broken)
+  // Called for every local block edit (multiplayer sends it to the server)
+  public onTileChange: ((planetId: string, tileIndex: number, depth: number, blockType: number) => void) | null = null;
+
   public saveTileChange(planetId: string, tileIndex: number, depth: number, blockType: number): void {
     const planet = this.planetData.get(planetId);
     if (!planet) return;
+    this.onTileChange?.(planetId, tileIndex, depth, blockType);
 
     const key = `${tileIndex}:${depth}`;
     planet.tileChanges.set(key, { tileIndex, depth, blockType });
@@ -778,7 +793,7 @@ export class GameStorage {
   // Load player data from storage
   private loadPlayerData(): void {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_PLAYER);
+      const saved = localStorage.getItem(playerStorageKey());
       if (!saved) return;
 
       const data = JSON.parse(saved) as PlayerSaveData;
@@ -828,12 +843,13 @@ export class GameStorage {
 
   // Migrate legacy single-file save to new multi-file format
   private migrateLegacySave(): void {
+    if (worldPrefix) return; // the legacy save is single player's
     try {
       const legacySaved = localStorage.getItem(LEGACY_STORAGE_KEY);
       if (!legacySaved) return;
 
       // Check if we've already migrated (new files exist)
-      if (localStorage.getItem(STORAGE_KEY_PLAYER) !== null) {
+      if (localStorage.getItem(playerStorageKey()) !== null) {
         // Already migrated, remove legacy file
         localStorage.removeItem(LEGACY_STORAGE_KEY);
         return;
@@ -957,7 +973,7 @@ export class GameStorage {
     }
 
     // Clear all storage keys
-    localStorage.removeItem(STORAGE_KEY_PLAYER);
+    localStorage.removeItem(playerStorageKey());
     for (const planetId of PLANET_IDS) {
       localStorage.removeItem(planetStorageKey(planetId));
     }
@@ -977,7 +993,7 @@ export class GameStorage {
         music: this.playerData?.music
       };
 
-      localStorage.setItem(STORAGE_KEY_PLAYER, JSON.stringify(data));
+      localStorage.setItem(playerStorageKey(), JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save player data:', error);
     }
@@ -1042,7 +1058,7 @@ export class GameStorage {
 
   // Check if there's any saved data
   public hasSavedData(): boolean {
-    return localStorage.getItem(STORAGE_KEY_PLAYER) !== null ||
+    return localStorage.getItem(playerStorageKey()) !== null ||
            PLANET_IDS.some(planetId => localStorage.getItem(planetStorageKey(planetId)) !== null) ||
            localStorage.getItem(LEGACY_STORAGE_KEY) !== null;
   }

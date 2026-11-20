@@ -4,7 +4,8 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
-import { PlanetTreeManager, MushroomTreeManager } from './planet/Tree';
+import { PlanetTreeManager, MushroomTreeManager, EarthTreeSpecies, standSpecies } from './planet/Tree';
+import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
@@ -14,10 +15,28 @@ import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
-import { RocketFlightManager } from './rocket';
+import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
+import { ItemType } from './player/Inventory';
+import { FishingSystem } from './player/Fishing';
+import { Multiplayer } from './net/Multiplayer';
+import { WorldBrowser } from './net/WorldBrowser';
+import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
+import { SolarSystemMockup } from './mockups/SolarSystemMockup';
+import { GroundClutter } from './mockups/GroundClutter';
+import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
+
+// Setting: new games start with a ready-to-fly rocket on a launch pad
+const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
+function startWithRocket(): boolean {
+  try {
+    return localStorage.getItem(START_WITH_ROCKET_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Calculate the sun direction for a given planet position.
@@ -49,6 +68,18 @@ class PlanetGame {
   // Rocket flight system
   private rocketFlightManager: RocketFlightManager | null = null;
 
+  // Fishing (rod in hand)
+  private fishing: FishingSystem | null = null;
+
+  // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
+  private multiplayer: Multiplayer | null = null;
+
+  // Mockups (Debug tab)
+  private solarSystemMockup: SolarSystemMockup | null = null;
+  private groundClutter: GroundClutter | null = null;
+  private earthClutter = false; // biome mockup: clutter on Earth too
+  private daytimeSkyMockup = false;
+
   // Shared frustum for all planet updates (calculated once per frame)
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
@@ -61,7 +92,7 @@ class PlanetGame {
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
   private sequoiaTreesScattered: boolean = false;
 
-  constructor() {
+  constructor(private worldError?: string) {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
 
@@ -100,6 +131,7 @@ class PlanetGame {
           highLODAltitude: bodyConfig.highLODAltitude,
           distantLODAltitude: bodyConfig.distantLODAltitude,
           detailRenderDistance: bodyConfig.detailRenderDistance,
+          seedOffset: bodyConfig.terrain.seed,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -187,6 +219,13 @@ class PlanetGame {
         if (planet) {
           planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
         }
+      }
+      // Light every planet from the star now, before anything builds its
+      // materials: a planet first initialized by a teleport or an approach
+      // (not the deferred loop) used to keep the default sun - lit on the
+      // wrong side.
+      for (const planet of this.planets.values()) {
+        planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
       }
 
       // Initialize ONLY the spawn planet (Earth) first - this is what matters for loading screen
@@ -282,6 +321,7 @@ class PlanetGame {
       const removedTreesData = gameStorage.getRemovedTrees('earth');
       const removedTiles = new Set(removedTreesData.map(t => t.tileIndex));
 
+      this.treeManager.setChunkLookup((tileIndex) => this.earth.getTileChunkIndex(tileIndex));
       this.treeManager.scatterTrees(
         this.earth.center,
         this.earth.radius,
@@ -291,8 +331,16 @@ class PlanetGame {
         PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
         (direction) => this.earth.getTileIndexInDirection(direction), // For visibility tracking
         (direction) => this.earth.getTileCenterInDirection(direction), // For centering trees on tiles
-        removedTiles // Skip tiles where trees were previously removed
+        removedTiles, // Skip tiles where trees were previously removed
+        this.biomeTreeSpecies(this.earth)
       );
+
+      // Fishing: a catch goes into the inventory
+      this.fishing = new FishingSystem(this.engine.scene, this.engine.camera, (item) => {
+        const left = this.blockInteraction.getInventory().addItem(item, 1);
+        this.blockInteraction.onInventoryChanged();
+        return left === 0;
+      });
 
       // Give block interaction access to tree manager for mining trees
       this.blockInteraction.setTreeManager(this.treeManager);
@@ -375,10 +423,24 @@ class PlanetGame {
         if (container) container.requestPointerLock();
       });
 
-      // Set up respawn callback for when player crashes and respawns
-      this.rocketFlightManager.setOnRespawnCallback((respawnPosition) => {
-        // Move player to respawn position (last boarded position)
-        this.player.position.copy(respawnPosition);
+      // Refuelling burns Rocket Fuel items from the inventory (crafted from
+      // ice or snow; see CraftingSystem), FUEL_PER_ITEM units each
+      RocketController.fuelSource = (wanted) => {
+        const inventory = this.blockInteraction.getInventory();
+        const per = ROCKET_CONFIG.FUEL_PER_ITEM;
+        const take = Math.min(Math.ceil(wanted / per), inventory.getItemCount(ItemType.ROCKET_FUEL));
+        if (take <= 0) {
+          showToast('No Rocket Fuel - craft it from ice or snow', { duration: 3000 });
+          return 0;
+        }
+        inventory.removeItem(ItemType.ROCKET_FUEL, take);
+        this.blockInteraction.onInventoryChanged();
+        return Math.min(wanted, take * per);
+      };
+
+      // Crash (or manual abandon): respawn on the planet nearest the rocket
+      this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
+        this.respawnOnNearestPlanet(rocketPosition);
       });
 
       // Set up board rocket callback for boarding landed rockets
@@ -582,6 +644,18 @@ class PlanetGame {
       console.log('[Deferred] Sequoia initialized with atmosphere (trees on approach)');
     }
 
+    // The barren worlds: LOD only (a sphere to see from afar), one at a
+    // time with frames in between. Their terrain is generated on approach
+    // or teleport (Planet.update -> enableDetailedTerrain), not now, so
+    // eight extra planets cost nothing until someone goes there.
+    for (const planet of this.planets.values()) {
+      if (planet === this.earth || planet === this.moon || planet === this.sequoia) continue;
+      await this.yieldToMainThread();
+      await planet.initialize();
+      planet.updateBoundingSpheres();
+      planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    }
+
     const elapsed = performance.now() - startTime;
     console.log(`[Deferred] All planets initialized in ${elapsed.toFixed(0)}ms`);
 
@@ -614,6 +688,31 @@ class PlanetGame {
     // Update music system (checks if time to play new song)
     MusicManager.update();
 
+    this.multiplayer?.update(deltaTime);
+    // Ground clutter (grass tufts, rocks): always on Sequoia, on Earth with
+    // the biome mockup
+    if (!this.groundClutter) {
+      this.groundClutter = new GroundClutter(this.engine.scene);
+      this.groundClutter.setEnabled(true);
+    }
+    {
+      const pos = this.player.position;
+      let on: Planet | null = null;
+      if (this.sequoia && pos.distanceTo(this.sequoia.center) < this.sequoia.radius * 1.2) on = this.sequoia;
+      else if (this.earthClutter && pos.distanceTo(this.earth.center) < this.earth.radius * 1.2) on = this.earth;
+      this.groundClutter.update(deltaTime, pos, on,
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+    }
+    if (this.solarSystemMockup) {
+      const cam = this.engine.camera.position;
+      let inSpace = true;
+      for (const planet of this.planets.values()) {
+        if (cam.distanceTo(planet.center) - planet.radius < planet.radius * 1.5) inSpace = false;
+      }
+      this.solarSystemMockup.update(deltaTime, inSpace);
+    }
+    this.updateDaytimeSky();
+
     // Check if in rocket flight mode
     const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
 
@@ -642,14 +741,22 @@ class PlanetGame {
         handledRocketInteraction = this.checkLandedRocketInteraction();
       }
 
+      // Fishing takes the mouse buttons while the rod is in hand
+      const holdingRod = isGameActive &&
+        this.blockInteraction.getInventory().getSelectedItem().itemType === ItemType.FISHING_ROD;
+      const fishing = this.fishing?.update(
+        deltaTime, holdingRod, this.player.getCurrentPlanet(), this.player.position,
+        input.leftClick, input.rightClick
+      ) ?? false;
+
       // Update block interaction FIRST - this handles torch placement/removal
       // which marks tiles dirty and updates torch data on planets immediately
       profiler.begin('Block Interaction');
       const wheelDelta = this.inputManager.getWheelDelta();
       this.blockInteraction.update(
         deltaTime,
-        isGameActive && input.leftClick,
-        isGameActive && input.rightClick && !handledRocketInteraction,
+        isGameActive && input.leftClick && !fishing,
+        isGameActive && input.rightClick && !handledRocketInteraction && !fishing,
         isGameActive ? wheelDelta : 0
       );
       profiler.end('Block Interaction');
@@ -672,12 +779,14 @@ class PlanetGame {
     this.earth.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Earth Update');
 
-    // Only update Moon and Sequoia if they've been initialized (deferred loading)
-    if (this.moon.isInitialTerrainReady()) {
-      profiler.begin('Moon Update');
-      this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
-      profiler.end('Moon Update');
+    // The other planets, once initialized (deferred loading). Sequoia is
+    // updated below with its trees.
+    profiler.begin('Other Planets Update');
+    for (const planet of this.planets.values()) {
+      if (planet === this.earth || planet === this.sequoia || !planet.isInitialTerrainReady()) continue;
+      planet.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     }
+    profiler.end('Other Planets Update');
 
     if (this.sequoia.isInitialTerrainReady()) {
       profiler.begin('Sequoia Update');
@@ -724,8 +833,7 @@ class PlanetGame {
     if (this.earth.isInOrbitView()) {
       this.treeManager.setAllVisible(false);
     } else {
-      const visibleTiles = this.earth.getVisibleTilesForTrees();
-      this.treeManager.updateVisibility(visibleTiles);
+      this.treeManager.updateVisibility(this.earth.getVisibleTreeChunks());
     }
 
     // Same visibility handling for Sequoia's mushroom trees (only if Sequoia is initialized)
@@ -733,8 +841,7 @@ class PlanetGame {
       if (this.sequoia.isInOrbitView()) {
         this.mushroomTreeManager.setAllVisible(false);
       } else {
-        const visibleTiles = this.sequoia.getVisibleTilesForTrees();
-        this.mushroomTreeManager.updateVisibility(visibleTiles);
+        this.mushroomTreeManager.updateVisibility(this.sequoia.getVisibleTreeChunks());
       }
     }
   }
@@ -779,6 +886,7 @@ class PlanetGame {
     this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
     const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
     const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
+    this.mushroomTreeManager.setChunkLookup((tileIndex) => this.sequoia.getTileChunkIndex(tileIndex));
     this.mushroomTreeManager.scatterTrees(
       this.sequoia.center,
       this.sequoia.radius,
@@ -788,7 +896,19 @@ class PlanetGame {
       PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
       (direction) => this.sequoia.getTileIndexInDirection(direction),
       (direction) => this.sequoia.getTileCenterInDirection(direction),
-      removedSequoiaTiles
+      removedSequoiaTiles,
+      (tileIndex, roll) => {
+        // Sequoia's biomes: ferns and lantern trees in the grassland,
+        // redwoods on the snowy heights, the odd lantern tree in the
+        // desert, nothing on bare rock
+        // Forests grow in stands of one species (standSpecies)
+        const top = this.topBlock(this.sequoia, tileIndex);
+        const dir = this.sequoia.getTileByIndex(tileIndex)!.center.clone().normalize();
+        if (top === HexBlockType.SEQ_GRASS) return standSpecies(dir, ['treefern', 'redwood', 'lantern'] as const, roll, 211);
+        if (top === HexBlockType.SEQ_SNOW) return roll < 0.6 ? 'redwood' : null;
+        if (top === HexBlockType.SEQ_SAND) return roll < 0.15 ? 'lantern' : null;
+        return null;
+      }
     );
     console.log('[Deferred] Sequoia mushroom trees scattered');
   }
@@ -909,11 +1029,51 @@ class PlanetGame {
       });
     }
 
-    // Handle teleport dropdown
+    // Handle teleport dropdown (Debug tab). Reset it afterwards so picking
+    // the same planet again still fires 'change'.
     if (teleportSelect) {
+      // One option per landable body, straight from the solar system config
+      for (const body of SOLAR_SYSTEM.bodies) {
+        if (!body.landable) continue;
+        const option = document.createElement('option');
+        option.value = body.id;
+        option.textContent = body.name;
+        teleportSelect.appendChild(option);
+      }
       teleportSelect.addEventListener('change', () => {
-        this.teleportToPlanet(teleportSelect.value);
+        const target = teleportSelect.value;
+        teleportSelect.value = '';
+        if (target) this.teleportToPlanet(target);
       });
+    }
+
+    // "New games start with a rocket" (applies the next time a game starts
+    // without a save, e.g. after Reset)
+    const startRocketToggle = document.getElementById('toggle-start-rocket') as HTMLInputElement | null;
+    if (startRocketToggle) {
+      startRocketToggle.checked = startWithRocket();
+      startRocketToggle.addEventListener('change', () => {
+        try { localStorage.setItem(START_WITH_ROCKET_KEY, startRocketToggle.checked ? '1' : '0'); } catch { /* storage blocked */ }
+      });
+    }
+
+    // Debug: a ready-to-fly rocket on a pad next to the player
+    const spawnRocketBtn = document.getElementById('spawn-rocket-btn');
+    if (spawnRocketBtn) {
+      spawnRocketBtn.addEventListener('click', async () => {
+        const planet = this.player.getCurrentPlanet() ?? this.earth;
+        const ok = await this.blockInteraction.placeStarterRocket(planet, this.player.position);
+        showToast(ok ? 'Rocket ready on a launch pad nearby' : 'No flat dry ground nearby for a launch pad', { duration: 3000 });
+      });
+    }
+
+    this.setupMultiplayer();
+    this.setupMockups();
+
+    // Respawn on the nearest planet's spawn point (works on foot or in flight)
+    const respawnBtn = document.getElementById('respawn-planet-btn');
+    if (respawnBtn) {
+      respawnBtn.addEventListener('click', () => this.respawnOnNearestPlanet());
     }
 
     // Handle reset game button
@@ -987,22 +1147,158 @@ class PlanetGame {
     if (overlay) overlay.classList.add('hidden');
   }
 
-  private async teleportToPlanet(planetName: string): Promise<void> {
-    let planet: Planet;
+  private topBlock(planet: Planet, tileIndex: number): number {
+    for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+      const b = planet.getBlock(tileIndex, d);
+      if (b !== HexBlockType.AIR) return b;
+    }
+    return HexBlockType.AIR;
+  }
 
-    switch (planetName) {
-      case 'earth':
-        planet = this.earth;
-        break;
-      case 'moon':
-        planet = this.moon;
-        break;
-      case 'sequoia':
-        planet = this.sequoia;
-        break;
-      default:
-        console.warn(`Unknown planet: ${planetName}`);
-        return;
+  // Biome mockup: trees follow the ground. Temperate grass grows oak and
+  // birch with some pine, tundra grows pine, nothing grows on bare rock,
+  // alpine snow or open desert.
+  private biomeTreeSpecies(planet: Planet): ((tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined) {
+    let on = false;
+    try { on = localStorage.getItem('tenebris_mock_biomes') === '1'; } catch { /* blocked */ }
+    if (!on) {
+      // Without biomes every land tile can grow trees, still in stands
+      return (tileIndex, roll) => standSpecies(planet.getTileByIndex(tileIndex)!.center.clone().normalize(), ['oak', 'birch', 'pine'] as const, roll, 101);
+    }
+    return (tileIndex, roll) => {
+      const top = this.topBlock(planet, tileIndex);
+      // Forests grow in stands of one species (standSpecies)
+      const dir = planet.getTileByIndex(tileIndex)!.center.clone().normalize();
+      if (top === HexBlockType.GRASS) return standSpecies(dir, ['oak', 'birch', 'pine'] as const, roll, 101);
+      if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
+      return null;
+    };
+  }
+
+  // Debug-tab mockups: prototypes to judge a look before building it for real
+  private setupMockups(): void {
+    const bind = (id: string, key: string, apply: (on: boolean) => void) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      let on = false;
+      try { on = localStorage.getItem(key) === '1'; } catch { /* blocked */ }
+      if (el) {
+        el.checked = on;
+        el.addEventListener('change', () => {
+          try { localStorage.setItem(key, el.checked ? '1' : '0'); } catch { /* blocked */ }
+          apply(el.checked);
+        });
+      }
+      apply(on);
+    };
+    bind('toggle-mock-sky', 'tenebris_mock_sky', (on) => {
+      this.daytimeSkyMockup = on;
+      if (!on) this.engine.setStarVisibility(1);
+    });
+    bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
+    // Terrain and tree biomes are read at load (reload to change them); the
+    // ground clutter follows the toggle live
+    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => { this.earthClutter = on; });
+    // The gas giants are part of the system now, not a toggle
+    this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
+    this.solarSystemMockup.setEnabled(true);
+  }
+
+  // Daytime sky mockup: inside an atmosphere, on the day side, the stars
+  // and nebula fade out (they used to show through the daytime sky)
+  private updateDaytimeSky(): void {
+    if (!this.daytimeSkyMockup) return;
+    const cam = this.engine.camera.position;
+    let visibility = 1;
+    for (const body of SOLAR_SYSTEM.bodies) {
+      if (!body.hasAtmosphere || !body.landable) continue;
+      const planet = this.planets.get(body.id);
+      if (!planet) continue;
+      const toCam = cam.clone().sub(planet.center);
+      const altitude = toCam.length() - planet.radius;
+      const atmosphere = planet.radius * 0.35;
+      const inside = 1 - THREE.MathUtils.smoothstep(altitude, atmosphere * 0.4, atmosphere);
+      const sunDir = this.sunPosition.clone().sub(planet.center).normalize();
+      const day = THREE.MathUtils.smoothstep(toCam.normalize().dot(sunDir), -0.15, 0.3);
+      visibility = Math.min(visibility, 1 - 0.97 * inside * day);
+    }
+    this.engine.setStarVisibility(visibility);
+  }
+
+  private setupMultiplayer(): void {
+    const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+    const write = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
+
+    const nameInput = document.getElementById('mp-name') as HTMLInputElement | null;
+    let name = read('tenebris_mp_name') || `Player${Math.floor(Math.random() * 1000)}`;
+    if (nameInput) {
+      nameInput.value = name;
+      nameInput.addEventListener('change', () => {
+        name = nameInput.value.trim().slice(0, 16) || name;
+        write('tenebris_mp_name', name);
+      });
+      // Typing in the box must not drive the player
+      nameInput.addEventListener('keydown', (e) => e.stopPropagation());
+    }
+
+    // Server browser: list worlds, create one, join one (reloads into it)
+    const browser = new WorldBrowser();
+    document.getElementById('world-browser-btn')?.addEventListener('click', () => browser.open());
+    if (this.worldError) showToast(this.worldError, { duration: 5000 });
+
+    // In a server world: go online in it
+    const world = currentWorld();
+    if (!world) return;
+    const label = document.getElementById('world-label');
+    if (label) label.textContent = `Online: ${world.name}`;
+    showToast(`World: ${world.name}`, { duration: 3000 });
+    this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
+      const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+      const p = flying ? flying.getPosition() : this.player.position;
+      let planet = this.player.getCurrentPlanet()?.getName();
+      if (!planet) {
+        let best = Infinity;
+        for (const [id, pl] of this.planets) {
+          const alt = p.distanceTo(pl.center) - pl.radius;
+          if (alt < best) { best = alt; planet = id; }
+        }
+      }
+      const o = this.player.exportForSave().orientation;
+      return { planet: planet ?? 'earth', p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
+    }, name);
+    this.multiplayer.connect(worldSocketUrl(world.id));
+  }
+
+  /**
+   * Respawn the player at the spawn point of the planet nearest `from`
+   * (default: where the player or their rocket is). In flight this abandons
+   * the rocket first; the flight manager then calls back here with the
+   * rocket's position. One path for crash, manual and menu respawns.
+   */
+  private respawnOnNearestPlanet(from?: THREE.Vector3): void {
+    if (this.rocketFlightManager?.isInFlight()) {
+      this.rocketFlightManager.respawnAfterCrash();
+      return;
+    }
+    const position = from ?? this.player.position;
+    let nearest = SOLAR_SYSTEM.startingBody;
+    let bestAltitude = Infinity;
+    for (const [id, planet] of this.planets) {
+      const altitude = position.distanceTo(planet.center) - planet.radius;
+      if (altitude < bestAltitude) {
+        bestAltitude = altitude;
+        nearest = id;
+      }
+    }
+    console.log(`Respawning on ${nearest}`);
+    this.player.setEnabled(true);
+    this.teleportToPlanet(nearest);
+  }
+
+  private async teleportToPlanet(planetName: string): Promise<void> {
+    const planet = this.planets.get(planetName);
+    if (!planet) {
+      console.warn(`Unknown planet: ${planetName}`);
+      return;
     }
 
     // Ensure the landing spot has detailed terrain before teleporting. A
@@ -1046,6 +1342,12 @@ class PlanetGame {
     const saveData = gameStorage.load();
     if (!saveData) {
       console.log('No saved game found, starting fresh');
+      if (startWithRocket()) {
+        this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
+        // Enough for a refuel on the way back
+        this.blockInteraction.getInventory().addItem(ItemType.ROCKET_FUEL, 4);
+        this.blockInteraction.onInventoryChanged();
+      }
       return;
     }
 
@@ -1069,6 +1371,8 @@ class PlanetGame {
 }
 
 // Start game when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  new PlanetGame();
+// The world (seed + save slot) is settled before anything is built
+document.addEventListener('DOMContentLoaded', async () => {
+  const { error } = await prepareWorld();
+  new PlanetGame(error);
 });

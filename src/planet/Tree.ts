@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { getAssetPath } from '../utils/assetPath';
 
 // Simple seeded random number generator (LCG algorithm)
 class SeededRandom {
@@ -23,6 +24,8 @@ export interface TreeConfig {
   leafLayers: number;
   leafBaseRadius: number;
   leafTaper: number; // How much each layer shrinks
+  species?: EarthTreeSpecies; // default: rolled from the seed
+  seed?: number;              // default: from the tree's position
 }
 
 const DEFAULT_CONFIG: TreeConfig = {
@@ -32,6 +35,467 @@ const DEFAULT_CONFIG: TreeConfig = {
   leafBaseRadius: 2,
   leafTaper: 0.7,
 };
+
+
+// ---------------------------------------------------------------------------
+// Tree geometry kit. Every part is made non-indexed (flat shaded, low-poly),
+// loses its uv, and is painted per FACE: the paint function gets the face's
+// centroid and normal in tree space (+Y up, base at the origin), so colours
+// read as facets - darker toward the base and underneath, lighter on top.
+// All parts end with exactly position + normal + color, so they merge.
+// ---------------------------------------------------------------------------
+
+type FacePaint = (centroid: THREE.Vector3, normal: THREE.Vector3) => THREE.Color;
+
+// Stable 0..1 hash of a position (+ a salt)
+function hash3(x: number, y: number, z: number, salt: number): number {
+  const h = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + salt * 19.19) * 43758.5453;
+  return h - Math.floor(h);
+}
+
+// A per-tree seed from where it stands, so a tree looks the same every load
+function seedFromPosition(p: THREE.Vector3): number {
+  return Math.floor(hash3(p.x, p.y, p.z, 7) * 0x7ffffff) + 1;
+}
+
+function prepPart(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const out = g.index ? g.toNonIndexed() : g;
+  if (out !== g) g.dispose();
+  out.deleteAttribute('uv');
+  out.computeVertexNormals();
+  return out;
+}
+
+function paintFaces(g: THREE.BufferGeometry, paint: FacePaint): void {
+  const pos = g.getAttribute('position');
+  const colors = new Float32Array(pos.count * 3);
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const centroid = new THREE.Vector3(), normal = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+    centroid.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    normal.subVectors(c, b).cross(b.clone().sub(a)).normalize().negate();
+    const col = paint(centroid, normal);
+    for (let k = 0; k < 3; k++) {
+      colors[(i + k) * 3] = col.r;
+      colors[(i + k) * 3 + 1] = col.g;
+      colors[(i + k) * 3 + 2] = col.b;
+    }
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+// Move every vertex by a hash of where it is, so shared corners move
+// together and the shape stays closed (lumpy foliage, gnarled bark)
+function jitterVertices(g: THREE.BufferGeometry, amount: number, salt: number): void {
+  const pos = g.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    const x = Math.round(pos.getX(i) * 1000) / 1000;
+    const y = Math.round(pos.getY(i) * 1000) / 1000;
+    const z = Math.round(pos.getZ(i) * 1000) / 1000;
+    pos.setXYZ(i,
+      pos.getX(i) + (hash3(x, y, z, salt) - 0.5) * 2 * amount,
+      pos.getY(i) + (hash3(x, y, z, salt + 1) - 0.5) * 2 * amount,
+      pos.getZ(i) + (hash3(x, y, z, salt + 2) - 0.5) * 2 * amount);
+  }
+  pos.needsUpdate = true;
+}
+
+// A tapered limb from `from` to `to`. Closed: an open end shows the hollow
+// inside of the tube (the black wedges on trunks).
+function limb(from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number, sides: number, segments = 1): THREE.BufferGeometry {
+  const dir = to.clone().sub(from);
+  const len = dir.length();
+  const g = new THREE.CylinderGeometry(r1, r0, len, sides, segments, false);
+  g.translate(0, len / 2, 0);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
+  g.translate(from.x, from.y, from.z);
+  return g;
+}
+
+/**
+ * A clump of leaves: several small, smooth-shaded lumps packed round a
+ * centre, so the crown reads as a soft leafy mass with a bumpy outline
+ * rather than one big faceted gem. Coloured per vertex: darker underneath
+ * and inside, lighter on top, each lump a little different.
+ */
+function addFoliage(
+  parts: THREE.BufferGeometry[], rng: SeededRandom, centre: THREE.Vector3, radius: number,
+  stretchY: number, low: THREE.Color, high: THREE.Color, yLow: number, yHigh: number, salt: number,
+): void {
+  const lumps = 4 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < lumps; i++) {
+    // the first lump fills the middle, the rest sit round it
+    const a = rng.next() * Math.PI * 2;
+    const off = i === 0 ? 0 : radius * (0.45 + rng.next() * 0.25);
+    const at = centre.clone().add(new THREE.Vector3(Math.cos(a) * off, (rng.next() - 0.35) * radius * 0.6 * stretchY, Math.sin(a) * off));
+    const r = radius * (i === 0 ? 0.72 : 0.48 + rng.next() * 0.18);
+    let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(r, 1);
+    g.deleteAttribute('normal');
+    g.deleteAttribute('uv');
+    g = BufferGeometryUtils.mergeVertices(g);
+    g.scale(1, stretchY * (0.85 + rng.next() * 0.2), 1);
+    g.translate(at.x, at.y, at.z);
+    jitterVertices(g, r * 0.12, salt + i * 7);
+    g.computeVertexNormals(); // smooth: soft, not gem-like
+    const flat = g.toNonIndexed();
+    g.dispose();
+    const pos = flat.getAttribute('position');
+    const nrm = flat.getAttribute('normal');
+    const colors = new Float32Array(pos.count * 3);
+    const tint = 0.9 + rng.next() * 0.2;
+    const hue = (rng.next() - 0.5) * 0.05;
+    const p = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let v = 0; v < pos.count; v++) {
+      p.fromBufferAttribute(pos, v);
+      n.fromBufferAttribute(nrm, v);
+      const h = Math.min(1, Math.max(0, (p.y - yLow) / Math.max(0.01, yHigh - yLow)));
+      // inside of the crown (near the trunk axis) is shadowed
+      const out = Math.min(1, Math.hypot(p.x - centre.x, p.z - centre.z) / radius);
+      const col = low.clone().lerp(high, 0.1 + 0.45 * h + 0.3 * Math.max(0, n.y));
+      col.offsetHSL(hue, 0, 0);
+      col.multiplyScalar(tint * (0.78 + 0.22 * out) * (n.y < -0.4 ? 0.7 : 1));
+      colors[v * 3] = col.r; colors[v * 3 + 1] = col.g; colors[v * 3 + 2] = col.b;
+    }
+    flat.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    setTexCell(flat, TEX_LEAVES);
+    parts.push(flat);
+  }
+}
+
+function shade(base: THREE.Color, k: number): THREE.Color {
+  return base.clone().multiplyScalar(k);
+}
+
+// Cells of the tree detail atlas (public/textures/trees.png, baked by
+// scripts/gen-tree-textures.py): which pixel pattern a part wears
+const TEX_BARK = 0, TEX_LEAVES = 1, TEX_NEEDLES = 2, TEX_SMOOTH = 3;
+
+function setTexCell(g: THREE.BufferGeometry, cell: number): void {
+  g.setAttribute('texCell', new THREE.BufferAttribute(new Float32Array(g.getAttribute('position').count).fill(cell), 1));
+}
+
+function addPart(parts: THREE.BufferGeometry[], g: THREE.BufferGeometry, paint: FacePaint, cell = TEX_BARK): void {
+  const part = prepPart(g);
+  paintFaces(part, paint);
+  setTexCell(part, cell);
+  parts.push(part);
+}
+
+// ---- Forest stands ---------------------------------------------------------
+
+// Smooth 0..1 value noise over the unit sphere (trilinear between lattice
+// hashes), for picking which species dominates a region
+function valueNoise(dir: THREE.Vector3, scale: number, salt: number): number {
+  const x = dir.x * scale, y = dir.y * scale, z = dir.z * scale;
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const fx = x - x0, fy = y - y0, fz = z - z0;
+  const s3 = (t: number) => t * t * (3 - 2 * t);
+  const u = s3(fx), v = s3(fy), w = s3(fz);
+  const h = (i: number, j: number, k: number) => hash3(x0 + i, y0 + j, z0 + k, salt);
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  return lerp(
+    lerp(lerp(h(0, 0, 0), h(1, 0, 0), u), lerp(h(0, 1, 0), h(1, 1, 0), u), v),
+    lerp(lerp(h(0, 0, 1), h(1, 0, 1), u), lerp(h(0, 1, 1), h(1, 1, 1), u), v),
+    w);
+}
+
+// How big a stand is: the noise scale over the unit sphere (higher = more,
+// smaller stands) and the share of trees in a stand that are its own species
+const STAND_SCALE = 6;
+const STAND_PURITY = 0.9;
+
+/**
+ * Real forests are stands, not a mix of wildly different trees competing
+ * for the same ground: one species dominates a region, with only the odd
+ * neighbour near its edges. Given where a tree stands (direction from the
+ * planet centre), the species allowed on that ground and a 0..1 roll, pick
+ * the species: the stand's own almost always, otherwise the species of the
+ * nearest other stand. Every planet's scatter goes through this.
+ */
+export function standSpecies<T>(dir: THREE.Vector3, allowed: readonly T[], roll: number, salt: number): T {
+  if (allowed.length === 1) return allowed[0];
+  const n = valueNoise(dir, STAND_SCALE, salt) * 0.999;
+  const idx = Math.floor(n * allowed.length);
+  if (roll < STAND_PURITY) return allowed[idx];
+  // an edge tree: the next stand over in the noise
+  const frac = n * allowed.length - idx;
+  const other = frac < 0.5 ? Math.max(0, idx - 1) : Math.min(allowed.length - 1, idx + 1);
+  return allowed[other === idx ? (idx + 1) % allowed.length : other];
+}
+
+// ---- Earth species --------------------------------------------------------
+
+export type EarthTreeSpecies = 'pine' | 'oak' | 'birch';
+
+/** Spruce: a tapered trunk under 5-7 drooping, star-edged tiers. */
+function buildPine(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const trunkH = 2.2 * size * tall;
+  const bark = new THREE.Color(0x5a3a22);
+  addPart(parts, limb(new THREE.Vector3(), new THREE.Vector3(0, trunkH + 1.5 * size, 0), 0.26 * size, 0.08 * size, 6),
+    (c) => shade(bark, 0.7 + 0.3 * Math.min(1, c.y / trunkH) + (hash3(c.x, c.y, c.z, 3) - 0.5) * 0.15));
+
+  const tiers = 5 + Math.floor(rng.next() * 3);
+  const dark = new THREE.Color(0x2c6236);
+  const light = new THREE.Color(0x74b04e);
+  const base = 0.9 * size * Math.min(tall, 1.1);
+  let y = base;
+  const top = trunkH + 2.6 * size;
+  const step = (top - base) / tiers;
+  for (let i = 0; i < tiers; i++) {
+    const t = i / (tiers - 1);
+    const r = (1.75 - 1.35 * t) * size * (0.9 + rng.next() * 0.2);
+    const h = step * 1.9;
+    const sides = 10;
+    const cone = new THREE.ConeGeometry(r, h, sides, 1, false);
+    // Star-edged rim that droops: alternate rim vertices in and down
+    const pos = cone.getAttribute('position');
+    for (let v = 0; v < pos.count; v++) {
+      const px = pos.getX(v), pz = pos.getZ(v), py = pos.getY(v);
+      const rr = Math.hypot(px, pz);
+      if (py < 0 && rr > 0.01) {
+        const k = Math.round(((Math.atan2(pz, px) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2 / sides)) % 2;
+        const s2 = k === 0 ? 1 : 0.72;
+        pos.setXYZ(v, px * s2, py - (k === 0 ? 0.22 * h : 0.05 * h), pz * s2);
+      }
+    }
+    cone.translate(0, y + h / 2, 0);
+    cone.rotateY(rng.next() * Math.PI);
+    cone.rotateZ((rng.next() - 0.5) * 0.08);
+    const tierLight = 0.15 + 0.85 * t;
+    addPart(parts, cone, (c, n) => {
+      if (n.y < -0.2) return shade(dark, 0.55);                 // underside
+      const local = Math.min(1, Math.max(0, (c.y - y) / h));      // tier bottom -> tip
+      const col = dark.clone().lerp(light, 0.25 * tierLight + 0.5 * local);
+      return shade(col, 0.9 + (hash3(c.x, c.y, c.z, 5) - 0.5) * 0.18);
+    }, TEX_NEEDLES);
+    y += step;
+  }
+}
+
+/** Oak: a thick, flared trunk forking into 2-3 limbs under lumpy leaf clusters. */
+function buildOak(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const bark = new THREE.Color(0x6b4a2e);
+  const trunkTop = new THREE.Vector3((rng.next() - 0.5) * 0.3 * size, 1.9 * size * tall, (rng.next() - 0.5) * 0.3 * size);
+  const trunk = limb(new THREE.Vector3(), trunkTop, 0.48 * size, 0.3 * size, 7, 2);
+  // flare the root
+  const tp = trunk.getAttribute('position');
+  for (let v = 0; v < tp.count; v++) if (tp.getY(v) < 0.01) tp.setXYZ(v, tp.getX(v) * 1.35, tp.getY(v), tp.getZ(v) * 1.35);
+  const barkPaint: FacePaint = (c) => shade(bark, 0.62 + 0.3 * Math.min(1, c.y / (3 * size)) + (hash3(c.x, c.y, c.z, 11) - 0.5) * 0.2);
+  addPart(parts, trunk, barkPaint);
+
+  const branches = 2 + Math.floor(rng.next() * 2);
+  const tips: THREE.Vector3[] = [];
+  const spin = rng.next() * Math.PI * 2;
+  for (let i = 0; i < branches; i++) {
+    const a = spin + (i / branches) * Math.PI * 2 + (rng.next() - 0.5) * 0.6;
+    const out = (1.2 + rng.next() * 0.6) * size;
+    const tip = trunkTop.clone().add(new THREE.Vector3(Math.cos(a) * out, (1.1 + rng.next() * 0.7) * size * tall, Math.sin(a) * out));
+    addPart(parts, limb(trunkTop.clone().addScaledVector(new THREE.Vector3(0, -1, 0), 0.15 * size), tip, 0.24 * size, 0.1 * size, 5), barkPaint);
+    tips.push(tip);
+  }
+
+  const canopyLow = new THREE.Color(0x2d6e2c);
+  const canopyHigh = new THREE.Color(0x8cc44c);
+  const centre = trunkTop.clone().add(new THREE.Vector3(0, 1.6 * size * tall, 0));
+  const clusters: { at: THREE.Vector3; r: number; detail: number }[] = [{ at: centre, r: 1.55 * size, detail: 1 }];
+  for (const tip of tips) clusters.push({ at: tip.clone().add(new THREE.Vector3(0, 0.3 * size, 0)), r: (1.0 + rng.next() * 0.35) * size, detail: 0 });
+  const extra = 4 + Math.floor(rng.next() * 4) - clusters.length;
+  for (let i = 0; i < extra; i++) {
+    const a = rng.next() * Math.PI * 2;
+    clusters.push({ at: centre.clone().add(new THREE.Vector3(Math.cos(a) * 1.1 * size, (rng.next() - 0.2) * 0.9 * size, Math.sin(a) * 1.1 * size)), r: (0.8 + rng.next() * 0.3) * size, detail: 0 });
+  }
+  const yLow = trunkTop.y, yHigh = centre.y + 1.6 * size;
+  clusters.forEach((cl, idx) => addFoliage(parts, rng, cl.at, cl.r, 0.8, canopyLow, canopyHigh, yLow, yHigh, 31 + idx * 13));
+}
+
+/** Birch: a slender white trunk banded in black under tall yellow-green clusters. */
+function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const height = 4.6 * size * tall;
+  const white = new THREE.Color(0xe9e4d6);
+  const band = new THREE.Color(0x4a443e);
+  const lean = new THREE.Vector3((rng.next() - 0.5) * 0.5 * size, height, (rng.next() - 0.5) * 0.5 * size);
+  const salt = rng.next() * 100;
+  // short dark lenticels round the bark, not whole black faces
+  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, 8, 16), (c) => {
+    const bandy = hash3(Math.round(c.y * 6), 0, Math.round(Math.atan2(c.z, c.x) * 3), salt) > 0.8;
+    return bandy ? band.clone() : shade(white, 0.8 + 0.2 * Math.min(1, c.y / height));
+  });
+  // two little side twigs
+  for (let i = 0; i < 2; i++) {
+    const at = lean.clone().multiplyScalar(0.55 + 0.15 * i);
+    const a = rng.next() * Math.PI * 2;
+    addPart(parts, limb(at, at.clone().add(new THREE.Vector3(Math.cos(a) * 0.8 * size, 0.6 * size, Math.sin(a) * 0.8 * size)), 0.06 * size, 0.03 * size, 4),
+      () => shade(white, 0.85));
+  }
+  const low = new THREE.Color(0x5f8a26);
+  const high = new THREE.Color(0xc4d84a);
+  const n = 3 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < n; i++) {
+    const t = 0.45 + 0.55 * (i / (n - 1));
+    const at = lean.clone().multiplyScalar(t);
+    const a = rng.next() * Math.PI * 2;
+    at.add(new THREE.Vector3(Math.cos(a) * 0.45 * size, 0.2 * size, Math.sin(a) * 0.45 * size));
+    const r = (0.95 - 0.35 * (i / n)) * size * (0.9 + rng.next() * 0.25);
+    addFoliage(parts, rng, at, r, 1.35, low, high, height * 0.4, height + r, 51 + i * 13);
+  }
+}
+
+// ---- Sequoia species --------------------------------------------------------
+
+export type SequoiaTreeSpecies = 'redwood' | 'treefern' | 'lantern';
+
+/**
+ * A leaf or frond as a ribbon along a curve, folded into a shallow V along
+ * its midrib. `at(t)` is the midrib point at 0..1, `side` the unit vector
+ * across the leaf, `up` the fold direction, `width(t)` the full width.
+ */
+function ribbon(at: (t: number) => THREE.Vector3, side: THREE.Vector3, up: THREE.Vector3, width: (t: number) => number, steps: number): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const pts = [] as { l: THREE.Vector3; m: THREE.Vector3; r: THREE.Vector3 }[];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const m = at(t);
+    const w = width(t) / 2;
+    const dropEdge = up.clone().multiplyScalar(-w * 0.35);
+    pts.push({ l: m.clone().addScaledVector(side, -w).add(dropEdge), m, r: m.clone().addScaledVector(side, w).add(dropEdge) });
+  }
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for (let i = 0; i < steps; i++) {
+    const p = pts[i], q = pts[i + 1];
+    tri(p.l, p.m, q.m); tri(p.l, q.m, q.l);
+    tri(p.m, p.r, q.r); tri(p.m, q.r, q.m);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
+/** Tree fern: a shaggy fibrous trunk under a crown of long arching fronds. */
+function buildTreeFern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const H = 4.2 * size * tall;
+  const top = new THREE.Vector3((rng.next() - 0.5) * 0.6 * size, H, (rng.next() - 0.5) * 0.6 * size);
+  const trunk = limb(new THREE.Vector3(), top, 0.34 * size, 0.24 * size, 8, 8);
+  // shaggy rings of old frond bases
+  const tp = trunk.getAttribute('position');
+  for (let v = 0; v < tp.count; v++) {
+    const k = 1 + 0.14 * Math.abs(Math.sin(tp.getY(v) * 4.5 / size));
+    tp.setXYZ(v, tp.getX(v) * k, tp.getY(v), tp.getZ(v) * k);
+  }
+  const fibre = new THREE.Color(0x4a3426);
+  addPart(parts, trunk, (c) => shade(fibre, 0.7 + 0.3 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 61) - 0.5) * 0.2));
+
+  const dark = new THREE.Color(0x1d6b52);
+  const light = new THREE.Color(0x6fd08a);
+  const fronds = 8 + Math.floor(rng.next() * 4);
+  const spin = rng.next() * Math.PI * 2;
+  for (let i = 0; i < fronds; i++) {
+    const a = spin + (i / fronds) * Math.PI * 2 + (rng.next() - 0.5) * 0.3;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    const L = (2.6 + rng.next() * 0.9) * size;
+    const rise = (0.9 + rng.next() * 0.5) * size;
+    const g = ribbon(
+      (t) => top.clone().addScaledVector(out, L * t).add(new THREE.Vector3(0, rise * Math.sin(t * Math.PI * 0.75) - L * 0.55 * t * t, 0)),
+      side, new THREE.Vector3(0, 1, 0),
+      (t) => 0.75 * size * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.1)), 0.7) * (1 - 0.3 * t),
+      7);
+    addPart(parts, g, (c, n) => {
+      const along = Math.min(1, c.clone().sub(top).length() / L);
+      const col = dark.clone().lerp(light, 0.25 + 0.55 * along);
+      return shade(col, n.y < -0.2 ? 0.7 : 1);
+    }, TEX_NEEDLES);
+  }
+  // a curled fiddlehead in the middle of the crown
+  const curl = new THREE.TorusGeometry(0.22 * size, 0.07 * size, 4, 8, Math.PI * 1.5);
+  curl.rotateX(Math.PI / 2);
+  curl.rotateZ(Math.PI / 2);
+  curl.translate(top.x, top.y + 0.35 * size, top.z);
+  addPart(parts, curl, () => shade(light, 0.9), TEX_NEEDLES);
+}
+
+/** Lantern tree: a twisted trunk under drooping violet straps hung with amber pods. */
+function buildLantern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const H = 5 * size * tall;
+  const bark = new THREE.Color(0x3b3346);
+  const mid = new THREE.Vector3((rng.next() - 0.5) * 1.0 * size, H * 0.5, (rng.next() - 0.5) * 1.0 * size);
+  const top = new THREE.Vector3(-mid.x * 0.6, H, -mid.z * 0.6);
+  const barkPaint: FacePaint = (c) => shade(bark, 0.7 + 0.35 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 71) - 0.5) * 0.15);
+  addPart(parts, limb(new THREE.Vector3(), mid, 0.32 * size, 0.24 * size, 7, 3), barkPaint);
+  addPart(parts, limb(mid, top, 0.24 * size, 0.16 * size, 7, 3), barkPaint);
+
+  const leafDark = new THREE.Color(0x3a2a6e);
+  const leafLight = new THREE.Color(0x9a7ad8);
+  const podCol = new THREE.Color(0xffb347);
+  const straps = 9 + Math.floor(rng.next() * 4);
+  const spin = rng.next() * Math.PI * 2;
+  for (let i = 0; i < straps; i++) {
+    const a = spin + (i / straps) * Math.PI * 2;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    const L = (2.0 + rng.next() * 0.8) * size;
+    const g = ribbon(
+      (t) => top.clone().addScaledVector(out, L * Math.sin(t * Math.PI * 0.5)).add(new THREE.Vector3(0, 0.5 * size * (1 - t) - L * 0.8 * t * t, 0)),
+      side, new THREE.Vector3(0, 1, 0),
+      (t) => 0.5 * size * (1 - 0.6 * t),
+      6);
+    addPart(parts, g, (c, n) => {
+      const drop = Math.min(1, Math.max(0, (top.y - c.y) / L));
+      return shade(leafDark.clone().lerp(leafLight, 0.6 - 0.4 * drop), n.y < -0.2 ? 0.7 : 1);
+    }, TEX_NEEDLES);
+    // every other strap hangs a pod from under the crown
+    if (i % 2 === 0) {
+      const hang = top.clone().addScaledVector(out, L * 0.45).add(new THREE.Vector3(0, -0.3 * size, 0));
+      const drop = (0.5 + rng.next() * 0.7) * size;
+      addPart(parts, limb(hang, hang.clone().add(new THREE.Vector3(0, -drop, 0)), 0.025 * size, 0.02 * size, 3), () => shade(bark, 0.8));
+      const pod = new THREE.IcosahedronGeometry(0.2 * size, 0);
+      pod.scale(1, 1.4, 1);
+      pod.translate(hang.x, hang.y - drop - 0.2 * size, hang.z);
+      addPart(parts, pod, (_c, n) => shade(podCol, 0.85 + 0.25 * Math.max(0, n.y)), TEX_SMOOTH);
+    }
+  }
+}
+
+/** Redwood: a massive flared red trunk under a high, narrow blue-green crown. */
+function buildRedwood(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const H = 11 * size * tall;
+  const trunk = new THREE.CylinderGeometry(0.4 * size, 0.85 * size, H, 8, 4, false);
+  trunk.translate(0, H / 2, 0);
+  const tp = trunk.getAttribute('position');
+  for (let v = 0; v < tp.count; v++) {
+    const y = tp.getY(v);
+    const flare = y < H * 0.3 ? 1 + 0.8 * Math.pow(1 - y / (H * 0.3), 2) : 1;
+    tp.setXYZ(v, tp.getX(v) * flare, y, tp.getZ(v) * flare);
+  }
+  const bark = new THREE.Color(0x8e3d22);
+  addPart(parts, trunk, (c) => {
+    const streak = hash3(Math.round(Math.atan2(c.z, c.x) * 3), 0, 0, 37) * 0.25;
+    return shade(bark, 0.6 + 0.3 * Math.min(1, c.y / H) + streak - 0.1);
+  });
+
+  const dark = new THREE.Color(0x1f4c40);
+  const light = new THREE.Color(0x44866f);
+  const tiers = 4 + Math.floor(rng.next() * 3);
+  const base = H * 0.55;
+  const top = H + 2.2 * size;
+  const step = (top - base) / tiers;
+  for (let i = 0; i < tiers; i++) {
+    const t = i / (tiers - 1);
+    const r = (1.9 - 1.3 * t) * size * (0.9 + rng.next() * 0.2);
+    const h = step * 1.8;
+    const cone = new THREE.ConeGeometry(r, h, 8, 1, false);
+    const y0 = base + i * step;
+    cone.translate(0, y0 + h / 2, 0);
+    cone.rotateY(rng.next() * Math.PI);
+    addPart(parts, cone, (c, n) => {
+      if (n.y < -0.2) return shade(dark, 0.6);
+      const local = Math.min(1, Math.max(0, (c.y - y0) / h));
+      return shade(dark.clone().lerp(light, 0.2 * t + 0.6 * local), 0.92 + (hash3(c.x, c.y, c.z, 41) - 0.5) * 0.14);
+    }, TEX_NEEDLES);
+  }
+}
 
 // Create a custom shader material that respects planet shadowing
 // Objects on the dark side of the planet receive no directional light
@@ -121,30 +585,18 @@ export class TreeBuilder {
     const cfg = { ...DEFAULT_CONFIG, ...config };
     const tree = new THREE.Group();
 
-    // Collect all geometries with their colors for merging
+    // Size from the scatter config (trunkRadius/trunkHeight vary per tree);
+    // species and shape from a seed taken from where the tree stands
+    const size = cfg.trunkRadius / DEFAULT_CONFIG.trunkRadius;
+    const tall = cfg.trunkHeight / (DEFAULT_CONFIG.trunkHeight * Math.max(size, 0.01));
+    const rng = new SeededRandom(cfg.seed ?? seedFromPosition(position));
+    const roll = rng.next();
+    const species: EarthTreeSpecies = cfg.species ?? (roll < 0.45 ? 'pine' : roll < 0.78 ? 'oak' : 'birch');
     const geometries: THREE.BufferGeometry[] = [];
-    const trunkColor = new THREE.Color(0x8B4513); // Brown
-    const leavesColor = new THREE.Color(0x228B22); // Green
-
-    // Create trunk (hexagonal prism)
-    const trunkGeom = this.createHexagonalPrism(cfg.trunkRadius, cfg.trunkHeight, 6);
-    this.addVertexColors(trunkGeom, trunkColor);
-    geometries.push(trunkGeom);
-
-    // Create pine cone leaves (series of cones stacked)
-    let currentHeight = cfg.trunkHeight;
-    let currentRadius = cfg.leafBaseRadius;
-
-    for (let i = 0; i < cfg.leafLayers; i++) {
-      const layerHeight = 1.2;
-      const coneGeom = new THREE.ConeGeometry(currentRadius, layerHeight, 6);
-      coneGeom.translate(0, currentHeight + layerHeight / 2, 0);
-      this.addVertexColors(coneGeom, leavesColor);
-      geometries.push(coneGeom);
-
-      currentHeight += layerHeight * 0.6; // Overlap layers
-      currentRadius *= cfg.leafTaper;
-    }
+    if (species === 'pine') buildPine(geometries, rng, size, tall);
+    else if (species === 'oak') buildOak(geometries, rng, size, tall);
+    else buildBirch(geometries, rng, size, tall);
+    tree.userData.species = species;
 
     // Merge all geometries into one
     const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
@@ -169,20 +621,17 @@ export class TreeBuilder {
     // Position the tree
     tree.position.copy(position);
 
+    // Trees never move: compute the matrices once and take the whole tree
+    // out of three.js's per-frame matrix update (Sequoia has 1000+).
+    tree.updateMatrixWorld(true);
+    tree.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.matrixWorldAutoUpdate = false;
+    });
+
     return tree;
   }
 
-  // Helper to add vertex colors to a geometry
-  private addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): void {
-    const positionCount = geometry.attributes.position.count;
-    const colors = new Float32Array(positionCount * 3);
-    for (let i = 0; i < positionCount; i++) {
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
-    }
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  }
 
   // Create merged tree material with vertex colors and planet-aware lighting
   private createMergedTreeMaterial(): THREE.ShaderMaterial {
@@ -229,13 +678,6 @@ export class TreeBuilder {
     });
   }
 
-  // Create a hexagonal prism geometry
-  private createHexagonalPrism(radius: number, height: number, segments: number): THREE.BufferGeometry {
-    const geometry = new THREE.CylinderGeometry(radius, radius, height, segments);
-    // Offset so base is at origin
-    geometry.translate(0, height / 2, 0);
-    return geometry;
-  }
 
   public getTrunkMaterial(): THREE.Material {
     return this.trunkMaterial;
@@ -246,6 +688,277 @@ export class TreeBuilder {
   }
 }
 
+// Mockup toggle (Debug tab): improved tree shading - baked darkening toward
+// the base of each tree and a per-tree tint, plus wrap lighting, sky/ground
+// ambient and a rim light in the shader.
+let improvedTreeShading = false;
+const treeBatchers = new Set<TreeBatcher>();
+export function setImprovedTreeShading(on: boolean): void {
+  improvedTreeShading = on;
+  for (const b of treeBatchers) b.setImproved(on);
+}
+
+// Batched tree rendering, one merged mesh per LOD chunk. Each chunk's mesh is
+// built once (and again only if a tree in it is added or removed) and then
+// just shown or hidden with the chunk. The old single batch was rebuilt -
+// cloning and merging every visible tree - whenever the visible tile set
+// changed, which at altitude was nearly every frame.
+class TreeBatcher {
+  private scene: THREE.Scene;
+  private material: THREE.ShaderMaterial;
+  private chunkOf: (tileIndex: number) => number = () => 0;
+  private treesByChunk: Map<number, THREE.Group[]> = new Map();
+  private meshes: Map<number, THREE.Mesh> = new Map();
+  private dirty: Set<number> = new Set();
+  private lastChunks: Set<number> | null = null;
+  private showingAll: boolean | null = null;
+
+  constructor(scene: THREE.Scene, material: THREE.ShaderMaterial) {
+    this.scene = scene;
+    this.material = material;
+    treeBatchers.add(this);
+    this.material.uniforms.improved.value = improvedTreeShading ? 1 : 0;
+  }
+
+  // Switch shading; the baked colours need every chunk rebuilt
+  public setImproved(on: boolean): void {
+    this.material.uniforms.improved.value = on ? 1 : 0;
+    for (const chunk of this.treesByChunk.keys()) this.dirty.add(chunk);
+    this.lastChunks = null;
+    this.showingAll = null;
+  }
+
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.chunkOf = chunkOf;
+  }
+
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.material.uniforms.planetCenter.value.copy(center);
+  }
+
+  // Trees without a tile go in chunk -1, which is always shown
+  private chunkFor(tree: THREE.Group): number {
+    const tileIndex = tree.userData.tileIndex;
+    return tileIndex === undefined ? -1 : this.chunkOf(tileIndex);
+  }
+
+  public add(tree: THREE.Group): void {
+    const chunk = this.chunkFor(tree);
+    tree.userData.treeChunk = chunk;
+    let list = this.treesByChunk.get(chunk);
+    if (!list) {
+      list = [];
+      this.treesByChunk.set(chunk, list);
+    }
+    list.push(tree);
+    this.dirty.add(chunk);
+    this.lastChunks = null;
+  }
+
+  public remove(tree: THREE.Group): void {
+    const chunk = tree.userData.treeChunk as number | undefined;
+    if (chunk === undefined) return;
+    const list = this.treesByChunk.get(chunk);
+    if (list) {
+      const i = list.indexOf(tree);
+      if (i >= 0) list.splice(i, 1);
+    }
+    this.dirty.add(chunk);
+    this.lastChunks = null;
+  }
+
+  private build(chunk: number): void {
+    const old = this.meshes.get(chunk);
+    if (old) {
+      this.scene.remove(old);
+      old.geometry.dispose();
+      this.meshes.delete(chunk);
+    }
+    this.dirty.delete(chunk);
+
+    const geometries: THREE.BufferGeometry[] = [];
+    for (const tree of this.treesByChunk.get(chunk) ?? []) {
+      const treeGeoms: THREE.BufferGeometry[] = [];
+      tree.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.geometry) {
+          const geom = child.geometry.clone();
+          child.updateWorldMatrix(true, false);
+          geom.applyMatrix4(child.matrixWorld);
+          treeGeoms.push(geom);
+        }
+      });
+      if (improvedTreeShading) bakeTreeShading(tree, treeGeoms);
+      geometries.push(...treeGeoms);
+    }
+    if (geometries.length === 0) return;
+
+    const merged = BufferGeometryUtils.mergeGeometries(geometries);
+    for (const geom of geometries) geom.dispose();
+    if (!merged) return;
+    merged.computeBoundingSphere();
+
+    const mesh = new THREE.Mesh(merged, this.material);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrixWorldAutoUpdate = false;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    this.meshes.set(chunk, mesh);
+  }
+
+  // Show exactly the given chunks (plus chunk -1). Same Set object as last
+  // time and nothing changed = no work.
+  public showChunks(chunks: Set<number>): void {
+    if (chunks === this.lastChunks && this.dirty.size === 0 && this.showingAll === null) return;
+    this.lastChunks = chunks;
+    this.showingAll = null;
+    for (const chunk of this.treesByChunk.keys()) {
+      const visible = chunk === -1 || chunks.has(chunk);
+      if (visible && (this.dirty.has(chunk) || !this.meshes.has(chunk))) this.build(chunk);
+      const mesh = this.meshes.get(chunk);
+      if (mesh) mesh.visible = visible;
+    }
+  }
+
+  public showAll(visible: boolean): void {
+    if (this.showingAll === visible && this.dirty.size === 0) return;
+    this.showingAll = visible;
+    this.lastChunks = null;
+    for (const chunk of this.treesByChunk.keys()) {
+      if (visible && (this.dirty.has(chunk) || !this.meshes.has(chunk))) this.build(chunk);
+      const mesh = this.meshes.get(chunk);
+      if (mesh) mesh.visible = visible;
+    }
+  }
+}
+
+// Improved shading, baked into vertex colours: darker toward the base of the
+// tree (cheap ambient occlusion) and a small per-tree tint so a forest isn't
+// one flat colour.
+function bakeTreeShading(tree: THREE.Group, geoms: THREE.BufferGeometry[]): void {
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(tree.quaternion);
+  const base = tree.position;
+  let top = 0;
+  const v = new THREE.Vector3();
+  for (const g of geoms) {
+    const pos = g.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) top = Math.max(top, v.fromBufferAttribute(pos, i).sub(base).dot(up));
+  }
+  if (top <= 0) return;
+  // Stable per-tree tint from its position
+  const h = Math.abs(Math.sin(base.x * 12.9898 + base.y * 78.233 + base.z * 37.719) * 43758.5453) % 1;
+  const tint = [0.92 + 0.16 * h, 0.95 + 0.1 * ((h * 7) % 1), 0.9 + 0.12 * ((h * 13) % 1)];
+  for (const g of geoms) {
+    const pos = g.getAttribute('position');
+    const col = g.getAttribute('color');
+    if (!col) continue;
+    for (let i = 0; i < pos.count; i++) {
+      const t = v.fromBufferAttribute(pos, i).sub(base).dot(up) / top;
+      const ao = 0.5 + 0.5 * Math.min(1, Math.max(0, t / 0.55));
+      col.setXYZ(i, col.getX(i) * ao * tint[0], col.getY(i) * ao * tint[1], col.getZ(i) * ao * tint[2]);
+    }
+    col.needsUpdate = true;
+  }
+}
+
+// Shared shader for batched trees. planetCenter makes the day/night term use
+// the direction from the tree's own planet; it used normalize(worldPos),
+// which only works for a planet at the origin (wrong on Sequoia and the Moon).
+// Atlas repeats (32 texels each) per world unit: 0.5 = 16 texels a unit,
+// close to the terrain's pixel size
+const TREE_TEXELS_PER_UNIT = 0.5;
+
+let atlasTexture: THREE.Texture | null = null;
+function treeAtlas(): THREE.Texture {
+  if (!atlasTexture) {
+    atlasTexture = new THREE.TextureLoader().load(getAssetPath('/textures/trees.png'));
+    atlasTexture.magFilter = THREE.NearestFilter;
+    atlasTexture.minFilter = THREE.NearestFilter;
+    atlasTexture.generateMipmaps = false;
+  }
+  return atlasTexture;
+}
+
+function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      sunDirection: { value: sunDirection.clone().normalize() },
+      planetCenter: { value: new THREE.Vector3() },
+      improved: { value: 0 },
+      ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+      directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+      treeAtlas: { value: treeAtlas() },
+    },
+    vertexShader: `
+      attribute float texCell;
+      varying float vTexCell;
+      attribute vec3 color;
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+
+      void main() {
+        vColor = color;
+        vTexCell = texCell;
+        vNormal = normalize(mat3(modelMatrix) * normal);
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPos.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D treeAtlas;
+      varying float vTexCell;
+      uniform vec3 sunDirection;
+      uniform vec3 planetCenter;
+      uniform float improved;
+      uniform float ambientIntensity;
+      uniform float directionalIntensity;
+
+      varying vec3 vColor;
+      varying vec3 vNormal;
+      varying vec3 vWorldPosition;
+
+      void main() {
+        vec3 surfaceNormal = normalize(vWorldPosition - planetCenter);
+        float planetSunFacing = dot(surfaceNormal, sunDirection);
+        float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
+        vec3 n = normalize(vNormal);
+        if (!gl_FrontFacing) n = -n;
+        float meshDiffuse = max(0.0, dot(n, sunDirection));
+        float directional = meshDiffuse * shadowFactor * directionalIntensity;
+        // Pixel detail from the tree atlas, projected along the face's
+        // dominant axis (planet-local so it stays precise far from origin),
+        // at the terrain's texel size; grey 200 = no change
+        vec3 lp = (vWorldPosition - planetCenter) * ${TREE_TEXELS_PER_UNIT.toFixed(3)};
+        vec3 an = abs(n);
+        vec2 tuv = an.x > an.y && an.x > an.z ? lp.zy : (an.y > an.z ? lp.xz : lp.xy);
+        vec2 auv = vec2((fract(tuv.x) + floor(vTexCell + 0.5)) * 0.25, fract(tuv.y));
+        vec3 detail = texture2D(treeAtlas, auv).rgb * (255.0 / 200.0);
+        vec3 tinted = vColor * detail;
+        // Ambient falls to 10% on the night side, exactly as the terrain's
+        // (terrain.vert/.frag), so trees don't glow against dark ground
+        float nightAmbient = ambientIntensity * mix(0.1, 1.0, smoothstep(-0.1, 0.3, planetSunFacing));
+        vec3 finalColor = tinted * (nightAmbient + directional);
+        if (improved > 0.5) {
+          // Wrap lighting (soft terminator on the canopy), sky/ground
+          // hemisphere ambient, and a rim on the sun side
+          float wrap = max(0.0, (dot(n, sunDirection) + 0.4) / 1.4);
+          float hemi = 0.5 + 0.5 * dot(n, surfaceNormal);
+          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * nightAmbient * (0.6 + 0.4 * shadowFactor);
+          vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+          float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
+          finalColor = tinted * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
+        }
+        gl_FragColor = vec4(finalColor, 1.0);
+      }
+    `,
+    side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    polygonOffset: doubleSided,
+    polygonOffsetFactor: doubleSided ? 1 : 0,
+    polygonOffsetUnits: doubleSided ? 1 : 0,
+  });
+}
+
 // Tree manager for a planet - now with geometry batching for performance
 export class PlanetTreeManager {
   private trees: THREE.Group[] = [];
@@ -253,10 +966,7 @@ export class PlanetTreeManager {
   private treeBuilder: TreeBuilder;
   private scene: THREE.Scene;
 
-  // Batched rendering
-  private batchedMesh: THREE.Mesh | null = null;
-  private batchedMaterial: THREE.ShaderMaterial | null = null;
-  private currentVisibleTiles: Set<number> = new Set();
+  private batcher: TreeBatcher;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -267,6 +977,7 @@ export class PlanetTreeManager {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
+    this.batcher = new TreeBatcher(scene, createBatchedTreeMaterial(this.sunDirection, false));
   }
 
   // Place a tree at a specific world position
@@ -288,8 +999,11 @@ export class PlanetTreeManager {
       this.treesByTile.get(tileIndex)!.push(tree);
     }
 
+    // Drawn by the batcher; the individual tree stays for raycasts
+    tree.visible = false;
     this.trees.push(tree);
     this.scene.add(tree);
+    this.batcher.add(tree);
 
     return tree;
   }
@@ -300,6 +1014,7 @@ export class PlanetTreeManager {
     if (index >= 0) {
       this.trees.splice(index, 1);
       this.scene.remove(tree);
+      this.batcher.remove(tree);
 
       // Remove from treesByTile map
       const tileIndex = tree.userData.tileIndex;
@@ -353,8 +1068,12 @@ export class PlanetTreeManager {
     seed: number = PlayerConfig.TERRAIN_SEED,
     getTileIndex?: (direction: THREE.Vector3) => number | null,
     getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
-    removedTiles?: Set<number>
+    removedTiles?: Set<number>,
+    // Biome mockup: which species grows on a tile (null = nothing grows
+    // there, undefined = the usual mix)
+    speciesAt?: (tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined
   ): void {
+    this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 54321); // Offset seed slightly for trees
     let placed = 0;
     let attempts = 0;
@@ -419,154 +1138,29 @@ export class PlanetTreeManager {
         leafTaper: 0.6 + rng.next() * 0.2, // 0.6 to 0.8 for shape variation
       };
 
+      if (speciesAt && tileIndex !== null) {
+        const species = speciesAt(tileIndex, rng.next());
+        if (species === null) continue;
+        if (species) config.species = species;
+      }
       this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
       placed++;
     }
   }
 
-  // Update tree visibility based on which tiles are visible (near player)
-  // Uses batched rendering for better performance
-  public updateVisibility(visibleTileIndices: Set<number>): void {
-    // Check if visible tiles changed
-    let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
-    if (!changed) {
-      for (const tileIndex of visibleTileIndices) {
-        if (!this.currentVisibleTiles.has(tileIndex)) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
-    if (changed) {
-      this.currentVisibleTiles = new Set(visibleTileIndices);
-      this.rebuildBatchedMesh();
-    }
-
-    // Hide individual trees (batched mesh handles rendering)
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // Show batched mesh
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = true;
-    }
+  // Which LOD chunks' trees are drawn (Planet.getVisibleTreeChunks())
+  public updateVisibility(visibleChunks: Set<number>): void {
+    this.batcher.showChunks(visibleChunks);
   }
 
-  // Set visibility for all trees at once (for LOD/orbit mode transitions)
+  // Show or hide every tree (orbit view)
   public setAllVisible(visible: boolean): void {
-    // Hide batched mesh and individual trees
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = false;
-    }
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // If showing all, rebuild batch with all tiles
-    if (visible) {
-      this.currentVisibleTiles = new Set(this.treesByTile.keys());
-      this.rebuildBatchedMesh();
-      if (this.batchedMesh) {
-        this.batchedMesh.visible = true;
-      }
-    }
+    this.batcher.showAll(visible);
   }
 
-  // Rebuild the batched mesh with currently visible trees
-  private rebuildBatchedMesh(): void {
-    // Remove old batched mesh
-    if (this.batchedMesh) {
-      this.scene.remove(this.batchedMesh);
-      this.batchedMesh.geometry.dispose();
-      this.batchedMesh = null;
-    }
-
-    // Collect geometries from visible trees
-    const geometries: THREE.BufferGeometry[] = [];
-
-    for (const tileIndex of this.currentVisibleTiles) {
-      const tileTrees = this.treesByTile.get(tileIndex);
-      if (!tileTrees) continue;
-
-      for (const tree of tileTrees) {
-        tree.traverse((child) => {
-          if (child instanceof THREE.Mesh && child.geometry) {
-            // Clone geometry and apply tree's world transform
-            const clonedGeom = child.geometry.clone();
-
-            // Apply the tree group's transform to the geometry
-            const matrix = new THREE.Matrix4();
-            child.updateWorldMatrix(true, false);
-            matrix.copy(child.matrixWorld);
-            clonedGeom.applyMatrix4(matrix);
-
-            geometries.push(clonedGeom);
-          }
-        });
-      }
-    }
-
-    if (geometries.length === 0) return;
-
-    // Merge all geometries into one
-    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
-
-    // Clean up cloned geometries
-    for (const geom of geometries) {
-      geom.dispose();
-    }
-
-    // Create material if not exists
-    if (!this.batchedMaterial) {
-      this.batchedMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-          sunDirection: { value: this.sunDirection.clone().normalize() },
-          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        },
-        vertexShader: `
-          attribute vec3 color;
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vColor = color;
-            vNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 sunDirection;
-          uniform float ambientIntensity;
-          uniform float directionalIntensity;
-
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vec3 surfaceNormal = normalize(vWorldPosition);
-            float planetSunFacing = dot(surfaceNormal, sunDirection);
-            float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
-            float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
-            float directional = meshDiffuse * shadowFactor * directionalIntensity;
-            float ambient = ambientIntensity;
-            vec3 finalColor = vColor * (ambient + directional);
-            gl_FragColor = vec4(finalColor, 1.0);
-          }
-        `,
-      });
-    }
-
-    // Create batched mesh
-    this.batchedMesh = new THREE.Mesh(mergedGeom, this.batchedMaterial);
-    this.batchedMesh.frustumCulled = false; // Trees are spread across planet, don't cull the batch
-    this.scene.add(this.batchedMesh);
+  // Map a tile to its LOD chunk; set before scattering trees
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.batcher.setChunkLookup(chunkOf);
   }
 
   public getTrees(): THREE.Group[] {
@@ -588,6 +1182,8 @@ export interface MushroomTreeConfig {
   capRadius: number;        // Radius of mushroom cap
   capHeight: number;        // Height/thickness of cap
   capTaper: number;         // 0 = flat disc, 1 = pointed cone
+  species?: SequoiaTreeSpecies; // default: rolled from the seed
+  seed?: number;                // default: from the tree's position
 }
 
 const DEFAULT_MUSHROOM_CONFIG: MushroomTreeConfig = {
@@ -618,32 +1214,17 @@ export class MushroomTreeBuilder {
     const cfg = { ...DEFAULT_MUSHROOM_CONFIG, ...config };
     const tree = new THREE.Group();
 
-    // Collect geometries for merging
+    const rng = new SeededRandom(cfg.seed ?? seedFromPosition(position));
+    // Sequoia's own flora (no species shared with Earth)
+    const roll = rng.next();
+    const species: SequoiaTreeSpecies = cfg.species ?? (roll < 0.4 ? 'redwood' : roll < 0.75 ? 'treefern' : 'lantern');
     const geometries: THREE.BufferGeometry[] = [];
-    const stemColor = new THREE.Color(0x8B7355);  // Grey-brown stem
-    const capColor = new THREE.Color(0x654321);   // Brown cap
-
-    // Create stem (hexagonal prism)
-    const stemGeom = this.createHexagonalPrism(cfg.stemRadius, cfg.stemHeight, 6);
-    this.addVertexColors(stemGeom, stemColor);
-    geometries.push(stemGeom);
-
-    // Create mushroom cap (flattened cone or dome)
-    // Use ConeGeometry for the mushroom shape
-    const capGeom = new THREE.ConeGeometry(cfg.capRadius, cfg.capHeight, 8, 1, false);
-    // Position cap on top of stem
-    capGeom.translate(0, cfg.stemHeight + cfg.capHeight / 2, 0);
-    this.addVertexColors(capGeom, capColor);
-    geometries.push(capGeom);
-
-    // Add cap underside (disc at bottom of cap for visual completeness)
-    // Offset slightly above stem top to prevent z-fighting with stem
-    const undersideGeom = new THREE.CircleGeometry(cfg.capRadius * 0.9, 8);
-    undersideGeom.rotateX(Math.PI / 2);  // Make it horizontal, facing down
-    undersideGeom.translate(0, cfg.stemHeight + 0.05, 0);  // Small offset to avoid z-fighting
-    const undersideColor = new THREE.Color(0x4a3520);  // Darker underside
-    this.addVertexColors(undersideGeom, undersideColor);
-    geometries.push(undersideGeom);
+    const size = cfg.stemRadius / DEFAULT_MUSHROOM_CONFIG.stemRadius;
+    const tall = cfg.stemHeight / (DEFAULT_MUSHROOM_CONFIG.stemHeight * Math.max(size, 0.01));
+    if (species === 'redwood') buildRedwood(geometries, rng, size, tall);
+    else if (species === 'treefern') buildTreeFern(geometries, rng, size, tall);
+    else buildLantern(geometries, rng, size, tall);
+    tree.userData.species = species;
 
     // Merge all geometries into one
     const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
@@ -668,20 +1249,17 @@ export class MushroomTreeBuilder {
     // Position the mushroom
     tree.position.copy(position);
 
+    // Trees never move: compute the matrices once and take the whole tree
+    // out of three.js's per-frame matrix update (Sequoia has 1000+).
+    tree.updateMatrixWorld(true);
+    tree.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.matrixWorldAutoUpdate = false;
+    });
+
     return tree;
   }
 
-  // Helper to add vertex colors to a geometry
-  private addVertexColors(geometry: THREE.BufferGeometry, color: THREE.Color): void {
-    const positionCount = geometry.attributes.position.count;
-    const colors = new Float32Array(positionCount * 3);
-    for (let i = 0; i < positionCount; i++) {
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
-    }
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  }
 
   // Create merged mushroom material with vertex colors and planet-aware lighting
   private createMergedMushroomMaterial(): THREE.ShaderMaterial {
@@ -732,12 +1310,6 @@ export class MushroomTreeBuilder {
     });
   }
 
-  // Create a hexagonal prism geometry
-  private createHexagonalPrism(radius: number, height: number, segments: number): THREE.BufferGeometry {
-    const geometry = new THREE.CylinderGeometry(radius, radius, height, segments);
-    geometry.translate(0, height / 2, 0);
-    return geometry;
-  }
 }
 
 // Mushroom tree manager - extends PlanetTreeManager pattern with batching
@@ -747,10 +1319,7 @@ export class MushroomTreeManager {
   private treeBuilder: MushroomTreeBuilder;
   private scene: THREE.Scene;
 
-  // Batched rendering
-  private batchedMesh: THREE.Mesh | null = null;
-  private batchedMaterial: THREE.ShaderMaterial | null = null;
-  private currentVisibleTiles: Set<number> = new Set();
+  private batcher: TreeBatcher;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -761,6 +1330,7 @@ export class MushroomTreeManager {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
+    this.batcher = new TreeBatcher(scene, createBatchedTreeMaterial(this.sunDirection, true));
   }
 
   // Place a mushroom at a specific world position
@@ -776,8 +1346,11 @@ export class MushroomTreeManager {
       this.treesByTile.get(tileIndex)!.push(tree);
     }
 
+    // Drawn by the batcher; the individual tree stays for raycasts
+    tree.visible = false;
     this.trees.push(tree);
     this.scene.add(tree);
+    this.batcher.add(tree);
     return tree;
   }
 
@@ -787,6 +1360,7 @@ export class MushroomTreeManager {
     if (index >= 0) {
       this.trees.splice(index, 1);
       this.scene.remove(tree);
+      this.batcher.remove(tree);
 
       const tileIndex = tree.userData.tileIndex;
       if (tileIndex !== undefined && this.treesByTile.has(tileIndex)) {
@@ -838,8 +1412,12 @@ export class MushroomTreeManager {
     seed: number = PlayerConfig.TERRAIN_SEED,
     getTileIndex?: (direction: THREE.Vector3) => number | null,
     _getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
-    removedTreeTiles?: Set<number>
+    removedTreeTiles?: Set<number>,
+    // Biomes: which species grows on a tile (null = nothing grows there,
+    // undefined = the usual mix)
+    speciesAt?: (tileIndex: number, roll: number) => SequoiaTreeSpecies | null | undefined
   ): void {
+    this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 98765);  // Different offset from regular trees
 
     let placed = 0;
@@ -884,158 +1462,30 @@ export class MushroomTreeManager {
         capHeight: DEFAULT_MUSHROOM_CONFIG.capHeight * sizeVariation,
         capTaper: 0.2 + rng.next() * 0.3,  // 0.2 to 0.5 for shape variation
       };
+      if (speciesAt && tileIndex !== null) {
+        const species = speciesAt(tileIndex, rng.next());
+        if (species === null) continue;
+        if (species) config.species = species;
+      }
 
       this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
       placed++;
     }
   }
 
-  // Update visibility based on visible tiles - uses batched rendering
-  public updateVisibility(visibleTileIndices: Set<number>): void {
-    // Check if visible tiles changed
-    let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
-    if (!changed) {
-      for (const tileIndex of visibleTileIndices) {
-        if (!this.currentVisibleTiles.has(tileIndex)) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
-    if (changed) {
-      this.currentVisibleTiles = new Set(visibleTileIndices);
-      this.rebuildBatchedMesh();
-    }
-
-    // Hide individual trees (batched mesh handles rendering)
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // Show batched mesh
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = true;
-    }
+  // Which LOD chunks' trees are drawn (Planet.getVisibleTreeChunks())
+  public updateVisibility(visibleChunks: Set<number>): void {
+    this.batcher.showChunks(visibleChunks);
   }
 
-  // Set visibility for all trees at once
+  // Show or hide every tree (orbit view)
   public setAllVisible(visible: boolean): void {
-    // Hide batched mesh and individual trees
-    if (this.batchedMesh) {
-      this.batchedMesh.visible = false;
-    }
-    for (const tree of this.trees) {
-      tree.visible = false;
-    }
-
-    // If showing all, rebuild batch with all tiles
-    if (visible) {
-      this.currentVisibleTiles = new Set(this.treesByTile.keys());
-      this.rebuildBatchedMesh();
-      if (this.batchedMesh) {
-        this.batchedMesh.visible = true;
-      }
-    }
+    this.batcher.showAll(visible);
   }
 
-  // Rebuild the batched mesh with currently visible mushroom trees
-  private rebuildBatchedMesh(): void {
-    // Remove old batched mesh
-    if (this.batchedMesh) {
-      this.scene.remove(this.batchedMesh);
-      this.batchedMesh.geometry.dispose();
-      this.batchedMesh = null;
-    }
-
-    // Collect geometries from visible trees
-    const geometries: THREE.BufferGeometry[] = [];
-
-    for (const tileIndex of this.currentVisibleTiles) {
-      const tileTrees = this.treesByTile.get(tileIndex);
-      if (!tileTrees) continue;
-
-      for (const tree of tileTrees) {
-        tree.traverse((child) => {
-          if (child instanceof THREE.Mesh && child.geometry) {
-            // Clone geometry and apply tree's world transform
-            const clonedGeom = child.geometry.clone();
-
-            // Apply the tree group's transform to the geometry
-            const matrix = new THREE.Matrix4();
-            child.updateWorldMatrix(true, false);
-            matrix.copy(child.matrixWorld);
-            clonedGeom.applyMatrix4(matrix);
-
-            geometries.push(clonedGeom);
-          }
-        });
-      }
-    }
-
-    if (geometries.length === 0) return;
-
-    // Merge all geometries into one
-    const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
-
-    // Clean up cloned geometries
-    for (const geom of geometries) {
-      geom.dispose();
-    }
-
-    // Create material if not exists
-    if (!this.batchedMaterial) {
-      this.batchedMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-          sunDirection: { value: this.sunDirection.clone().normalize() },
-          ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-          directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        },
-        vertexShader: `
-          attribute vec3 color;
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vColor = color;
-            vNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-        fragmentShader: `
-          uniform vec3 sunDirection;
-          uniform float ambientIntensity;
-          uniform float directionalIntensity;
-
-          varying vec3 vColor;
-          varying vec3 vNormal;
-          varying vec3 vWorldPosition;
-
-          void main() {
-            vec3 surfaceNormal = normalize(vWorldPosition);
-            float planetSunFacing = dot(surfaceNormal, sunDirection);
-            float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
-            float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
-            float directional = meshDiffuse * shadowFactor * directionalIntensity;
-            float ambient = ambientIntensity;
-            vec3 finalColor = vColor * (ambient + directional);
-            gl_FragColor = vec4(finalColor, 1.0);
-          }
-        `,
-        side: THREE.DoubleSide,  // For mushroom cap underside
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
-      });
-    }
-
-    // Create batched mesh
-    this.batchedMesh = new THREE.Mesh(mergedGeom, this.batchedMaterial);
-    this.batchedMesh.frustumCulled = false; // Trees are spread across planet
-    this.scene.add(this.batchedMesh);
+  // Map a tile to its LOD chunk; set before scattering trees
+  public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
+    this.batcher.setChunkLookup(chunkOf);
   }
 
   public getTrees(): THREE.Group[] {

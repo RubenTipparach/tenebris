@@ -13,6 +13,12 @@ interface TileData {
 
 // Planet config passed from main thread
 interface TerrainConfig {
+  // Replace generic terrain blocks with a planet's own block IDs
+  // (e.g. GRASS -> SEQ_GRASS on Sequoia); keys and values are HexBlockType
+  blockRemap?: Record<number, number>;
+  // Mockup: climate biomes (deserts, tundra, rocky highlands, alpine snow,
+  // stone cliffs) built from existing blocks. Earth only.
+  biomes?: boolean;
   seed: number;
   maxDepth: number;
   seaLevel: number;
@@ -370,6 +376,16 @@ function spreadOreVein(
 
 // ============ TERRAIN GENERATION ============
 
+// Biome mockup thresholds
+const BIOME_TEMP_SCALE = 2.5;
+const BIOME_MOIST_SCALE = 3.0;
+const BIOME_CLIFF_STEP = 4;      // height step to a neighbour that bares rock
+const BIOME_ALPINE_ALT = 0.88;   // fraction of the highest land
+const BIOME_ROCK_ALT = 0.72;
+const BIOME_DESERT_TEMP = 0.7;
+const BIOME_DESERT_MOIST = -0.08;
+const BIOME_TUNDRA_TEMP = 0.12;
+
 function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, number[]> {
   const columns = new Map<number, number[]>();
 
@@ -402,6 +418,35 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
     }
   }
 
+  // Biome mockup: surface block per land tile from climate + terrain
+  const biomeTop = new Map<number, number>();
+  if (config.biomes && !config.isSingleTexturePlanet) {
+    let maxAlt = 1;
+    for (const d of heightMap.values()) maxAlt = Math.max(maxAlt, d - SEA_LEVEL_DEPTH);
+    for (const tile of tiles) {
+      const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
+      if (surfaceDepth < SEA_LEVEL_DEPTH || beachTiles.has(tile.index)) continue;
+      const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
+      const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
+      if (Math.abs(y) > config.polarThreshold) continue;
+      const altFrac = (surfaceDepth - SEA_LEVEL_DEPTH) / maxAlt;
+      // Temperature: warm at the equator, cold toward the poles and up high
+      const temp = 1 - Math.abs(y) / config.polarThreshold
+        + 0.35 * fractalSimplex3D(x, y, z, BIOME_TEMP_SCALE, 3, 0.5, 2.0, config.seed + 101)
+        - 0.6 * altFrac;
+      const moisture = fractalSimplex3D(x, y, z, BIOME_MOIST_SCALE, 3, 0.5, 2.0, config.seed + 202);
+      let steep = 0;
+      for (const n of tile.neighbors) steep = Math.max(steep, Math.abs((heightMap.get(n) ?? surfaceDepth) - surfaceDepth));
+      let top = HexBlockType.GRASS;
+      if (steep >= BIOME_CLIFF_STEP) top = HexBlockType.STONE;
+      else if (altFrac > BIOME_ALPINE_ALT) top = HexBlockType.SNOW;
+      else if (altFrac > BIOME_ROCK_ALT) top = HexBlockType.STONE;
+      else if (temp > BIOME_DESERT_TEMP && moisture < BIOME_DESERT_MOIST) top = HexBlockType.SAND;
+      else if (temp < BIOME_TUNDRA_TEMP) top = HexBlockType.DIRT_SNOW;
+      biomeTop.set(tile.index, top);
+    }
+  }
+
   // Third pass: Create blocks based on height map
   for (const tile of tiles) {
     const blocks: number[] = [];
@@ -418,7 +463,28 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       if (depth > surfaceDepth) {
         blocks.push(HexBlockType.AIR);
       } else if (config.isSingleTexturePlanet) {
-        blocks.push(HexBlockType.MOON_ROCK);
+        // Airless rock worlds (the Moon) still hold resources: the ore veins
+        // generated for every planet, and water ice - patchy just under the
+        // surface near the poles, plus rare pockets elsewhere. Ice is the
+        // raw material for rocket fuel, so a ship can refuel off-world.
+        const oreType = depth <= surfaceDepth - 3 ? oreVeinCache.get(`${tile.index},${depth}`) : undefined;
+        const roll = (hash3D(tile.index, depth, 7919, config.seed) >>> 0) % 1000;
+        const nearPole = Math.abs(normalizedY) > config.polarThreshold * 0.85;
+        const polarIce = nearPole && depth < surfaceDepth && depth >= surfaceDepth - 4 && roll < 600;
+        const icePocket = depth < surfaceDepth - 2 && roll < 15;
+        if (oreType !== undefined) {
+          blocks.push(oreType);
+        } else if (polarIce || icePocket) {
+          blocks.push(HexBlockType.ICE);
+        } else {
+          blocks.push(HexBlockType.MOON_ROCK);
+        }
+      } else if (depth === surfaceDepth && biomeTop.has(tile.index)) {
+        blocks.push(biomeTop.get(tile.index)!);
+      } else if (depth > surfaceDepth - 3 && biomeTop.has(tile.index) && biomeTop.get(tile.index) !== HexBlockType.GRASS && biomeTop.get(tile.index) !== HexBlockType.DIRT_SNOW) {
+        // Deserts are sand all the way down the soil layer, rock is rock
+        const top = biomeTop.get(tile.index)!;
+        blocks.push(top === HexBlockType.SAND ? HexBlockType.SAND : HexBlockType.STONE);
       } else if (depth === surfaceDepth) {
         if (isBeach && !isPolar) {
           blocks.push(HexBlockType.SAND);
@@ -447,6 +513,12 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       }
     }
 
+    if (config.blockRemap) {
+      for (let i = 0; i < blocks.length; i++) {
+        const to = config.blockRemap[blocks[i]];
+        if (to !== undefined) blocks[i] = to;
+      }
+    }
     columns.set(tile.index, blocks);
   }
 
