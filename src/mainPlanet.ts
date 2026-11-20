@@ -56,6 +56,8 @@ class PlanetGame {
   // Sun position from solar system config (for per-planet lighting calculation)
   private sunPosition: THREE.Vector3 = new THREE.Vector3();
 
+  private teleportInProgress: boolean = false;
+
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
   private sequoiaTreesScattered: boolean = false;
 
@@ -150,6 +152,13 @@ class PlanetGame {
       }
     });
 
+    // Debug handle for automated testing / the browser console: ?debug in the URL
+    // (or any dev server) exposes the game as window.__tenebris.
+    if (import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')) {
+      (window as unknown as { __tenebris: PlanetGame; __THREE: typeof THREE }).__tenebris = this;
+      (window as unknown as { __THREE: typeof THREE }).__THREE = THREE;
+    }
+
     this.init();
   }
 
@@ -189,18 +198,31 @@ class PlanetGame {
       this.earth.updateBoundingSpheres();
       loadingManager.completeStep('spawn-planet');
 
-      // Calculate spawn position before building initial terrain
+      // Build terrain where the player will actually appear: the saved
+      // position if there is one (on whichever planet it is on), otherwise
+      // Earth's spawn point. Building around Earth's spawn regardless used to
+      // drop returning players into empty space and through the ground.
       loadingManager.setStatus('Building terrain around spawn...');
-      const earthConfig = getBodyConfig('earth')!;
-      const spawnPosition = this.earth.getSpawnPositionAtLatLon(
-        earthConfig.spawn?.latitude ?? 0,
-        earthConfig.spawn?.longitude ?? 0,
-        earthConfig.spawn?.altitudeAboveSurface ?? 3
-      );
-
-      // Build initial terrain around spawn point and wait for completion
-      // This ensures terrain is ready before player spawns (no falling through)
-      await this.earth.buildInitialTerrain(spawnPosition);
+      const startPlanet = this.findSavedStartPlanet();
+      if (startPlanet && startPlanet.planet !== this.earth) {
+        loadingManager.setStatus(`Loading ${startPlanet.planet.getName()}...`);
+        await startPlanet.planet.initialize();
+        startPlanet.planet.updateBoundingSpheres();
+        startPlanet.planet.setSunDirection(
+          calculateSunDirectionForPlanet(startPlanet.planet.center, this.sunPosition)
+        );
+        await startPlanet.planet.enableDetailedTerrain();
+        await startPlanet.planet.buildInitialTerrain(startPlanet.position);
+      } else {
+        const earthConfig = getBodyConfig('earth')!;
+        const spawnPosition = startPlanet?.position ?? this.earth.getSpawnPositionAtLatLon(
+          earthConfig.spawn?.latitude ?? 0,
+          earthConfig.spawn?.longitude ?? 0,
+          earthConfig.spawn?.altitudeAboveSurface ?? 3
+        );
+        // Wait for completion so terrain is ready before the player spawns
+        await this.earth.buildInitialTerrain(spawnPosition);
+      }
       loadingManager.completeStep('initial-terrain');
 
       // Initialize player on Earth surface
@@ -467,6 +489,31 @@ class PlanetGame {
     }
   }
 
+  /**
+   * Which planet the saved player position is on (nearest surface), or null
+   * when there is no usable save.
+   */
+  private findSavedStartPlanet(): { planet: Planet; position: THREE.Vector3 } | null {
+    const saveData = gameStorage.load();
+    const pos = saveData?.player?.position;
+    if (!pos) return null;
+    const position = new THREE.Vector3(pos.x, pos.y, pos.z);
+
+    let best: Planet | null = null;
+    let bestAltitude = Infinity;
+    for (const planet of this.planets.values()) {
+      const altitude = position.distanceTo(planet.center) - planet.radius;
+      if (altitude < bestAltitude) {
+        bestAltitude = altitude;
+        best = planet;
+      }
+    }
+    // Same sanity check loadSavedGame() applies: a position deep inside a
+    // planet is a corrupt/default save, not a place to load terrain around.
+    if (!best || position.distanceTo(best.center) < best.radius * 0.5) return null;
+    return { planet: best, position };
+  }
+
   // Helper to yield to main thread between heavy operations
   private yieldToMainThread(): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, 0));
@@ -479,7 +526,8 @@ class PlanetGame {
     console.log('[Deferred] Starting background planet initialization...');
     const startTime = performance.now();
 
-    // Initialize Moon (smaller, faster)
+    // Initialize Moon (smaller, faster). initialize() is idempotent, so a
+    // planet already loaded for a saved game is not built twice.
     if (this.moon) {
       console.log('[Deferred] Initializing Moon...');
       await this.yieldToMainThread();
@@ -536,6 +584,16 @@ class PlanetGame {
 
     const elapsed = performance.now() - startTime;
     console.log(`[Deferred] All planets initialized in ${elapsed.toFixed(0)}ms`);
+
+    // Generate the other planets' terrain data in the background now, in a
+    // worker, so arriving at them later doesn't stall on it. One planet at a
+    // time to keep worker and memory pressure low.
+    for (const planet of [this.moon, this.sequoia]) {
+      if (!planet) continue;
+      await this.yieldToMainThread();
+      await planet.ensureTerrainGenerated();
+    }
+    console.log(`[Deferred] Background terrain ready in ${(performance.now() - startTime).toFixed(0)}ms`);
   }
 
   private update(deltaTime: number): void {
@@ -896,6 +954,13 @@ class PlanetGame {
     if (titleEl) titleEl.textContent = `Preparing ${planetName.charAt(0).toUpperCase() + planetName.slice(1)}`;
     if (progressBar) progressBar.style.width = '0%';
 
+    // Step 0: the planet may still be loading in the background
+    if (!planet.isInitialized()) {
+      if (statusEl) statusEl.textContent = 'Loading planet...';
+      await planet.initialize();
+      planet.updateBoundingSpheres();
+    }
+
     // Step 1: Generate terrain data if not done (0-50%)
     if (!planet.isDetailedTerrainEnabled()) {
       if (statusEl) statusEl.textContent = 'Generating terrain...';
@@ -904,17 +969,15 @@ class PlanetGame {
     }
     if (progressBar) progressBar.style.width = '50%';
 
-    // Step 2: Build initial terrain mesh around spawn (50-100%)
-    if (!planet.isInitialTerrainReady()) {
-      if (statusEl) statusEl.textContent = 'Building terrain mesh...';
-      const bodyConfig = getBodyConfig(planetName);
-      const spawnPos = planet.getSpawnPositionAtLatLon(
-        bodyConfig?.spawn?.latitude ?? 0,
-        bodyConfig?.spawn?.longitude ?? 0,
-        1
-      );
-      await planet.buildInitialTerrain(spawnPos);
-    }
+    // Step 2: Build the detailed terrain mesh around the landing spot (50-100%)
+    if (statusEl) statusEl.textContent = 'Building terrain mesh...';
+    const bodyConfig = getBodyConfig(planetName);
+    const spawnPos = planet.getSpawnPositionAtLatLon(
+      bodyConfig?.spawn?.latitude ?? 0,
+      bodyConfig?.spawn?.longitude ?? 0,
+      1
+    );
+    await planet.buildInitialTerrain(spawnPos);
     if (progressBar) progressBar.style.width = '100%';
 
     // Brief delay to show completion before hiding
@@ -942,9 +1005,15 @@ class PlanetGame {
         return;
     }
 
-    // Ensure planet is ready before teleporting
-    if (!planet.isInitialTerrainReady()) {
+    // Ensure the landing spot has detailed terrain before teleporting. A
+    // planet in LOD-only mode reports isInitialTerrainReady() too, so that
+    // check used to skip preparation and land the player on nothing.
+    if (this.teleportInProgress) return;
+    this.teleportInProgress = true;
+    try {
       await this.preparePlanetForTeleport(planet, planetName);
+    } finally {
+      this.teleportInProgress = false;
     }
 
     const surfaceOffset = 1; // 1m above surface

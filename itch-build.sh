@@ -1,40 +1,21 @@
 #!/bin/bash
-#
-# DISABLED during WASM port. Re-enable once the WASM preview reaches
-# Tier 2+ (save/load working) so we can ship a combined itch build
-# that includes both the JS and WASM variants. For now the vite config
-# + build pipeline targets GitHub Pages only.
-#
-echo "itch build is disabled during the Sokol/WASM port - see conversion.md Tier 1."
-exit 0
+# Build Tenebris for itch.io: a flat, relative-path HTML5 build zipped as
+# tenebris-itch.zip. Upload it as an HTML5 game ("This file will be played
+# in the browser"); index.html is at the zip root.
+set -e
 
-# --- original script preserved below ----------------------------------
-# set -e
-#
-# echo ""
-# echo "[1/4] Compiling TypeScript..."
-# npx tsc
-#
-# echo ""
-# echo "[2/4] Building with Vite (itch.io config)..."
-# npx vite build --config vite.config.itch.ts
-#
-# echo ""
-# echo "[3/4] Preparing zip file..."
-# rm -f tenebris-itch.zip
-#
-# echo ""
-# echo "[4/4] Creating tenebris-itch.zip..."
-# cd dist-itch && zip -r ../tenebris-itch.zip . && cd ..
-#
-# echo ""
-# echo "========================================"
-# echo "Build complete!"
-# echo "========================================"
-# echo ""
-# echo "Output: tenebris-itch.zip"
-# echo ""
-# echo "Upload this zip file to itch.io"
-# echo "Make sure to set \"This file will be played in the browser\""
-# echo "and enable \"SharedArrayBuffer support\" if needed."
-# echo ""
+echo ""
+echo "[1/2] Building with Vite (itch.io config)..."
+npm run build:itch
+
+echo ""
+echo "[2/2] Creating tenebris-itch.zip..."
+rm -f tenebris-itch.zip
+(cd dist-itch && zip -qr ../tenebris-itch.zip .)
+
+echo ""
+echo "========================================"
+echo "Build complete: tenebris-itch.zip ($(du -h tenebris-itch.zip | cut -f1))"
+echo "========================================"
+echo "Upload it to itch.io as an HTML5 game, or push with butler:"
+echo "  butler push tenebris-itch.zip <user>/<game>:html5"

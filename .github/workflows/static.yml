@@ -1,7 +1,8 @@
 # Continuous build + deploy for Tenebris.
 #
-# Every push to every branch builds the archived JS client + landing
-# pages and deploys the dedicated server to Fly.io. GitHub Pages
+# Every push to every branch builds the JS client (the dist/ landing
+# build, the heavyphoton.com/tenebris/ build and the itch.io zip) and
+# deploys the dedicated server to Fly.io. GitHub Pages
 # auto-deploy is DISABLED (the Pages `deploy` job was removed by
 # request) - the build still produces dist/ and uploads it as a
 # downloadable artifact, but nothing publishes it to
@@ -83,6 +84,60 @@ jobs:
           set -e
           test -f dist/index.html       || { echo "missing dist/index.html"; exit 1; }
           test -f dist/js/index.html    || { echo "missing dist/js/index.html"; exit 1; }
+
+      # The two places the JS client actually ships: heavyphoton.com/tenebris/
+      # (copied into the heavyphoton.github.io repo's docs/tenebris/ with
+      # ./build.sh deploy) and itch.io (tenebris-itch.zip from ./itch-build.sh).
+      # Build both on every push so a broken deploy shows up here first.
+      - name: Build heavyphoton.com variant (base /tenebris/)
+        run: |
+          set -e
+          npm run build:site
+          test -f dist-site/index.html || { echo "missing dist-site/index.html"; exit 1; }
+          grep -q 'src="/tenebris/assets/index-' dist-site/index.html \
+            || { echo "dist-site/index.html does not load /tenebris/assets/"; exit 1; }
+
+      - name: Build itch.io zip
+        run: |
+          set -e
+          ./itch-build.sh
+          unzip -l tenebris-itch.zip | grep -q ' index.html$' \
+            || { echo "index.html is not at the root of tenebris-itch.zip"; exit 1; }
+          # itch serves from an unknown sub-path: nothing may be absolute
+          if grep -q 'src="/' dist-itch/index.html; then
+            echo "dist-itch/index.html has an absolute script path"; exit 1
+          fi
+
+      - name: Upload heavyphoton.com build
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: tenebris-site-${{ github.sha }}
+          path: dist-site
+          retention-days: 3
+
+      - name: Upload itch.io zip
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: tenebris-itch-${{ github.sha }}
+          path: tenebris-itch.zip
+          retention-days: 3
+
+      # Optional: push the zip to itch.io with butler. Runs only on main and
+      # only once a BUTLER_API_KEY secret and an ITCH_TARGET repo variable
+      # (e.g. "user/tenebris:html5") are configured.
+      - name: Push to itch.io (butler)
+        if: github.ref == 'refs/heads/main' && vars.ITCH_TARGET != ''
+        continue-on-error: true
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          set -e
+          if [ -z "$BUTLER_API_KEY" ]; then echo "BUTLER_API_KEY secret not set - skipping"; exit 0; fi
+          curl -sSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler && chmod +x butler/butler
+          ./butler/butler push tenebris-itch.zip "${{ vars.ITCH_TARGET }}" --userversion "${{ github.sha }}"
 
       # Non-blocking: the compile + "Verify dist layout" above already gate
       # real build breaks. This upload is a convenience download only, so an

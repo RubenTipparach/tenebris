@@ -1,12 +1,14 @@
 #!/bin/bash
 
-# Build script for Tenebris
+# Build script for Tenebris (the JS / Three.js client)
 # Usage: ./build.sh [option]
 # Options:
 #   dev     - Start development server
-#   build   - Production build (default)
+#   build   - Production build into dist/ (default)
 #   preview - Preview production build
-#   deploy  - Build and deploy to heavy-photon-site
+#   deploy  - Build for heavyphoton.com (/tenebris/) and copy it into the
+#             heavyphoton.github.io checkout's docs/tenebris/
+#   itch    - Build the itch.io zip (same as ./itch-build.sh)
 
 set -e
 
@@ -15,8 +17,16 @@ if [ -f "build.config.sh" ]; then
     source build.config.sh
 fi
 
-# Default HEAVY_PHOTON_PATH to parent directory if not set
-HEAVY_PHOTON_PATH="${HEAVY_PHOTON_PATH:-../heavy-photon-site}"
+# Find the heavyphoton.github.io checkout: the configured path, else a
+# sibling directory under either of its usual names.
+if [ -z "$HEAVY_PHOTON_PATH" ] || [ ! -d "$HEAVY_PHOTON_PATH" ]; then
+    for candidate in ../heavyphoton.github.io ../heavy-photon-site ../heavyphoton; do
+        if [ -d "$candidate/docs" ]; then
+            HEAVY_PHOTON_PATH="$candidate"
+            break
+        fi
+    done
+fi
 
 case "${1:-build}" in
   dev)
@@ -26,61 +36,40 @@ case "${1:-build}" in
   build)
     echo "Building Tenebris..."
     npm run build
-
-    if [ $? -ne 0 ]; then
-        echo "Build failed!"
-        exit 1
-    fi
-
     echo ""
     echo "Build complete! Output is in the 'dist' folder."
-
-    # Auto-deploy to heavy-photon-site if it exists
-    if [ -d "$HEAVY_PHOTON_PATH" ]; then
-        echo ""
-        echo "Deploying to heavy-photon-site..."
-        mkdir -p "$HEAVY_PHOTON_PATH/docs/tenebris"
-        cp -r dist/* "$HEAVY_PHOTON_PATH/docs/tenebris/"
-        echo "Deployment complete!"
-    fi
+    echo "Run './build.sh deploy' to publish it to heavyphoton.com."
     ;;
   preview)
     echo "Previewing production build..."
     npm run preview
     ;;
   deploy)
-    echo "Building Tenebris..."
-    npm run build
-
-    if [ $? -ne 0 ]; then
-        echo "Build failed!"
+    if [ -z "$HEAVY_PHOTON_PATH" ] || [ ! -d "$HEAVY_PHOTON_PATH/docs" ]; then
+        echo "Error: heavyphoton.github.io checkout not found (HEAVY_PHOTON_PATH='$HEAVY_PHOTON_PATH')"
+        echo "Set HEAVY_PHOTON_PATH in build.config.sh or the environment"
         exit 1
     fi
 
+    echo "Building Tenebris for heavyphoton.com/tenebris/..."
+    npm run build:site
+
+    DEST="$HEAVY_PHOTON_PATH/docs/tenebris"
     echo ""
-    echo "Build complete! Output is in the 'dist' folder."
+    echo "Deploying to $DEST ..."
+    mkdir -p "$DEST"
+    # Old hashed bundles would pile up forever - replace the assets folder.
+    rm -rf "$DEST/assets"
+    cp -r dist-site/* "$DEST/"
+
     echo ""
-
-    # Deploy to heavy-photon-site
-    if [ -d "$HEAVY_PHOTON_PATH" ]; then
-        echo "Deploying to heavy-photon-site..."
-
-        # Create directory if it doesn't exist
-        mkdir -p "$HEAVY_PHOTON_PATH/docs/tenebris"
-
-        # Copy entire dist folder contents to docs/tenebris
-        cp -r dist/* "$HEAVY_PHOTON_PATH/docs/tenebris/"
-
-        echo ""
-        echo "Deployment complete!"
-    else
-        echo "Error: HEAVY_PHOTON_PATH not found at: $HEAVY_PHOTON_PATH"
-        echo "Set HEAVY_PHOTON_PATH in build.config.sh or environment"
-        exit 1
-    fi
+    echo "Deployment complete! Commit docs/tenebris in $HEAVY_PHOTON_PATH."
+    ;;
+  itch)
+    ./itch-build.sh
     ;;
   *)
-    echo "Usage: ./build.sh [dev|build|preview|deploy]"
+    echo "Usage: ./build.sh [dev|build|preview|deploy|itch]"
     exit 1
     ;;
 esac

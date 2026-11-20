@@ -202,13 +202,54 @@ export class GoldbergPolyhedron {
     }
   }
 
-  public getTileAtPoint(point: THREE.Vector3): HexTile | null {
-    // Find the closest tile center to the given point
-    const normalizedPoint = point.clone().normalize().multiplyScalar(this.radius);
+  // Coarse cube-map grid of seed tiles for getTileAtPoint (built lazily)
+  private lookupGrid: Int32Array | null = null;
+  private lookupGridSize = 0;
+  private lastLookupTile: HexTile | null = null;
 
+  private lookupCell(x: number, y: number, z: number): number {
+    const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+    let face: number, u: number, v: number;
+    if (ax >= ay && ax >= az) { face = x > 0 ? 0 : 1; u = y / ax; v = z / ax; }
+    else if (ay >= az) { face = y > 0 ? 2 : 3; u = x / ay; v = z / ay; }
+    else { face = z > 0 ? 4 : 5; u = x / az; v = y / az; }
+    const g = this.lookupGridSize;
+    const iu = Math.min(g - 1, Math.floor((u + 1) * 0.5 * g));
+    const iv = Math.min(g - 1, Math.floor((v + 1) * 0.5 * g));
+    return (face * g + iu) * g + iv;
+  }
+
+  private buildLookupGrid(): void {
+    // About two tiles per cell, so most cells hold a seed close to any query
+    this.lookupGridSize = Math.max(1, Math.round(Math.sqrt(this.tiles.length / 12)));
+    const g = this.lookupGridSize;
+    this.lookupGrid = new Int32Array(6 * g * g).fill(-1);
+    for (const tile of this.tiles) {
+      const cell = this.lookupCell(tile.center.x, tile.center.y, tile.center.z);
+      if (this.lookupGrid[cell] < 0) this.lookupGrid[cell] = tile.index;
+    }
+  }
+
+  public getTileAtPoint(point: THREE.Vector3): HexTile | null {
+    // Find the closest tile center to the given point. This used to scan every
+    // tile (163k on the largest planet) and is called per tree, per raycast and
+    // per spawn query; now it seeds from a coarse grid and walks neighbours.
+    if (this.tiles.length === 0) return null;
+    if (point.lengthSq() === 0) return this.tiles[0];
+    if (!this.lookupGrid) this.buildLookupGrid();
+
+    const seedIndex = this.lookupGrid![this.lookupCell(point.x, point.y, point.z)];
+    const seed = seedIndex >= 0 ? this.tiles[seedIndex] : (this.lastLookupTile ?? this.tiles[0]);
+    const tile = this.getTileAtPointFromHint(point, seed);
+    this.lastLookupTile = tile;
+    return tile;
+  }
+
+  // Exhaustive nearest-tile search (reference implementation for tests)
+  public getTileAtPointBruteForce(point: THREE.Vector3): HexTile | null {
+    const normalizedPoint = point.clone().normalize().multiplyScalar(this.radius);
     let closestTile: HexTile | null = null;
     let closestDist = Infinity;
-
     for (const tile of this.tiles) {
       const dist = tile.center.distanceToSquared(normalizedPoint);
       if (dist < closestDist) {
@@ -216,7 +257,6 @@ export class GoldbergPolyhedron {
         closestTile = tile;
       }
     }
-
     return closestTile;
   }
 

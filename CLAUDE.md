@@ -427,35 +427,44 @@ at the same point in the call graph as `world_set` is wired today.
 A new mutator without a same-frame save is a bug, not a feature
 request.
 
-## C and JS trees are frozen archives — all work is in `tenebris-rs/`
+## The JS client is live; the C tree is a frozen archive
 
-`tenebris-rs/` is the primary, leading development target. The C tree
-(`tenebris-c/`) and the JS tree (`src/`, `public/`, `index.html`, ...)
-are kept ONLY for historical reference.
+The JS / Three.js client (`src/`, `public/`, `index.html`, the vite
+configs) is actively maintained again: fix, refactor and extend it
+freely. It ships to two places:
 
-- **Do not edit them.** No fixes, refactors, reformats, or parity syncs
-  to `tenebris-c/` or the JS tree, even for an obvious bug or typo — port
-  the change into `tenebris-rs/`, or leave it alone.
-- **Do not chase parity.** Rust leads; when it diverges from C/JS that is
-  fine. Golden mesh / worldgen / sim hashes are Rust-golden — re-pin them
-  to the intended Rust output, don't hold Rust back for a C contract.
-- **Rust must not depend on them.** No `tenebris-c/` or JS path in a Rust
-  `include_*` / `concat!` / build script / test fixture; COPY any needed
-  asset into `tenebris-rs/assets/` rather than pointing at the C copy.
-  Reading C/JS to learn how a feature worked is fine and encouraged.
+- **heavyphoton.com/tenebris/** - `./build.sh deploy` (or `build.bat`)
+  builds with base `/tenebris/` (`npm run build:site` -> `dist-site/`)
+  and copies it into the heavyphoton.github.io checkout's
+  `docs/tenebris/`, replacing the old `assets/`. Commit it there.
+- **itch.io** - `./itch-build.sh` (or `itch-build.bat`) builds with
+  relative, flattened paths (`npm run build:itch` -> `dist-itch/`) and
+  zips it as `tenebris-itch.zip`. CI builds both on every push and can
+  push the zip with butler (needs a `BUTLER_API_KEY` secret and an
+  `ITCH_TARGET` repo variable).
+
+Append `?debug` to the URL (or use the dev server) to get the game as
+`window.__tenebris` (and three.js as `window.__THREE`) in the console.
+
+The C tree (`tenebris-c/`) stays frozen, kept only for historical
+reference:
+
+- **Do not edit it.** Port a change into `tenebris-rs/` instead.
+- **Do not chase parity.** Rust leads; JS and Rust may diverge. Golden
+  mesh / worldgen / sim hashes are Rust-golden.
+- **Rust must not depend on C or JS paths.** No `tenebris-c/` or JS path
+  in a Rust `include_*` / `concat!` / build script / test fixture; COPY
+  any needed asset into `tenebris-rs/assets/`. Reading C/JS to learn how
+  a feature worked is fine and encouraged.
 - **Two carve-outs that must NOT be "cleaned up":** `//! Port of
   tenebris-c/...` attribution comments (documentation, not a dependency),
-  and the save / wire-compat string literals that contain `tenebris-c` —
+  and the save / wire-compat string literals that contain `tenebris-c` -
   the `tenebris-c:` localStorage / KV key namespaces, the
   `wss://tenebris-c.fly.dev/` server URL, the `tenebris-c` `%APPDATA%`
   config dir. Changing those breaks existing saves and MP interop; they
   stay verbatim.
 
-The long-form historical rules (the old "development happens in
-`tenebris-c/`" era, the full JS-deprecation and Rust-self-contained
-notes) live in `legacy.md`.
-
-This rule stays in force until the user says otherwise.
+The long-form historical rules live in `legacy.md`.
 
 ## Tunable values live in `tenebris-c/assets/config/*.yaml`
 
