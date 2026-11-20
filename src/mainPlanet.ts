@@ -19,6 +19,16 @@ import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
 
+// Setting: new games start with a ready-to-fly rocket on a launch pad
+const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
+function startWithRocket(): boolean {
+  try {
+    return localStorage.getItem(START_WITH_ROCKET_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Calculate the sun direction for a given planet position.
  * Returns a normalized vector pointing FROM the planet center TO the sun.
@@ -918,6 +928,26 @@ class PlanetGame {
       });
     }
 
+    // "New games start with a rocket" (applies the next time a game starts
+    // without a save, e.g. after Reset)
+    const startRocketToggle = document.getElementById('toggle-start-rocket') as HTMLInputElement | null;
+    if (startRocketToggle) {
+      startRocketToggle.checked = startWithRocket();
+      startRocketToggle.addEventListener('change', () => {
+        try { localStorage.setItem(START_WITH_ROCKET_KEY, startRocketToggle.checked ? '1' : '0'); } catch { /* storage blocked */ }
+      });
+    }
+
+    // Debug: a ready-to-fly rocket on a pad next to the player
+    const spawnRocketBtn = document.getElementById('spawn-rocket-btn');
+    if (spawnRocketBtn) {
+      spawnRocketBtn.addEventListener('click', async () => {
+        const planet = this.player.getCurrentPlanet() ?? this.earth;
+        const ok = await this.blockInteraction.placeStarterRocket(planet, this.player.position);
+        showToast(ok ? 'Rocket ready on a launch pad nearby' : 'No flat dry ground nearby for a launch pad', { duration: 3000 });
+      });
+    }
+
     // Respawn on the nearest planet's spawn point (works on foot or in flight)
     const respawnBtn = document.getElementById('respawn-planet-btn');
     if (respawnBtn) {
@@ -1069,6 +1099,9 @@ class PlanetGame {
     const saveData = gameStorage.load();
     if (!saveData) {
       console.log('No saved game found, starting fresh');
+      if (startWithRocket()) {
+        this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
+      }
       return;
     }
 
