@@ -1191,11 +1191,21 @@ export class RocketController {
   }
 
   /**
-   * Refuel the rocket (instant for now)
+   * Where refuelling draws fuel from: given the units wanted, it takes what
+   * it can (Rocket Fuel items from the player's inventory) and returns the
+   * units actually supplied. Unset = free refuel (tests / no inventory).
+   */
+  public static fuelSource: ((unitsWanted: number) => number) | null = null;
+
+  /**
+   * Refuel the rocket from the fuel source
    */
   public refuel(): void {
-    this.currentFuel = this.totalFuelCapacity;
-    console.log('Rocket refueled to 100%');
+    const wanted = this.totalFuelCapacity - this.currentFuel;
+    if (wanted <= 0) return;
+    const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted) : wanted;
+    this.currentFuel = Math.min(this.totalFuelCapacity, this.currentFuel + supplied);
+    console.log(`Rocket refuelled: +${supplied.toFixed(0)} (${((this.currentFuel / this.totalFuelCapacity) * 100).toFixed(0)}%)`);
   }
 
   // === GETTERS ===

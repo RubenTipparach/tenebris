@@ -70,6 +70,8 @@ export enum ItemType {
   SEQ_DIRT = 50,
   SEQ_SAND = 51,
   SEQ_SNOW = 52,
+  // Rocket fuel (hydrogen/oxygen from water ice); used when refuelling
+  ROCKET_FUEL = 53,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -231,6 +233,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.SEQ_DIRT]: { name: 'Sequoia Soil', stackSize: 64, texture: '/textures/planet_seq/planet_seq_dirt.png', mineTime: 0.5 },
   [ItemType.SEQ_SAND]: { name: 'Sequoia Sand', stackSize: 64, texture: '/textures/planet_seq/planet_seq_sand.png', mineTime: 0.5 },
   [ItemType.SEQ_SNOW]: { name: 'Sequoia Snow', stackSize: 64, texture: '/textures/planet_seq/planet_seq_snow.png', mineTime: 0.5 },
+  [ItemType.ROCKET_FUEL]: { name: 'Rocket Fuel', stackSize: 64, texture: '/textures/icons/rocket_fuel.png', mineTime: 0.3 },
 };
 
 // Inventory slot

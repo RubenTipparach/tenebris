@@ -3,6 +3,7 @@
 
 export const ROCKET_CONFIG = {
   // === FUEL SYSTEM ===
+  FUEL_PER_ITEM: 25,             // Fuel units one Rocket Fuel item adds when refuelling
   MEDIUM_FUEL_TANK: {
     fuelCapacity: 100,           // Units of fuel
     wetMass: 500,                 // kg when full

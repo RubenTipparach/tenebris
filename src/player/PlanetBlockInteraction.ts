@@ -3559,6 +3559,13 @@ export class PlanetBlockInteraction {
     }
   }
 
+  // Call after changing the inventory from outside (e.g. refuelling):
+  // refreshes the hotbar and saves
+  public onInventoryChanged(): void {
+    this.updateHotbarUI();
+    this.saveInventory();
+  }
+
   public getInventory(): Inventory {
     return this.inventory;
   }

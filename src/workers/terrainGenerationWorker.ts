@@ -421,7 +421,22 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       if (depth > surfaceDepth) {
         blocks.push(HexBlockType.AIR);
       } else if (config.isSingleTexturePlanet) {
-        blocks.push(HexBlockType.MOON_ROCK);
+        // Airless rock worlds (the Moon) still hold resources: the ore veins
+        // generated for every planet, and water ice - patchy just under the
+        // surface near the poles, plus rare pockets elsewhere. Ice is the
+        // raw material for rocket fuel, so a ship can refuel off-world.
+        const oreType = depth <= surfaceDepth - 3 ? oreVeinCache.get(`${tile.index},${depth}`) : undefined;
+        const roll = (hash3D(tile.index, depth, 7919, config.seed) >>> 0) % 1000;
+        const nearPole = Math.abs(normalizedY) > config.polarThreshold * 0.85;
+        const polarIce = nearPole && depth < surfaceDepth && depth >= surfaceDepth - 4 && roll < 600;
+        const icePocket = depth < surfaceDepth - 2 && roll < 15;
+        if (oreType !== undefined) {
+          blocks.push(oreType);
+        } else if (polarIce || icePocket) {
+          blocks.push(HexBlockType.ICE);
+        } else {
+          blocks.push(HexBlockType.MOON_ROCK);
+        }
       } else if (depth === surfaceDepth) {
         if (isBeach && !isPolar) {
           blocks.push(HexBlockType.SAND);

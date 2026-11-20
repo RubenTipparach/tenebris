@@ -14,7 +14,8 @@ import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
-import { RocketFlightManager } from './rocket';
+import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
+import { ItemType } from './player/Inventory';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
@@ -384,6 +385,21 @@ class PlanetGame {
         const container = document.getElementById('game-container');
         if (container) container.requestPointerLock();
       });
+
+      // Refuelling burns Rocket Fuel items from the inventory (crafted from
+      // ice or snow; see CraftingSystem), FUEL_PER_ITEM units each
+      RocketController.fuelSource = (wanted) => {
+        const inventory = this.blockInteraction.getInventory();
+        const per = ROCKET_CONFIG.FUEL_PER_ITEM;
+        const take = Math.min(Math.ceil(wanted / per), inventory.getItemCount(ItemType.ROCKET_FUEL));
+        if (take <= 0) {
+          showToast('No Rocket Fuel - craft it from ice or snow', { duration: 3000 });
+          return 0;
+        }
+        inventory.removeItem(ItemType.ROCKET_FUEL, take);
+        this.blockInteraction.onInventoryChanged();
+        return Math.min(wanted, take * per);
+      };
 
       // Crash (or manual abandon): respawn on the planet nearest the rocket
       this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
@@ -1101,6 +1117,9 @@ class PlanetGame {
       console.log('No saved game found, starting fresh');
       if (startWithRocket()) {
         this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
+        // Enough for a refuel on the way back
+        this.blockInteraction.getInventory().addItem(ItemType.ROCKET_FUEL, 4);
+        this.blockInteraction.onInventoryChanged();
       }
       return;
     }

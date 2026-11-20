@@ -203,6 +203,36 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.GLASS, quantity: 8 },
   },
+  // Rocket fuel: water ice split into hydrogen and oxygen. Ice is found on
+  // Earth's poles, under the Moon's polar surface and in its rock; snow (a
+  // row of three) works too.
+  //  .I.
+  {
+    name: 'Rocket Fuel (ice)',
+    inputs: [
+      { itemType: ItemType.ICE, quantity: 1, slot: 4 },
+    ],
+    output: { itemType: ItemType.ROCKET_FUEL, quantity: 2 },
+  },
+  //  SSS
+  {
+    name: 'Rocket Fuel (snow)',
+    inputs: [
+      { itemType: ItemType.SNOW, quantity: 1, slot: 3 },
+      { itemType: ItemType.SNOW, quantity: 1, slot: 4 },
+      { itemType: ItemType.SNOW, quantity: 1, slot: 5 },
+    ],
+    output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
+  },
+  {
+    name: 'Rocket Fuel (Sequoia snow)',
+    inputs: [
+      { itemType: ItemType.SEQ_SNOW, quantity: 1, slot: 3 },
+      { itemType: ItemType.SEQ_SNOW, quantity: 1, slot: 4 },
+      { itemType: ItemType.SEQ_SNOW, quantity: 1, slot: 5 },
+    ],
+    output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
