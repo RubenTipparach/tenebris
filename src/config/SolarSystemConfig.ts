@@ -192,6 +192,21 @@ function singleTextureTileset(texture: string): TilesetConfig {
   };
 }
 
+/** Where the star sits (the 'sun' body below uses it too). */
+const SUN_POSITION = { x: 1000, y: 0, z: 4000 };
+
+/**
+ * Spawn lat/lon on a body's sunlit side: the sub-solar point, swung
+ * SPAWN_MORNING_DEG towards the terminator so the light comes in low.
+ */
+const SPAWN_MORNING_DEG = 35;
+function daySideSpawn(position: { x: number; y: number; z: number }): { latitude: number; longitude: number } {
+  const d = new THREE.Vector3(SUN_POSITION.x - position.x, SUN_POSITION.y - position.y, SUN_POSITION.z - position.z).normalize();
+  const latitude = THREE.MathUtils.radToDeg(Math.asin(d.y));
+  const longitude = THREE.MathUtils.radToDeg(Math.atan2(d.z, d.x)) + SPAWN_MORNING_DEG;
+  return { latitude, longitude };
+}
+
 /** What makes one barren world different from the next. */
 interface BarrenWorld {
   id: string;
@@ -238,8 +253,7 @@ function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
     },
     tileset: singleTextureTileset(texture),
     spawn: {
-      latitude: 20,
-      longitude: 30,
+      ...daySideSpawn(w.position),
       altitudeAboveSurface: 3,
     },
     landable: true,
@@ -374,7 +388,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       type: CelestialBodyType.STAR,
       radius: 500,
       subdivisions: 4,
-      position: { x: 1000, y: 0, z: 4000},
+      position: SUN_POSITION,
       visual: {
         heightVariation: 0,
         terrainStyle: TerrainStyle.VOLCANIC,

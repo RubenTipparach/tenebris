@@ -220,6 +220,13 @@ class PlanetGame {
           planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
         }
       }
+      // Light every planet from the star now, before anything builds its
+      // materials: a planet first initialized by a teleport or an approach
+      // (not the deferred loop) used to keep the default sun - lit on the
+      // wrong side.
+      for (const planet of this.planets.values()) {
+        planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+      }
 
       // Initialize ONLY the spawn planet (Earth) first - this is what matters for loading screen
       loadingManager.setStatus('Loading Earth textures...');
