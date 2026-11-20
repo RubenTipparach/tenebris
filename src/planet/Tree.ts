@@ -184,6 +184,48 @@ function addPart(parts: THREE.BufferGeometry[], g: THREE.BufferGeometry, paint: 
   parts.push(part);
 }
 
+// ---- Forest stands ---------------------------------------------------------
+
+// Smooth 0..1 value noise over the unit sphere (trilinear between lattice
+// hashes), for picking which species dominates a region
+function valueNoise(dir: THREE.Vector3, scale: number, salt: number): number {
+  const x = dir.x * scale, y = dir.y * scale, z = dir.z * scale;
+  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
+  const fx = x - x0, fy = y - y0, fz = z - z0;
+  const s3 = (t: number) => t * t * (3 - 2 * t);
+  const u = s3(fx), v = s3(fy), w = s3(fz);
+  const h = (i: number, j: number, k: number) => hash3(x0 + i, y0 + j, z0 + k, salt);
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  return lerp(
+    lerp(lerp(h(0, 0, 0), h(1, 0, 0), u), lerp(h(0, 1, 0), h(1, 1, 0), u), v),
+    lerp(lerp(h(0, 0, 1), h(1, 0, 1), u), lerp(h(0, 1, 1), h(1, 1, 1), u), v),
+    w);
+}
+
+// How big a stand is: the noise scale over the unit sphere (higher = more,
+// smaller stands) and the share of trees in a stand that are its own species
+const STAND_SCALE = 6;
+const STAND_PURITY = 0.9;
+
+/**
+ * Real forests are stands, not a mix of wildly different trees competing
+ * for the same ground: one species dominates a region, with only the odd
+ * neighbour near its edges. Given where a tree stands (direction from the
+ * planet centre), the species allowed on that ground and a 0..1 roll, pick
+ * the species: the stand's own almost always, otherwise the species of the
+ * nearest other stand. Every planet's scatter goes through this.
+ */
+export function standSpecies<T>(dir: THREE.Vector3, allowed: readonly T[], roll: number, salt: number): T {
+  if (allowed.length === 1) return allowed[0];
+  const n = valueNoise(dir, STAND_SCALE, salt) * 0.999;
+  const idx = Math.floor(n * allowed.length);
+  if (roll < STAND_PURITY) return allowed[idx];
+  // an edge tree: the next stand over in the noise
+  const frac = n * allowed.length - idx;
+  const other = frac < 0.5 ? Math.max(0, idx - 1) : Math.min(allowed.length - 1, idx + 1);
+  return allowed[other === idx ? (idx + 1) % allowed.length : other];
+}
+
 // ---- Earth species --------------------------------------------------------
 
 export type EarthTreeSpecies = 'pine' | 'oak' | 'birch';

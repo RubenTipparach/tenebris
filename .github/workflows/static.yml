@@ -165,9 +165,15 @@ jobs:
   # so any commit can be played. Branches deploy too (last push wins); if
   # GitHub refuses a branch, allow it under Settings > Environments >
   # github-pages > Deployment branches.
+  #
+  # Non-blocking: until Pages is enabled for the repo (Settings > Pages >
+  # Source: GitHub Actions) the deploy answers 404. That must not fail the
+  # run (and email a build failure on every push) - the build above is the
+  # real check.
   pages:
     needs: build
     runs-on: ubuntu-latest
+    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

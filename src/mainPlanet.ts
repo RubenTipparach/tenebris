@@ -4,7 +4,7 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
-import { PlanetTreeManager, MushroomTreeManager, EarthTreeSpecies } from './planet/Tree';
+import { PlanetTreeManager, MushroomTreeManager, EarthTreeSpecies, standSpecies } from './planet/Tree';
 import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
@@ -894,8 +894,10 @@ class PlanetGame {
         // Sequoia's biomes: ferns and lantern trees in the grassland,
         // redwoods on the snowy heights, the odd lantern tree in the
         // desert, nothing on bare rock
+        // Forests grow in stands of one species (standSpecies)
         const top = this.topBlock(this.sequoia, tileIndex);
-        if (top === HexBlockType.SEQ_GRASS) return roll < 0.35 ? 'redwood' : roll < 0.75 ? 'treefern' : 'lantern';
+        const dir = this.sequoia.getTileByIndex(tileIndex)!.center.clone().normalize();
+        if (top === HexBlockType.SEQ_GRASS) return standSpecies(dir, ['treefern', 'redwood', 'lantern'] as const, roll, 211);
         if (top === HexBlockType.SEQ_SNOW) return roll < 0.6 ? 'redwood' : null;
         if (top === HexBlockType.SEQ_SAND) return roll < 0.15 ? 'lantern' : null;
         return null;
@@ -1149,13 +1151,18 @@ class PlanetGame {
   // Biome mockup: trees follow the ground. Temperate grass grows oak and
   // birch with some pine, tundra grows pine, nothing grows on bare rock,
   // alpine snow or open desert.
-  private biomeTreeSpecies(planet: Planet): ((tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined) | undefined {
+  private biomeTreeSpecies(planet: Planet): ((tileIndex: number, roll: number) => EarthTreeSpecies | null | undefined) {
     let on = false;
     try { on = localStorage.getItem('tenebris_mock_biomes') === '1'; } catch { /* blocked */ }
-    if (!on) return undefined;
+    if (!on) {
+      // Without biomes every land tile can grow trees, still in stands
+      return (tileIndex, roll) => standSpecies(planet.getTileByIndex(tileIndex)!.center.clone().normalize(), ['oak', 'birch', 'pine'] as const, roll, 101);
+    }
     return (tileIndex, roll) => {
       const top = this.topBlock(planet, tileIndex);
-      if (top === HexBlockType.GRASS) return roll < 0.45 ? 'oak' : roll < 0.75 ? 'birch' : 'pine';
+      // Forests grow in stands of one species (standSpecies)
+      const dir = planet.getTileByIndex(tileIndex)!.center.clone().normalize();
+      if (top === HexBlockType.GRASS) return standSpecies(dir, ['oak', 'birch', 'pine'] as const, roll, 101);
       if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
       return null;
     };
