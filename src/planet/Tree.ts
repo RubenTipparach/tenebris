@@ -1370,7 +1370,10 @@ export class MushroomTreeManager {
     seed: number = PlayerConfig.TERRAIN_SEED,
     getTileIndex?: (direction: THREE.Vector3) => number | null,
     _getTileCenter?: (direction: THREE.Vector3) => THREE.Vector3 | null,
-    removedTreeTiles?: Set<number>
+    removedTreeTiles?: Set<number>,
+    // Biomes: which species grows on a tile (null = nothing grows there,
+    // undefined = the usual mix)
+    speciesAt?: (tileIndex: number, roll: number) => SequoiaTreeSpecies | null | undefined
   ): void {
     this.batcher.setPlanetCenter(planetCenter);
     const rng = new SeededRandom(seed + 98765);  // Different offset from regular trees
@@ -1417,6 +1420,11 @@ export class MushroomTreeManager {
         capHeight: DEFAULT_MUSHROOM_CONFIG.capHeight * sizeVariation,
         capTaper: 0.2 + rng.next() * 0.3,  // 0.2 to 0.5 for shape variation
       };
+      if (speciesAt && tileIndex !== null) {
+        const species = speciesAt(tileIndex, rng.next());
+        if (species === null) continue;
+        if (species) config.species = species;
+      }
 
       this.addTree(treePosition, planetCenter, config, tileIndex ?? undefined);
       placed++;

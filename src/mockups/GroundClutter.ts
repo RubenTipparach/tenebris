@@ -3,9 +3,10 @@ import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 
 /**
- * Biome mockup: ground clutter around the player, after Pale Blue Dot's
+ * Ground clutter around the player (Sequoia; Earth with the biome mockup), after Pale Blue Dot's
  * foliage playground.
  *
  * - Grass tufts: nine one-pixel blades on a 16 px card, dark root to light
@@ -38,6 +39,7 @@ export class GroundClutter {
   private tuftMaterial: THREE.ShaderMaterial;
   private rockMaterial: THREE.ShaderMaterial;
   private grass: Tones = fallbackTones(0x2f7d2a, 0x4fae3a, 0x86d45a);
+  private seqGrass: Tones = fallbackTones(0x6a7a2a, 0x93a33c, 0xc2cf6a);
   private stone = new THREE.Color(0x8a8780);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
@@ -58,6 +60,7 @@ export class GroundClutter {
       scene.add(m);
     }
     sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
+    sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
   }
 
@@ -142,7 +145,7 @@ export class GroundClutter {
             m.compose(pos, rot, scale);
             this.tufts.setMatrixAt(nTufts, m);
             const r = rnd();
-            const tone = plan.straw ? STRAW : this.grass;
+            const tone = plan.straw ? STRAW : block === HexBlockType.SEQ_GRASS ? this.seqGrass : this.grass;
             col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
             this.tufts.setColorAt(nTufts, col);
             nTufts++;
@@ -184,6 +187,11 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.STONE: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.7, rocks: 4 };
     case HexBlockType.SAND: return { tufts: 0, tuftsRand: 1.4, straw: true, rockChance: 0.15, rocks: 2 };
     case HexBlockType.DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
+    // Sequoia: tufts in its own grass's tones, straw in its desert
+    case HexBlockType.SEQ_GRASS: return { tufts: 4, tuftsRand: 5, straw: false, rockChance: 0.08, rocks: 1 };
+    case HexBlockType.SEQ_DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
+    case HexBlockType.SEQ_SAND: return { tufts: 0, tuftsRand: 1.2, straw: true, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.SEQ_SNOW: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
     default: return null;
   }
 }
