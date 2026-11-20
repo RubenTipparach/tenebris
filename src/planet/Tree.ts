@@ -102,15 +102,65 @@ function jitterVertices(g: THREE.BufferGeometry, amount: number, salt: number): 
   pos.needsUpdate = true;
 }
 
-// A tapered limb from `from` to `to` (open ended: the ends are hidden)
+// A tapered limb from `from` to `to`. Closed: an open end shows the hollow
+// inside of the tube (the black wedges on trunks).
 function limb(from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number, sides: number, segments = 1): THREE.BufferGeometry {
   const dir = to.clone().sub(from);
   const len = dir.length();
-  const g = new THREE.CylinderGeometry(r1, r0, len, sides, segments, true);
+  const g = new THREE.CylinderGeometry(r1, r0, len, sides, segments, false);
   g.translate(0, len / 2, 0);
   g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
   g.translate(from.x, from.y, from.z);
   return g;
+}
+
+/**
+ * A clump of leaves: several small, smooth-shaded lumps packed round a
+ * centre, so the crown reads as a soft leafy mass with a bumpy outline
+ * rather than one big faceted gem. Coloured per vertex: darker underneath
+ * and inside, lighter on top, each lump a little different.
+ */
+function addFoliage(
+  parts: THREE.BufferGeometry[], rng: SeededRandom, centre: THREE.Vector3, radius: number,
+  stretchY: number, low: THREE.Color, high: THREE.Color, yLow: number, yHigh: number, salt: number,
+): void {
+  const lumps = 4 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < lumps; i++) {
+    // the first lump fills the middle, the rest sit round it
+    const a = rng.next() * Math.PI * 2;
+    const off = i === 0 ? 0 : radius * (0.45 + rng.next() * 0.25);
+    const at = centre.clone().add(new THREE.Vector3(Math.cos(a) * off, (rng.next() - 0.35) * radius * 0.6 * stretchY, Math.sin(a) * off));
+    const r = radius * (i === 0 ? 0.72 : 0.48 + rng.next() * 0.18);
+    let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(r, 1);
+    g.deleteAttribute('normal');
+    g.deleteAttribute('uv');
+    g = BufferGeometryUtils.mergeVertices(g);
+    g.scale(1, stretchY * (0.85 + rng.next() * 0.2), 1);
+    g.translate(at.x, at.y, at.z);
+    jitterVertices(g, r * 0.12, salt + i * 7);
+    g.computeVertexNormals(); // smooth: soft, not gem-like
+    const flat = g.toNonIndexed();
+    g.dispose();
+    const pos = flat.getAttribute('position');
+    const nrm = flat.getAttribute('normal');
+    const colors = new Float32Array(pos.count * 3);
+    const tint = 0.9 + rng.next() * 0.2;
+    const hue = (rng.next() - 0.5) * 0.05;
+    const p = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let v = 0; v < pos.count; v++) {
+      p.fromBufferAttribute(pos, v);
+      n.fromBufferAttribute(nrm, v);
+      const h = Math.min(1, Math.max(0, (p.y - yLow) / Math.max(0.01, yHigh - yLow)));
+      // inside of the crown (near the trunk axis) is shadowed
+      const out = Math.min(1, Math.hypot(p.x - centre.x, p.z - centre.z) / radius);
+      const col = low.clone().lerp(high, 0.1 + 0.45 * h + 0.3 * Math.max(0, n.y));
+      col.offsetHSL(hue, 0, 0);
+      col.multiplyScalar(tint * (0.78 + 0.22 * out) * (n.y < -0.4 ? 0.7 : 1));
+      colors[v * 3] = col.r; colors[v * 3 + 1] = col.g; colors[v * 3 + 2] = col.b;
+    }
+    flat.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    parts.push(flat);
+  }
 }
 
 function shade(base: THREE.Color, k: number): THREE.Color {
@@ -205,33 +255,20 @@ function buildOak(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number
     clusters.push({ at: centre.clone().add(new THREE.Vector3(Math.cos(a) * 1.1 * size, (rng.next() - 0.2) * 0.9 * size, Math.sin(a) * 1.1 * size)), r: (0.8 + rng.next() * 0.3) * size, detail: 0 });
   }
   const yLow = trunkTop.y, yHigh = centre.y + 1.6 * size;
-  clusters.forEach((cl, idx) => {
-    const g = new THREE.IcosahedronGeometry(cl.r, cl.detail);
-    g.scale(1, 0.82, 1);
-    g.translate(cl.at.x, cl.at.y, cl.at.z);
-    jitterVertices(g, cl.r * 0.16, 31 + idx);
-    const tint = 0.88 + rng.next() * 0.24;
-    const hueShift = (rng.next() - 0.5) * 0.08;
-    addPart(parts, g, (c, n) => {
-      const h = Math.min(1, Math.max(0, (c.y - yLow) / (yHigh - yLow)));
-      const col = canopyLow.clone().lerp(canopyHigh, 0.15 + 0.55 * h + 0.3 * Math.max(0, n.y));
-      col.offsetHSL(hueShift, 0, 0);
-      if (n.y < -0.3) col.multiplyScalar(0.6);
-      return shade(col, tint * (0.92 + (hash3(c.x, c.y, c.z, 13) - 0.5) * 0.16));
-    });
-  });
+  clusters.forEach((cl, idx) => addFoliage(parts, rng, cl.at, cl.r, 0.8, canopyLow, canopyHigh, yLow, yHigh, 31 + idx * 13));
 }
 
 /** Birch: a slender white trunk banded in black under tall yellow-green clusters. */
 function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
   const height = 4.6 * size * tall;
   const white = new THREE.Color(0xe9e4d6);
-  const band = new THREE.Color(0x2b2622);
+  const band = new THREE.Color(0x4a443e);
   const lean = new THREE.Vector3((rng.next() - 0.5) * 0.5 * size, height, (rng.next() - 0.5) * 0.5 * size);
   const salt = rng.next() * 100;
-  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, 6, 7), (c) => {
-    const bandy = hash3(Math.round(c.y * 3), 0, Math.round(Math.atan2(c.z, c.x) * 2), salt) > 0.72;
-    return bandy ? band.clone() : shade(white, 0.78 + 0.22 * Math.min(1, c.y / height));
+  // short dark lenticels round the bark, not whole black faces
+  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, 8, 16), (c) => {
+    const bandy = hash3(Math.round(c.y * 6), 0, Math.round(Math.atan2(c.z, c.x) * 3), salt) > 0.8;
+    return bandy ? band.clone() : shade(white, 0.8 + 0.2 * Math.min(1, c.y / height));
   });
   // two little side twigs
   for (let i = 0; i < 2; i++) {
@@ -249,16 +286,7 @@ function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numb
     const a = rng.next() * Math.PI * 2;
     at.add(new THREE.Vector3(Math.cos(a) * 0.45 * size, 0.2 * size, Math.sin(a) * 0.45 * size));
     const r = (0.95 - 0.35 * (i / n)) * size * (0.9 + rng.next() * 0.25);
-    const g = new THREE.IcosahedronGeometry(r, 0);
-    g.scale(0.85, 1.45, 0.85);
-    g.translate(at.x, at.y, at.z);
-    jitterVertices(g, r * 0.14, 51 + i);
-    addPart(parts, g, (c, nrm) => {
-      const h = Math.min(1, Math.max(0, c.y / (height + r)));
-      const col = low.clone().lerp(high, 0.2 + 0.5 * h + 0.3 * Math.max(0, nrm.y));
-      if (nrm.y < -0.3) col.multiplyScalar(0.65);
-      return shade(col, 0.92 + (hash3(c.x, c.y, c.z, 17) - 0.5) * 0.16);
-    });
+    addFoliage(parts, rng, at, r, 1.35, low, high, height * 0.4, height + r, 51 + i * 13);
   }
 }
 
@@ -771,13 +799,16 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         if (!gl_FrontFacing) n = -n;
         float meshDiffuse = max(0.0, dot(n, sunDirection));
         float directional = meshDiffuse * shadowFactor * directionalIntensity;
-        vec3 finalColor = vColor * (ambientIntensity + directional);
+        // Ambient falls to 10% on the night side, exactly as the terrain's
+        // (terrain.vert/.frag), so trees don't glow against dark ground
+        float nightAmbient = ambientIntensity * mix(0.1, 1.0, smoothstep(-0.1, 0.3, planetSunFacing));
+        vec3 finalColor = vColor * (nightAmbient + directional);
         if (improved > 0.5) {
           // Wrap lighting (soft terminator on the canopy), sky/ground
           // hemisphere ambient, and a rim on the sun side
           float wrap = max(0.0, (dot(n, sunDirection) + 0.4) / 1.4);
           float hemi = 0.5 + 0.5 * dot(n, surfaceNormal);
-          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * ambientIntensity * (0.6 + 0.4 * shadowFactor);
+          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * nightAmbient * (0.6 + 0.4 * shadowFactor);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
           float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
           finalColor = vColor * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;

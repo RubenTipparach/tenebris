@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
+import { PlayerConfig } from '../config/PlayerConfig';
 
 /**
  * Biome mockup: ground clutter around the player, after Pale Blue Dot's
@@ -27,6 +28,7 @@ const MAX_ROCKS = 1500;
 const TUFT_WIDTH = 0.55;
 const TUFT_HEIGHT = 0.42;
 const WIND = 0.06;
+const AMBIENT = PlayerConfig.AMBIENT_LIGHT_INTENSITY;
 
 interface Tones { dark: THREE.Color; mid: THREE.Color; light: THREE.Color }
 
@@ -269,18 +271,25 @@ function tuftGeometry(): THREE.BufferGeometry {
 }
 
 function rockGeometry(): THREE.BufferGeometry {
-  const g = new THREE.IcosahedronGeometry(1, 0);
+  // IcosahedronGeometry is non-indexed (each face has its own copy of its
+  // corners), so the lumps are keyed on the corner's position: every copy
+  // of a corner moves the same way and the faces stay closed.
+  const g = new THREE.IcosahedronGeometry(1, 1);
   const p = g.getAttribute('position');
-  // lumpy, flat bottom
+  const lump = (x: number, y: number, z: number) => {
+    const h = Math.sin(Math.round(x * 1000) * 12.9898 + Math.round(y * 1000) * 78.233 + Math.round(z * 1000) * 37.719) * 43758.5453;
+    return 0.82 + 0.3 * (h - Math.floor(h));
+  };
   for (let i = 0; i < p.count; i++) {
-    const k = 0.75 + 0.5 * Math.abs(Math.sin(i * 12.9898) * 43758.5453 % 1);
-    p.setXYZ(i, p.getX(i) * k, Math.max(p.getY(i) * k, -0.2), p.getZ(i) * k);
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const k = lump(x, y, z);
+    // flat bottom so it sits on the ground
+    p.setXYZ(i, x * k, Math.max(y * k, -0.25), z * k);
   }
-  const ng = g.toNonIndexed();
-  ng.computeVertexNormals();
-  const uv = new Float32Array(ng.getAttribute('position').count * 2);
-  ng.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  return ng;
+  g.computeVertexNormals(); // per face (non-indexed) = flat shaded
+  g.deleteAttribute('uv');
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(p.count * 2), 2));
+  return g;
 }
 
 function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
@@ -332,9 +341,13 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
           c *= t.rgb;
         #endif
         vec3 up = normalize(vWorld - planetCenter);
-        float day = smoothstep(-0.1, 0.2, dot(up, sunDirection));
+        // Same day/night curve as the terrain (terrain.vert/.frag): ambient
+        // falls to 10% on the night side, so tufts and rocks don't glow
+        float facing = dot(up, sunDirection);
+        float day = smoothstep(-0.1, 0.2, facing);
+        float ambient = ${AMBIENT.toFixed(3)} * mix(0.1, 1.0, smoothstep(-0.1, 0.3, facing));
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        gl_FragColor = vec4(c * (0.55 + 0.6 * diff * day), 1.0);
+        gl_FragColor = vec4(c * (ambient + 0.6 * diff * day), 1.0);
       }
     `,
   });
