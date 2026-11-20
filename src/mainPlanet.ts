@@ -17,6 +17,7 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
 import { ItemType } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
+import { Multiplayer, DEFAULT_SERVER } from './net/Multiplayer';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
@@ -63,6 +64,9 @@ class PlanetGame {
 
   // Fishing (rod in hand)
   private fishing: FishingSystem | null = null;
+
+  // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
+  private multiplayer: Multiplayer | null = null;
 
   // Shared frustum for all planet updates (calculated once per frame)
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
@@ -650,6 +654,8 @@ class PlanetGame {
     // Update music system (checks if time to play new song)
     MusicManager.update();
 
+    this.multiplayer?.update(deltaTime);
+
     // Check if in rocket flight mode
     const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
 
@@ -983,6 +989,8 @@ class PlanetGame {
       });
     }
 
+    this.setupMultiplayer();
+
     // Respawn on the nearest planet's spawn point (works on foot or in flight)
     const respawnBtn = document.getElementById('respawn-planet-btn');
     if (respawnBtn) {
@@ -1058,6 +1066,57 @@ class PlanetGame {
 
     // Hide overlay
     if (overlay) overlay.classList.add('hidden');
+  }
+
+  private setupMultiplayer(): void {
+    const params = new URLSearchParams(window.location.search);
+    const server = params.get('server') || DEFAULT_SERVER;
+    const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+    const write = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
+
+    const nameInput = document.getElementById('mp-name') as HTMLInputElement | null;
+    let name = read('tenebris_mp_name') || `Player${Math.floor(Math.random() * 1000)}`;
+    if (nameInput) {
+      nameInput.value = name;
+      nameInput.addEventListener('change', () => {
+        name = nameInput.value.trim().slice(0, 16) || name;
+        write('tenebris_mp_name', name);
+      });
+      // Typing in the box must not drive the player
+      nameInput.addEventListener('keydown', (e) => e.stopPropagation());
+    }
+
+    const start = () => {
+      if (!this.multiplayer) {
+        this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
+          const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+          const p = flying ? flying.getPosition() : this.player.position;
+          let planet = this.player.getCurrentPlanet()?.getName();
+          if (!planet) {
+            let best = Infinity;
+            for (const [id, pl] of this.planets) {
+              const alt = p.distanceTo(pl.center) - pl.radius;
+              if (alt < best) { best = alt; planet = id; }
+            }
+          }
+          const o = this.player.exportForSave().orientation;
+          return { planet: planet ?? 'earth', p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
+        }, name);
+      }
+      this.multiplayer.connect(server);
+    };
+
+    const toggle = document.getElementById('toggle-multiplayer') as HTMLInputElement | null;
+    const enabled = params.has('mp') || read('tenebris_mp') === '1';
+    if (toggle) {
+      toggle.checked = enabled;
+      toggle.addEventListener('change', () => {
+        write('tenebris_mp', toggle.checked ? '1' : '0');
+        if (toggle.checked) start();
+        else this.multiplayer?.disconnect();
+      });
+    }
+    if (enabled) start();
   }
 
   /**

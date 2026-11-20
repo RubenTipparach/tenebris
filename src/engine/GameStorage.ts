@@ -274,9 +274,13 @@ export class GameStorage {
   }
 
   // Save a tile change (block placed or broken)
+  // Called for every local block edit (multiplayer sends it to the server)
+  public onTileChange: ((planetId: string, tileIndex: number, depth: number, blockType: number) => void) | null = null;
+
   public saveTileChange(planetId: string, tileIndex: number, depth: number, blockType: number): void {
     const planet = this.planetData.get(planetId);
     if (!planet) return;
+    this.onTileChange?.(planetId, tileIndex, depth, blockType);
 
     const key = `${tileIndex}:${depth}`;
     planet.tileChanges.set(key, { tileIndex, depth, blockType });

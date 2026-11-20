@@ -5,12 +5,16 @@
 # - itch.io: builds tenebris-itch.zip and pushes it with butler to
 #   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
 #   BUTLER_API_KEY secret (itch.io -> Settings -> API keys).
+# - multiplayer server: deploys server-js/ to the 'tenebris-c' Fly app
+#   (wss://tenebris-c.fly.dev/, the clients' default server), replacing the
+#   Rust server there. Needs the FLY_API_TOKEN secret (a deploy token for
+#   tenebris-c, the same one the Rust deploy used).
 # - heavyphoton.com/tenebris/: pings heavyphoton.github.io, whose
 #   deploy-tenebris workflow builds this commit into docs/tenebris. Needs a
 #   SITE_DISPATCH_TOKEN secret: a fine-grained PAT for
 #   heavyphoton.github.io with Contents: read and write. Without it the
 #   site still picks the change up on its hourly check.
-name: JS client - deploy (itch.io + heavyphoton.com)
+name: JS client - deploy (itch.io + heavyphoton.com + multiplayer server)
 
 on:
   push:
@@ -81,3 +85,28 @@ jobs:
             https://api.github.com/repos/RubenTipparach/heavyphoton.github.io/dispatches \
             -d "{\"event_type\":\"tenebris-updated\",\"client_payload\":{\"sha\":\"$GITHUB_SHA\"}}"
           echo "heavyphoton.com deploy triggered"
+
+  server:
+    name: multiplayer server (tenebris-c)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for the Fly token
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN secret is not set - create one with: fly tokens create deploy -a tenebris-c"
+            exit 1
+          fi
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy server-js to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: server-js
+        run: flyctl deploy --remote-only --config fly.toml --wait-timeout 600

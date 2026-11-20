@@ -442,12 +442,22 @@ freely. It ships to two places:
   flattened paths (`npm run build:itch` -> `dist-itch/`) and zips it as
   `tenebris-itch.zip`.
 
-Both deploy automatically on every push to `main` via
+- **Multiplayer server** - `server-js/` (Node + `ws`): relays player
+  poses and block edits, appends every edit to `/data/js-edits.log` and
+  replays it on boot. It is deployed to the `tenebris-c` Fly app, which
+  means it REPLACES the Rust server there (and its /admin portal and tile
+  editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
+  Clients connect from Settings > Multiplayer, or with `?mp`
+  (`&server=ws://localhost:8080` for a local server).
+
+All three deploy automatically on every push to `main` via
 `.github/workflows/js-deploy.yml`: the `itch.io` job pushes the zip with
 butler to `ruben-tipparach/tenebris:html5` (needs a `BUTLER_API_KEY`
 secret), and the `heavyphoton.com` job pings heavyphoton.github.io,
 whose `deploy-tenebris` workflow builds main into `docs/tenebris/`
-(needs a `SITE_DISPATCH_TOKEN` secret; the site also checks hourly).
+(needs a `SITE_DISPATCH_TOKEN` secret; the site also checks hourly), and
+the `multiplayer server` job runs `fly deploy` in `server-js/` (needs
+`FLY_API_TOKEN`).
 `static.yml` builds and verifies both on every branch.
 
 Append `?debug` to the URL (or use the dev server) to get the game as
@@ -884,10 +894,10 @@ After each commit, always show these links to the user:
 
 - Play the games: https://rubentipparach.github.io/tenebris/
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
-- Operator portal: https://tenebris-c.fly.dev/admin
-- Hex structure editor: https://tenebris-c.fly.dev/admin/tile-editor
+- JS multiplayer server: https://tenebris-c.fly.dev/
 
-The `/admin` portal and the tile editor are served by the dedicated
-server itself (`tenebris-server` on Fly), so they update on the same
-push that deploys the server. The editor exports `*.template.json`
+The `/admin` operator portal and the hex structure editor were served by
+the Rust server (`tenebris-server`); while the JS server is deployed on
+`tenebris-c` they are offline (deploy `tenebris-rs/fly.toml` to bring
+them back). The editor exports `*.template.json`
 into `tenebris-rs/assets/templates/`.

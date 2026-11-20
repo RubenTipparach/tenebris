@@ -1,8 +1,9 @@
-# Continuous build + deploy for Tenebris.
+# Continuous build for the Tenebris JS client.
 #
 # Every push to every branch builds the JS client (the dist/ landing
 # build, the heavyphoton.com/tenebris/ build and the itch.io zip) and
-# deploys the dedicated server to Fly.io. GitHub Pages
+# checks the JS multiplayer server. Deploys (itch.io, heavyphoton.com,
+# the Fly server) live in js-deploy.yml and run from main. GitHub Pages
 # auto-deploy is DISABLED (the Pages `deploy` job was removed by
 # request) - the build still produces dist/ and uploads it as a
 # downloadable artifact, but nothing publishes it to
@@ -20,14 +21,10 @@
 # buildable by hand with `npm run build:wasm` in a shell that has
 # Emscripten activated.
 #
-# Single-dev / fast-iteration mode - whoever pushed last wins the live
-# server. Tighten to a branch allowlist later if the project grows
-# contributors.
-#
-# Fly deploy requires a FLY_API_TOKEN repo secret (scoped deploy
-# token from `fly tokens create deploy -a tenebris-c`, including the
-# 'FlyV1 ' prefix). Without it the deploy step fails fast.
-name: JS client - build + Rust server - deploy to Fly
+# The Rust server used to be deployed to Fly from here on every push to
+# every branch. The JS server (server-js/) has replaced it on the
+# 'tenebris-c' app and is deployed from main by js-deploy.yml.
+name: JS client - build
 
 on:
   # Push covers branch commits AND PR synchronize events (a PR
@@ -53,7 +50,7 @@ permissions:
   contents: read
 
 # One deploy at a time across the whole repo, not per-ref, so a newer
-# push cleanly supersedes an older in-flight Fly deploy.
+# push cleanly supersedes an older in-flight run.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -144,43 +141,15 @@ jobs:
       # step and no `deploy` job. dist/ ships only as the downloadable
       # tenebris-dist artifact above.
 
-      # ---------------------------------------------------------------
-      # Server deploy. Folded into the build job so a single push gives
-      # you a single "Run workflow" button + a single status indicator
-      # for the whole pipeline. Cold-cache depot builds can take 5-8 min;
-      # --wait-timeout 900 (15 min) leaves headroom without giving up
-      # early. --verbose makes failures self-diagnose in the run log.
-      #
-      # The server behind the 'tenebris-c' Fly app is the RUST
-      # implementation (tenebris-rs/crates/tenebris-server) - the C
-      # server is retired (its config lives on as
-      # tenebris-c/fly.toml.retired, the emergency rollback path). The
-      # app keeps the C-era name because wss://tenebris-c.fly.dev/ is
-      # an on-wire identifier baked into every client. Saves carry
-      # over: the volume + format are byte-compatible by porting rule.
-      # ---------------------------------------------------------------
-      # Both Fly steps are non-blocking: flyctl setup downloads the binary
-      # from Fly's servers (has 503'd during Fly outages) and the deploy talks
-      # to Fly too. A Fly-side outage must not red the build check - the WASM
-      # build is already done and validated above. When Fly is up these still
-      # deploy the server normally; when it's down the step goes yellow, not red.
-      - name: Set up flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
-        continue-on-error: true
-
-      - name: Deploy server to Fly.io (Rust)
-        continue-on-error: true
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        working-directory: tenebris-rs
+      # The JS multiplayer server (server-js/) - install and syntax-check it
+      # here; js-deploy.yml deploys it to the 'tenebris-c' Fly app from main.
+      # (The Rust server is no longer deployed by CI: the JS server replaced
+      # it on tenebris-c. tenebris-rs/fly.toml still deploys it by hand.)
+      - name: Check JS multiplayer server
+        working-directory: server-js
         run: |
-          if [ -z "$FLY_API_TOKEN" ]; then
-            echo "::error::FLY_API_TOKEN repo secret is not set."
-            echo "::error::Get a deploy-scoped token via:  fly tokens create deploy -a tenebris-c"
-            echo "::error::Add it under Settings → Secrets and variables → Actions."
-            exit 1
-          fi
-          flyctl deploy --remote-only --wait-timeout 900 --verbose
+          npm ci --omit=dev
+          node --check server.js
 
   # The experimental `webgpu-build` job (Stage 0 of the C tree's
   # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.
