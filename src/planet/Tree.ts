@@ -184,6 +184,36 @@ function addPart(parts: THREE.BufferGeometry[], g: THREE.BufferGeometry, paint: 
   parts.push(part);
 }
 
+// ---- Footprint ----------------------------------------------------------------
+
+// A tree stands on one hex tile. Its trunk must fit inside that tile, or a
+// wide flared base hangs out over the lower tile next door and floats (the
+// redwood bug). Anything near the ground is pulled in to this radius, and
+// the base ring is sunk into the ground so a tile edge or slope never shows
+// a gap under the trunk.
+const TILE_FOOTPRINT = 0.5;   // max trunk radius at the ground (world units)
+const FOOTPRINT_UP_TO = 1.6;  // height over which the clamp eases off
+const ROOT_SINK = 0.8;        // how far the base ring goes into the ground
+
+function plantInTile(parts: THREE.BufferGeometry[]): void {
+  for (const g of parts) {
+    const pos = g.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      if (y >= FOOTPRINT_UP_TO) continue;
+      const r = Math.hypot(x, z);
+      // allowed radius grows from the footprint at the ground to anything at
+      // FOOTPRINT_UP_TO, so the trunk still flares, just within its tile
+      const t = Math.max(0, y) / FOOTPRINT_UP_TO;
+      const allowed = TILE_FOOTPRINT + t * t * 4;
+      const k = r > allowed ? allowed / r : 1;
+      pos.setXYZ(i, x * k, y < 0.01 ? -ROOT_SINK : y, z * k);
+    }
+    pos.needsUpdate = true;
+    g.computeBoundingSphere();
+  }
+}
+
 // ---- Forest stands ---------------------------------------------------------
 
 // Smooth 0..1 value noise over the unit sphere (trilinear between lattice
@@ -205,7 +235,7 @@ function valueNoise(dir: THREE.Vector3, scale: number, salt: number): number {
 // How big a stand is: the noise scale over the unit sphere (higher = more,
 // smaller stands) and the share of trees in a stand that are its own species
 const STAND_SCALE = 6;
-const STAND_PURITY = 0.9;
+const STAND_PURITY = 1.0; // one species per stand, no mixing
 
 /**
  * Real forests are stands, not a mix of wildly different trees competing
@@ -599,6 +629,7 @@ export class TreeBuilder {
     tree.userData.species = species;
 
     // Merge all geometries into one
+    plantInTile(geometries);
     const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
 
     // Create merged mesh with custom shader material that uses vertex colors
@@ -1227,6 +1258,7 @@ export class MushroomTreeBuilder {
     tree.userData.species = species;
 
     // Merge all geometries into one
+    plantInTile(geometries);
     const mergedGeom = BufferGeometryUtils.mergeGeometries(geometries);
 
     // Create merged mesh with custom shader material

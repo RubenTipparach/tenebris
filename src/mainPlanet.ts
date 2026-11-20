@@ -901,12 +901,13 @@ class PlanetGame {
         // Sequoia's biomes: ferns and lantern trees in the grassland,
         // redwoods on the snowy heights, the odd lantern tree in the
         // desert, nothing on bare rock
-        // Forests grow in stands of one species (standSpecies)
+        // One tree species per biome, never a mix: fern lowlands, redwood
+        // forest, a few lantern trees in the red desert; nothing on rock or
+        // snow
         const top = this.topBlock(this.sequoia, tileIndex);
-        const dir = this.sequoia.getTileByIndex(tileIndex)!.center.clone().normalize();
-        if (top === HexBlockType.SEQ_GRASS) return standSpecies(dir, ['treefern', 'redwood', 'lantern'] as const, roll, 211);
-        if (top === HexBlockType.SEQ_SNOW) return roll < 0.6 ? 'redwood' : null;
-        if (top === HexBlockType.SEQ_SAND) return roll < 0.15 ? 'lantern' : null;
+        if (top === HexBlockType.SEQ_GRASS) return 'treefern';
+        if (top === HexBlockType.SEQ_DIRT) return 'redwood';
+        if (top === HexBlockType.SEQ_SAND) return roll < 0.3 ? 'lantern' : null;
         return null;
       }
     );
@@ -1166,10 +1167,12 @@ class PlanetGame {
       return (tileIndex, roll) => standSpecies(planet.getTileByIndex(tileIndex)!.center.clone().normalize(), ['oak', 'birch', 'pine'] as const, roll, 101);
     }
     return (tileIndex, roll) => {
+      // One tree species per biome, never a mix: oak on temperate grass,
+      // birch on the damp forest floor, pine in the tundra; nothing on
+      // rock, snow or open desert
       const top = this.topBlock(planet, tileIndex);
-      // Forests grow in stands of one species (standSpecies)
-      const dir = planet.getTileByIndex(tileIndex)!.center.clone().normalize();
-      if (top === HexBlockType.GRASS) return standSpecies(dir, ['oak', 'birch', 'pine'] as const, roll, 101);
+      if (top === HexBlockType.GRASS) return 'oak';
+      if (top === HexBlockType.DIRT) return 'birch';
       if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
       return null;
     };

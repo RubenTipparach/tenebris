@@ -378,13 +378,14 @@ function spreadOreVein(
 
 // Biome mockup thresholds
 const BIOME_TEMP_SCALE = 2.5;
-const BIOME_MOIST_SCALE = 3.0;
+const BIOME_MOIST_SCALE = 2.2;   // low frequency, few octaves: big clean biomes
 const BIOME_CLIFF_STEP = 4;      // height step to a neighbour that bares rock
 const BIOME_ALPINE_ALT = 0.88;   // fraction of the highest land
 const BIOME_ROCK_ALT = 0.72;
 const BIOME_DESERT_TEMP = 0.7;
 const BIOME_DESERT_MOIST = -0.08;
 const BIOME_TUNDRA_TEMP = 0.12;
+const BIOME_FOREST_MOIST = 0.18; // damp forest floor (bare soil under a closed canopy)
 
 function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, number[]> {
   const columns = new Map<number, number[]>();
@@ -432,9 +433,9 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       const altFrac = (surfaceDepth - SEA_LEVEL_DEPTH) / maxAlt;
       // Temperature: warm at the equator, cold toward the poles and up high
       const temp = 1 - Math.abs(y) / config.polarThreshold
-        + 0.35 * fractalSimplex3D(x, y, z, BIOME_TEMP_SCALE, 3, 0.5, 2.0, config.seed + 101)
+        + 0.35 * fractalSimplex3D(x, y, z, BIOME_TEMP_SCALE, 2, 0.35, 2.0, config.seed + 101)
         - 0.6 * altFrac;
-      const moisture = fractalSimplex3D(x, y, z, BIOME_MOIST_SCALE, 3, 0.5, 2.0, config.seed + 202);
+      const moisture = fractalSimplex3D(x, y, z, BIOME_MOIST_SCALE, 2, 0.3, 2.0, config.seed + 202);
       let steep = 0;
       for (const n of tile.neighbors) steep = Math.max(steep, Math.abs((heightMap.get(n) ?? surfaceDepth) - surfaceDepth));
       let top = HexBlockType.GRASS;
@@ -443,6 +444,7 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       else if (altFrac > BIOME_ROCK_ALT) top = HexBlockType.STONE;
       else if (temp > BIOME_DESERT_TEMP && moisture < BIOME_DESERT_MOIST) top = HexBlockType.SAND;
       else if (temp < BIOME_TUNDRA_TEMP) top = HexBlockType.DIRT_SNOW;
+      else if (moisture > BIOME_FOREST_MOIST) top = HexBlockType.DIRT;
       biomeTop.set(tile.index, top);
     }
   }
@@ -481,7 +483,7 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
         }
       } else if (depth === surfaceDepth && biomeTop.has(tile.index)) {
         blocks.push(biomeTop.get(tile.index)!);
-      } else if (depth > surfaceDepth - 3 && biomeTop.has(tile.index) && biomeTop.get(tile.index) !== HexBlockType.GRASS && biomeTop.get(tile.index) !== HexBlockType.DIRT_SNOW) {
+      } else if (depth > surfaceDepth - 3 && (biomeTop.get(tile.index) === HexBlockType.SAND || biomeTop.get(tile.index) === HexBlockType.STONE || biomeTop.get(tile.index) === HexBlockType.SNOW)) {
         // Deserts are sand all the way down the soil layer, rock is rock
         const top = biomeTop.get(tile.index)!;
         blocks.push(top === HexBlockType.SAND ? HexBlockType.SAND : HexBlockType.STONE);
