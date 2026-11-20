@@ -66,6 +66,10 @@ export enum ItemType {
   MEDIUM_FUEL_TANK = 48,
   // Moon terrain
   MOON_ROCK = 49,
+  // Sequoia terrain (its own blocks; see HexBlockType.SEQ_*)
+  SEQ_DIRT = 50,
+  SEQ_SAND = 51,
+  SEQ_SNOW = 52,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -223,6 +227,10 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   },
   // Moon terrain (same mining time as stone)
   [ItemType.MOON_ROCK]: { name: 'Moon Rock', stackSize: 64, texture: '/textures/moon.png', mineTime: 1.5 },
+  // Sequoia terrain
+  [ItemType.SEQ_DIRT]: { name: 'Sequoia Soil', stackSize: 64, texture: '/textures/planet_seq/planet_seq_dirt.png', mineTime: 0.5 },
+  [ItemType.SEQ_SAND]: { name: 'Sequoia Sand', stackSize: 64, texture: '/textures/planet_seq/planet_seq_sand.png', mineTime: 0.5 },
+  [ItemType.SEQ_SNOW]: { name: 'Sequoia Snow', stackSize: 64, texture: '/textures/planet_seq/planet_seq_snow.png', mineTime: 0.5 },
 };
 
 // Inventory slot

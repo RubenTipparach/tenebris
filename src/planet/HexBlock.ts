@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig, EARTH_TILESET } from '../config/SolarSystemConfig';
+import { TilesetConfig, EARTH_TILESET, MOON_TILESET, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { getAssetPath } from '../utils/assetPath';
 import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
@@ -217,21 +217,51 @@ export class HexBlockMeshBuilder {
     this.materials.set('oreLithium', createTerrainMaterial(lithiumTexture));
     this.materials.set('oreAluminum', createTerrainMaterial(aluminumTexture));
     this.materials.set('oreCobalt', createTerrainMaterial(cobaltTexture));
-    // Moon rock material (uses moon texture if loaded, else stone)
-    if (moonTexture) {
-      this.materials.set('moonRock', createTerrainMaterial(moonTexture));
-    } else {
-      this.materials.set('moonRock', createTerrainMaterial(stoneTexture)); // Fallback
-    }
     // Snow biome materials - snow and dirt_snow use standard terrain shader
     this.materials.set('snow', createTerrainMaterial(snowTexture));
     this.materials.set('dirtSnow', createTerrainMaterial(dirtSnowTexture)); // Dirt with snow on top
     this.materials.set('snowSide', createTerrainMaterial(dirtSnowTexture)); // Snow block sides use dirt_snow texture
 
+    // Real block IDs: a block looks the same on every planet. The tileset
+    // textures loaded above stay for this planet's distant LOD only; the
+    // detailed blocks always use their own textures - Earth's set for the
+    // Earth blocks, moon.png for moon rock, Sequoia's set for SEQ_* blocks.
+    // (On the Moon every block used to render as moon rock, and moon rock
+    // placed anywhere else rendered as stone.)
+    const loadFixed = async (path: string): Promise<THREE.Texture> => {
+      const tex = await this.loadTexture(path);
+      configureTexture(tex);
+      return tex;
+    };
+    if (ts !== EARTH_TILESET) {
+      const e = EARTH_TILESET;
+      this.materials.set('top', createTerrainMaterial(await loadFixed(e.grass)));
+      this.materials.set('side', createTerrainMaterial(await loadFixed(e.dirt)));
+      this.materials.set('grassSide', createTerrainMaterial(await loadFixed(e.dirtGrass)));
+      this.materials.set('bottom', createTerrainMaterial(await loadFixed(e.stone)));
+      this.materials.set('stone', createTerrainMaterial(await loadFixed(e.stone)));
+      this.materials.set('wood', createTerrainMaterial(await loadFixed(e.wood)));
+      this.materials.set('sand', createTerrainMaterial(await loadFixed(e.sand)));
+      this.materials.set('snow', createTerrainMaterial(await loadFixed(e.snow)));
+      const earthDirtSnow = await loadFixed(e.dirtSnow);
+      this.materials.set('dirtSnow', createTerrainMaterial(earthDirtSnow));
+      this.materials.set('snowSide', createTerrainMaterial(earthDirtSnow));
+    }
+    this.materials.set('moonRock', createTerrainMaterial(moonTexture ?? await loadFixed(MOON_TILESET.stone)));
+    const q = SEQUOIA_TILESET;
+    this.materials.set('seqGrass', createTerrainMaterial(await loadFixed(q.grass)));
+    this.materials.set('seqGrassSide', createTerrainMaterial(await loadFixed(q.dirtGrass)));
+    this.materials.set('seqDirt', createTerrainMaterial(await loadFixed(q.dirt)));
+    this.materials.set('seqSand', createTerrainMaterial(await loadFixed(q.sand)));
+    this.materials.set('seqSnow', createTerrainMaterial(await loadFixed(q.snow)));
+    this.materials.set('seqSnowSide', createTerrainMaterial(await loadFixed(q.dirtSnow)));
+    const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
+    const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);
+
     // Ice material - transparent with specular shininess
     const iceMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        terrainTexture: { value: iceTexture },
+        terrainTexture: { value: fixedIce },
         sunDirection: { value: this.sunDirection.clone() },
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
@@ -259,7 +289,7 @@ export class HexBlockMeshBuilder {
     // Glass material - uses texture alpha for transparency with specular shininess
     const glassMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        terrainTexture: { value: glassTexture },
+        terrainTexture: { value: fixedGlass },
         sunDirection: { value: this.sunDirection.clone() },
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },

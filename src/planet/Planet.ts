@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
+import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
+import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -415,6 +416,12 @@ export class Planet {
 
       // Prepare config for worker
       const config = {
+        blockRemap: this.config.tileset === SEQUOIA_TILESET ? {
+          [HexBlockType.GRASS]: HexBlockType.SEQ_GRASS,
+          [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
+          [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
+          [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
+        } : undefined,
         seed: this.seed,
         maxDepth: this.MAX_DEPTH,
         seaLevel: this.SEA_LEVEL,
@@ -763,28 +770,7 @@ export class Planet {
     }
   }
 
-  private handleWorkerResult(data: {
-    topData: GeometryData;
-    sideData: GeometryData;
-    grassSideData: GeometryData;
-    stoneData: GeometryData;
-    sandData: GeometryData;
-    woodData: GeometryData;
-    waterData: GeometryData;
-    oreCoalData: GeometryData;
-    oreCopperData: GeometryData;
-    oreIronData: GeometryData;
-    oreGoldData: GeometryData;
-    oreLithiumData: GeometryData;
-    oreAluminumData: GeometryData;
-    oreCobaltData: GeometryData;
-    snowData: GeometryData;
-    snowSideData: GeometryData;
-    dirtSnowData: GeometryData;
-    iceData: GeometryData;
-    glassData: GeometryData;
-    moonRockData: GeometryData;
-  }): void {
+  private handleWorkerResult(data: Record<string, unknown>): void {
     if (!this.batchedMeshGroup) return;
 
     profiler.begin('Planet.workerResult');
@@ -793,39 +779,12 @@ export class Planet {
     profiler.begin('Planet.workerResult.createMeshes');
     const newMeshes: THREE.Mesh[] = [];
 
-    // Map worker data keys to material config
-    const workerDataMap: Array<{ dataKey: keyof typeof data; materialKey: string; renderOrder?: number }> = [
-      { dataKey: 'topData', materialKey: 'top' },
-      { dataKey: 'sideData', materialKey: 'side' },
-      { dataKey: 'grassSideData', materialKey: 'grassSide' },
-      { dataKey: 'stoneData', materialKey: 'stone' },
-      { dataKey: 'sandData', materialKey: 'sand' },
-      { dataKey: 'woodData', materialKey: 'wood' },
-      { dataKey: 'waterData', materialKey: 'water', renderOrder: 1 },
-      // Mineral ores
-      { dataKey: 'oreCoalData', materialKey: 'oreCoal' },
-      { dataKey: 'oreCopperData', materialKey: 'oreCopper' },
-      { dataKey: 'oreIronData', materialKey: 'oreIron' },
-      { dataKey: 'oreGoldData', materialKey: 'oreGold' },
-      { dataKey: 'oreLithiumData', materialKey: 'oreLithium' },
-      { dataKey: 'oreAluminumData', materialKey: 'oreAluminum' },
-      { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
-      // Snow biome
-      { dataKey: 'snowData', materialKey: 'snow' },
-      { dataKey: 'snowSideData', materialKey: 'snowSide' },
-      { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
-      { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 }, // Render after water (transparent)
-      { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 }, // Render after ice (transparent)
-      // Moon terrain
-      { dataKey: 'moonRockData', materialKey: 'moonRock' },
-    ];
 
     let newWaterMesh: THREE.Mesh | null = null;
-    for (const { dataKey, materialKey, renderOrder } of workerDataMap) {
-      const geomData = data[dataKey] as GeometryData;
+    for (const { materialKey, geomData, renderOrder } of this.materialBuffers(data)) {
       if (geomData.positions.length > 0) {
         const geom = this.createBufferGeometry(geomData);
-        const materialConfig = this.BLOCK_MATERIALS.find(m => m.key === materialKey);
+        const materialConfig = this.terrainMaterialConfig(materialKey);
         if (materialConfig) {
           const mesh = new THREE.Mesh(geom, materialConfig.getMaterial());
           if (renderOrder !== undefined) {
@@ -938,29 +897,6 @@ export class Planet {
 
     profiler.begin('Planet.chunkWorkerResult');
 
-    // Map of geometry data key to material key
-    const dataToMaterial: Array<{ dataKey: string; materialKey: string; renderOrder?: number }> = [
-      { dataKey: 'topData', materialKey: 'top' },
-      { dataKey: 'sideData', materialKey: 'side' },
-      { dataKey: 'grassSideData', materialKey: 'grassSide' },
-      { dataKey: 'stoneData', materialKey: 'stone' },
-      { dataKey: 'sandData', materialKey: 'sand' },
-      { dataKey: 'woodData', materialKey: 'wood' },
-      { dataKey: 'waterData', materialKey: 'water', renderOrder: 1 },
-      { dataKey: 'oreCoalData', materialKey: 'oreCoal' },
-      { dataKey: 'oreCopperData', materialKey: 'oreCopper' },
-      { dataKey: 'oreIronData', materialKey: 'oreIron' },
-      { dataKey: 'oreGoldData', materialKey: 'oreGold' },
-      { dataKey: 'oreLithiumData', materialKey: 'oreLithium' },
-      { dataKey: 'oreAluminumData', materialKey: 'oreAluminum' },
-      { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
-      { dataKey: 'snowData', materialKey: 'snow' },
-      { dataKey: 'snowSideData', materialKey: 'snowSide' },
-      { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
-      { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 },
-      { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 },
-      { dataKey: 'moonRockData', materialKey: 'moonRock' },
-    ];
 
     // On first chunk rebuild, clear all old flat meshes from initial build
     // The initial build creates flat meshes, but chunk rebuilds use per-chunk groups
@@ -1013,12 +949,11 @@ export class Planet {
 
       // Create meshes for each material type
       let totalVerts = 0;
-      for (const { dataKey, materialKey, renderOrder } of dataToMaterial) {
-        const geomData = (chunkData as Record<string, GeometryData>)[dataKey];
-        if (geomData && geomData.positions.length > 0) {
+      for (const { materialKey, geomData, renderOrder } of this.materialBuffers(chunkData)) {
+        if (geomData.positions.length > 0) {
           totalVerts += geomData.positions.length / 3;
           const geom = this.createBufferGeometry(geomData);
-          const materialConfig = this.BLOCK_MATERIALS.find(m => m.key === materialKey);
+          const materialConfig = this.terrainMaterialConfig(materialKey);
           if (materialConfig) {
             const mesh = new THREE.Mesh(geom, materialConfig.getMaterial());
             if (renderOrder !== undefined) {
@@ -1768,36 +1703,12 @@ export class Planet {
     const chunkGroup = new THREE.Group();
     chunkGroup.name = `detailChunk_${chunkIndex}`;
 
-    // Map of geometry data key to material key
-    const dataToMaterial: Array<{ dataKey: keyof ChunkGeometryData; materialKey: string; renderOrder?: number }> = [
-      { dataKey: 'topData', materialKey: 'top' },
-      { dataKey: 'sideData', materialKey: 'side' },
-      { dataKey: 'grassSideData', materialKey: 'grassSide' },
-      { dataKey: 'stoneData', materialKey: 'stone' },
-      { dataKey: 'sandData', materialKey: 'sand' },
-      { dataKey: 'woodData', materialKey: 'wood' },
-      { dataKey: 'waterData', materialKey: 'water', renderOrder: 1 },
-      { dataKey: 'oreCoalData', materialKey: 'oreCoal' },
-      { dataKey: 'oreCopperData', materialKey: 'oreCopper' },
-      { dataKey: 'oreIronData', materialKey: 'oreIron' },
-      { dataKey: 'oreGoldData', materialKey: 'oreGold' },
-      { dataKey: 'oreLithiumData', materialKey: 'oreLithium' },
-      { dataKey: 'oreAluminumData', materialKey: 'oreAluminum' },
-      { dataKey: 'oreCobaltData', materialKey: 'oreCobalt' },
-      { dataKey: 'snowData', materialKey: 'snow' },
-      { dataKey: 'snowSideData', materialKey: 'snowSide' },
-      { dataKey: 'dirtSnowData', materialKey: 'dirtSnow' },
-      { dataKey: 'iceData', materialKey: 'ice', renderOrder: 2 },
-      { dataKey: 'glassData', materialKey: 'glass', renderOrder: 3 },
-      { dataKey: 'moonRockData', materialKey: 'moonRock' },
-    ];
 
-    for (const { dataKey, materialKey, renderOrder } of dataToMaterial) {
-      const geomData = chunkData[dataKey];
+    for (const { materialKey, geomData, renderOrder } of this.materialBuffers(chunkData)) {
       if (geomData.positions.length > 0) {
         const geom = createBufferGeometryFromData(geomData);
         if (geom) {
-          const materialConfig = this.BLOCK_MATERIALS.find(m => m.key === materialKey);
+          const materialConfig = this.terrainMaterialConfig(materialKey);
           if (materialConfig) {
             const mesh = new THREE.Mesh(geom, materialConfig.getMaterial());
             if (renderOrder !== undefined) {
@@ -2567,7 +2478,7 @@ export class Planet {
         if (column.blocks[d] !== HexBlockType.AIR) {
           if (surfaceBlockType === HexBlockType.GRASS) {
             surfaceDepth = d;
-            surfaceBlockType = column.blocks[d];
+            surfaceBlockType = baseTerrainType(column.blocks[d]);
           }
           if (column.blocks[d] !== HexBlockType.WATER) {
             terrainDepth = d;
@@ -4615,35 +4526,23 @@ export class Planet {
   }
 
   // Block material configuration - add new block types here
-  private readonly BLOCK_MATERIALS: Array<{
-    key: string;
-    getMaterial: () => THREE.Material;
-    renderOrder?: number;
-  }> = [
-    { key: 'top', getMaterial: () => this.meshBuilder.getTopMaterial() },
-    { key: 'side', getMaterial: () => this.meshBuilder.getSideMaterial() },
-    { key: 'grassSide', getMaterial: () => this.meshBuilder.getGrassSideMaterial() },
-    { key: 'stone', getMaterial: () => this.meshBuilder.getStoneMaterial() },
-    { key: 'sand', getMaterial: () => this.meshBuilder.getSandMaterial() },
-    { key: 'wood', getMaterial: () => this.meshBuilder.getWoodMaterial() },
-    { key: 'water', getMaterial: () => this.meshBuilder.getWaterMaterial(), renderOrder: 1 },
-    // Mineral ore materials
-    { key: 'oreCoal', getMaterial: () => this.meshBuilder.getMaterial('oreCoal') },
-    { key: 'oreCopper', getMaterial: () => this.meshBuilder.getMaterial('oreCopper') },
-    { key: 'oreIron', getMaterial: () => this.meshBuilder.getMaterial('oreIron') },
-    { key: 'oreGold', getMaterial: () => this.meshBuilder.getMaterial('oreGold') },
-    { key: 'oreLithium', getMaterial: () => this.meshBuilder.getMaterial('oreLithium') },
-    { key: 'oreAluminum', getMaterial: () => this.meshBuilder.getMaterial('oreAluminum') },
-    { key: 'oreCobalt', getMaterial: () => this.meshBuilder.getMaterial('oreCobalt') },
-    // Snow biome materials
-    { key: 'snow', getMaterial: () => this.meshBuilder.getSnowMaterial() },
-    { key: 'snowSide', getMaterial: () => this.meshBuilder.getSnowSideMaterial() },
-    { key: 'dirtSnow', getMaterial: () => this.meshBuilder.getDirtSnowMaterial() },
-    { key: 'ice', getMaterial: () => this.meshBuilder.getIceMaterial(), renderOrder: 2 },
-    { key: 'glass', getMaterial: () => this.meshBuilder.getGlassMaterial(), renderOrder: 3 },
-    // Moon terrain
-    { key: 'moonRock', getMaterial: () => this.meshBuilder.getMoonRockMaterial() },
-  ];
+  // Material for a mesher buffer key ('top', 'seqGrass', ...); see
+  // blockFaces() in shared/blockTypes for which faces use which key
+  private terrainMaterialConfig(materialKey: string): { getMaterial: () => THREE.Material } {
+    return { getMaterial: () => this.meshBuilder.getMaterial(materialKey) };
+  }
+
+  // Mesher output buffers ('<material>Data' keys) with their material key
+  // and draw order. Only buffers that exist are returned.
+  private materialBuffers(data: Record<string, unknown>): Array<{ materialKey: string; geomData: GeometryData; renderOrder?: number }> {
+    const out: Array<{ materialKey: string; geomData: GeometryData; renderOrder?: number }> = [];
+    for (const [dataKey, value] of Object.entries(data)) {
+      if (!dataKey.endsWith('Data') || !value || typeof value !== 'object' || !('positions' in value)) continue;
+      const materialKey = dataKey.slice(0, -4);
+      out.push({ materialKey, geomData: value as GeometryData, renderOrder: MATERIAL_RENDER_ORDER[materialKey] });
+    }
+    return out;
+  }
 
   private rebuildBatchedMeshes(): void {
     if (!this.batchedMeshGroup) return;
@@ -4661,11 +4560,8 @@ export class Planet {
       this.batchedMeshGroup.remove(child);
     }
 
-    // Create geometry data for all block types
+    // Geometry per material key, created as faces need them
     const geometryData: Record<string, GeometryData> = {};
-    for (const mat of this.BLOCK_MATERIALS) {
-      geometryData[mat.key] = createEmptyGeometryData();
-    }
 
     for (const tileIndex of this.cachedNearbyTiles) {
       const column = this.columns.get(tileIndex);
@@ -4680,8 +4576,8 @@ export class Planet {
     }
 
     // Create meshes from batched geometry
-    for (const mat of this.BLOCK_MATERIALS) {
-      const data = geometryData[mat.key];
+    for (const [key, data] of Object.entries(geometryData)) {
+      const mat = { key, getMaterial: () => this.meshBuilder.getMaterial(key), renderOrder: MATERIAL_RENDER_ORDER[key] };
       if (data.positions.length > 0) {
         const geom = this.createBufferGeometry(data);
         const mesh = new THREE.Mesh(geom, mat.getMaterial());
@@ -4711,84 +4607,21 @@ export class Planet {
 
   // Get the material key for a block type's top/bottom face
   private getBlockTopMaterialKey(blockType: HexBlockType): string {
-    switch (blockType) {
-      case HexBlockType.WATER: return 'water';
-      case HexBlockType.STONE: return 'stone';
-      case HexBlockType.SAND: return 'sand';
-      case HexBlockType.DIRT: return 'side';  // Dirt uses side (dirt) texture
-      case HexBlockType.WOOD: return 'wood';
-      case HexBlockType.GRASS: return 'top';  // Grass top
-      // Mineral ores
-      case HexBlockType.ORE_COAL: return 'oreCoal';
-      case HexBlockType.ORE_COPPER: return 'oreCopper';
-      case HexBlockType.ORE_IRON: return 'oreIron';
-      case HexBlockType.ORE_GOLD: return 'oreGold';
-      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
-      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
-      case HexBlockType.ORE_COBALT: return 'oreCobalt';
-      // Snow biome
-      case HexBlockType.SNOW: return 'snow';
-      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
-      case HexBlockType.ICE: return 'ice';
-      case HexBlockType.GLASS: return 'glass';
-      // Moon terrain
-      case HexBlockType.MOON_ROCK: return 'moonRock';
-      default: return 'top';
-    }
+    return blockFaces(blockType).top;
   }
+
 
   // Get the material key for a block type's side face
   private getBlockSideMaterialKey(blockType: HexBlockType): string {
-    switch (blockType) {
-      case HexBlockType.STONE: return 'stone';
-      case HexBlockType.SAND: return 'sand';
-      case HexBlockType.DIRT: return 'side';
-      case HexBlockType.WOOD: return 'wood';
-      case HexBlockType.GRASS: return 'grassSide';  // Grass sides use dirt_grass texture
-      // Mineral ores use same texture on all faces
-      case HexBlockType.ORE_COAL: return 'oreCoal';
-      case HexBlockType.ORE_COPPER: return 'oreCopper';
-      case HexBlockType.ORE_IRON: return 'oreIron';
-      case HexBlockType.ORE_GOLD: return 'oreGold';
-      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
-      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
-      case HexBlockType.ORE_COBALT: return 'oreCobalt';
-      // Snow biome
-      case HexBlockType.SNOW: return 'snowSide';  // Snow sides use dirt_snow texture
-      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
-      case HexBlockType.ICE: return 'ice';
-      case HexBlockType.GLASS: return 'glass';
-      // Moon terrain
-      case HexBlockType.MOON_ROCK: return 'moonRock';
-      default: return 'side';
-    }
+    return blockFaces(blockType).side;
   }
+
 
   // Get the material key for a block type's bottom face
   private getBlockBottomMaterialKey(blockType: HexBlockType): string {
-    switch (blockType) {
-      case HexBlockType.STONE: return 'stone';
-      case HexBlockType.SAND: return 'sand';
-      case HexBlockType.WOOD: return 'wood';
-      // Mineral ores use same texture on all faces
-      case HexBlockType.ORE_COAL: return 'oreCoal';
-      case HexBlockType.ORE_COPPER: return 'oreCopper';
-      case HexBlockType.ORE_IRON: return 'oreIron';
-      case HexBlockType.ORE_GOLD: return 'oreGold';
-      case HexBlockType.ORE_LITHIUM: return 'oreLithium';
-      case HexBlockType.ORE_ALUMINUM: return 'oreAluminum';
-      case HexBlockType.ORE_COBALT: return 'oreCobalt';
-      // Snow biome - snow blocks show dirt_snow on bottom
-      case HexBlockType.SNOW: return 'dirtSnow';
-      case HexBlockType.DIRT_SNOW: return 'dirtSnow';
-      case HexBlockType.ICE: return 'ice';
-      case HexBlockType.GLASS: return 'glass';
-      // Moon terrain
-      case HexBlockType.MOON_ROCK: return 'moonRock';
-      // Dirt and grass show dirt texture on bottom
-      default: return 'side';
-    }
+    return blockFaces(blockType).bottom;
   }
+
 
   private buildColumnGeometry(
     column: PlanetColumn,
@@ -4864,7 +4697,7 @@ export class Planet {
         if (posAttr && normAttr && uvAttr && indexAttr) {
           const key = this.getBlockTopMaterialKey(blockType);
           const light = isWater ? 1.0 : skyLightLevel;
-          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, light);
+          this.mergeGeometry((geometryData[key] ??= createEmptyGeometryData()), posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, light);
         }
         top.dispose();
       }
@@ -4877,7 +4710,7 @@ export class Planet {
         if (posAttr && normAttr && uvAttr && indexAttr) {
           const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
           const key = this.getBlockBottomMaterialKey(blockType);
-          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
+          this.mergeGeometry((geometryData[key] ??= createEmptyGeometryData()), posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, bottomSkyLight);
         }
         bottom.dispose();
       }
@@ -4889,14 +4722,14 @@ export class Planet {
         const indexAttr = sides.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           const key = this.getBlockSideMaterialKey(blockType);
-          this.mergeGeometry(geometryData[key], posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
+          this.mergeGeometry((geometryData[key] ??= createEmptyGeometryData()), posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, skyLightLevel);
         }
         sides.dispose();
       }
 
       // Water side faces - generate per-edge only where neighbor is air
       if (isWater) {
-        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, geometryData['water']);
+        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, (geometryData["water"] ??= createEmptyGeometryData()));
       }
     }
   }

@@ -13,6 +13,9 @@ interface TileData {
 
 // Planet config passed from main thread
 interface TerrainConfig {
+  // Replace generic terrain blocks with a planet's own block IDs
+  // (e.g. GRASS -> SEQ_GRASS on Sequoia); keys and values are HexBlockType
+  blockRemap?: Record<number, number>;
   seed: number;
   maxDepth: number;
   seaLevel: number;
@@ -447,6 +450,12 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       }
     }
 
+    if (config.blockRemap) {
+      for (let i = 0; i < blocks.length; i++) {
+        const to = config.blockRemap[blocks[i]];
+        if (to !== undefined) blocks[i] = to;
+      }
+    }
     columns.set(tile.index, blocks);
   }
 

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { InputManager, InputState } from '../engine/InputManager';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
+import { baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 import {
@@ -481,7 +482,7 @@ export class PlanetPlayer {
     if (groundDepth < 0) return SurfaceType.STONE;
 
     const blockType = this.currentPlanet.getBlock(currentTile.index, groundDepth);
-    return BLOCK_TO_SURFACE[blockType] ?? SurfaceType.STONE;
+    return BLOCK_TO_SURFACE[baseTerrainType(blockType)] ?? SurfaceType.STONE;
   }
 
   // Play footstep sound based on surface and movement speed

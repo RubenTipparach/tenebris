@@ -62,6 +62,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.PRINTER_3D: return ItemType.PRINTER_3D;
     // Moon terrain
     case HexBlockType.MOON_ROCK: return ItemType.MOON_ROCK;
+    // Sequoia terrain
+    case HexBlockType.SEQ_GRASS: return ItemType.SEQ_DIRT; // Like grass, drops its soil
+    case HexBlockType.SEQ_DIRT: return ItemType.SEQ_DIRT;
+    case HexBlockType.SEQ_SAND: return ItemType.SEQ_SAND;
+    case HexBlockType.SEQ_SNOW: return ItemType.SEQ_SNOW;
     default: return ItemType.NONE;
   }
 }
@@ -89,6 +94,10 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.GLASS: return HexBlockType.GLASS;
     // Moon terrain can be placed
     case ItemType.MOON_ROCK: return HexBlockType.MOON_ROCK;
+    // Sequoia terrain can be placed anywhere and keeps its look
+    case ItemType.SEQ_DIRT: return HexBlockType.SEQ_DIRT;
+    case ItemType.SEQ_SAND: return HexBlockType.SEQ_SAND;
+    case ItemType.SEQ_SNOW: return HexBlockType.SEQ_SNOW;
     default: return HexBlockType.AIR;
   }
 }
