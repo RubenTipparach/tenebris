@@ -433,10 +433,13 @@ The JS / Three.js client (`src/`, `public/`, `index.html`, the vite
 configs) is actively maintained again: fix, refactor and extend it
 freely. It ships to two places:
 
-- **heavyphoton.com/tenebris/** - `./build.sh deploy` (or `build.bat`)
-  builds with base `/tenebris/` (`npm run build:site` -> `dist-site/`)
-  and copies it into the heavyphoton.github.io checkout's
-  `docs/tenebris/`, replacing the old `assets/`. Commit it there.
+- **heavyphoton.com/tenebris/** - deployed automatically: on a push to
+  `main`, CI pings heavyphoton.github.io (needs a `SITE_DISPATCH_TOKEN`
+  secret), whose `deploy-tenebris` workflow builds main and commits it
+  to `docs/tenebris/`; it also checks hourly. By hand: `./build.sh
+  deploy` (or `build.bat`) builds with base `/tenebris/` (`npm run
+  build:site` -> `dist-site/`) and copies it into a heavyphoton.github.io
+  checkout's `docs/tenebris/`, replacing the old `assets/`.
 - **itch.io** - `./itch-build.sh` (or `itch-build.bat`) builds with
   relative, flattened paths (`npm run build:itch` -> `dist-itch/`) and
   zips it as `tenebris-itch.zip`. CI builds both on every push and can
