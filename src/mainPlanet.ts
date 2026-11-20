@@ -1105,7 +1105,7 @@ class PlanetGame {
     });
     bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
     bind('toggle-mock-planets', 'tenebris_mock_planets', (on) => {
-      if (on && !this.solarSystemMockup) this.solarSystemMockup = new SolarSystemMockup(this.engine.scene, this.sunPosition);
+      if (on && !this.solarSystemMockup) this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
       this.solarSystemMockup?.setEnabled(on);
     });
   }

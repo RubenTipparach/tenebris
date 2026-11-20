@@ -148,7 +148,12 @@ export class SolarSystemMockup {
   private bodies: Body[] = [];
   private enabled = false;
 
-  constructor(scene: THREE.Scene, private sunPosition: THREE.Vector3) {
+  // Sun position relative to the far layer's floating origin, shared by
+  // every material
+  private sunUniform = { value: new THREE.Vector3() };
+
+  // scene: the engine's far layer root (world coordinates, floating origin)
+  constructor(scene: THREE.Object3D, private sunPosition: THREE.Vector3, private origin: THREE.Vector3) {
     this.root.visible = false;
     this.root.name = 'solarSystemMockup';
     scene.add(this.root);
@@ -168,6 +173,7 @@ export class SolarSystemMockup {
   // they streak across the daytime sky)
   public update(dt: number, showGuides: boolean): void {
     if (!this.enabled) return;
+    this.sunUniform.value.copy(this.sunPosition).sub(this.origin);
     for (const b of this.bodies) {
       for (const g of b.guides) g.visible = showGuides;
       b.angle += b.speed * dt;
@@ -200,7 +206,7 @@ export class SolarSystemMockup {
       new THREE.SphereGeometry(spec.radius, 64, 40),
       new THREE.ShaderMaterial({
         uniforms: {
-          sunPosition: { value: this.sunPosition.clone() },
+          sunPosition: this.sunUniform,
           c0: { value: c[0] }, c1: { value: c[1] }, c2: { value: c[2] },
           kind: { value: KIND_ID[spec.kind] },
           seed: { value: index * 17.3 },
@@ -215,7 +221,7 @@ export class SolarSystemMockup {
       const glow = new THREE.Mesh(
         new THREE.SphereGeometry(spec.radius * 1.08, 48, 32),
         new THREE.ShaderMaterial({
-          uniforms: { glowColor: { value: new THREE.Color(spec.atmosphere) }, sunPosition: { value: this.sunPosition.clone() } },
+          uniforms: { glowColor: { value: new THREE.Color(spec.atmosphere) }, sunPosition: this.sunUniform },
           vertexShader: glowShader.vertexShader,
           fragmentShader: glowShader.fragmentShader,
           transparent: true,
