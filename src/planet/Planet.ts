@@ -32,6 +32,7 @@ export interface PlanetConfig {
   distantLODAltitude?: number;  // Altitude where DISTANT LOD activates
   detailRenderDistance?: number;  // Override for detail terrain render distance (tiles from player)
   isSpawnPlanet?: boolean;  // If true, generate detailed terrain immediately. If false, only LOD until approached.
+  seedOffset?: number;  // Added to the world seed so this planet gets its own landscape (default 0)
 }
 
 export interface PlanetColumn {
@@ -245,7 +246,7 @@ export class Planet {
     this.SEA_LEVEL = config.seaLevel ?? PlayerConfig.TERRAIN_SEA_LEVEL;
     this.MAX_DEPTH = this.SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
     this.MAX_HEIGHT = PlayerConfig.TERRAIN_MAX_HEIGHT;
-    this.seed = PlayerConfig.TERRAIN_SEED;
+    this.seed = PlayerConfig.TERRAIN_SEED + (config.seedOffset ?? 0);
     this.polyhedron = new GoldbergPolyhedron(radius, subdivisions);
     const targetChunks = this.polyhedron.tiles.length / PlayerConfig.LOD_CHUNK_TARGET_TILES;
     let chunkSub = 0;
@@ -258,6 +259,15 @@ export class Planet {
     this.lodChunkSubdivisions = chunkSub;
     this.LOD_CHUNK_COUNT = chunkSub === 0 ? PlayerConfig.LOD_CHUNK_COUNT : 10 * Math.pow(4, chunkSub) + 2;
     this.meshBuilder = new HexBlockMeshBuilder();
+  }
+
+  // Far-LOD colour of a single-texture planet at a height factor (0.4-1):
+  // its configured rock colour, or the Moon's grey when none is set
+  private singleTextureLodColor(heightFactor: number): THREE.Color {
+    const rock = this.config.lodColors?.rock;
+    return rock
+      ? new THREE.Color(rock).multiplyScalar(0.5 + 0.6 * heightFactor)
+      : new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
   }
 
   // Convert depth to radius
@@ -438,8 +448,12 @@ export class Planet {
           [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
           [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
           [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
+          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_SNOW,
         } : undefined,
-        biomes: this.config.tileset !== SEQUOIA_TILESET && !this.config.texturePath && this.config.hasWater !== false && biomeMockupOn(),
+        // Sequoia always has its biomes (desert, rocky highlands, snow
+        // beside its grassland, in its own blocks via blockRemap); on Earth
+        // they are still the Debug-tab mockup
+        biomes: !this.config.texturePath && this.config.hasWater !== false && (this.config.tileset === SEQUOIA_TILESET || biomeMockupOn()),
         seed: this.seed,
         maxDepth: this.MAX_DEPTH,
         seaLevel: this.SEA_LEVEL,
@@ -1910,7 +1924,7 @@ export class Planet {
         if (isSingleTexturePlanet) {
           // Single texture planets (like moon) use grey shading based on height
           const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
-          color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+          color = this.singleTextureLodColor(heightFactor);
         } else if (isWater && isPolar) {
           // Polar water = ice
           color = new THREE.Color(lodColors.ice);
@@ -2014,7 +2028,7 @@ export class Planet {
         if (!tileData.isWater) {
           // Use grey for single-texture planets (moon), brown for Earth
           const sideColor = isSingleTexturePlanet
-            ? new THREE.Color(0.5, 0.5, 0.5)
+            ? this.singleTextureLodColor(0.72)
             : new THREE.Color(0x8b7355);
           const numSides = tile.vertices.length;
 
@@ -2174,7 +2188,7 @@ export class Planet {
       let color: THREE.Color;
       if (isSingleTexturePlanet) {
         const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
-        color = new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+        color = this.singleTextureLodColor(heightFactor);
       } else if (isWater && isPolar) {
         color = new THREE.Color(lodColors.ice);
       } else if (isWater) {
@@ -2249,7 +2263,7 @@ export class Planet {
       // (Only for non-water tiles)
       if (!tileData.isWater) {
         const sideColor = isSingleTexturePlanet
-          ? new THREE.Color(0.5, 0.5, 0.5)
+          ? this.singleTextureLodColor(0.72)
           : new THREE.Color(0x8b7355);
         const numSides = tile.vertices.length;
 

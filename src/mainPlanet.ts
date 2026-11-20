@@ -77,6 +77,7 @@ class PlanetGame {
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
   private groundClutter: GroundClutter | null = null;
+  private earthClutter = false; // biome mockup: clutter on Earth too
   private daytimeSkyMockup = false;
 
   // Shared frustum for all planet updates (calculated once per frame)
@@ -130,6 +131,7 @@ class PlanetGame {
           highLODAltitude: bodyConfig.highLODAltitude,
           distantLODAltitude: bodyConfig.distantLODAltitude,
           detailRenderDistance: bodyConfig.detailRenderDistance,
+          seedOffset: bodyConfig.terrain.seed,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -635,6 +637,18 @@ class PlanetGame {
       console.log('[Deferred] Sequoia initialized with atmosphere (trees on approach)');
     }
 
+    // The barren worlds: LOD only (a sphere to see from afar), one at a
+    // time with frames in between. Their terrain is generated on approach
+    // or teleport (Planet.update -> enableDetailedTerrain), not now, so
+    // eight extra planets cost nothing until someone goes there.
+    for (const planet of this.planets.values()) {
+      if (planet === this.earth || planet === this.moon || planet === this.sequoia) continue;
+      await this.yieldToMainThread();
+      await planet.initialize();
+      planet.updateBoundingSpheres();
+      planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    }
+
     const elapsed = performance.now() - startTime;
     console.log(`[Deferred] All planets initialized in ${elapsed.toFixed(0)}ms`);
 
@@ -668,11 +682,19 @@ class PlanetGame {
     MusicManager.update();
 
     this.multiplayer?.update(deltaTime);
-    if (this.groundClutter) {
-      // Biomes (and so the clutter) are Earth-only
-      const near = this.player.position.distanceTo(this.earth.center) < this.earth.radius * 1.2;
-      this.groundClutter.update(deltaTime, this.player.position, near ? this.earth : null,
-        calculateSunDirectionForPlanet(this.earth.center, this.sunPosition));
+    // Ground clutter (grass tufts, rocks): always on Sequoia, on Earth with
+    // the biome mockup
+    if (!this.groundClutter) {
+      this.groundClutter = new GroundClutter(this.engine.scene);
+      this.groundClutter.setEnabled(true);
+    }
+    {
+      const pos = this.player.position;
+      let on: Planet | null = null;
+      if (this.sequoia && pos.distanceTo(this.sequoia.center) < this.sequoia.radius * 1.2) on = this.sequoia;
+      else if (this.earthClutter && pos.distanceTo(this.earth.center) < this.earth.radius * 1.2) on = this.earth;
+      this.groundClutter.update(deltaTime, pos, on,
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
     }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
@@ -750,12 +772,14 @@ class PlanetGame {
     this.earth.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     profiler.end('Earth Update');
 
-    // Only update Moon and Sequoia if they've been initialized (deferred loading)
-    if (this.moon.isInitialTerrainReady()) {
-      profiler.begin('Moon Update');
-      this.moon.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
-      profiler.end('Moon Update');
+    // The other planets, once initialized (deferred loading). Sequoia is
+    // updated below with its trees.
+    profiler.begin('Other Planets Update');
+    for (const planet of this.planets.values()) {
+      if (planet === this.earth || planet === this.sequoia || !planet.isInitialTerrainReady()) continue;
+      planet.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
     }
+    profiler.end('Other Planets Update');
 
     if (this.sequoia.isInitialTerrainReady()) {
       profiler.begin('Sequoia Update');
@@ -865,7 +889,17 @@ class PlanetGame {
       PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
       (direction) => this.sequoia.getTileIndexInDirection(direction),
       (direction) => this.sequoia.getTileCenterInDirection(direction),
-      removedSequoiaTiles
+      removedSequoiaTiles,
+      (tileIndex, roll) => {
+        // Sequoia's biomes: ferns and lantern trees in the grassland,
+        // redwoods on the snowy heights, the odd lantern tree in the
+        // desert, nothing on bare rock
+        const top = this.topBlock(this.sequoia, tileIndex);
+        if (top === HexBlockType.SEQ_GRASS) return roll < 0.35 ? 'redwood' : roll < 0.75 ? 'treefern' : 'lantern';
+        if (top === HexBlockType.SEQ_SNOW) return roll < 0.6 ? 'redwood' : null;
+        if (top === HexBlockType.SEQ_SAND) return roll < 0.15 ? 'lantern' : null;
+        return null;
+      }
     );
     console.log('[Deferred] Sequoia mushroom trees scattered');
   }
@@ -989,6 +1023,14 @@ class PlanetGame {
     // Handle teleport dropdown (Debug tab). Reset it afterwards so picking
     // the same planet again still fires 'change'.
     if (teleportSelect) {
+      // One option per landable body, straight from the solar system config
+      for (const body of SOLAR_SYSTEM.bodies) {
+        if (!body.landable) continue;
+        const option = document.createElement('option');
+        option.value = body.id;
+        option.textContent = body.name;
+        teleportSelect.appendChild(option);
+      }
       teleportSelect.addEventListener('change', () => {
         const target = teleportSelect.value;
         teleportSelect.value = '';
@@ -1096,6 +1138,14 @@ class PlanetGame {
     if (overlay) overlay.classList.add('hidden');
   }
 
+  private topBlock(planet: Planet, tileIndex: number): number {
+    for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+      const b = planet.getBlock(tileIndex, d);
+      if (b !== HexBlockType.AIR) return b;
+    }
+    return HexBlockType.AIR;
+  }
+
   // Biome mockup: trees follow the ground. Temperate grass grows oak and
   // birch with some pine, tundra grows pine, nothing grows on bare rock,
   // alpine snow or open desert.
@@ -1104,11 +1154,7 @@ class PlanetGame {
     try { on = localStorage.getItem('tenebris_mock_biomes') === '1'; } catch { /* blocked */ }
     if (!on) return undefined;
     return (tileIndex, roll) => {
-      let top: number = HexBlockType.AIR;
-      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
-        const b = planet.getBlock(tileIndex, d);
-        if (b !== HexBlockType.AIR) { top = b; break; }
-      }
+      const top = this.topBlock(planet, tileIndex);
       if (top === HexBlockType.GRASS) return roll < 0.45 ? 'oak' : roll < 0.75 ? 'birch' : 'pine';
       if (top === HexBlockType.DIRT_SNOW) return roll < 0.6 ? 'pine' : null;
       return null;
@@ -1137,14 +1183,10 @@ class PlanetGame {
     bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
     // Terrain and tree biomes are read at load (reload to change them); the
     // ground clutter follows the toggle live
-    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => {
-      if (on && !this.groundClutter) this.groundClutter = new GroundClutter(this.engine.scene);
-      this.groundClutter?.setEnabled(on);
-    });
-    bind('toggle-mock-planets', 'tenebris_mock_planets', (on) => {
-      if (on && !this.solarSystemMockup) this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
-      this.solarSystemMockup?.setEnabled(on);
-    });
+    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => { this.earthClutter = on; });
+    // The gas giants are part of the system now, not a toggle
+    this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
+    this.solarSystemMockup.setEnabled(true);
   }
 
   // Daytime sky mockup: inside an atmosphere, on the day side, the stars

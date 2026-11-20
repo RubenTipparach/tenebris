@@ -1,18 +1,14 @@
 import * as THREE from 'three';
 
 /**
- * MOCKUP (Debug tab): ten more planets orbiting the star.
+ * The gas giants: Brontes and Aurelia, far out round the star.
  *
- * Look-and-feel prototype for a bigger solar system - not landable, no
- * terrain, no gravity. Each body is a procedurally shaded sphere (rocky,
- * icy, desert, ocean, lava or banded gas giant) lit by the star, some with
- * rings or an atmosphere glow, on an inclined orbit whose speed follows
- * Kepler's third law (period ~ r^1.5). Orbit lines and name tags help
- * read the layout from space.
- *
- * Making the real, landable planets orbit as well needs each planet to
- * carry its own moving frame (terrain, trees, machines and the player
- * all in planet-local coordinates); this mockup only covers the look.
+ * Visual only - not landable, no terrain, no gravity (the ten landable
+ * planets are real Planets from SolarSystemConfig). Each giant is a
+ * procedurally shaded banded sphere lit by the star, with rings, on an
+ * inclined orbit whose speed follows Kepler's third law (period ~ r^1.5).
+ * Orbit lines and name tags show in space only. Drawn in the engine's far
+ * layer (floating origin), so the 1e6 far plane keeps them in view.
  */
 
 type Kind = 'rocky' | 'icy' | 'desert' | 'ocean' | 'lava' | 'gas';
@@ -29,19 +25,11 @@ interface BodySpec {
   atmosphere?: number;  // glow colour
 }
 
-// Orbits sit outside the star (radius 500) and avoid the current planets
-// (Earth, Moon and Sequoia are ~3.5-4.1k from the star).
+// Far outside the landable planets (all within ~4 km of Earth; the star
+// is ~4.1 km from Earth), so the giants never crowd them.
 const BODIES: BodySpec[] = [
-  { name: 'Cinder', kind: 'lava', radius: 35, orbit: 1300, inclination: 2, phase: 0.4, colors: [0x2a0a05, 0xff5a1f, 0xffd166], atmosphere: 0xff6b3d },
-  { name: 'Vesper', kind: 'desert', radius: 55, orbit: 1900, inclination: 4, phase: 2.1, colors: [0x8c5a2b, 0xd9a066, 0xf2d0a4], atmosphere: 0xf2c48d },
-  { name: 'Halcyon', kind: 'ocean', radius: 80, orbit: 2600, inclination: 1, phase: 4.0, colors: [0x0b3d6b, 0x1f7ab8, 0xe8f4ff], atmosphere: 0x8fd3ff },
-  { name: 'Ferrum', kind: 'rocky', radius: 45, orbit: 5200, inclination: 6, phase: 1.2, colors: [0x3b2f2f, 0x7a5c4f, 0xb39a8c] },
-  { name: 'Tessaly', kind: 'icy', radius: 60, orbit: 6000, inclination: 3, phase: 5.2, colors: [0x7aa6c2, 0xcfe8f5, 0xffffff], atmosphere: 0xcde9ff },
   { name: 'Brontes', kind: 'gas', radius: 240, orbit: 7600, inclination: 1.5, phase: 3.3, colors: [0x8a5a34, 0xd9b38c, 0xf5e6d0], rings: true },
   { name: 'Aurelia', kind: 'gas', radius: 190, orbit: 9200, inclination: 2.5, phase: 0.9, colors: [0x6b5a2b, 0xe0c068, 0xfff1c2], rings: true },
-  { name: 'Nerith', kind: 'gas', radius: 150, orbit: 10800, inclination: 1.8, phase: 4.7, colors: [0x1d3f6e, 0x4f86c6, 0xb8dcff], atmosphere: 0x7fb8ff },
-  { name: 'Kessel', kind: 'rocky', radius: 30, orbit: 12200, inclination: 9, phase: 2.6, colors: [0x2b2b33, 0x5b5b66, 0x9a9aa6] },
-  { name: 'Umbra', kind: 'icy', radius: 70, orbit: 13600, inclination: 12, phase: 5.9, colors: [0x2a3550, 0x6a7fa8, 0xdfe7ff], rings: true },
 ];
 
 const BASE_PERIOD_S = 240;       // orbit period at r = 2000, in seconds of play

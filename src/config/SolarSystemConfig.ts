@@ -97,7 +97,8 @@ export interface TerrainConfig {
   maxDepth?: number;
   /** Max height above sea level for building/terrain */
   maxHeight?: number;
-  /** Terrain seed override (uses global seed if not set) */
+  /** Added to the world seed for this body, so bodies sharing the same
+   *  generator still get their own landscape (0 / unset = the world seed) */
   seed?: number;
   /** Water color override (hex string, defaults to PlayerConfig.WATER_COLOR) */
   waterColor?: string;
@@ -178,6 +179,73 @@ export const MOON_TILESET: TilesetConfig = {
   glass: '/textures/glass.png',
   mineralsPath: '/textures/minerals/earth',  // Reuse Earth minerals (moon folder doesn't exist)
 };
+
+/**
+ * Tileset for a single-texture (barren) planet: its own rock texture on
+ * every native surface, like the Moon's.
+ */
+function singleTextureTileset(texture: string): TilesetConfig {
+  return {
+    ...MOON_TILESET,
+    stone: texture, dirt: texture, grass: texture, dirtGrass: texture, sand: texture,
+    wood: texture, snow: texture, dirtSnow: texture, ice: texture,
+  };
+}
+
+/** What makes one barren world different from the next. */
+interface BarrenWorld {
+  id: string;
+  name: string;
+  radius: number;
+  subdivisions: number;       // 4 = radius ~25, 5 = ~50, 6 = ~100 (keeps tiles ~1.75 m)
+  position: { x: number; y: number; z: number };
+  heightVariation: number;
+  gravity: number;            // 1 = Earth
+  colour: string;             // distant and far-LOD colour
+  seed: number;               // offset from the world seed
+}
+
+/**
+ * A lifeless, landable rock planet with its own surface texture
+ * (public/textures/planets/<id>.png, from scripts/gen-planet-textures.py).
+ * No water, atmosphere, flora or fauna; native rock, polar ice and ore
+ * veins come from the single-texture terrain generator, like the Moon's.
+ */
+function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
+  const texture = `/textures/planets/${w.id}.png`;
+  return {
+    id: w.id,
+    name: w.name,
+    type: CelestialBodyType.PLANET,
+    radius: w.radius,
+    subdivisions: w.subdivisions,
+    position: w.position,
+    visual: {
+      texturePath: texture,
+      heightVariation: w.heightVariation,
+      terrainStyle: TerrainStyle.BARREN,
+      distantColor: w.colour,
+      lodColors: { rock: w.colour },
+    },
+    gravity: {
+      strength: w.gravity,
+      fullRadiusMultiplier: 1.4,
+      falloffRadiusMultiplier: 2.4,
+    },
+    terrain: {
+      hasWater: false,
+      seed: w.seed,
+    },
+    tileset: singleTextureTileset(texture),
+    spawn: {
+      latitude: 20,
+      longitude: 30,
+      altitudeAboveSurface: 3,
+    },
+    landable: true,
+    hasAtmosphere: false,
+  };
+}
 
 /**
  * Sequoia tileset - alien planet with unique terrain textures
@@ -447,6 +515,28 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       distantLODAltitude: 150,  // HIGH -> DISTANT at altitude 200
       detailRenderDistance: 20,  // Fewer detail tiles for larger planet (reduces geometry load)
     },
+
+    // =========================================================================
+    // THE BARREN WORLDS - eight more landable planets (lifeless rock)
+    // =========================================================================
+    // Spread round Earth at 1.5-4 km so the rocket reaches each in a few
+    // minutes, and kept clear of the sun (1000, 0, 4000).
+    barrenPlanet({ id: 'cinder', name: 'Cinder', radius: 45, subdivisions: 5, position: { x: -1600, y: 150, z: 900 },
+      heightVariation: 0.9, gravity: 0.6, colour: '#5a3a30', seed: 101 }),
+    barrenPlanet({ id: 'vesper', name: 'Vesper', radius: 60, subdivisions: 5, position: { x: 2200, y: -100, z: -600 },
+      heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202 }),
+    barrenPlanet({ id: 'halcyon', name: 'Halcyon', radius: 55, subdivisions: 5, position: { x: -900, y: -250, z: -1800 },
+      heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303 }),
+    barrenPlanet({ id: 'ferrum', name: 'Ferrum', radius: 90, subdivisions: 6, position: { x: 2600, y: 300, z: 2200 },
+      heightVariation: 1.0, gravity: 0.9, colour: '#953b25', seed: 404 }),
+    barrenPlanet({ id: 'tessaly', name: 'Tessaly', radius: 50, subdivisions: 5, position: { x: -2400, y: 400, z: -400 },
+      heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505 }),
+    barrenPlanet({ id: 'nerith', name: 'Nerith', radius: 38, subdivisions: 5, position: { x: 300, y: -500, z: -2600 },
+      heightVariation: 0.7, gravity: 0.45, colour: '#61708a', seed: 606 }),
+    barrenPlanet({ id: 'kessel', name: 'Kessel', radius: 25, subdivisions: 4, position: { x: -300, y: 600, z: 2400 },
+      heightVariation: 1.0, gravity: 0.25, colour: '#655d77', seed: 707 }),
+    barrenPlanet({ id: 'umbra', name: 'Umbra', radius: 45, subdivisions: 5, position: { x: 3600, y: -200, z: 600 },
+      heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808 }),
 
     // =========================================================================
     // EXAMPLE: Additional bodies that could be added

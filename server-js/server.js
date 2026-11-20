@@ -41,7 +41,11 @@ const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 64);   // whole server
 const MAX_WORLDS = Number(process.env.MAX_WORLDS || 100);
 const CREATE_COOLDOWN_MS = 20_000;   // per address, so the list can't be flooded
 const MAX_EDITS_PER_SECOND = 40;     // per client, to bound log growth from a bad client
-const KNOWN_PLANETS = new Set(['earth', 'moon', 'sequoia']);
+// Planet ids are the client's SolarSystemConfig body ids. Accept any id of
+// that shape rather than keeping a second list here that must be updated
+// with every new planet (and silently drops edits when it isn't).
+const PLANET_ID = /^[a-z][a-z0-9_]{1,23}$/;
+const isPlanetId = (v) => typeof v === 'string' && PLANET_ID.test(v);
 const MAIN_WORLD = { id: 'main', name: 'Tenebris', seed: 12345, created: 0 };
 
 // ---- worlds ---------------------------------------------------------------
@@ -147,10 +151,10 @@ function onMessage(id, raw) {
   if (m.t === 'hello' && typeof m.name === 'string') {
     pl.name = m.name.replace(/[^\x20-\x7e]/g, '').slice(0, 24) || pl.name;
     broadcast(w, { t: 'join', id, name: pl.name }, id);
-  } else if (m.t === 'pose' && KNOWN_PLANETS.has(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
+  } else if (m.t === 'pose' && isPlanetId(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
     pl.planet = m.planet; pl.p = m.p; pl.q = m.q;
     broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q }, id);
-  } else if (m.t === 'edit' && KNOWN_PLANETS.has(m.planet) && Number.isInteger(m.tile) && Number.isInteger(m.depth) && Number.isInteger(m.block)
+  } else if (m.t === 'edit' && isPlanetId(m.planet) && Number.isInteger(m.tile) && Number.isInteger(m.depth) && Number.isInteger(m.block)
              && m.tile >= 0 && m.tile < 1_000_000 && m.depth >= 0 && m.depth < 256 && m.block >= 0 && m.block < 256) {
     const now = Date.now();
     if (now - pl.editWindow > 1000) { pl.editWindow = now; pl.editCount = 0; }

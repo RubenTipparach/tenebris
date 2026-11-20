@@ -1,3 +1,5 @@
+import { getLandableBodies } from '../config/SolarSystemConfig';
+
 // Types for saved game data
 
 // Tile change for a planet
@@ -217,8 +219,9 @@ export function setSaveWorld(worldId: string | null): void {
 }
 const STORAGE_KEY_PLAYER_BASE = 'player';
 // Each planet's edits live under tenebris_<planetId> (tenebris_earth,
-// tenebris_moon, tenebris_sequoia). Sequoia used to share the moon's key.
-const PLANET_IDS = ['earth', 'moon', 'sequoia'];
+// tenebris_moon, tenebris_sequoia, ...). Sequoia used to share the moon's
+// key. Every landable body in the solar system config gets one.
+const PLANET_IDS = getLandableBodies().map(body => body.id);
 const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}${planetId}`;
 const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';

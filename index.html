@@ -1337,13 +1337,6 @@
         </div>
       </div>
       <div class="settings-row">
-        <label for="toggle-mock-planets">Mockup: 10 orbiting planets</label>
-        <div class="toggle-switch">
-          <input type="checkbox" id="toggle-mock-planets">
-          <span class="toggle-slider"></span>
-        </div>
-      </div>
-      <div class="settings-row">
         <label>Rocket + launch pad here</label>
         <button id="spawn-rocket-btn" class="play-music-btn">Spawn</button>
       </div>
@@ -1351,9 +1344,7 @@
         <label for="teleport-select">Teleport</label>
         <select id="teleport-select" class="teleport-select">
           <option value="" selected disabled>Choose planet</option>
-          <option value="earth">Earth</option>
-          <option value="moon">Moon</option>
-          <option value="sequoia">Sequoia</option>
+          <!-- one option per landable body, added from SolarSystemConfig -->
         </select>
       </div>
     </div>
