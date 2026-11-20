@@ -85,8 +85,6 @@ export class LaunchPadManager {
   // Geometry and materials
   private baseGeometry: THREE.CylinderGeometry | null = null;
   private baseMaterial: THREE.ShaderMaterial | null = null;
-  // The ring of the launch complex: light concrete with a hazard-striped rim
-  private platformMaterial: THREE.ShaderMaterial | null = null;
   private segmentGeometry: THREE.BoxGeometry | null = null;
   private segmentMaterial: THREE.ShaderMaterial | null = null;
 
@@ -241,11 +239,6 @@ export class LaunchPadManager {
       alphaTest: 0.01,
       side: THREE.DoubleSide,
     });
-
-    // Ring material: same shader and (shared) lighting uniforms, its own
-    // concrete texture
-    this.platformMaterial = this.baseMaterial.clone();
-    this.platformMaterial.uniforms = { ...this.baseMaterial.uniforms, techTexture: { value: createPlatformTexture() } };
 
     // Load segment texture
     const segmentTexture = await new Promise<THREE.Texture>((resolve, reject) => {
@@ -498,7 +491,7 @@ export class LaunchPadManager {
     if (!tiles || outerRadius === undefined || !this.baseMaterial) return;
     for (const tile of tiles) {
       const inner = Math.min(tile.innerRadius, outerRadius - 0.05);
-      group.add(new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, outerRadius, planetCenter), this.platformMaterial ?? this.baseMaterial));
+      group.add(new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, outerRadius, planetCenter), this.baseMaterial));
     }
   }
 
@@ -1454,66 +1447,4 @@ export class LaunchPadManager {
     this.segmentGeometry?.dispose();
     this.segmentMaterial?.dispose();
   }
-}
-
-/**
- * Concrete for the launch complex ring, in the pad's atlas layout (left
- * cell = top face, a hexagon inscribed in the cell; right cell = sides):
- * light slab with a yellow/black hazard band round the rim, striped sides.
- */
-function createPlatformTexture(): THREE.Texture {
-  const cell = 32;
-  const canvas = document.createElement('canvas');
-  canvas.width = cell * 2;
-  canvas.height = cell;
-  const ctx = canvas.getContext('2d')!;
-  // Concrete with speckle (deterministic)
-  let seed = 7;
-  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (let y = 0; y < cell; y++) {
-    for (let x = 0; x < cell * 2; x++) {
-      const v = 168 + Math.floor(rnd() * 22);
-      ctx.fillStyle = `rgb(${v},${v - 2},${v - 6})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-  // Top face: hazard band just inside the hexagon's edge
-  const hex = (r: number) => {
-    ctx.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 - Math.PI / 2;
-      const px = cell / 2 + Math.cos(a) * r, py = cell / 2 + Math.sin(a) * r;
-      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-  };
-  ctx.save();
-  hex(cell / 2);
-  hex(cell / 2 - 4);
-  ctx.clip('evenodd');
-  for (let i = -cell; i < cell * 2; i += 6) {
-    ctx.fillStyle = '#f2c230';
-    ctx.beginPath();
-    ctx.moveTo(i, 0); ctx.lineTo(i + 3, 0); ctx.lineTo(i + 3 + cell, cell); ctx.lineTo(i + cell, cell);
-    ctx.fill();
-  }
-  ctx.restore();
-  // Seams between slabs
-  ctx.strokeStyle = 'rgba(70,70,70,0.6)';
-  ctx.lineWidth = 1;
-  hex(cell / 2 - 9);
-  ctx.stroke();
-  // Sides: hazard stripes along the top edge
-  for (let i = cell - 8; i < cell * 2 + 8; i += 6) {
-    ctx.fillStyle = '#f2c230';
-    ctx.beginPath();
-    ctx.moveTo(i, 0); ctx.lineTo(i + 3, 0); ctx.lineTo(i + 7, 6); ctx.lineTo(i + 4, 6);
-    ctx.fill();
-  }
-  ctx.fillStyle = '#1b1b1b';
-  ctx.fillRect(cell, 6, cell, 1);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  return tex;
 }
