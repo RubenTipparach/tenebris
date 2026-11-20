@@ -22,6 +22,9 @@ export enum FaceType {
   SIDE = 'side'
 }
 
+// Texture loads shared by every planet's mesh builder (see loadTexture)
+const textureCache = new Map<string, Promise<THREE.Texture>>();
+
 export class HexBlockMeshBuilder {
   private textureLoader: THREE.TextureLoader;
   private textures: Map<string, THREE.Texture> = new Map();
@@ -84,6 +87,14 @@ export class HexBlockMeshBuilder {
   ): Promise<void> {
     // Use provided tileset or default to Earth tileset
     const ts = tileset || EARTH_TILESET;
+    // Start every texture this planet needs at once (they're cached, so the
+    // awaits below then resolve as each arrives instead of one by one)
+    const wanted = new Set<string>();
+    for (const set of [ts, EARTH_TILESET, SEQUOIA_TILESET, MOON_TILESET]) {
+      for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
+    }
+    if (singleTexturePath) wanted.add(singleTexturePath);
+    await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
     const waterDeepColor = waterColors?.deepColor || PlayerConfig.WATER_DEEP_COLOR;
@@ -434,17 +445,26 @@ export class HexBlockMeshBuilder {
   private loadTexture(path: string): Promise<THREE.Texture> {
     // Prepend base URL for production builds (e.g., GitHub Pages subdirectory)
     const fullPath = getAssetPath(path);
-    return new Promise((resolve, reject) => {
+    // One load per texture for the whole session, shared by every planet
+    // (each planet's block set used to re-load ~20 textures one after
+    // another, which held a first teleport on "Loading planet..." for
+    // half a minute)
+    const cached = textureCache.get(fullPath);
+    if (cached) return cached;
+    const promise = new Promise<THREE.Texture>((resolve, reject) => {
       this.textureLoader.load(
         fullPath,
         resolve,
         undefined,
         (error) => {
           console.error(`[HexBlock] Failed to load texture: ${fullPath} (original: ${path})`);
+          textureCache.delete(fullPath);
           reject(error);
         }
       );
     });
+    textureCache.set(fullPath, promise);
+    return promise;
   }
 
   public getMaterial(faceType: string): THREE.Material {

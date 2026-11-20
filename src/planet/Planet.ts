@@ -448,7 +448,9 @@ export class Planet {
           [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
           [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
           [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
-          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_SNOW,
+          // Sequoia's cold lowlands are redwood forest floor, not snow;
+          // its snow is only the peaks and poles
+          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DIRT,
         } : undefined,
         // Sequoia always has its biomes (desert, rocky highlands, snow
         // beside its grassland, in its own blocks via blockRemap); on Earth
