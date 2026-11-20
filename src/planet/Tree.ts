@@ -169,6 +169,14 @@ export class TreeBuilder {
     // Position the tree
     tree.position.copy(position);
 
+    // Trees never move: compute the matrices once and take the whole tree
+    // out of three.js's per-frame matrix update (Sequoia has 1000+).
+    tree.updateMatrixWorld(true);
+    tree.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.matrixWorldAutoUpdate = false;
+    });
+
     return tree;
   }
 
@@ -257,6 +265,9 @@ export class PlanetTreeManager {
   private batchedMesh: THREE.Mesh | null = null;
   private batchedMaterial: THREE.ShaderMaterial | null = null;
   private currentVisibleTiles: Set<number> = new Set();
+  // The visible-tile Set passed last frame; reset whenever trees or
+  // visibility change so the next updateVisibility() does the full pass.
+  private lastVisibleTileSet: Set<number> | null = null;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -271,6 +282,7 @@ export class PlanetTreeManager {
 
   // Place a tree at a specific world position
   public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<TreeConfig>, tileIndex?: number): THREE.Group {
+    this.lastVisibleTileSet = null;
     // Calculate up direction (away from planet center)
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
 
@@ -296,6 +308,7 @@ export class PlanetTreeManager {
 
   // Remove a tree
   public removeTree(tree: THREE.Group): void {
+    this.lastVisibleTileSet = null;
     const index = this.trees.indexOf(tree);
     if (index >= 0) {
       this.trees.splice(index, 1);
@@ -427,6 +440,10 @@ export class PlanetTreeManager {
   // Update tree visibility based on which tiles are visible (near player)
   // Uses batched rendering for better performance
   public updateVisibility(visibleTileIndices: Set<number>): void {
+    // Same Set object as last frame = nothing changed (Planet caches it)
+    if (visibleTileIndices === this.lastVisibleTileSet) return;
+    this.lastVisibleTileSet = visibleTileIndices;
+
     // Check if visible tiles changed
     let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
     if (!changed) {
@@ -456,6 +473,7 @@ export class PlanetTreeManager {
 
   // Set visibility for all trees at once (for LOD/orbit mode transitions)
   public setAllVisible(visible: boolean): void {
+    this.lastVisibleTileSet = null;
     // Hide batched mesh and individual trees
     if (this.batchedMesh) {
       this.batchedMesh.visible = false;
@@ -668,6 +686,14 @@ export class MushroomTreeBuilder {
     // Position the mushroom
     tree.position.copy(position);
 
+    // Trees never move: compute the matrices once and take the whole tree
+    // out of three.js's per-frame matrix update (Sequoia has 1000+).
+    tree.updateMatrixWorld(true);
+    tree.traverse((obj) => {
+      obj.matrixAutoUpdate = false;
+      obj.matrixWorldAutoUpdate = false;
+    });
+
     return tree;
   }
 
@@ -751,6 +777,9 @@ export class MushroomTreeManager {
   private batchedMesh: THREE.Mesh | null = null;
   private batchedMaterial: THREE.ShaderMaterial | null = null;
   private currentVisibleTiles: Set<number> = new Set();
+  // The visible-tile Set passed last frame; reset whenever trees or
+  // visibility change so the next updateVisibility() does the full pass.
+  private lastVisibleTileSet: Set<number> | null = null;
   private sunDirection: THREE.Vector3;
 
   constructor(scene: THREE.Scene, sunDirection?: THREE.Vector3) {
@@ -765,6 +794,7 @@ export class MushroomTreeManager {
 
   // Place a mushroom at a specific world position
   public addTree(worldPosition: THREE.Vector3, planetCenter: THREE.Vector3, config?: Partial<MushroomTreeConfig>, tileIndex?: number): THREE.Group {
+    this.lastVisibleTileSet = null;
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
     const tree = this.treeBuilder.createTree(worldPosition, upDirection, config);
 
@@ -783,6 +813,7 @@ export class MushroomTreeManager {
 
   // Remove a mushroom tree
   public removeTree(tree: THREE.Group): void {
+    this.lastVisibleTileSet = null;
     const index = this.trees.indexOf(tree);
     if (index >= 0) {
       this.trees.splice(index, 1);
@@ -892,6 +923,10 @@ export class MushroomTreeManager {
 
   // Update visibility based on visible tiles - uses batched rendering
   public updateVisibility(visibleTileIndices: Set<number>): void {
+    // Same Set object as last frame = nothing changed (Planet caches it)
+    if (visibleTileIndices === this.lastVisibleTileSet) return;
+    this.lastVisibleTileSet = visibleTileIndices;
+
     // Check if visible tiles changed
     let changed = visibleTileIndices.size !== this.currentVisibleTiles.size;
     if (!changed) {
@@ -921,6 +956,7 @@ export class MushroomTreeManager {
 
   // Set visibility for all trees at once
   public setAllVisible(visible: boolean): void {
+    this.lastVisibleTileSet = null;
     // Hide batched mesh and individual trees
     if (this.batchedMesh) {
       this.batchedMesh.visible = false;

@@ -82,7 +82,14 @@ export class Planet {
   private chunkTotalTileCount: Map<number, number> = new Map(); // Total tiles per chunk (for determining full coverage)
   // LOD chunk count from config (12 icosahedron vertices + 20 face centers)
   // Smaller chunks = better alignment with circular detail render distance
-  private readonly LOD_CHUNK_COUNT = PlayerConfig.LOD_CHUNK_COUNT;
+  // LOD chunks: 32 for planets up to 2 x 32 x LOD_CHUNK_TARGET_TILES tiles
+  // (Earth, Moon); bigger planets get a finer layout so a chunk stays about
+  // the same number of tiles. The detailed area is chosen in whole chunks, so
+  // with 32 chunks Sequoia (163k tiles) was building ~25k detailed tiles.
+  private readonly LOD_CHUNK_COUNT: number;
+  // Finer layouts take their chunk centres from a low-subdivision Goldberg
+  // polyhedron (42, 162, 642 ... centres); 0 = the classic 32-centre layout.
+  private readonly lodChunkSubdivisions: number;
 
   // Distance-based LOD meshes (for viewing from other planets)
   private distantLODMeshes: THREE.Mesh[] = []; // Array of progressively lower-detail meshes
@@ -239,6 +246,16 @@ export class Planet {
     this.MAX_HEIGHT = PlayerConfig.TERRAIN_MAX_HEIGHT;
     this.seed = PlayerConfig.TERRAIN_SEED;
     this.polyhedron = new GoldbergPolyhedron(radius, subdivisions);
+    const targetChunks = this.polyhedron.tiles.length / PlayerConfig.LOD_CHUNK_TARGET_TILES;
+    let chunkSub = 0;
+    // Only switch layouts once 32 chunks would be well over target size
+    // (Earth sits exactly on it and keeps its 32 chunks).
+    if (targetChunks > 2 * PlayerConfig.LOD_CHUNK_COUNT) {
+      chunkSub = 1;
+      while (10 * Math.pow(4, chunkSub) + 2 < targetChunks) chunkSub++;
+    }
+    this.lodChunkSubdivisions = chunkSub;
+    this.LOD_CHUNK_COUNT = chunkSub === 0 ? PlayerConfig.LOD_CHUNK_COUNT : 10 * Math.pow(4, chunkSub) + 2;
     this.meshBuilder = new HexBlockMeshBuilder();
   }
 
@@ -550,22 +567,25 @@ export class Planet {
       [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
     ];
 
-    // Generate 32 chunk centers: 12 vertices + 20 face centers
     this.lodChunkDirections = [];
-
-    // Add 12 vertex centers
-    for (const v of vertices) {
-      this.lodChunkDirections.push(v.clone());
-    }
-
-    // Add 20 face centers (average of 3 vertices per face, normalized)
-    for (const face of faces) {
-      const center = new THREE.Vector3()
-        .add(vertices[face[0]])
-        .add(vertices[face[1]])
-        .add(vertices[face[2]])
-        .normalize();
-      this.lodChunkDirections.push(center);
+    if (this.lodChunkSubdivisions === 0) {
+      // Generate 32 chunk centers: 12 vertices + 20 face centers
+      for (const v of vertices) {
+        this.lodChunkDirections.push(v.clone());
+      }
+      for (const face of faces) {
+        const center = new THREE.Vector3()
+          .add(vertices[face[0]])
+          .add(vertices[face[1]])
+          .add(vertices[face[2]])
+          .normalize();
+        this.lodChunkDirections.push(center);
+      }
+    } else {
+      // Large planet: the tile centres of a small Goldberg polyhedron
+      for (const tile of new GoldbergPolyhedron(1, this.lodChunkSubdivisions).tiles) {
+        this.lodChunkDirections.push(tile.center.clone().normalize());
+      }
     }
 
     const chunkCenters = this.lodChunkDirections;
@@ -595,15 +615,26 @@ export class Planet {
     }
 
     // Create chunk groups and bounding spheres
-    // With 32 chunks, each covers ~3.1% of sphere surface (vs 8.3% with 12 chunks)
-    // Smaller chunks = tighter bounding spheres
     for (let i = 0; i < this.LOD_CHUNK_COUNT; i++) {
       const chunkGroup = new THREE.Group();
       this.lodChunks.push(chunkGroup);
 
-      // Bounding sphere centered on chunk - smaller radius for 32 chunks
       const boundCenter = chunkCenters[i].clone().multiplyScalar(this.radius).add(this.center);
-      const boundRadius = this.radius * 0.4; // Tighter bounds for smaller chunks
+      let boundRadius: number;
+      if (this.lodChunkSubdivisions === 0) {
+        boundRadius = this.radius * 0.4; // Fits the 32-chunk layout
+      } else {
+        // Fit the chunk's tiles: furthest tile corner from the centre, plus
+        // the terrain's full depth (surfaces sit up to MAX_DEPTH below radius)
+        const localCenter = chunkCenters[i].clone().multiplyScalar(this.radius);
+        let maxDist = 0;
+        for (const tileIndex of this.chunkToTiles.get(i) ?? []) {
+          for (const v of this.polyhedron.tiles[tileIndex].vertices) {
+            maxDist = Math.max(maxDist, v.distanceTo(localCenter));
+          }
+        }
+        boundRadius = maxDist + this.MAX_DEPTH * this.BLOCK_HEIGHT;
+      }
       this.lodChunkBounds.push(new THREE.Sphere(boundCenter, boundRadius));
     }
   }
@@ -5956,21 +5987,38 @@ export class Planet {
 
   // Get all tiles that should have visible trees
   // This includes nearby tiles (detailed terrain) AND tiles on visible LOD chunks
-  public getVisibleTilesForTrees(): Set<number> {
-    const result = new Set(this.cachedNearbyTiles);
+  // Tiles whose trees should be drawn: the detailed area plus every visible
+  // LOD chunk. Called every frame for each planet, so the result is cached
+  // and only rebuilt when the detailed area or the chunk visibility changes.
+  // (It used to copy the detailed set and rescan every tile of the planet
+  // once per visible chunk, every frame - the top JS cost on Sequoia.)
+  // Callers get the same Set object back while nothing changed.
+  private visibleTreeTiles: Set<number> = new Set();
+  private visibleTreeTilesKey: string = '';
+  private visibleTreeTilesSource: Set<number> | null = null;
 
-    // Add all tiles from visible LOD chunks
+  public getVisibleTilesForTrees(): Set<number> {
+    let key = `${this.cachedNearbyTiles.size}:`;
     for (let i = 0; i < this.lodChunks.length; i++) {
-      if (this.lodChunks[i].visible) {
-        // Add all tiles assigned to this chunk
-        for (const [tileIndex, chunkIndex] of this.tileToChunk) {
-          if (chunkIndex === i) {
-            result.add(tileIndex);
-          }
-        }
+      key += this.lodChunks[i].visible ? '1' : '0';
+    }
+    if (key === this.visibleTreeTilesKey && this.visibleTreeTilesSource === this.cachedNearbyTiles) {
+      return this.visibleTreeTiles;
+    }
+
+    const result = new Set(this.cachedNearbyTiles);
+    for (let i = 0; i < this.lodChunks.length; i++) {
+      if (!this.lodChunks[i].visible) continue;
+      const chunkTiles = this.chunkToTiles.get(i);
+      if (!chunkTiles) continue;
+      for (const tileIndex of chunkTiles) {
+        result.add(tileIndex);
       }
     }
 
+    this.visibleTreeTiles = result;
+    this.visibleTreeTilesKey = key;
+    this.visibleTreeTilesSource = this.cachedNearbyTiles;
     return result;
   }
 

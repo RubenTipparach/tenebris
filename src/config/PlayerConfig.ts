@@ -104,6 +104,7 @@ export const PlayerConfig = {
 
   // Terrain rendering & streaming
   LOD_CHUNK_COUNT: 32,                  // Number of LOD chunks (12 icosahedron vertices + 20 face centers)
+  LOD_CHUNK_TARGET_TILES: 1280,        // Target tiles per LOD chunk; planets over 2x this at 32 chunks get a finer layout (Sequoia: 162)
   TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
   TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
   TERRAIN_INTERMEDIATE_BLOCK_STEP: 4, // Sample every Nth block for height in intermediate LOD
