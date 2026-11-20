@@ -440,8 +440,9 @@ freely. It ships to two places:
 - **itch.io** - `./itch-build.sh` (or `itch-build.bat`) builds with
   relative, flattened paths (`npm run build:itch` -> `dist-itch/`) and
   zips it as `tenebris-itch.zip`. CI builds both on every push and can
-  push the zip with butler (needs a `BUTLER_API_KEY` secret and an
-  `ITCH_TARGET` repo variable).
+  pushes the zip from `main` to https://ruben-tipparach.itch.io/tenebris
+  with butler (`ruben-tipparach/tenebris:html5`) once a `BUTLER_API_KEY`
+  secret is set.
 
 Append `?debug` to the URL (or use the dev server) to get the game as
 `window.__tenebris` (and three.js as `window.__THREE`) in the console.

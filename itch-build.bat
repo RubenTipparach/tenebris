@@ -19,5 +19,5 @@ echo ========================================
 echo Build complete: tenebris-itch.zip
 echo ========================================
 echo Upload it to itch.io as an HTML5 game, or push with butler:
-echo   butler push tenebris-itch.zip ^<user^>/^<game^>:html5
+echo   butler push tenebris-itch.zip ruben-tipparach/tenebris:html5
 pause
