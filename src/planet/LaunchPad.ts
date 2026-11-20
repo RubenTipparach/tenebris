@@ -28,6 +28,15 @@ export interface PlacedRocketPart {
 //  P P      <- 2 hexes (bottom row)
 // Total: 10 hexes
 
+// One of the six hexes around the rocket tile that make the pad a
+// platform: built from the pad's top down to innerRadius (the ground there,
+// so the platform never hovers over a dip).
+export interface PlatformTile {
+  center: THREE.Vector3;
+  vertices: THREE.Vector3[];
+  innerRadius: number;
+}
+
 // Launch Pad placement data
 export interface PlacedLaunchPad {
   mesh: THREE.Group;  // Group containing base + segments
@@ -477,6 +486,15 @@ export class LaunchPadManager {
    * Matches terrain generation rules exactly (same as HexBlock.createSeparateGeometries)
    * Uses innerRadius/outerRadius to position vertices on sphere surface
    */
+  // The platform hexes around the rocket tile, level with its top
+  private addPlatform(group: THREE.Group, tiles: PlatformTile[] | undefined, outerRadius: number | undefined, planetCenter: THREE.Vector3): void {
+    if (!tiles || outerRadius === undefined || !this.baseMaterial) return;
+    for (const tile of tiles) {
+      const inner = Math.min(tile.innerRadius, outerRadius - 0.05);
+      group.add(new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, outerRadius, planetCenter), this.baseMaterial));
+    }
+  }
+
   private createHexGeometryFromTile(
     tile: { center: THREE.Vector3; vertices: THREE.Vector3[] },
     innerRadius: number,
@@ -674,7 +692,8 @@ export class LaunchPadManager {
     tileVertices?: THREE.Vector3[],
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
-    outerRadius?: number
+    outerRadius?: number,
+    platformTiles?: PlatformTile[]
   ): Promise<PlacedLaunchPad | null> {
     if (!this.baseMaterial) {
       await this.initGeometryAndMaterials();
@@ -705,6 +724,7 @@ export class LaunchPadManager {
     // Create base mesh - geometry is already in world space, no transform needed
     const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
     group.add(baseMesh);
+    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
 
     // Add to scene
     this.scene.add(group);
@@ -765,7 +785,8 @@ export class LaunchPadManager {
     tileCenter?: THREE.Vector3,
     innerRadius?: number,
     outerRadius?: number,
-    savedRocketParts?: { itemType: ItemType; heightIndex: number }[]
+    savedRocketParts?: { itemType: ItemType; heightIndex: number }[],
+    platformTiles?: PlatformTile[]
   ): Promise<PlacedLaunchPad | null> {
     if (!this.baseMaterial) {
       await this.initGeometryAndMaterials();
@@ -796,6 +817,7 @@ export class LaunchPadManager {
     // Create base mesh - geometry is already in world space, no transform needed
     const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
     group.add(baseMesh);
+    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
 
     // Add to scene
     this.scene.add(group);

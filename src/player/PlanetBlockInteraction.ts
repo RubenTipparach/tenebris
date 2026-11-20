@@ -16,7 +16,7 @@ import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/Electri
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { ComputerManager, PlacedComputer } from '../planet/Computer';
 import { Printer3DManager, PlacedPrinter3D } from '../planet/Printer3D';
-import { LaunchPadManager, PlacedLaunchPad } from '../planet/LaunchPad';
+import { LaunchPadManager, PlacedLaunchPad, PlatformTile } from '../planet/LaunchPad';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
@@ -3434,12 +3434,46 @@ export class PlanetBlockInteraction {
       originalTileVertices,
       originalTileCenter,
       innerRadius,
-      outerRadius
+      outerRadius,
+      this.launchPadPlatform(planet, tile.neighbors, depth, innerRadius, true)
     );
     if (placedPad) {
       this.saveLaunchPadStates();
     }
     return placedPad;
+  }
+
+  /**
+   * The six hexes around a pad's rocket tile, which make it a platform level
+   * with the pad. Where the ground is higher the blocks above pad level are
+   * cleared (saved like any other edit) so the platform is flat; where it is
+   * lower each hex reaches down to the ground, so nothing - the tower
+   * included, which stands on one of these - hovers.
+   */
+  private launchPadPlatform(planet: Planet, neighbors: number[], airDepth: number, padInner: number, clearAbove: boolean): PlatformTile[] {
+    const planetId = this.getPlanetId(planet);
+    const tiles: PlatformTile[] = [];
+    for (const n of neighbors) {
+      const tile = planet.getTileByIndex(n);
+      if (!tile) continue;
+      if (clearAbove) {
+        for (let d = airDepth; d < planet.getMaxDepth(); d++) {
+          if (planet.getBlock(n, d) !== HexBlockType.AIR) {
+            planet.setBlock(n, d, HexBlockType.AIR);
+            gameStorage.saveTileChange(planetId, n, d, HexBlockType.AIR);
+          }
+        }
+      }
+      let groundRadius = planet.depthToRadius(0);
+      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+        if (planet.getBlock(n, d) !== HexBlockType.AIR) {
+          groundRadius = planet.depthToRadius(d);
+          break;
+        }
+      }
+      tiles.push({ center: tile.center, vertices: tile.vertices, innerRadius: Math.min(groundRadius, padInner) });
+    }
+    return tiles;
   }
 
   private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
@@ -4212,7 +4246,10 @@ export class PlanetBlockInteraction {
           tile.center.clone(),
           innerRadius,
           outerRadius,
-          savedPad.rocketParts
+          savedPad.rocketParts,
+          // the ground was levelled when the pad was placed; rebuild the
+          // platform without touching blocks
+          this.launchPadPlatform(planet, savedPad.surroundingTileIndices, 0, innerRadius, false)
         );
       }
     }
