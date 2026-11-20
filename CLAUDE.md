@@ -34,6 +34,12 @@ everywhere.
   wild fruit (apple/melon/orange/kiwi - Tenebris ONLY). A new planet
   gets new plant species, gated on its tileset, never a reused one.
 
+- **Forests grow in stands, not a mix.** Within one biome, one species
+  dominates a region with only the odd neighbour at its edges - species
+  compete for the same ground, so a random mix of wildly different trees
+  is wrong. In the JS client every planet's scatter picks species through
+  `standSpecies()` in `src/planet/Tree.ts`; a new planet's flora does too.
+
 When you add a planet or a species, the checklist is: (1) give it its
 own roster branch, (2) gate it on the body/tileset so it can't appear
 elsewhere, (3) extend the disjointness test, (4) if it's a new visible
