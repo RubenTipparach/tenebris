@@ -54,6 +54,10 @@ const ROSTERS: Record<string, Species[]> = {
 
 // Pale Blue Dot FishingSettings
 const CHARGE_S = 1.2;
+// The rod in hand (metres)
+const ROD_GRIP = 0.28;
+const ROD_BLANK = 0.75;
+const ROD_SEGMENTS = 6;
 const CAST_SPEED = [5.0, 18.0];
 const CAST_LIFT = [3.0, 6.0];
 const GRAVITY = 20;            // units/s^2 toward the planet centre
@@ -103,6 +107,9 @@ export class FishingSystem {
   private planet: Planet | null = null;
 
   private floatGroup: THREE.Group;
+  // The rod in hand, a chain of segments so the blank can bend under load
+  private rod: THREE.Group;
+  private rodSegments: THREE.Mesh[] = [];
   private line: THREE.Line;
   private linePositions: Float32Array;
   private hud: HTMLElement;
@@ -132,6 +139,9 @@ export class FishingSystem {
     this.line.frustumCulled = false;
     this.line.visible = false;
     scene.add(this.line);
+
+    this.rod = this.buildRod();
+    scene.add(this.rod);
 
     // HUD (Pale Blue Dot's layout): status text + meter above the hotbar,
     // button prompt bottom-left
@@ -167,6 +177,7 @@ export class FishingSystem {
     this.prevRight = right;
     this.clock += dt;
 
+    this.rod.visible = holding;
     if (!holding || !planet) {
       if (this.phase !== Phase.Ready) this.windIn(this.species ? `Wound in - the ${this.species.name} got away` : '');
       this.showHud(false);
@@ -406,14 +417,72 @@ export class FishingSystem {
     return this.floatPos.clone().sub(feet).projectOnPlane(up).length();
   }
 
+  /** Cork grip, reel and a tapered two-tone blank, built along +Y. */
+  private buildRod(): THREE.Group {
+    const group = new THREE.Group();
+    const cork = new THREE.MeshLambertMaterial({ color: 0xb08a5a });
+    const metal = new THREE.MeshLambertMaterial({ color: 0x9aa3ab });
+    const blank = new THREE.MeshLambertMaterial({ color: 0x23324a });
+    const wrap = new THREE.MeshLambertMaterial({ color: 0xc9302c });
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, ROD_GRIP, 8), cork);
+    grip.position.y = ROD_GRIP / 2;
+    const reel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.025, 12), metal);
+    reel.rotation.z = Math.PI / 2;
+    reel.position.set(0, ROD_GRIP * 0.8, -0.035);
+    group.add(grip, reel);
+    // Blank segments: each is parented to the one before so a per-joint
+    // rotation bends the whole rod like a real one
+    let parent: THREE.Object3D = group;
+    let y = ROD_GRIP;
+    for (let i = 0; i < ROD_SEGMENTS; i++) {
+      const r0 = 0.012 * (1 - i / ROD_SEGMENTS) + 0.003;
+      const r1 = 0.012 * (1 - (i + 1) / ROD_SEGMENTS) + 0.003;
+      const len = ROD_BLANK / ROD_SEGMENTS;
+      const joint = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, len, 6), blank);
+      joint.geometry.translate(0, len / 2, 0);
+      joint.position.y = y;
+      if (i > 0 && i % 2 === 0) {
+        const guide = new THREE.Mesh(new THREE.TorusGeometry(0.008, 0.002, 4, 8), wrap);
+        joint.add(guide);
+      }
+      parent.add(joint);
+      this.rodSegments.push(joint);
+      parent = joint;
+      y = len;
+    }
+    group.traverse(o => { o.frustumCulled = false; (o as THREE.Mesh).renderOrder = 10; });
+    group.visible = false;
+    return group;
+  }
+
+  /**
+   * Hold the rod in the right hand, in the eye frame (butt low and near,
+   * blank angled up and out), bend it by the load, and return its tip.
+   */
   private rodTip(): THREE.Vector3 {
-    // Pale Blue Dot's rod tip in the eye frame: right 0.26, up 0.05, fwd 0.95
     const cam = this.camera;
     const fwd = new THREE.Vector3();
     cam.getWorldDirection(fwd);
-    const camUp = cam.up.clone().normalize();
+    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
     const right = fwd.clone().cross(camUp).normalize();
-    return cam.position.clone().addScaledVector(right, 0.26).addScaledVector(camUp, 0.05).addScaledVector(fwd, 0.95);
+    const butt = cam.position.clone().addScaledVector(right, 0.22).addScaledVector(camUp, -0.3).addScaledVector(fwd, 0.35);
+    // Point the rod up-forward; pull it back while charging, raise it while
+    // fighting a fish
+    const lift = this.phase === Phase.Charging ? 1.4 * this.power
+      : this.phase === Phase.Hooked ? 0.5 + 0.4 * this.tension : 0.6;
+    const along = fwd.clone().multiplyScalar(Math.cos(lift * 0.6)).addScaledVector(camUp, Math.sin(lift * 0.6) + 0.35).addScaledVector(right, 0.08).normalize();
+    this.rod.position.copy(butt);
+    const basis = new THREE.Matrix4();
+    const zAxis = right.clone().cross(along).normalize();
+    basis.makeBasis(right.clone().crossVectors(along, zAxis).normalize(), along, zAxis);
+    this.rod.quaternion.setFromRotationMatrix(basis);
+    // Bend: load spread over the joints, more toward the tip
+    const load = this.phase === Phase.Hooked ? 0.05 + 0.18 * this.tension
+      : this.phase === Phase.Bite ? 0.06 : this.phase === Phase.Charging ? -0.04 * this.power : 0.015;
+    this.rodSegments.forEach((seg, i) => { if (i > 0) seg.rotation.x = load * (i / ROD_SEGMENTS); });
+    this.rod.updateMatrixWorld(true);
+    const last = this.rodSegments[this.rodSegments.length - 1];
+    return new THREE.Vector3(0, ROD_BLANK / ROD_SEGMENTS, 0).applyMatrix4(last.matrixWorld);
   }
 
   private updateDip(dt: number): void {
@@ -424,6 +493,7 @@ export class FishingSystem {
   }
 
   private draw(up: THREE.Vector3): void {
+    const tip = this.rodTip();
     const inWater = this.phase >= Phase.Flying;
     this.floatGroup.visible = inWater;
     this.line.visible = inWater;
@@ -437,7 +507,6 @@ export class FishingSystem {
     const slack = this.phase === Phase.Bite ? 0.03
       : this.phase === Phase.Hooked ? 0.01 + 0.05 * (1 - this.tension)
       : 0.6;
-    const tip = this.rodTip();
     const span = shown.clone().sub(tip);
     for (let i = 0; i < 24; i++) {
       const u = i / 23;
