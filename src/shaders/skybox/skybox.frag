@@ -3,6 +3,9 @@ precision highp float;
 varying vec3 vDirection;
 
 uniform float time;
+// 1 = full starfield; lower fades stars and nebula (daytime inside an
+// atmosphere - see the Daytime sky mockup)
+uniform float starVisibility;
 
 //=============================================================================
 // TWEAKABLE PARAMETERS
@@ -231,7 +234,7 @@ void main() {
   vec3 nebColor = nebula(dir);
 
   // Composite: space background + nebula + stars
-  vec3 color = SpaceColor + nebColor + stars * StarColor;
+  vec3 color = SpaceColor + (nebColor + stars * StarColor) * starVisibility;
 
   gl_FragColor = vec4(color, 1.0);
 }

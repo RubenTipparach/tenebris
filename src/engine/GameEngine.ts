@@ -11,6 +11,7 @@ function createStarfieldMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       time: { value: 0 },
+      starVisibility: { value: 1 },
     },
     vertexShader: skyboxVert,
     fragmentShader: skyboxFrag,
@@ -159,6 +160,12 @@ export class GameEngine {
    * @param position The sun's world position
    * @param radius Optional radius to scale the sun mesh (default keeps existing size)
    */
+  // 0..1: how much of the starfield shows (1 = space, lower = daytime sky)
+  public setStarVisibility(v: number): void {
+    const mat = this.starfield?.material as THREE.ShaderMaterial | undefined;
+    if (mat?.uniforms.starVisibility) mat.uniforms.starVisibility.value = v;
+  }
+
   public setSunPosition(position: THREE.Vector3, radius?: number): void {
     // Update sun mesh to actual position
     if (this.sunMesh) {

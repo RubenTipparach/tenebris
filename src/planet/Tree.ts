@@ -254,6 +254,16 @@ export class TreeBuilder {
   }
 }
 
+// Mockup toggle (Debug tab): improved tree shading - baked darkening toward
+// the base of each tree and a per-tree tint, plus wrap lighting, sky/ground
+// ambient and a rim light in the shader.
+let improvedTreeShading = false;
+const treeBatchers = new Set<TreeBatcher>();
+export function setImprovedTreeShading(on: boolean): void {
+  improvedTreeShading = on;
+  for (const b of treeBatchers) b.setImproved(on);
+}
+
 // Batched tree rendering, one merged mesh per LOD chunk. Each chunk's mesh is
 // built once (and again only if a tree in it is added or removed) and then
 // just shown or hidden with the chunk. The old single batch was rebuilt -
@@ -272,6 +282,16 @@ class TreeBatcher {
   constructor(scene: THREE.Scene, material: THREE.ShaderMaterial) {
     this.scene = scene;
     this.material = material;
+    treeBatchers.add(this);
+    this.material.uniforms.improved.value = improvedTreeShading ? 1 : 0;
+  }
+
+  // Switch shading; the baked colours need every chunk rebuilt
+  public setImproved(on: boolean): void {
+    this.material.uniforms.improved.value = on ? 1 : 0;
+    for (const chunk of this.treesByChunk.keys()) this.dirty.add(chunk);
+    this.lastChunks = null;
+    this.showingAll = null;
   }
 
   public setChunkLookup(chunkOf: (tileIndex: number) => number): void {
@@ -324,14 +344,17 @@ class TreeBatcher {
 
     const geometries: THREE.BufferGeometry[] = [];
     for (const tree of this.treesByChunk.get(chunk) ?? []) {
+      const treeGeoms: THREE.BufferGeometry[] = [];
       tree.traverse((child) => {
         if (child instanceof THREE.Mesh && child.geometry) {
           const geom = child.geometry.clone();
           child.updateWorldMatrix(true, false);
           geom.applyMatrix4(child.matrixWorld);
-          geometries.push(geom);
+          treeGeoms.push(geom);
         }
       });
+      if (improvedTreeShading) bakeTreeShading(tree, treeGeoms);
+      geometries.push(...treeGeoms);
     }
     if (geometries.length === 0) return;
 
@@ -374,6 +397,35 @@ class TreeBatcher {
   }
 }
 
+// Improved shading, baked into vertex colours: darker toward the base of the
+// tree (cheap ambient occlusion) and a small per-tree tint so a forest isn't
+// one flat colour.
+function bakeTreeShading(tree: THREE.Group, geoms: THREE.BufferGeometry[]): void {
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(tree.quaternion);
+  const base = tree.position;
+  let top = 0;
+  const v = new THREE.Vector3();
+  for (const g of geoms) {
+    const pos = g.getAttribute('position');
+    for (let i = 0; i < pos.count; i++) top = Math.max(top, v.fromBufferAttribute(pos, i).sub(base).dot(up));
+  }
+  if (top <= 0) return;
+  // Stable per-tree tint from its position
+  const h = Math.abs(Math.sin(base.x * 12.9898 + base.y * 78.233 + base.z * 37.719) * 43758.5453) % 1;
+  const tint = [0.92 + 0.16 * h, 0.95 + 0.1 * ((h * 7) % 1), 0.9 + 0.12 * ((h * 13) % 1)];
+  for (const g of geoms) {
+    const pos = g.getAttribute('position');
+    const col = g.getAttribute('color');
+    if (!col) continue;
+    for (let i = 0; i < pos.count; i++) {
+      const t = v.fromBufferAttribute(pos, i).sub(base).dot(up) / top;
+      const ao = 0.5 + 0.5 * Math.min(1, Math.max(0, t / 0.55));
+      col.setXYZ(i, col.getX(i) * ao * tint[0], col.getY(i) * ao * tint[1], col.getZ(i) * ao * tint[2]);
+    }
+    col.needsUpdate = true;
+  }
+}
+
 // Shared shader for batched trees. planetCenter makes the day/night term use
 // the direction from the tree's own planet; it used normalize(worldPos),
 // which only works for a planet at the origin (wrong on Sequoia and the Moon).
@@ -382,6 +434,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
     uniforms: {
       sunDirection: { value: sunDirection.clone().normalize() },
       planetCenter: { value: new THREE.Vector3() },
+      improved: { value: 0 },
       ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
       directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
     },
@@ -402,6 +455,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
     fragmentShader: `
       uniform vec3 sunDirection;
       uniform vec3 planetCenter;
+      uniform float improved;
       uniform float ambientIntensity;
       uniform float directionalIntensity;
 
@@ -418,6 +472,16 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         float meshDiffuse = max(0.0, dot(n, sunDirection));
         float directional = meshDiffuse * shadowFactor * directionalIntensity;
         vec3 finalColor = vColor * (ambientIntensity + directional);
+        if (improved > 0.5) {
+          // Wrap lighting (soft terminator on the canopy), sky/ground
+          // hemisphere ambient, and a rim on the sun side
+          float wrap = max(0.0, (dot(n, sunDirection) + 0.4) / 1.4);
+          float hemi = 0.5 + 0.5 * dot(n, surfaceNormal);
+          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * ambientIntensity * (0.6 + 0.4 * shadowFactor);
+          vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+          float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
+          finalColor = vColor * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
+        }
         gl_FragColor = vec4(finalColor, 1.0);
       }
     `,

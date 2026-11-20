@@ -18,6 +18,8 @@ import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
 import { ItemType } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer, DEFAULT_SERVER } from './net/Multiplayer';
+import { SolarSystemMockup } from './mockups/SolarSystemMockup';
+import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
@@ -67,6 +69,10 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+
+  // Mockups (Debug tab)
+  private solarSystemMockup: SolarSystemMockup | null = null;
+  private daytimeSkyMockup = false;
 
   // Shared frustum for all planet updates (calculated once per frame)
   private sharedFrustum: THREE.Frustum = new THREE.Frustum();
@@ -656,6 +662,15 @@ class PlanetGame {
     MusicManager.update();
 
     this.multiplayer?.update(deltaTime);
+    if (this.solarSystemMockup) {
+      const cam = this.engine.camera.position;
+      let inSpace = true;
+      for (const planet of this.planets.values()) {
+        if (cam.distanceTo(planet.center) - planet.radius < planet.radius * 1.5) inSpace = false;
+      }
+      this.solarSystemMockup.update(deltaTime, inSpace);
+    }
+    this.updateDaytimeSky();
 
     // Check if in rocket flight mode
     const inFlightMode = this.rocketFlightManager?.isInFlight() ?? false;
@@ -990,6 +1005,7 @@ class PlanetGame {
     }
 
     this.setupMultiplayer();
+    this.setupMockups();
 
     // Respawn on the nearest planet's spawn point (works on foot or in flight)
     const respawnBtn = document.getElementById('respawn-planet-btn');
@@ -1066,6 +1082,53 @@ class PlanetGame {
 
     // Hide overlay
     if (overlay) overlay.classList.add('hidden');
+  }
+
+  // Debug-tab mockups: prototypes to judge a look before building it for real
+  private setupMockups(): void {
+    const bind = (id: string, key: string, apply: (on: boolean) => void) => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      let on = false;
+      try { on = localStorage.getItem(key) === '1'; } catch { /* blocked */ }
+      if (el) {
+        el.checked = on;
+        el.addEventListener('change', () => {
+          try { localStorage.setItem(key, el.checked ? '1' : '0'); } catch { /* blocked */ }
+          apply(el.checked);
+        });
+      }
+      apply(on);
+    };
+    bind('toggle-mock-sky', 'tenebris_mock_sky', (on) => {
+      this.daytimeSkyMockup = on;
+      if (!on) this.engine.setStarVisibility(1);
+    });
+    bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
+    bind('toggle-mock-planets', 'tenebris_mock_planets', (on) => {
+      if (on && !this.solarSystemMockup) this.solarSystemMockup = new SolarSystemMockup(this.engine.scene, this.sunPosition);
+      this.solarSystemMockup?.setEnabled(on);
+    });
+  }
+
+  // Daytime sky mockup: inside an atmosphere, on the day side, the stars
+  // and nebula fade out (they used to show through the daytime sky)
+  private updateDaytimeSky(): void {
+    if (!this.daytimeSkyMockup) return;
+    const cam = this.engine.camera.position;
+    let visibility = 1;
+    for (const body of SOLAR_SYSTEM.bodies) {
+      if (!body.hasAtmosphere || !body.landable) continue;
+      const planet = this.planets.get(body.id);
+      if (!planet) continue;
+      const toCam = cam.clone().sub(planet.center);
+      const altitude = toCam.length() - planet.radius;
+      const atmosphere = planet.radius * 0.35;
+      const inside = 1 - THREE.MathUtils.smoothstep(altitude, atmosphere * 0.4, atmosphere);
+      const sunDir = this.sunPosition.clone().sub(planet.center).normalize();
+      const day = THREE.MathUtils.smoothstep(toCam.normalize().dot(sunDir), -0.15, 0.3);
+      visibility = Math.min(visibility, 1 - 0.97 * inside * day);
+    }
+    this.engine.setStarVisibility(visibility);
   }
 
   private setupMultiplayer(): void {
