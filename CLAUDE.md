@@ -460,15 +460,22 @@ freely. It ships to two places:
   `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
   local server.
 
-All three deploy automatically on every push to `main` via
-`.github/workflows/js-deploy.yml`: the `itch.io` job pushes the zip with
-butler to `ruben-tipparach/tenebris:html5` (needs a `BUTLER_API_KEY`
-secret), and the `heavyphoton.com` job pings heavyphoton.github.io,
-whose `deploy-tenebris` workflow builds main into `docs/tenebris/`
-(needs a `SITE_DISPATCH_TOKEN` secret; the site also checks hourly), and
-the `multiplayer server` job runs `fly deploy` in `server-js/` (needs
-`FLY_API_TOKEN`).
-`static.yml` builds and verifies both on every branch.
+Deploys are in `.github/workflows/js-deploy.yml`:
+
+- **heavyphoton.com** - automatic on every push to `main`: the `site` job
+  pings heavyphoton.github.io, whose `deploy-tenebris` workflow builds
+  main into `docs/tenebris/` (needs a `SITE_DISPATCH_TOKEN` secret; the
+  site also checks hourly).
+- **itch.io + the multiplayer server** - MANUAL, together: run the
+  workflow by hand (Actions > Run workflow on main). The `itch` job pushes
+  the zip with butler to `ruben-tipparach/tenebris:html5` (needs
+  `BUTLER_API_KEY`), and the `server` job runs `fly deploy` in `server-js/`
+  (needs `FLY_API_TOKEN`) only after the itch push succeeds, so the server
+  always matches the itch build.
+
+`static.yml` builds and verifies the client on every push to `main` and
+publishes it to GitHub Pages; on branches it only runs by hand (Run
+workflow), not on every push.
 
 Append `?debug` to the URL (or use the dev server) to get the game as
 `window.__tenebris` (and three.js as `window.__THREE`) in the console.

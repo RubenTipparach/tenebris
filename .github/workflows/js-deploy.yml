@@ -1,6 +1,10 @@
-# JS client deploy: ships the Three.js build on every push to main (or by
-# hand from the Actions tab). The Rust client/server have their own
-# pipelines (rust.yml, and the Fly deploy in static.yml).
+# JS client deploy.
+#
+# - On every push to main: only heavyphoton.com/tenebris/ updates.
+# - itch.io + the multiplayer server are a MANUAL release, together: run
+#   this workflow by hand (Actions > this workflow > Run workflow, branch
+#   main). The Fly server deploys only after the itch.io push succeeds, so
+#   the server players connect to always matches the itch build.
 #
 # - itch.io: builds tenebris-itch.zip and pushes it with butler to
 #   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
@@ -31,6 +35,8 @@ concurrency:
 jobs:
   itch:
     name: itch.io
+    # manual releases only
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -88,6 +94,8 @@ jobs:
 
   server:
     name: multiplayer server (tenebris-c)
+    # ships with the itch.io release, after it succeeds
+    needs: itch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

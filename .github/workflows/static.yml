@@ -1,10 +1,10 @@
 # Continuous build for the Tenebris JS client.
 #
-# Every push to every branch builds the JS client (the dist/ landing
-# build, the heavyphoton.com/tenebris/ build and the itch.io zip) and
-# checks the JS multiplayer server, and publishes dist/ to GitHub Pages
-# (https://rubentipparach.github.io/tenebris/) so every commit can be
-# played - from any branch, the last push wins. Deploys to itch.io,
+# Every push to main builds the JS client (the dist/ landing build, the
+# heavyphoton.com/tenebris/ build and the itch.io zip), checks the JS
+# multiplayer server, and publishes dist/ to GitHub Pages
+# (https://rubentipparach.github.io/tenebris/). Branches only build when
+# run by hand (Actions > JS client - build > Run workflow). Deploys to itch.io,
 # heavyphoton.com and the Fly server live in js-deploy.yml and run from
 # main.
 #
@@ -24,16 +24,11 @@
 name: JS client - build
 
 on:
-  # Push covers branch commits AND PR synchronize events (a PR
-  # synchronize is itself a push to the head branch in this repo).
-  # We used to ALSO list `pull_request: branches: ['**']` here, but
-  # that fired its own workflow run on top of the push run for the
-  # same commit - two identical builds in parallel. Dropped since
-  # this repo doesn't take fork PRs (single-dev mode, see the
-  # top-of-file comment); revisit if external contributors land and
-  # PR-only runs become necessary for the no-write-access case.
+  # Only main builds automatically (and publishes to Pages); branch pushes
+  # don't run CI. Run it by hand on any branch from the Actions tab
+  # (Run workflow) when a branch build is wanted.
   push:
-    branches: ['**']
+    branches: [main]
   workflow_dispatch:
     inputs:
       branch:
@@ -161,10 +156,9 @@ jobs:
   # dropped rather than fixed. Nothing depended on it - it was
   # continue-on-error with no dependents.
 
-  # Every push publishes its build to https://rubentipparach.github.io/tenebris/
-  # so any commit can be played. Branches deploy too (last push wins); if
-  # GitHub refuses a branch, allow it under Settings > Environments >
-  # github-pages > Deployment branches.
+  # Publishes the build to https://rubentipparach.github.io/tenebris/ (from
+  # main, or from a branch run by hand; a branch may need allowing under
+  # Settings > Environments > github-pages > Deployment branches).
   #
   # Non-blocking: until Pages is enabled for the repo (Settings > Pages >
   # Source: GitHub Actions) the deploy answers 404. That must not fail the
