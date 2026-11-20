@@ -44,6 +44,14 @@ everywhere.
   regional stands through `standSpecies()` in `src/planet/Tree.ts`, one
   species per stand. A new planet's flora follows the same rule.
 
+- **Never tint a biome - always draw a new block.** Standing instruction
+  from the user. A biome's own look is its own block type with its own
+  baked texture (`src/shared/blockTypes.ts` + `scripts/gen-biome-textures.py`),
+  never a colour shift / tint / palette swap of an existing block. Draw it
+  Pale Blue Dot's way (the `block-textures` skill in `.claude/skills/`):
+  Sweaft-64 palette only, short ramps lit from the top left, no
+  anti-aliasing, checked on the `scripts/block-audit.py` sheet.
+
 When you add a planet or a species, the checklist is: (1) give it its
 own roster branch, (2) gate it on the body/tileset so it can't appear
 elsewhere, (3) extend the disjointness test, (4) if it's a new visible
