@@ -1,4 +1,6 @@
-# Deploy TENEBRIS on every push to main (or by hand from the Actions tab).
+# JS client deploy: ships the Three.js build on every push to main (or by
+# hand from the Actions tab). The Rust client/server have their own
+# pipelines (rust.yml, and the Fly deploy in static.yml).
 #
 # - itch.io: builds tenebris-itch.zip and pushes it with butler to
 #   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
@@ -8,7 +10,7 @@
 #   SITE_DISPATCH_TOKEN secret: a fine-grained PAT for
 #   heavyphoton.github.io with Contents: read and write. Without it the
 #   site still picks the change up on its hourly check.
-name: Deploy
+name: JS client - deploy (itch.io + heavyphoton.com)
 
 on:
   push:
@@ -19,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy
+  group: js-deploy
   cancel-in-progress: false
 
 jobs:

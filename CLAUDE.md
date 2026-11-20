@@ -443,7 +443,7 @@ freely. It ships to two places:
   `tenebris-itch.zip`.
 
 Both deploy automatically on every push to `main` via
-`.github/workflows/deploy.yml`: the `itch.io` job pushes the zip with
+`.github/workflows/js-deploy.yml`: the `itch.io` job pushes the zip with
 butler to `ruben-tipparach/tenebris:html5` (needs a `BUTLER_API_KEY`
 secret), and the `heavyphoton.com` job pings heavyphoton.github.io,
 whose `deploy-tenebris` workflow builds main into `docs/tenebris/`
