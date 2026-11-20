@@ -1,0 +1,81 @@
+# Deploy TENEBRIS on every push to main (or by hand from the Actions tab).
+#
+# - itch.io: builds tenebris-itch.zip and pushes it with butler to
+#   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
+#   BUTLER_API_KEY secret (itch.io -> Settings -> API keys).
+# - heavyphoton.com/tenebris/: pings heavyphoton.github.io, whose
+#   deploy-tenebris workflow builds this commit into docs/tenebris. Needs a
+#   SITE_DISPATCH_TOKEN secret: a fine-grained PAT for
+#   heavyphoton.github.io with Contents: read and write. Without it the
+#   site still picks the change up on its hourly check.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  itch:
+    name: itch.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for the butler key
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          if [ -z "$BUTLER_API_KEY" ]; then
+            echo "::error::BUTLER_API_KEY secret is not set - add it under Settings > Secrets and variables > Actions (key from https://itch.io/user/settings/api-keys)."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build tenebris-itch.zip
+        run: |
+          set -e
+          npm ci
+          ./itch-build.sh
+          unzip -l tenebris-itch.zip | grep -q ' index.html$'
+
+      - name: Push to itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: |
+          set -e
+          curl -sSfL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler && chmod +x butler/butler
+          ./butler/butler push tenebris-itch.zip ruben-tipparach/tenebris:html5 --userversion "${GITHUB_SHA::7}"
+
+  site:
+    name: heavyphoton.com
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the heavyphoton.github.io deploy
+        env:
+          SITE_DISPATCH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$SITE_DISPATCH_TOKEN" ]; then
+            echo "::warning::SITE_DISPATCH_TOKEN secret not set - heavyphoton.com picks this up on its hourly check instead."
+            exit 0
+          fi
+          curl -sSf -X POST \
+            -H "Authorization: Bearer $SITE_DISPATCH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/RubenTipparach/heavyphoton.github.io/dispatches \
+            -d "{\"event_type\":\"tenebris-updated\",\"client_payload\":{\"sha\":\"$GITHUB_SHA\"}}"
+          echo "heavyphoton.com deploy triggered"

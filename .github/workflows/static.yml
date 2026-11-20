@@ -124,20 +124,8 @@ jobs:
           path: tenebris-itch.zip
           retention-days: 3
 
-      # Optional: push the zip to itch.io with butler. Runs only on main and
-      # only once a BUTLER_API_KEY secret and an ITCH_TARGET repo variable
-      # (e.g. "user/tenebris:html5") are configured.
-      - name: Push to itch.io (butler)
-        if: github.ref == 'refs/heads/main' && vars.ITCH_TARGET != ''
-        continue-on-error: true
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: |
-          set -e
-          if [ -z "$BUTLER_API_KEY" ]; then echo "BUTLER_API_KEY secret not set - skipping"; exit 0; fi
-          curl -sSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
-          unzip -q butler.zip -d butler && chmod +x butler/butler
-          ./butler/butler push tenebris-itch.zip "${{ vars.ITCH_TARGET }}" --userversion "${{ github.sha }}"
+      # Deploying (itch.io + heavyphoton.com) lives in deploy.yml, which runs
+      # on pushes to main.
 
       # Non-blocking: the compile + "Verify dist layout" above already gate
       # real build breaks. This upload is a convenience download only, so an

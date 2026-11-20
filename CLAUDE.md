@@ -435,13 +435,20 @@ freely. It ships to two places:
 
 - **heavyphoton.com/tenebris/** - `./build.sh deploy` (or `build.bat`)
   builds with base `/tenebris/` (`npm run build:site` -> `dist-site/`)
-  and copies it into the heavyphoton.github.io checkout's
-  `docs/tenebris/`, replacing the old `assets/`. Commit it there.
-- **itch.io** - `./itch-build.sh` (or `itch-build.bat`) builds with
-  relative, flattened paths (`npm run build:itch` -> `dist-itch/`) and
-  zips it as `tenebris-itch.zip`. CI builds both on every push and can
-  push the zip with butler (needs a `BUTLER_API_KEY` secret and an
-  `ITCH_TARGET` repo variable).
+  and copies it into a heavyphoton.github.io checkout's `docs/tenebris/`,
+  replacing the old `assets/`.
+- **itch.io** (https://ruben-tipparach.itch.io/tenebris) -
+  `./itch-build.sh` (or `itch-build.bat`) builds with relative,
+  flattened paths (`npm run build:itch` -> `dist-itch/`) and zips it as
+  `tenebris-itch.zip`.
+
+Both deploy automatically on every push to `main` via
+`.github/workflows/deploy.yml`: the `itch.io` job pushes the zip with
+butler to `ruben-tipparach/tenebris:html5` (needs a `BUTLER_API_KEY`
+secret), and the `heavyphoton.com` job pings heavyphoton.github.io,
+whose `deploy-tenebris` workflow builds main into `docs/tenebris/`
+(needs a `SITE_DISPATCH_TOKEN` secret; the site also checks hourly).
+`static.yml` builds and verifies both on every branch.
 
 Append `?debug` to the URL (or use the dev server) to get the game as
 `window.__tenebris` (and three.js as `window.__THREE`) in the console.
