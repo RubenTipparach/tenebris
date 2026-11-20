@@ -442,13 +442,17 @@ freely. It ships to two places:
   flattened paths (`npm run build:itch` -> `dist-itch/`) and zips it as
   `tenebris-itch.zip`.
 
-- **Multiplayer server** - `server-js/` (Node + `ws`): relays player
-  poses and block edits, appends every edit to `/data/js-edits.log` and
-  replays it on boot. It is deployed to the `tenebris-c` Fly app, which
+- **Multiplayer server** - `server-js/` (Node + `ws`): hosts any number
+  of worlds (`GET/POST /worlds`, join with `ws /?world=<id>`), each with
+  its own seed and edit log under `/data/worlds/`; relays player poses and
+  block edits and appends every edit to the world's log on arrival. The
+  in-game server browser (Settings > Multiplayer: worlds) lists, creates
+  and joins worlds; a world opens as `?world=<id>`, which sets the terrain
+  seed and a separate local save slot before the game builds anything. It is deployed to the `tenebris-c` Fly app, which
   means it REPLACES the Rust server there (and its /admin portal and tile
   editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
-  Clients connect from Settings > Multiplayer, or with `?mp`
-  (`&server=ws://localhost:8080` for a local server).
+  `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
+  local server.
 
 All three deploy automatically on every push to `main` via
 `.github/workflows/js-deploy.yml`: the `itch.io` job pushes the zip with

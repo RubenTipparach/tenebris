@@ -64,9 +64,13 @@ export class Multiplayer {
       showToast(`Connected to ${url.replace(/^wss?:\/\//, '').replace(/\/$/, '')}`, { duration: 2500 });
     };
     ws.onmessage = (ev) => this.onMessage(String(ev.data));
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       this.ws = null;
       this.clearRemotes();
+      if (ev.code === 4004) {
+        this.wanted = false;
+        showToast('That world no longer exists on the server', { duration: 4000 });
+      }
       if (this.wanted) {
         showToast('Multiplayer connection lost - retrying', { duration: 2500 });
         this.retryTimer = window.setTimeout(() => { this.retryTimer = null; if (this.wanted) this.connect(url); }, 5000);

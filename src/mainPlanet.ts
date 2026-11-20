@@ -18,7 +18,9 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
 import { ItemType } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
-import { Multiplayer, DEFAULT_SERVER } from './net/Multiplayer';
+import { Multiplayer } from './net/Multiplayer';
+import { WorldBrowser } from './net/WorldBrowser';
+import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
 import { setImprovedTreeShading } from './planet/Tree';
@@ -89,7 +91,7 @@ class PlanetGame {
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
   private sequoiaTreesScattered: boolean = false;
 
-  constructor() {
+  constructor(private worldError?: string) {
     const container = document.getElementById('game-container');
     if (!container) throw new Error('Game container not found');
 
@@ -1167,8 +1169,6 @@ class PlanetGame {
   }
 
   private setupMultiplayer(): void {
-    const params = new URLSearchParams(window.location.search);
-    const server = params.get('server') || DEFAULT_SERVER;
     const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
     const write = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
 
@@ -1184,37 +1184,32 @@ class PlanetGame {
       nameInput.addEventListener('keydown', (e) => e.stopPropagation());
     }
 
-    const start = () => {
-      if (!this.multiplayer) {
-        this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
-          const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
-          const p = flying ? flying.getPosition() : this.player.position;
-          let planet = this.player.getCurrentPlanet()?.getName();
-          if (!planet) {
-            let best = Infinity;
-            for (const [id, pl] of this.planets) {
-              const alt = p.distanceTo(pl.center) - pl.radius;
-              if (alt < best) { best = alt; planet = id; }
-            }
-          }
-          const o = this.player.exportForSave().orientation;
-          return { planet: planet ?? 'earth', p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
-        }, name);
-      }
-      this.multiplayer.connect(server);
-    };
+    // Server browser: list worlds, create one, join one (reloads into it)
+    const browser = new WorldBrowser();
+    document.getElementById('world-browser-btn')?.addEventListener('click', () => browser.open());
+    if (this.worldError) showToast(this.worldError, { duration: 5000 });
 
-    const toggle = document.getElementById('toggle-multiplayer') as HTMLInputElement | null;
-    const enabled = params.has('mp') || read('tenebris_mp') === '1';
-    if (toggle) {
-      toggle.checked = enabled;
-      toggle.addEventListener('change', () => {
-        write('tenebris_mp', toggle.checked ? '1' : '0');
-        if (toggle.checked) start();
-        else this.multiplayer?.disconnect();
-      });
-    }
-    if (enabled) start();
+    // In a server world: go online in it
+    const world = currentWorld();
+    if (!world) return;
+    const label = document.getElementById('world-label');
+    if (label) label.textContent = `Online: ${world.name}`;
+    showToast(`World: ${world.name}`, { duration: 3000 });
+    this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
+      const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+      const p = flying ? flying.getPosition() : this.player.position;
+      let planet = this.player.getCurrentPlanet()?.getName();
+      if (!planet) {
+        let best = Infinity;
+        for (const [id, pl] of this.planets) {
+          const alt = p.distanceTo(pl.center) - pl.radius;
+          if (alt < best) { best = alt; planet = id; }
+        }
+      }
+      const o = this.player.exportForSave().orientation;
+      return { planet: planet ?? 'earth', p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
+    }, name);
+    this.multiplayer.connect(worldSocketUrl(world.id));
   }
 
   /**
@@ -1320,6 +1315,8 @@ class PlanetGame {
 }
 
 // Start game when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  new PlanetGame();
+// The world (seed + save slot) is settled before anything is built
+document.addEventListener('DOMContentLoaded', async () => {
+  const { error } = await prepareWorld();
+  new PlanetGame(error);
 });
