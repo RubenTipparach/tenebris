@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
+import { attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
 /**
  * Online play against server-js/ (deployed to the 'tenebris-c' Fly app).
@@ -11,8 +12,9 @@ import { showToast } from '../utils/toast';
  * .onTileChange - the single point every block edit is persisted through),
  * remote edits are applied straight to the planet (Planet.setBlock, which
  * queues edits for terrain that hasn't generated yet), and a joining client
- * receives every edit so far. v1 syncs players and blocks; torches,
- * machines, trees and rockets stay local.
+ * receives every edit so far. Placed objects (torches, trees, machines,
+ * launch pads, rockets) and live frames (animals, rockets in flight) go
+ * through NetSync, which game systems use without a reference to this.
  */
 
 export const DEFAULT_SERVER = 'wss://tenebris-c.fly.dev/';
@@ -66,6 +68,7 @@ export class Multiplayer {
     ws.onmessage = (ev) => this.onMessage(String(ev.data));
     ws.onclose = (ev) => {
       this.ws = null;
+      attachTransport(null);
       this.clearRemotes();
       if (ev.code === 4004) {
         this.wanted = false;
@@ -84,6 +87,7 @@ export class Multiplayer {
     if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
     this.ws?.close();
     this.ws = null;
+    attachTransport(null);
     this.clearRemotes();
   }
 
@@ -113,11 +117,18 @@ export class Multiplayer {
     switch (m.t) {
       case 'welcome':
         this.myId = m.id;
+        attachTransport({
+          sendRecord: (kind, planet, key, data) => this.sendJson({ t: 'rec', kind, planet, key, data }),
+          sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
+        }, m.id, m.now, m.world?.created);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
           this.planets.get(planet)?.setBlock(tile, depth, block);
         }
+        for (const [kind, planet, key, data] of (m.records ?? []) as Array<[string, string, string, any]>) {
+          dispatchRecord(kind, planet, key, data);
+        }
         for (const p of m.players) this.upsert(p.id, p.name, p.planet, p.p, p.q);
-        console.log(`[MP] joined as ${this.myId}: ${m.edits.length} edits, ${m.players.length} other player(s)`);
+        console.log(`[MP] joined as ${this.myId}: ${m.edits.length} edits, ${m.records?.length ?? 0} objects, ${m.players.length} other player(s)`);
         break;
       case 'join':
         this.upsert(m.id, m.name);
@@ -136,6 +147,12 @@ export class Multiplayer {
         break;
       case 'edit':
         this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block);
+        break;
+      case 'rec':
+        dispatchRecord(m.kind, m.planet, m.key, m.data);
+        break;
+      case 'live':
+        dispatchLive(m.ch, m.id, m.data);
         break;
     }
   }
@@ -159,6 +176,7 @@ export class Multiplayer {
       this.scene.add(r.group);
     }
     if (planet) r.planet = planet;
+    setPeer(id, r.planet);
     if (p) r.target.fromArray(p);
     if (q) r.targetQ.fromArray(q);
   }
@@ -174,6 +192,7 @@ export class Multiplayer {
       }
     });
     this.remotes.delete(id);
+    setPeer(id, null);
   }
 
   private clearRemotes(): void {

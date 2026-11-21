@@ -21,11 +21,21 @@
 //     { t: 'hello', name }
 //     { t: 'pose', planet, p: [x,y,z], q: [x,y,z,w] }
 //     { t: 'edit', planet, tile, depth, block }
+//     { t: 'rec', kind, planet, key, data }   placed objects (torches, felled
+//         trees, machines and their contents, launch pads and their rockets,
+//         landed rockets): the latest data per (kind, planet, key) is kept
+//         and logged like an edit; data null removes it
+//     { t: 'live', ch, data }   relayed to the world, never stored (fauna
+//         snapshots from the planet's host, rockets in flight)
 //   server -> client
-//     { t: 'welcome', id, world: { id, name, seed }, edits: [[planet, tile, depth, block], ...], players: [{ id, name, planet, p, q }] }
+//     { t: 'welcome', id, now, world: { id, name, seed, created }, edits: [[planet, tile, depth, block], ...],
+//       records: [[kind, planet, key, data], ...], players: [{ id, name, planet, p, q }] }
+//         now is the server clock (ms): every client derives the world's time
+//         of day from (now - created) so the sun is the same for everyone
 //     { t: 'join', id, name }   { t: 'leave', id }
 //     { t: 'pose', id, planet, p, q }
 //     { t: 'edit', id, planet, tile, depth, block }
+//     { t: 'rec', id, kind, planet, key, data }   { t: 'live', id, ch, data }
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,12 +51,20 @@ const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 64);   // whole server
 const MAX_WORLDS = Number(process.env.MAX_WORLDS || 100);
 const CREATE_COOLDOWN_MS = 20_000;   // per address, so the list can't be flooded
 const MAX_EDITS_PER_SECOND = 40;     // per client, to bound log growth from a bad client
+const MAX_RECS_PER_SECOND = 40;      // object records, per client
+const MAX_LIVE_PER_SECOND = 30;      // relayed live frames, per client
+const MAX_RECORDS_PER_WORLD = 20_000;
+const MAX_MESSAGE_BYTES = 16 * 1024; // a chest or a rocket's cargo fits easily
+const KIND = /^[a-zA-Z][a-zA-Z0-9]{0,23}$/;
+const KEY = /^[A-Za-z0-9:_.-]{1,64}$/;
+const CHANNEL = /^[a-zA-Z][a-zA-Z0-9]{0,23}$/;
 // Planet ids are the client's SolarSystemConfig body ids. Accept any id of
 // that shape rather than keeping a second list here that must be updated
 // with every new planet (and silently drops edits when it isn't).
 const PLANET_ID = /^[a-z][a-z0-9_]{1,23}$/;
 const isPlanetId = (v) => typeof v === 'string' && PLANET_ID.test(v);
 const MAIN_WORLD = { id: 'main', name: 'Tenebris', seed: 12345, created: 0 };
+const recKey = (r) => `${r[0]}|${r[1]}|${r[2]}`;
 
 // ---- worlds ---------------------------------------------------------------
 // id -> { id, name, seed, created, edits: Map, log, players: Set<playerId> }
@@ -79,7 +97,25 @@ function openWorld(meta) {
     fs.writeFileSync(tmp, [...edits.values()].map(e => JSON.stringify(e)).join('\n') + (edits.size ? '\n' : ''));
     fs.renameSync(tmp, log);
   }
-  const w = { ...meta, edits, log, players: new Set() };
+  // Placed objects: one line per record, latest wins, null data = removed
+  const recLog = path.join(WORLDS_DIR, `${meta.id}.rec.log`);
+  const records = new Map(); // "kind|planet|key" -> [kind, planet, key, data]
+  if (fs.existsSync(recLog)) {
+    for (const line of fs.readFileSync(recLog, 'utf8').split('\n')) {
+      if (!line) continue;
+      try {
+        const r = JSON.parse(line);
+        if (r[3] === null) records.delete(recKey(r));
+        else records.set(recKey(r), r);
+      } catch {
+        // torn last line
+      }
+    }
+    const tmp = `${recLog}.tmp`;
+    fs.writeFileSync(tmp, [...records.values()].map(r => JSON.stringify(r)).join('\n') + (records.size ? '\n' : ''));
+    fs.renameSync(tmp, recLog);
+  }
+  const w = { ...meta, edits, log, records, recLog, players: new Set() };
   worlds.set(w.id, w);
   return w;
 }
@@ -98,8 +134,9 @@ function loadWorlds() {
   for (const meta of list) openWorld(meta);
   saveIndex();
   let total = 0;
-  for (const w of worlds.values()) total += w.edits.size;
-  console.log(`loaded ${worlds.size} world(s), ${total} edits`);
+  let recs = 0;
+  for (const w of worlds.values()) { total += w.edits.size; recs += w.records.size; }
+  console.log(`loaded ${worlds.size} world(s), ${total} edits, ${recs} objects`);
 }
 
 function createWorld(name, seed) {
@@ -114,16 +151,31 @@ function createWorld(name, seed) {
   return w;
 }
 
-const worldInfo = (w) => ({ id: w.id, name: w.name, seed: w.seed, created: w.created, players: w.players.size, edits: w.edits.size });
+const worldInfo = (w) => ({ id: w.id, name: w.name, seed: w.seed, created: w.created, players: w.players.size, edits: w.edits.size + w.records.size });
 
 function recordEdit(w, e) {
   w.edits.set(`${e[0]}:${e[1]}:${e[2]}`, e);
   fs.appendFileSync(w.log, JSON.stringify(e) + '\n');
 }
 
+function recordObject(w, r) {
+  if (r[3] === null) w.records.delete(recKey(r));
+  else w.records.set(recKey(r), r);
+  fs.appendFileSync(w.recLog, JSON.stringify(r) + '\n');
+}
+
+// A per-client rate window: false once the client has sent more than
+// `max` of this kind of message in the last second
+function allow(pl, kind, max) {
+  const now = Date.now();
+  const win = pl.rate[kind] ?? (pl.rate[kind] = { start: now, count: 0 });
+  if (now - win.start > 1000) { win.start = now; win.count = 0; }
+  return ++win.count <= max;
+}
+
 // ---- players --------------------------------------------------------------
 let nextId = 1;
-const players = new Map(); // id -> { ws, world, name, planet, p, q, editWindow, editCount }
+const players = new Map(); // id -> { ws, world, name, planet, p, q, rate }
 
 function send(ws, msg) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
@@ -156,12 +208,20 @@ function onMessage(id, raw) {
     broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q }, id);
   } else if (m.t === 'edit' && isPlanetId(m.planet) && Number.isInteger(m.tile) && Number.isInteger(m.depth) && Number.isInteger(m.block)
              && m.tile >= 0 && m.tile < 1_000_000 && m.depth >= 0 && m.depth < 256 && m.block >= 0 && m.block < 256) {
-    const now = Date.now();
-    if (now - pl.editWindow > 1000) { pl.editWindow = now; pl.editCount = 0; }
-    if (++pl.editCount > MAX_EDITS_PER_SECOND) return;
+    if (!allow(pl, 'edit', MAX_EDITS_PER_SECOND)) return;
     const e = [m.planet, m.tile, m.depth, m.block];
     recordEdit(w, e);
     broadcast(w, { t: 'edit', id, planet: m.planet, tile: m.tile, depth: m.depth, block: m.block }, id);
+  } else if (m.t === 'rec' && typeof m.kind === 'string' && KIND.test(m.kind) && isPlanetId(m.planet)
+             && typeof m.key === 'string' && KEY.test(m.key) && (m.data === null || (typeof m.data === 'object' && !Array.isArray(m.data)))) {
+    if (!allow(pl, 'rec', MAX_RECS_PER_SECOND)) return;
+    const r = [m.kind, m.planet, m.key, m.data];
+    if (r[3] !== null && !w.records.has(recKey(r)) && w.records.size >= MAX_RECORDS_PER_WORLD) return;
+    recordObject(w, r);
+    broadcast(w, { t: 'rec', id, kind: m.kind, planet: m.planet, key: m.key, data: m.data }, id);
+  } else if (m.t === 'live' && typeof m.ch === 'string' && CHANNEL.test(m.ch)) {
+    if (!allow(pl, 'live', MAX_LIVE_PER_SECOND)) return;
+    broadcast(w, { t: 'live', id, ch: m.ch, data: m.data ?? null }, id);
   }
 }
 
@@ -217,7 +277,7 @@ const server = http.createServer((req, res) => {
   res.end(`Tenebris JS server - ${players.size} player(s) online in ${worlds.size} world(s), ${edits} block edits saved\n`);
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 4096 });
+const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_BYTES });
 wss.on('connection', (ws, req) => {
   if (players.size >= MAX_PLAYERS) {
     ws.close(1013, 'server full');
@@ -230,12 +290,14 @@ wss.on('connection', (ws, req) => {
     return;
   }
   const id = nextId++;
-  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], editWindow: 0, editCount: 0 });
+  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], rate: {} });
   send(ws, {
     t: 'welcome',
     id,
-    world: { id: w.id, name: w.name, seed: w.seed },
+    now: Date.now(),
+    world: { id: w.id, name: w.name, seed: w.seed, created: w.created },
     edits: [...w.edits.values()],
+    records: [...w.records.values()],
     players: [...w.players].map(pid => [pid, players.get(pid)]).filter(([, p]) => p)
       .map(([pid, p]) => ({ id: pid, name: p.name, planet: p.planet, p: p.p, q: p.q })),
   });
