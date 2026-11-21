@@ -56,6 +56,7 @@ And the industry resource blocks (public/textures/resources/*.png, all faces):
 
 And the building blocks (public/textures/building/*.png, all faces):
   brick_block   running-bond brick with mortar joints
+  carpet        a red wool weave, cream border, a diamond (wool-air-and-reentry)
   concrete      cast grey with a formwork seam and tie-holes
   steel_girder  an open steel truss (alpha-cut gaps, drawn with the glass shader)
   steel_glass   clear panes in a steel frame with a cross mullion
@@ -724,6 +725,8 @@ BLD = {
     'concrete': R('#3e586e', '#5d778d', '#92a3b2', '#bfcad7'),
     'steel': R('#011c34', '#1f3b52', '#3e586e', '#5d778d', '#92a3b2'),
     'pane': R('#1096c3', '#74effe', '#d2f8ff'),
+    'wool': R('#733126', '#a61e1f', '#d12d41', '#fa3a64'),
+    'woolEdge': R('#cfaa81', '#eab798'),
 }
 
 
@@ -824,12 +827,36 @@ def bld_steel_glass(rng):
     return px
 
 
+def bld_carpet(rng):
+    """Wool carpet: a red weave of 2 px knots, a cream border and a diamond
+    in the middle; each knot lit top-left, shaded bottom-right"""
+    w, e = BLD['wool'], BLD['woolEdge']
+    px = [[w[1]] * N for _ in range(N)]
+    for y in range(N):
+        for x in range(N):
+            if x in (0, N - 1) or y in (0, N - 1):
+                px[y][x] = e[1] if x == 0 or y == 0 else e[0]
+                continue
+            knot = (x // 2 + y // 2) % 2
+            c = w[2] if knot else w[1]
+            if x % 2 == 1 and y % 2 == 1:
+                c = w[c == w[2] and 1 or 0]          # the knot's shaded corner
+            px[y][x] = c
+    for k in range(4):                               # the diamond
+        for (x, y) in ((7 - k, 4 + k), (8 + k, 4 + k), (7 - k, 11 - k), (8 + k, 11 - k)):
+            px[y][x] = e[1] if (x + y) % 2 == 0 else w[3]
+    if rng.random() < 2:                             # a stray fibre
+        px[2 + rng.randrange(3)][3 + rng.randrange(10)] = w[3]
+    return px
+
+
 def building():
     out = os.path.join(ROOT, 'building')
     os.makedirs(out, exist_ok=True)
     brng = random.Random(6363)                             # own rng: the tiles above don't change
     for name, draw, alpha in [('brick_block', bld_brick, False), ('concrete', bld_concrete, False),
-                              ('steel_girder', bld_girder, True), ('steel_glass', bld_steel_glass, True)]:
+                              ('steel_girder', bld_girder, True), ('steel_glass', bld_steel_glass, True),
+                              ('carpet', bld_carpet, False)]:
         px = draw(brng)
         if alpha:
             check_rgba(px)

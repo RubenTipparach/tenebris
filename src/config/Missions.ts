@@ -39,6 +39,11 @@ import { ItemType } from '../player/Inventory';
  *   onBattery   a network keeps its machines running on battery charge
  *   fueled      refuel a rocket with `item`
  *   launchedWith take off in a rocket whose stack holds `item`
+ *   sheared     shear a sheep
+ *   chuteLanded land a rocket under an open parachute
+ *   bottled     a gas collector fills an oxygen tank
+ *   suited      seconds breathed from tank air while exposed
+ *   recharged   swap a battery into a landed rocket
  * `distinct` counts different keys once each (kinds of fish, worlds).
  *
  * Text is shown in game: plain ASCII, short.
@@ -47,7 +52,8 @@ export type ObjectiveKind =
   | 'gained' | 'crafted' | 'placed' | 'smelted' | 'padComplete' | 'assembled'
   | 'launched' | 'landed' | 'caught' | 'caughtOn' | 'reached'
   | 'cooked' | 'ate' | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
-  | 'onBattery' | 'fueled' | 'launchedWith';
+  | 'onBattery' | 'fueled' | 'launchedWith'
+  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged';
 
 export interface MissionObjective {
   kind: ObjectiveKind;
@@ -62,7 +68,8 @@ export interface MissionObjective {
 export type MissionBranch =
   | 'trunk' | 'mining' | 'power' | 'electronics' | 'rocketry' | 'moon'
   | 'light' | 'fishing' | 'about'
-  | 'cooking' | 'construction' | 'oil' | 'storage' | 'nuclear';
+  | 'cooking' | 'construction' | 'oil' | 'storage' | 'nuclear'
+  | 'ranching' | 'air';
 
 export interface Mission {
   id: string;
@@ -92,6 +99,8 @@ export const MISSION_BRANCHES: { id: MissionBranch; name: string }[] = [
   { id: 'construction', name: 'Construction' },
   { id: 'fishing', name: 'Fishing' },
   { id: 'about', name: 'Getting about' },
+  { id: 'ranching', name: 'Wool and leather' },
+  { id: 'air', name: 'Air and suits' },
 ];
 
 const I = ItemType;
@@ -144,7 +153,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'ingots', branch: 'mining', icon: I.INGOT_IRON, parent: 'iron', title: 'Smelt iron', help: 'Put iron ore and coal in the furnace.',
     objectives: [{ kind: 'smelted', item: I.INGOT_IRON, count: 3, label: 'Iron ingots' }],
-    unlocks: [I.BUCKET, I.INGOT_COPPER],
+    unlocks: [I.BUCKET, I.INGOT_COPPER, I.SHEARS],
   },
   {
     id: 'bucket', branch: 'mining', icon: I.WATER_BUCKET, parent: 'ingots', title: 'Carry water', help: 'Craft a bucket and fill it at water.',
@@ -180,7 +189,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'cables', branch: 'power', icon: I.CABLE, parent: 'steam', title: 'Wire it up', help: 'Run cables from the engine.',
     objectives: [{ kind: 'placed', item: I.CABLE, count: 4, label: 'Cables' }],
-    unlocks: [I.ELECTRIC_FURNACE, I.HYDRO_GENERATOR],
+    unlocks: [I.ELECTRIC_FURNACE, I.HYDRO_GENERATOR, I.EMPTY_TANK, I.GAS_COLLECTOR],
   },
   {
     id: 'efurnace', branch: 'power', icon: I.ELECTRIC_FURNACE, parent: 'cables', title: 'Electric furnace', help: 'Place it on the cables.',
@@ -550,6 +559,63 @@ export const MISSIONS: Mission[] = [
   {
     id: 'ionflight', branch: 'nuclear', icon: I.ION_DRIVE, parent: 'ioncore', title: 'Fly the ion drive', help: 'Launch with the ion drive and its reactor core.',
     objectives: [{ kind: 'launchedWith', item: I.ION_DRIVE, count: 1, label: 'Ion flight' }],
+    unlocks: [],
+  },
+
+  // ---- wool and leather (openspec wool-air-and-reentry): Earth's sheep and cows
+  {
+    id: 'shear', branch: 'ranching', icon: I.WOOL, parent: 'ingots', title: 'Shear a sheep', help: 'Craft shears. Hold them and press F at a sheep.',
+    objectives: [
+      { kind: 'sheared', count: 1, label: 'Sheep shorn' },
+      { kind: 'gained', item: I.WOOL, count: 4, label: 'Wool' },
+    ],
+    unlocks: [I.CARPET, I.WOOL_CLOTHING, I.PARACHUTE],
+  },
+  {
+    id: 'carpet', branch: 'ranching', icon: I.CARPET, parent: 'shear', title: 'Lay a carpet', help: 'Craft carpet from wool and lay a floor.',
+    objectives: [{ kind: 'placed', item: I.CARPET, count: 4, label: 'Carpet' }],
+    unlocks: [],
+  },
+  {
+    id: 'hide', branch: 'ranching', icon: I.LEATHER, parent: 'shear', title: 'Tan a hide', help: 'Hit a cow until it falls.',
+    objectives: [{ kind: 'gained', item: I.LEATHER, count: 4, label: 'Leather' }],
+    unlocks: [],
+  },
+  {
+    id: 'clothes', branch: 'ranching', icon: I.WOOL_CLOTHING, parent: 'hide', title: 'Make clothes', help: 'Craft wool clothing.',
+    objectives: [{ kind: 'crafted', item: I.WOOL_CLOTHING, count: 1, label: 'Wool clothing' }],
+    unlocks: [],
+  },
+
+  // ---- air and suits: bottle air on Earth, wear it off-world
+  {
+    id: 'bottle', branch: 'air', icon: I.OXYGEN_TANK, parent: 'cables', title: 'Bottle air', help: 'Place a gas collector on power and fill empty tanks.',
+    objectives: [
+      { kind: 'placed', item: I.GAS_COLLECTOR, count: 1, label: 'Gas collector' },
+      { kind: 'bottled', count: 2, label: 'Oxygen tanks' },
+    ],
+    unlocks: [I.SPACE_SUIT],
+  },
+  {
+    id: 'suit', branch: 'air', icon: I.SPACE_SUIT, parent: 'bottle', after: ['clothes'], title: 'Suit up', help: 'Craft a space suit and put it on.',
+    objectives: [{ kind: 'crafted', item: I.SPACE_SUIT, count: 1, label: 'Space suit' }],
+    unlocks: [],
+  },
+  {
+    id: 'spacewalk', branch: 'air', icon: I.MOON_ROCK, parent: 'suit', after: ['moon'], title: 'Walk in space', help: 'Breathe from your tanks on an airless world.',
+    objectives: [{ kind: 'suited', count: 60, label: 'Seconds on tank air' }],
+    unlocks: [],
+  },
+
+  // ---- rocketry, returning: a parachute landing and a fresh battery
+  {
+    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: 'Add a parachute to the stack and land under it.',
+    objectives: [{ kind: 'chuteLanded', count: 1, label: 'Landed under a chute' }],
+    unlocks: [],
+  },
+  {
+    id: 'recharge', branch: 'rocketry', icon: I.BATTERY_LITHIUM, parent: 'moon', after: ['lithium'], title: 'Fresh battery', help: 'Press F at a landed rocket with a lithium-ion battery.',
+    objectives: [{ kind: 'recharged', count: 1, label: 'Battery swapped' }],
     unlocks: [],
   },
 ];

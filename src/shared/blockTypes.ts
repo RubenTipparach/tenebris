@@ -127,6 +127,8 @@ export enum HexBlockType {
   CONCRETE_BLOCK = 96,
   STEEL_GIRDER = 97,     // an open steel truss: cut-out, drawn with the glass shader
   STEEL_GLASS = 98,      // steel-framed glass: see-through like GLASS
+  // Wool carpet (openspec wool-air-and-reentry): a full block, soft underfoot
+  CARPET = 99,
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -203,6 +205,7 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.CONCRETE_BLOCK]: HexBlockType.STONE,
   [HexBlockType.STEEL_GIRDER]: HexBlockType.STONE,
   [HexBlockType.STEEL_GLASS]: HexBlockType.GLASS,
+  [HexBlockType.CARPET]: HexBlockType.DIRT,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -230,6 +233,7 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.OIL_SAND]: sameFaces('oilSand'),
   [HexBlockType.ORE_URANIUM]: sameFaces('oreUranium'),
   [HexBlockType.BRICK_BLOCK]: sameFaces('brickBlock'),
+  [HexBlockType.CARPET]: sameFaces('carpet'),
   [HexBlockType.CONCRETE_BLOCK]: sameFaces('concrete'),
   [HexBlockType.STEEL_GIRDER]: sameFaces('steelGirder'),
   [HexBlockType.STEEL_GLASS]: sameFaces('steelGlass'),

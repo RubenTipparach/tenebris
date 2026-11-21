@@ -130,6 +130,17 @@ export enum ItemType {
   CONCRETE_BLOCK = 102,
   STEEL_GIRDER = 103,
   STEEL_GLASS = 104,
+  // Wool, air and re-entry (openspec wool-air-and-reentry)
+  WOOL = 105,
+  LEATHER = 106,
+  SHEARS = 107,
+  CARPET = 108,
+  WOOL_CLOTHING = 109,
+  PARACHUTE = 110,
+  EMPTY_TANK = 111,
+  OXYGEN_TANK = 112,
+  GAS_COLLECTOR = 113,
+  SPACE_SUIT = 114,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -449,6 +460,28 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.CONCRETE_BLOCK]: { name: 'Concrete', stackSize: 64, texture: '/textures/building/concrete.png', mineTime: 2.5 },
   [ItemType.STEEL_GIRDER]: { name: 'Steel Girder', stackSize: 64, texture: '/textures/building/steel_girder.png', mineTime: 2.5 },
   [ItemType.STEEL_GLASS]: { name: 'Steel Glass', stackSize: 64, texture: '/textures/building/steel_glass.png', mineTime: 2.5 },
+  // Wool, air and re-entry (openspec wool-air-and-reentry)
+  [ItemType.WOOL]: { name: 'Wool', stackSize: 64, texture: '/textures/icons/wool.png', mineTime: 0.5 },
+  [ItemType.LEATHER]: { name: 'Leather', stackSize: 64, texture: '/textures/icons/leather.png', mineTime: 0.5 },
+  [ItemType.SHEARS]: { name: 'Shears', stackSize: 1, texture: '/textures/icons/shears.png', mineTime: 0.5 },
+  [ItemType.CARPET]: { name: 'Carpet', stackSize: 64, texture: '/textures/building/carpet.png', mineTime: 0.4 },
+  [ItemType.WOOL_CLOTHING]: { name: 'Wool Clothing', stackSize: 8, texture: '/textures/icons/wool_clothing.png', mineTime: 0.5 },
+  [ItemType.PARACHUTE]: {
+    name: 'Parachute',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/parachute_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/parachute.png',
+      heightUnits: 1,
+    },
+  },
+  [ItemType.EMPTY_TANK]: { name: 'Empty Tank', stackSize: 16, texture: '/textures/icons/empty_tank.png', mineTime: 0.5 },
+  [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
+  [ItemType.GAS_COLLECTOR]: { name: 'Gas Collector', stackSize: 8, texture: '/textures/technology/gas_collector_face.png', mineTime: 2.0 },
+  [ItemType.SPACE_SUIT]: { name: 'Space Suit', stackSize: 1, texture: '/textures/icons/space_suit.png', mineTime: 0.5 },
 };
 
 // Inventory slot

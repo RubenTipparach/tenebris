@@ -148,6 +148,7 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.OIL_SAND: return ItemType.NONE;
     // Building materials come back as themselves
     case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
+    case HexBlockType.CARPET: return ItemType.CARPET;
     case HexBlockType.CONCRETE_BLOCK: return ItemType.CONCRETE_BLOCK;
     case HexBlockType.STEEL_GIRDER: return ItemType.STEEL_GIRDER;
     case HexBlockType.STEEL_GLASS: return ItemType.STEEL_GLASS;
@@ -188,6 +189,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.CLAY: return HexBlockType.CLAY;
     case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
     case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
+    case ItemType.CARPET: return HexBlockType.CARPET;
     case ItemType.CONCRETE_BLOCK: return HexBlockType.CONCRETE_BLOCK;
     case ItemType.STEEL_GIRDER: return HexBlockType.STEEL_GIRDER;
     case ItemType.STEEL_GLASS: return HexBlockType.STEEL_GLASS;
