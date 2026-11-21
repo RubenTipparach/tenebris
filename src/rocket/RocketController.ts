@@ -1299,6 +1299,15 @@ export class RocketController {
     return this.health;
   }
 
+  /**
+   * Whether the command module has power (openspec wool-air-and-reentry,
+   * design 2): with none, the engines and steering stop and the cabin air
+   * fails (the air system reads this). The battery model fills this in.
+   */
+  public hasPower(): boolean {
+    return true;
+  }
+
   public getHealthPercent(): number {
     return (this.health / ROCKET_CONFIG.HEALTH.maxHealth) * 100;
   }
