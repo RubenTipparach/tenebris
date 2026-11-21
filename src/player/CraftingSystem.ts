@@ -1,3 +1,4 @@
+import { emitGameEvent } from '../engine/GameEvents';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
@@ -1223,6 +1224,7 @@ export class CraftingSystem {
 
     // Add output items
     this.inventory.addItem(this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
+    emitGameEvent('crafted', this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
 
     // Update UI
     this.updateUI();

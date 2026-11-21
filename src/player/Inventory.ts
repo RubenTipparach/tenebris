@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+
 // Item types in the game
 export enum ItemType {
   NONE = 0,
@@ -450,9 +452,11 @@ export class Inventory {
   }
 
   // Use item from selected slot (for placing blocks)
+  // Takes one of the held item: every caller is placing it in the world
   public useSelectedItem(): boolean {
     const slot = this.slots[this.selectedSlot];
     if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
+      emitGameEvent('placed', slot.itemType, 1);
       slot.quantity--;
       if (slot.quantity === 0) {
         slot.itemType = ItemType.NONE;

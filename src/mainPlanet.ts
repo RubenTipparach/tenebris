@@ -21,6 +21,7 @@ import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
+import { MissionsPanel } from './player/MissionsPanel';
 import { showTitleScreen, titleWanted } from './net/TitleScreen';
 import { CharacterCreator } from './net/CharacterCreator';
 import { loadMyLook } from './net/Avatar';
@@ -104,6 +105,7 @@ class PlanetGame {
 
   private teleportInProgress: boolean = false;
   private releaseTimer = 0;
+  private missions: MissionsPanel | null = null;
 
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
 
@@ -567,7 +569,9 @@ class PlanetGame {
       profiler.setFrameSpikeThreshold(PlayerConfig.FRAME_SPIKE_THRESHOLD_MS);
 
       // Load saved game data (tiles, inventory, player position)
+      const existingWorld = !!gameStorage.load();
       this.loadSavedGame();
+      this.setupMissions(existingWorld);
 
       // Setup auto-save for player position (every 5 seconds)
       gameStorage.setPlayerSaveCallback(() => this.player.exportForSave());
@@ -744,6 +748,7 @@ class PlanetGame {
         if (planet.isDetailedTerrainEnabled() && planet.isFarForRelease(viewer)) planet.releaseDetailedTerrain();
       }
     }
+    this.missions?.update(deltaTime);
     this.multiplayer?.update(deltaTime);
     this.rocketSync?.update(deltaTime);
     // Ground clutter (pixel grass tufts, rocks) on every world
@@ -1478,6 +1483,34 @@ class PlanetGame {
     this.player.setEnabled(wasEnabled);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
+  }
+
+  // Missions: the Missions tab of the E panel, counted from play
+  private setupMissions(existingWorld: boolean): void {
+    const inventory = this.blockInteraction.getInventory();
+    const machineLists: Partial<Record<number, () => unknown[]>> = {
+      [ItemType.FURNACE]: () => gameStorage.getFurnaces(),
+      [ItemType.ELECTRIC_FURNACE]: () => gameStorage.getElectricFurnaces(),
+      [ItemType.ELECTRONICS_WORKBENCH]: () => gameStorage.getElectronicsWorkbenches(),
+      [ItemType.COMPUTER]: () => gameStorage.getComputers(),
+      [ItemType.PRINTER_3D]: () => gameStorage.getPrinters3D(),
+      [ItemType.STORAGE_CHEST]: () => gameStorage.getStorageChests(),
+      [ItemType.STEAM_ENGINE]: () => gameStorage.getSteamEngines(),
+      [ItemType.HYDRO_GENERATOR]: () => gameStorage.getHydroGenerators(),
+      [ItemType.TORCH]: () => gameStorage.getTorches(),
+    };
+    const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
+    this.missions = new MissionsPanel(inventory, existingWorld, () => ({
+      held: (item) => inventory.getItemCount(item as ItemType),
+      placedMachines: (item) => machineLists[item]?.().length ?? 0,
+      padComplete: pads().some(p => p.isComplete),
+      rocketAssembled: pads().some(p => p.rocketParts.length >= 3),
+    }));
+    const missions = this.missions;
+    this.blockInteraction.getCraftingSystem().registerPanel('missions', {
+      show: (el) => missions.show(el),
+      hide: () => missions.hide(),
+    });
   }
 
   private loadSavedGame(): void {

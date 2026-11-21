@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
@@ -896,6 +898,7 @@ export class RocketController {
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
             this.hasLaunched = true;
+            emitGameEvent('launched');
           }
         }
         break;
@@ -946,6 +949,7 @@ export class RocketController {
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
             this.hasLaunched = true;
+            emitGameEvent('launched');
           }
         }
         break;
@@ -1000,6 +1004,11 @@ export class RocketController {
 
       this.stateMachine.transitionTo(RocketState.LANDED);
       console.log(`Landed safely at ${impactVelocity.toFixed(1)} m/s`);
+      if (this.closestPlanet) {
+        // the gravity source is named by its display name; missions use body ids
+        const name = this.closestPlanet.name;
+        emitGameEvent('landed', SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase());
+      }
     } else {
       // Too fast - crash!
       console.log(`Crash! Impact too fast: ${impactVelocity.toFixed(1)} m/s`);

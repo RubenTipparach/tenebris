@@ -4,6 +4,15 @@ import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
+import { emitGameEvent } from '../engine/GameEvents';
+
+// An engine, a fuel tank and a command module on the pad: a rocket that flies
+const ENGINES = new Set<ItemType>([ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE]);
+const TANKS = new Set<ItemType>([ItemType.FUEL_TANK, ItemType.MEDIUM_FUEL_TANK, ItemType.LARGE_FUEL_TANK]);
+function hasFlyableRocket(pad: { rocketParts: { itemType: ItemType }[] }): boolean {
+  const types = pad.rocketParts.map(p => p.itemType);
+  return types.some(t => ENGINES.has(t)) && types.some(t => TANKS.has(t)) && types.includes(ItemType.COMMAND_MODULE);
+}
 import { RocketController } from '../rocket/RocketController';
 import { computeRocketStats, slotStore } from '../rocket/RocketPerformance';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
@@ -523,7 +532,9 @@ export class PlanetBlockInteraction {
         showToast(`A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`, { duration: 3500 });
         return false;
       }
+      const hadRocket = hasFlyableRocket(pad);
       const result = await this.launchPadManager.addRocketPart(pad, itemType);
+      if (result && !hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
       if (result) {
         this.saveLaunchPadStates();
       }
@@ -3573,12 +3584,14 @@ export class PlanetBlockInteraction {
     const hex = this.padHex(planet, tileIndex, level, outerRadius - padHeight, true);
     if (!hex) return 'Nothing to build on';
     if (pad) {
+      const wasComplete = pad.isComplete;
       this.launchPadManager.addHex(pad, hex);
       for (const other of touching.slice(1)) {
         const otherKey = other.centerTileIndex;
         if (this.launchPadManager.mergeInto(pad, other)) gameStorage.removeLaunchPad(this.getPlanetId(planet), otherKey);
       }
       this.saveLaunchPadStates();
+      if (!wasComplete && pad.isComplete) emitGameEvent('padComplete');
       return pad;
     }
     const created = await this.launchPadManager.createPad(planet.center, hex, outerRadius);

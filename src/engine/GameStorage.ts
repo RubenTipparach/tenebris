@@ -248,6 +248,8 @@ const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}$
 const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
 const MUSIC_KEY = 'tenebris_music';
+// Mission progress lives in the world's own slot (each world has its own)
+const missionsKey = (): string => `tenebris_${worldPrefix}missions`;
 
 // Every placed-object save is also published to the multiplayer world as a
 // record (NetSync), so the one save path is the one sync path. Offline, and
@@ -1109,6 +1111,24 @@ export class GameStorage {
       localStorage.setItem(playerStorageKey(), JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save player data:', error);
+    }
+  }
+
+  // Mission progress (src/player/MissionTracker), saved the moment it changes
+  public getMissionState<T>(): T | null {
+    try {
+      const raw = localStorage.getItem(missionsKey());
+      return raw ? JSON.parse(raw) as T : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveMissionState(state: object): void {
+    try {
+      localStorage.setItem(missionsKey(), JSON.stringify(state));
+    } catch {
+      // storage blocked: progress lasts this session only
     }
   }
 

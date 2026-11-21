@@ -1,0 +1,30 @@
+/**
+ * Things the player did, for anything that counts them (missions).
+ * Emitted where the game already does the thing; listeners must not throw.
+ *
+ *   crafted     key = ItemType made at a crafting grid or workbench, n = count
+ *   placed      key = ItemType placed in the world (a block, machine, torch)
+ *   padComplete a launch pad became complete (7 blocks, middle + ring)
+ *   assembled   a pad's rocket has an engine, a tank and a command module
+ *   launched    a rocket left the ground
+ *   landed      key = body id where a rocket touched down safely
+ *
+ * Items gained are not an event: they are read off the inventory itself
+ * (src/player/Missions.ts), since they arrive by many paths.
+ */
+export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed';
+export type GameEventKey = number | string | undefined;
+type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
+
+const listeners = new Set<Listener>();
+
+export function emitGameEvent(type: GameEventType, key?: GameEventKey, n = 1): void {
+  for (const l of listeners) {
+    try { l(type, key, n); } catch (e) { console.error('[GameEvents]', e); }
+  }
+}
+
+export function onGameEvent(l: Listener): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}

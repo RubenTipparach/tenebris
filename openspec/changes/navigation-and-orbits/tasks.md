@@ -34,8 +34,8 @@
 
 ## 7. Missions (missions)
 
-- [ ] 7.1 Mission data (`src/config/Missions.ts`) and an event bus fed from Inventory, crafting, block interaction, launch pad and flight. Verify: tests of counting and of only counting after a mission opens.
-- [ ] 7.2 Missions panel (current first, objectives with counts, done ticked) and a toast on completion; progress saved. Verify: headless chop a tree, see "Logs 4 / 4" and the toast; reload keeps progress.
+- [x] 7.1 Mission data (`src/config/Missions.ts`) and an event bus fed from Inventory, crafting, block interaction, launch pad and flight. Verify: tests of counting and of only counting after a mission opens.
+- [x] 7.2 Missions panel (current first, objectives with counts, done ticked) and a toast on completion; progress saved. Verify: headless chop a tree, see "Logs 4 / 4" and the toast; reload keeps progress.
 
 ## 8. Stage B and C (orbital-motion, later)
 

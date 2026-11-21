@@ -1,3 +1,4 @@
+import { emitGameEvent } from '../engine/GameEvents';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
@@ -584,6 +585,7 @@ export class ElectronicsWorkbenchUI {
 
     // Give output
     this.inventory.addItem(recipe.output.itemType, recipe.output.quantity);
+    emitGameEvent('crafted', recipe.output.itemType, recipe.output.quantity);
 
     this.updateUI();
     this.notifyChanges();
@@ -693,6 +695,7 @@ export class ElectronicsWorkbenchUI {
 
     // Give output (addItem returns remaining items that couldn't be added)
     this.inventory.addItem(matchedRecipe.output.itemType, matchedRecipe.output.quantity);
+    emitGameEvent('crafted', matchedRecipe.output.itemType, matchedRecipe.output.quantity);
 
     this.updateUI();
     this.notifyChanges();
