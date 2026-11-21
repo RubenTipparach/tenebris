@@ -18,7 +18,8 @@
 //
 // Protocol (JSON text frames):
 //   client -> server
-//     { t: 'hello', name }
+//     { t: 'hello', name, look }   look = the avatar's colours / hair style
+//         (the client checks values against its palette); resent on change
 //     { t: 'pose', planet, p: [x,y,z], q: [x,y,z,w] }
 //     { t: 'edit', planet, tile, depth, block }
 //     { t: 'rec', kind, planet, key, data }   placed objects (torches, felled
@@ -29,10 +30,10 @@
 //         snapshots from the planet's host, rockets in flight)
 //   server -> client
 //     { t: 'welcome', id, now, world: { id, name, seed, created }, edits: [[planet, tile, depth, block], ...],
-//       records: [[kind, planet, key, data], ...], players: [{ id, name, planet, p, q }] }
+//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q }] }
 //         now is the server clock (ms): every client derives the world's time
 //         of day from (now - created) so the sun is the same for everyone
-//     { t: 'join', id, name }   { t: 'leave', id }
+//     { t: 'join', id, name, look }   { t: 'leave', id }
 //     { t: 'pose', id, planet, p, q }
 //     { t: 'edit', id, planet, tile, depth, block }
 //     { t: 'rec', id, kind, planet, key, data }   { t: 'live', id, ch, data }
@@ -191,6 +192,15 @@ function broadcast(w, msg, exceptId) {
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isVec = (v, n) => Array.isArray(v) && v.length === n && v.every(isNum);
+// An avatar look: a few short string fields (the client validates the values)
+function cleanLook(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = {};
+  for (const [k, x] of Object.entries(v).slice(0, 12)) {
+    if (/^[a-z]{1,12}$/.test(k) && typeof x === 'string' && /^[#a-z0-9]{1,16}$/i.test(x)) out[k] = x;
+  }
+  return out;
+}
 
 function onMessage(id, raw) {
   const pl = players.get(id);
@@ -202,7 +212,8 @@ function onMessage(id, raw) {
 
   if (m.t === 'hello' && typeof m.name === 'string') {
     pl.name = m.name.replace(/[^\x20-\x7e]/g, '').slice(0, 24) || pl.name;
-    broadcast(w, { t: 'join', id, name: pl.name }, id);
+    pl.look = cleanLook(m.look) ?? pl.look;
+    broadcast(w, { t: 'join', id, name: pl.name, look: pl.look }, id);
   } else if (m.t === 'pose' && isPlanetId(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
     pl.planet = m.planet; pl.p = m.p; pl.q = m.q;
     broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q }, id);
@@ -290,7 +301,7 @@ wss.on('connection', (ws, req) => {
     return;
   }
   const id = nextId++;
-  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], rate: {} });
+  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {} });
   send(ws, {
     t: 'welcome',
     id,
@@ -299,7 +310,7 @@ wss.on('connection', (ws, req) => {
     edits: [...w.edits.values()],
     records: [...w.records.values()],
     players: [...w.players].map(pid => [pid, players.get(pid)]).filter(([, p]) => p)
-      .map(([pid, p]) => ({ id: pid, name: p.name, planet: p.planet, p: p.p, q: p.q })),
+      .map(([pid, p]) => ({ id: pid, name: p.name, look: p.look, planet: p.planet, p: p.p, q: p.q })),
   });
   w.players.add(id);
   ws.on('message', (data) => onMessage(id, data.toString()));

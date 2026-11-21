@@ -21,6 +21,8 @@ import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
+import { CharacterCreator } from './net/CharacterCreator';
+import { loadMyLook } from './net/Avatar';
 import { WorldBrowser } from './net/WorldBrowser';
 import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
@@ -1331,10 +1333,20 @@ class PlanetGame {
       nameInput.addEventListener('change', () => {
         name = nameInput.value.trim().slice(0, 16) || name;
         write('tenebris_mp_name', name);
+        this.multiplayer?.setIdentity(name, loadMyLook());
       });
       // Typing in the box must not drive the player
       nameInput.addEventListener('keydown', (e) => e.stopPropagation());
     }
+
+    // Character creator: name and look (what other players see)
+    const creator = new CharacterCreator(() => name, (newName, look) => {
+      name = newName;
+      write('tenebris_mp_name', name);
+      if (nameInput) nameInput.value = name;
+      this.multiplayer?.setIdentity(name, look);
+    });
+    document.getElementById('character-btn')?.addEventListener('click', () => creator.open());
 
     // Server browser: list worlds, create one, join one (reloads into it)
     const browser = new WorldBrowser();
@@ -1353,7 +1365,7 @@ class PlanetGame {
       const planet = this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
       const o = this.player.exportForSave().orientation;
       return { planet, p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
-    }, name);
+    }, name, creator.getLook());
     this.multiplayer.connect(worldSocketUrl(world.id));
   }
 

@@ -482,6 +482,16 @@ freely. It ships to two places:
   editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
   `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
   local server.
+  What syncs: blocks (edits), poses + avatars (name and look from the
+  character creator, `src/net/Avatar.ts`), placed objects as **records**
+  (torches, felled trees, every machine and chest with its contents, launch
+  pads with tower / rocket / cargo, landed rockets) and **live frames**
+  (animals from each planet's host, rockets in flight), plus a shared
+  world clock. All of it goes through `src/net/NetSync.ts`. Placed objects
+  publish from the ONE save path (`GameStorage` save*/remove*) and remote
+  records rebuild through the ONE restore path a save load uses
+  (`PlanetBlockInteraction.restoreSavedObject`) - a new placeable object
+  joins by adding its kind there, never with its own sync code.
 
 Deploys are in `.github/workflows/js-deploy.yml`:
 
