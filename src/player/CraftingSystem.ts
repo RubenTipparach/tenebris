@@ -309,6 +309,7 @@ export class CraftingSystem {
 
   private setupUI(): void {
     this.menuElement = document.getElementById('inventory-menu');
+    this.setupPanelTabs();
     this.recipeSelectElement = document.getElementById('recipe-select') as HTMLSelectElement;
     this.craftingGridElement = document.getElementById('crafting-grid');
     this.craftingOutputElement = document.getElementById('crafting-output');
@@ -665,6 +666,41 @@ export class CraftingSystem {
     });
   }
 
+  // The E panel's tabs (Inventory / Map / Missions). Other panels register
+  // here and draw into their container (#panel-<name>) when shown.
+  private panels = new Map<string, { show: (el: HTMLElement) => void; hide?: () => void }>();
+  private currentPanel = 'inventory';
+
+  public registerPanel(name: string, panel: { show: (el: HTMLElement) => void; hide?: () => void }): void {
+    this.panels.set(name, panel);
+  }
+
+  /** Open the E panel on a tab ('inventory', 'map', 'missions'). */
+  public openPanel(name: string): void {
+    if (!this.isOpen) this.open();
+    this.showPanel(name);
+  }
+
+  private showPanel(name: string): void {
+    if (!this.menuElement) return;
+    if (this.currentPanel !== name) this.panels.get(this.currentPanel)?.hide?.();
+    this.currentPanel = name;
+    this.menuElement.querySelectorAll<HTMLElement>('.inv-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
+    const body = this.menuElement.querySelector<HTMLElement>('[data-panel-body="inventory"]');
+    if (body) body.style.display = name === 'inventory' ? '' : 'none';
+    this.menuElement.querySelectorAll<HTMLElement>('.inv-panel').forEach(p => { p.hidden = p.id !== `panel-${name}`; });
+    const title = this.menuElement.querySelector('.inventory-title');
+    if (title) title.textContent = name === 'inventory' ? 'Inventory' : name === 'map' ? 'Map' : 'Missions';
+    const el = document.getElementById(`panel-${name}`);
+    if (el && name !== 'inventory') this.panels.get(name)?.show(el);
+  }
+
+  private setupPanelTabs(): void {
+    this.menuElement?.querySelectorAll<HTMLElement>('.inv-tab').forEach(tab => {
+      tab.addEventListener('click', () => this.showPanel(tab.dataset.panel ?? 'inventory'));
+    });
+  }
+
   public open(): void {
     if (this.menuElement) {
       console.log('Inventory opened');
@@ -679,6 +715,10 @@ export class CraftingSystem {
     if (this.menuElement) {
       this.menuElement.classList.remove('active');
       this.isOpen = false;
+
+      // The next open starts on the inventory
+      this.panels.get(this.currentPanel)?.hide?.();
+      if (this.currentPanel !== 'inventory') this.showPanel('inventory');
 
       // Cancel any ongoing drag operation to prevent click events after close
       this.cancelDrag();
