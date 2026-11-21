@@ -23,6 +23,7 @@ import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
 import { showTitleScreen, titleWanted } from './net/TitleScreen';
+import { Navigation } from './nav/Navigation';
 import { CharacterCreator } from './net/CharacterCreator';
 import { loadMyLook } from './net/Avatar';
 import { WorldBrowser } from './net/WorldBrowser';
@@ -88,6 +89,7 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+  private navigation: Navigation | null = null;
   private rocketSync: RocketSync | null = null;
 
   // Mockups (Debug tab)
@@ -749,6 +751,23 @@ class PlanetGame {
       }
     }
     this.missions?.update(deltaTime);
+    // Maps, compass and waypoints (built once the world is up)
+    if (!this.navigation) {
+      this.navigation = new Navigation({
+        planets: this.planets,
+        player: () => {
+          const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+          const position = flying ? flying.getPosition() : this.player.position;
+          return {
+            planetId: this.player.getCurrentPlanet()?.getName() ?? null,
+            position,
+            forward: this.engine.camera.getWorldDirection(new THREE.Vector3()),
+          };
+        },
+        remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
+      }, this.blockInteraction.getCraftingSystem());
+    }
+    this.navigation.update();
     this.multiplayer?.update(deltaTime);
     this.rocketSync?.update(deltaTime);
     // Ground clutter (pixel grass tufts, rocks) on every world
