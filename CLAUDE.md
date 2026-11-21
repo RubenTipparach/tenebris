@@ -507,7 +507,8 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   always matches the itch build. Pick **server only** in the Run workflow
   box to redeploy just the server (a server fix) without an itch push, or
   **pages + server** to deploy GitHub Pages (`pages.yml`, called as a
-  reusable workflow) and then the server once Pages is up - no itch push.
+  reusable workflow) and then the server once Pages is up - no itch push
+  and no heavyphoton.com rebuild.
 
 `static.yml` ("JS client - build + check") builds and verifies the client
 on every push to `main`; on branches it only runs by hand (Run workflow).

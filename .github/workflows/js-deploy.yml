@@ -11,7 +11,7 @@
 #                    first deploy) - no itch.io push
 #     pages + server GitHub Pages (rubentipparach.github.io/tenebris, the
 #                    pages.yml workflow) then the Fly server once Pages
-#                    deployed - no itch.io push
+#                    deployed - no itch.io push, no heavyphoton.com
 #   The server's admin portal (https://tenebris-c.fly.dev/admin) needs an
 #   ADMIN_TOKEN Fly secret: fly secrets set ADMIN_TOKEN=... -a tenebris-c
 #
@@ -93,6 +93,8 @@ jobs:
 
   site:
     name: heavyphoton.com - trigger docs/tenebris rebuild
+    # every push, and every manual release except 'pages + server'
+    if: github.event_name == 'push' || inputs.ship != 'pages + server'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger the heavyphoton.github.io deploy
