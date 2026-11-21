@@ -958,7 +958,8 @@ export class LaunchPadManager {
    * Load rocket part model and material for a given item type
    * Caches the result for reuse
    */
-  private async loadRocketPartAssets(itemType: ItemType): Promise<{ geometry: THREE.BufferGeometry; material: THREE.ShaderMaterial } | null> {
+  // Public: multiplayer builds other players' rockets from the same models
+  public async loadRocketPartAssets(itemType: ItemType): Promise<{ geometry: THREE.BufferGeometry; material: THREE.ShaderMaterial } | null> {
     // Check cache first
     const cached = this.rocketPartCache.get(itemType);
     if (cached) {
