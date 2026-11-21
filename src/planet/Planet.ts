@@ -444,9 +444,9 @@ export class Planet {
       // Prepare config for worker
       const config = {
         blockRemap: this.config.tileset === SEQUOIA_TILESET ? {
-          // Sequoia's biomes in its own blocks: tree-fern moss lowlands,
+          // Sequoia's biomes in its own blocks: dry scrub lowlands (tree ferns),
           // dry pale plains, redwood duff in the forest and the cold
-          [HexBlockType.GRASS]: HexBlockType.SEQ_MOSS,
+          [HexBlockType.GRASS]: HexBlockType.SEQ_SCRUB,
           [HexBlockType.DRY_GRASS]: HexBlockType.SEQ_GRASS,
           [HexBlockType.FOREST_FLOOR]: HexBlockType.SEQ_DUFF,
           [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,

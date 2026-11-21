@@ -901,11 +901,11 @@ class PlanetGame {
         // Sequoia's biomes: ferns and lantern trees in the grassland,
         // redwoods on the snowy heights, the odd lantern tree in the
         // desert, nothing on bare rock
-        // One tree species per biome, never a mix: tree ferns on the moss
+        // One tree species per biome, never a mix: tree ferns on the dry scrub
         // lowlands, redwoods on the needle duff, scattered lantern trees on
         // the dry plains; nothing in the desert, on rock or snow
         const top = this.topBlock(this.sequoia, tileIndex);
-        if (top === HexBlockType.SEQ_MOSS) return 'treefern';
+        if (top === HexBlockType.SEQ_SCRUB) return 'treefern';
         if (top === HexBlockType.SEQ_DUFF) return 'redwood';
         if (top === HexBlockType.SEQ_GRASS) return roll < 0.3 ? 'lantern' : null;
         return null;

@@ -18,7 +18,9 @@ of another block (CLAUDE.md). Drawn the way Pale Blue Dot draws pixel art
 Blocks:
   forest_floor  Earth: leaf litter (birch forest)
   dry_grass     Earth: savanna grass
-  seq_moss      Sequoia: fern moss (tree-fern lowlands)
+  seq_scrub     Sequoia: dry scrub - its beige ground with clumps of dry
+                olive grass (tree-fern lowlands). Sequoia's palette is beige
+                and dry grass green; it has no lush green grass
   seq_duff      Sequoia: needle duff (redwood forest)
 
 Deterministic. Run from the repo root:  python3 scripts/gen-biome-textures.py
@@ -56,7 +58,8 @@ RAMPS = {
     'leafgreen': [rgb(h) for h in ('#05582d', '#297537', '#559642')],
     'straw': [rgb(h) for h in ('#725244', '#ab8465', '#cfaa81', '#eab798')],
     'drystem': [rgb(h) for h in ('#434137', '#725244', '#a09f91')],
-    'moss': [rgb(h) for h in ('#003227', '#05582d', '#297537', '#53998b', '#9bb675')],
+    'seqground': [rgb(h) for h in ('#725244', '#ab8465', '#cfaa81', '#eab798')],
+    'dryolive': [rgb(h) for h in ('#434137', '#a09f91', '#9bb675', '#cfaa81')],
     'duff': [rgb(h) for h in ('#2e0d06', '#41322c', '#522b2f', '#725244', '#7d4636')],
 }
 
@@ -170,14 +173,15 @@ def dry_grass(rng):
     return t.px
 
 
-def seq_moss(rng):
-    t = Tile(RAMPS['moss'], 1)
-    t.ground(rng, RAMPS['moss'], [0, 1], [1, 3])
-    for _ in range(12):                                    # cushions of moss, rounded
-        w, h = rng.choice([(3, 3), (4, 3), (3, 2)])
-        t.clump(blob(rng.randrange(N), rng.randrange(N), w, h), RAMPS['moss'], rng.choice([2, 3]))
-    for _ in range(3):                                     # single bright spore tips
-        t.put(rng.randrange(N), rng.randrange(N), RAMPS['moss'][4])
+def seq_scrub(rng):
+    t = Tile(RAMPS['seqground'], 2)
+    t.ground(rng, RAMPS['seqground'], [1, 2], [2, 3])      # Sequoia's beige ground
+    for _ in range(9):                                     # dry olive scrub clumps
+        w, h = rng.choice([(3, 2), (2, 3), (3, 3)])
+        t.clump(blob(rng.randrange(N), rng.randrange(N), w, h), RAMPS['dryolive'], rng.choice([1, 2]))
+    for _ in range(5):                                     # pale bleached grass blades
+        x, y = rng.randrange(N), rng.randrange(N)
+        t.clump([(x, y), (x + 1, y), (x, y - 1)], RAMPS['seqground'], 3)
     return t.px
 
 
@@ -213,7 +217,7 @@ def main():
     earth_soil = read_png(os.path.join(ROOT, 'dirt.png'))
     seq_soil = read_png(os.path.join(ROOT, 'planet_seq', 'planet_seq_dirt.png'))
     for name, draw, soil in [('forest_floor', forest_floor, earth_soil), ('dry_grass', dry_grass, earth_soil),
-                             ('seq_moss', seq_moss, seq_soil), ('seq_duff', seq_duff, seq_soil)]:
+                             ('seq_scrub', seq_scrub, seq_soil), ('seq_duff', seq_duff, seq_soil)]:
         top = draw(rng)
         check(top)
         write_png(os.path.join(OUT, f'{name}.png'), top)

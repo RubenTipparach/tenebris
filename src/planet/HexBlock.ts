@@ -27,7 +27,7 @@ export enum FaceType {
 const BIOME_TEXTURES: [string, string][] = [
   ['forestFloor', 'forest_floor'], ['forestFloorSide', 'forest_floor_side'],
   ['dryGrass', 'dry_grass'], ['dryGrassSide', 'dry_grass_side'],
-  ['seqMoss', 'seq_moss'], ['seqMossSide', 'seq_moss_side'],
+  ['seqScrub', 'seq_scrub'], ['seqScrubSide', 'seq_scrub_side'],
   ['seqDuff', 'seq_duff'], ['seqDuffSide', 'seq_duff_side'],
 ];
 

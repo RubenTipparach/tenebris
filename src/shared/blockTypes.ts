@@ -41,10 +41,10 @@ export enum HexBlockType {
   SEQ_SNOW = 26,
   // Biome surfaces (a biome's own ground; like grass they drop their soil
   // when mined). Earth: birch forest floor, savanna. Sequoia: tree-fern
-  // moss, redwood needle duff.
+  // scrub (its beige ground with dry olive grass), redwood needle duff.
   FOREST_FLOOR = 27,
   DRY_GRASS = 28,
-  SEQ_MOSS = 29,
+  SEQ_SCRUB = 29,
   SEQ_DUFF = 30
 }
 
@@ -57,7 +57,7 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.SEQ_SNOW]: HexBlockType.SNOW,
   [HexBlockType.FOREST_FLOOR]: HexBlockType.DIRT,
   [HexBlockType.DRY_GRASS]: HexBlockType.GRASS,
-  [HexBlockType.SEQ_MOSS]: HexBlockType.GRASS,
+  [HexBlockType.SEQ_SCRUB]: HexBlockType.GRASS,
   [HexBlockType.SEQ_DUFF]: HexBlockType.DIRT,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
@@ -93,7 +93,7 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.SEQ_SNOW]: { top: 'seqSnow', side: 'seqSnowSide', bottom: 'seqSnowSide' },
   [HexBlockType.FOREST_FLOOR]: { top: 'forestFloor', side: 'forestFloorSide', bottom: 'side' },
   [HexBlockType.DRY_GRASS]: { top: 'dryGrass', side: 'dryGrassSide', bottom: 'side' },
-  [HexBlockType.SEQ_MOSS]: { top: 'seqMoss', side: 'seqMossSide', bottom: 'seqDirt' },
+  [HexBlockType.SEQ_SCRUB]: { top: 'seqScrub', side: 'seqScrubSide', bottom: 'seqDirt' },
   [HexBlockType.SEQ_DUFF]: { top: 'seqDuff', side: 'seqDuffSide', bottom: 'seqDirt' },
 };
 const DEFAULT_FACES = sameFaces('top');

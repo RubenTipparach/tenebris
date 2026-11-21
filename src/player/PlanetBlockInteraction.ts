@@ -70,7 +70,7 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // Biome surfaces drop their soil, as grass does
     case HexBlockType.FOREST_FLOOR: return ItemType.DIRT;
     case HexBlockType.DRY_GRASS: return ItemType.DIRT;
-    case HexBlockType.SEQ_MOSS: return ItemType.SEQ_DIRT;
+    case HexBlockType.SEQ_SCRUB: return ItemType.SEQ_DIRT;
     case HexBlockType.SEQ_DUFF: return ItemType.SEQ_DIRT;
     default: return ItemType.NONE;
   }

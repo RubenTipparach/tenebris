@@ -417,8 +417,9 @@ function buildTreeFern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: n
   const fibre = new THREE.Color(0x4a3426);
   addPart(parts, trunk, (c) => shade(fibre, 0.7 + 0.3 * Math.min(1, c.y / H) + (hash3(c.x, c.y, c.z, 61) - 0.5) * 0.2));
 
-  const dark = new THREE.Color(0x1d6b52);
-  const light = new THREE.Color(0x6fd08a);
+  // Sequoia's palette: dry olive greens, not lush green
+  const dark = new THREE.Color(0x434137);
+  const light = new THREE.Color(0x9bb675);
   const fronds = 8 + Math.floor(rng.next() * 4);
   const spin = rng.next() * Math.PI * 2;
   for (let i = 0; i < fronds; i++) {
