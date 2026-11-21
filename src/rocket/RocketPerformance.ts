@@ -23,6 +23,7 @@ export interface RocketStats {
   deltaV: number;           // m/s with full tanks (Tsiolkovsky)
   cargoSlots: number;
   tier: number;             // highest part tier in the stack
+  problems: string[];       // why a part can't work (an ion drive with no reactor core)
 }
 
 export function partStats(itemType: ItemType): RocketPartStats | undefined {
@@ -41,6 +42,7 @@ export function cargoMass(cargo: readonly InventorySlot[] | null | undefined): n
 export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0): RocketStats {
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
   let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0;
+  const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
     if (!s) continue;
@@ -48,6 +50,12 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
     fuelCapacity += s.fuelCapacity ?? 0;
     cargoSlots += s.cargoSlots ?? 0;
     tier = Math.max(tier, s.tier);
+    const missing = (s.requires ?? []).filter(r => !itemTypes.includes(r));
+    if (missing.length) {
+      const msg = `${ITEM_DATA[itemType]?.name ?? 'Part'} needs a ${missing.map(r => ITEM_DATA[r]?.name ?? 'part').join(' and a ')}`;
+      if (!problems.includes(msg)) problems.push(msg);
+      continue;  // a part that can't work gives no thrust
+    }
     if (s.thrust && s.specificImpulse) {
       thrust += s.thrust;
       massFlow += s.thrust / (s.specificImpulse * g0);
@@ -57,7 +65,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, tier };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, tier, problems };
 }
 
 /** Delta-v left with `fuelUnits` in the tanks */

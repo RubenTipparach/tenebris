@@ -18,6 +18,10 @@ export interface RocketPartStats {
                          // the delta-v the physics delivers
   fuelCapacity?: number; // fuel units, tanks only (FUEL_KG_PER_UNIT kg each)
   cargoSlots?: number;   // cargo hold slots this part adds
+  // Parts that must also be in the stack for this one to work (the ion
+  // drive needs a reactor core). Unmet: the part gives no thrust, and the
+  // stack's stats carry the reason (RocketStats.problems)
+  requires?: ItemType[];
 }
 
 export const ROCKET_CONFIG = {
@@ -57,6 +61,8 @@ export const ROCKET_CONFIG = {
   // Tier 2 (Moon titanium): the Vacuum Engine - efficient but weak, it can't
   // lift off Earth (TWR < 1) but flies fine off the Moon and in space - and
   // the Large Fuel Tank. Together they reach the other planets.
+  // Tier 3 (openspec industry-and-nuclear): the Nuclear Thermal Engine.
+  // Tier 4: the Ion Drive, which needs a Reactor Core in the stack.
   // The derived numbers (delta-v, TWR, Earth->Moon cost) are printed by
   // scripts/rocket-tech-report.ts.
   PARTS: {
@@ -67,6 +73,15 @@ export const ROCKET_CONFIG = {
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
     [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4 },
     [ItemType.CARGO_BAY]: { tier: 1, dryMass: 80, cargoSlots: 8 },
+    // Tier 3 (uranium, built off-world): the nuclear thermal engine - the
+    // same tank fuel at more than twice the vacuum engine's efficiency - and
+    // the battery pack (cargo space now, ion power later)
+    [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
+    [ItemType.BATTERY_PACK]: { tier: 3, dryMass: 60, cargoSlots: 2 },
+    // Tier 4: the ion drive, the most efficient engine and the gentlest -
+    // an in-space engine that only fires with a reactor core aboard
+    [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },
+    [ItemType.REACTOR_CORE]: { tier: 4, dryMass: 400 },
   } as Partial<Record<ItemType, RocketPartStats>>,
 
   // === CARGO HOLD ===

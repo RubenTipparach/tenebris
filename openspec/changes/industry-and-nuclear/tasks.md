@@ -30,8 +30,8 @@
 
 ## 6. Rocket tiers
 
-- [ ] 6.1 PARTS rows for the nuclear thermal engine, ion drive, reactor core, battery pack; `requires` in computeRocketStats (ion needs a reactor core) with the reason shown and launch refused. Verify: tests of delta-v ordering and the ion requirement.
-- [ ] 6.2 Rocket tech report lists tier 3 and 4 builds. Verify: report output.
+- [x] 6.1 PARTS rows for the nuclear thermal engine, ion drive, reactor core, battery pack; `requires` in computeRocketStats (ion needs a reactor core) with the reason shown and launch refused. Verify: tests of delta-v ordering and the ion requirement.
+- [x] 6.2 Rocket tech report lists tier 3 and 4 builds. Verify: report output.
 
 ## 8. Building materials
 

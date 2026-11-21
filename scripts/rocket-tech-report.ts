@@ -55,6 +55,11 @@ const STACKS: [string, ItemType[]][] = [
   ['Tier 2 + Cargo Bay', [ItemType.VACUUM_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
   ['Both engines: Rocket Engine (lift) + Vacuum Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Rocket Engine + Large Tank (mixed)', [ItemType.ROCKET_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 3: Nuclear Thermal Engine + Large Tank + Command Module', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 3 + Battery Pack', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.BATTERY_PACK, ItemType.COMMAND_MODULE]],
+  ['Tier 4: Rocket Engine (lift) + Ion Drive + Reactor Core + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 4: Ion Drive + Reactor Core + Large Tank (in space)', [ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Ion Drive with no Reactor Core (cannot fire)', [ItemType.ION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
 ];
 const TRIPS: [string, string][] = [
   ['earth', 'moon'], ['moon', 'earth'], ['earth', 'sequoia'], ['moon', 'sequoia'],
@@ -69,6 +74,8 @@ for (const [label, parts] of STACKS) {
     `Isp-eff ${(s.exhaustVelocity / 9.81).toFixed(0)} s, burn ${(s.fuelCapacity / s.fuelFlow).toFixed(0)} s, ` +
     `DELTA-V ${s.deltaV.toFixed(0)} m/s, cargo ${s.cargoSlots} slots, tier ${s.tier}`);
   console.log(`  TWR full: Earth ${surfaceTWR(s, 1).toFixed(2)}, Moon ${surfaceTWR(s, 0.4).toFixed(2)}, Cinder ${surfaceTWR(s, 0.6).toFixed(2)}`);
+  for (const p of s.problems) console.log(`  CANNOT FIRE: ${p}`);
+  if (s.thrust <= 0) continue;
   for (const [a, b] of TRIPS) {
     const from0 = body(a);
     if (surfaceTWR(s, from0.gravity) <= 1) {
