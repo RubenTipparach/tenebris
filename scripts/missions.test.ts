@@ -9,6 +9,8 @@ import { PRINTER_RECIPES } from '../src/player/Printer3DUI';
 import { SMELTING_RECIPES, ELECTRIC_SMELTING_RECIPES } from '../src/config/SmeltingRecipes';
 import { COOKERS } from '../src/config/CookingConfig';
 import { FABRICATOR_RECIPES } from '../src/config/PowerConfig';
+import { MISSION_TREE_UI } from '../src/config/Missions';
+import { packTree, linkProblems } from '../src/player/MissionTreeLayout';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 const byId = new Map(MISSIONS.map(m => [m.id, m]));
@@ -176,3 +178,13 @@ t12.event('launchedWith', ItemType.ROCKET_ENGINE, 1, h);
 ok(!t12.isDone('ntrlaunch'), 'a chemical launch is not a nuclear launch');
 t12.event('launchedWith', ItemType.NUCLEAR_THERMAL_ENGINE, 1, h);
 ok(t12.isDone('ntrlaunch') && t12.recipeOpen(ItemType.ION_DRIVE) && t12.recipeOpen(ItemType.REACTOR_CORE), 'a nuclear launch unlocks the ion drive and reactor core');
+
+// ---- the tree panel: no line crosses a card or plaque, and lines from
+// different parents never meet, at every zoom level (the owner: "make sure
+// paths don't overlap on the research tree")
+MISSION_TREE_UI.LEVELS.forEach((L, i) => {
+  const t = packTree(L);
+  const probs = linkProblems(L, t);
+  ok(probs.length === 0, `zoom ${i}: no overlapping lines${probs.length ? ' - ' + probs.slice(0, 3).map(p => `${p.link.parent}->${p.link.child} ${p.what}`).join('; ') : ''}`);
+  ok(t.links.length === MISSIONS.filter(m => m.parent).length, `zoom ${i}: a line to every mission with a parent`);
+});

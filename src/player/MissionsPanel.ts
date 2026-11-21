@@ -6,6 +6,7 @@ import { showToast } from '../utils/toast';
 import { Inventory, ITEM_DATA, ItemType } from './Inventory';
 import { MissionSave, MissionTracker, WorldState } from './MissionTracker';
 import { setRecipeGate } from './RecipeGate';
+import { packTree, TreeLayout } from './MissionTreeLayout';
 
 /**
  * Missions (openspec navigation-and-orbits, missions): the tracker fed from
@@ -30,43 +31,6 @@ const KIND_ICON: Record<string, string> = {
 const BY_ID = new Map(MISSIONS.map(m => [m.id, m]));
 const BRANCH_NAME = new Map(MISSION_BRANCHES.map(b => [b.id, b.name]));
 
-// ---- layout (static: the tree never changes shape) ------------------------
-
-interface Slot { col: number; row: number; branchIndex: number; branch: string }
-
-function layoutTree(): { slots: Map<string, Slot>; rows: number; cols: number; branchStart: Map<string, { col: number; row: number; branchIndex: number }> } {
-  const depth = new Map<string, number>();
-  const depthOf = (m: Mission): number => {
-    if (depth.has(m.id)) return depth.get(m.id)!;
-    const d = m.parent ? depthOf(BY_ID.get(m.parent)!) + 1 : 0;
-    depth.set(m.id, d);
-    return d;
-  };
-  const slots = new Map<string, Slot>();
-  const branchStart = new Map<string, { col: number; row: number; branchIndex: number }>();
-  let rowBase = 0;
-  MISSION_BRANCHES.forEach((b, branchIndex) => {
-    const inBranch = MISSIONS.filter(m => m.branch === b.id);
-    if (!inBranch.length) return;
-    let rows = 0;
-    // First child carries on its parent's row; later children start rows below
-    const place = (m: Mission, row: number) => {
-      slots.set(m.id, { col: depthOf(m), row, branchIndex, branch: b.id });
-      rows = Math.max(rows, row + 1);
-      const kids = inBranch.filter(k => k.parent === m.id);
-      kids.forEach((k, i) => place(k, i === 0 ? row : rows));
-    };
-    for (const root of inBranch.filter(m => !m.parent || BY_ID.get(m.parent)!.branch !== b.id)) place(root, rows);
-    const first = inBranch.reduce((a, m) => (slots.get(m.id)!.col < slots.get(a.id)!.col ? m : a));
-    branchStart.set(b.id, { ...slots.get(first.id)!, row: rowBase });
-    rowBase += rows;
-  });
-  let cols = 0;
-  for (const s of slots.values()) cols = Math.max(cols, s.col + 1);
-  return { slots, rows: rowBase, cols, branchStart };
-}
-
-const LAYOUT = layoutTree();
 
 export class MissionsPanel {
   private tracker: MissionTracker;
@@ -133,59 +97,13 @@ export class MissionsPanel {
 
   private get L() { return UI.LEVELS[this.level]; }
 
-  // Packed layout per zoom level (cached): each branch is a block - its
-  // plaque over its cards - placed as high as it can go, no higher than its
-  // parent's card and clear of every block already placed. So the main line
-  // runs straight on and side branches sit right under the trunk, instead
-  // of every branch taking new rows below all the ones before it.
-  private packedCache = new Map<number, { cards: Map<string, { x: number; y: number }>; plaques: Map<string, { x: number; y: number }>; w: number; h: number }>();
+  // The packed layout per zoom level (MissionTreeLayout), cached
+  private packedCache = new Map<number, TreeLayout>();
 
-  private packed() {
-    const hit = this.packedCache.get(this.level);
-    if (hit) return hit;
-    const L = this.L;
-    const stepX = L.cardW + L.gapX, stepY = L.cardH + L.gapY;
-    const cards = new Map<string, { x: number; y: number }>();
-    const plaques = new Map<string, { x: number; y: number }>();
-    const placed: Array<{ x0: number; x1: number; y0: number; y1: number }> = [];
-    let w = 0, h = 0;
-    MISSION_BRANCHES.forEach((b, i) => {
-      const members = MISSIONS.filter(m => m.branch === b.id);
-      if (!members.length) return;
-      let c0 = Infinity, c1 = -Infinity, rows = 0;
-      for (const m of members) {
-        const sl = LAYOUT.slots.get(m.id)!;
-        c0 = Math.min(c0, sl.col); c1 = Math.max(c1, sl.col);
-        rows = Math.max(rows, sl.row + 1);
-      }
-      const label = `${i}. ${b.name}`;
-      const x0 = UI.PAD + c0 * stepX;
-      const x1 = Math.max(UI.PAD + c1 * stepX + L.cardW, x0 + label.length * L.font * UI.PLAQUE_CHAR_W);
-      const height = L.plaque + rows * stepY - L.gapY;
-      // no higher than the parent's card (the branch grows out of it)
-      const root = members.find(m => !m.parent || BY_ID.get(m.parent)!.branch !== b.id)!;
-      const parentCard = root.parent ? cards.get(root.parent) : undefined;
-      let y = parentCard ? parentCard.y - L.plaque : UI.PAD;
-      for (let moved = true; moved;) {
-        moved = false;
-        for (const r of placed) {
-          const overlapX = x0 < r.x1 + L.gapX && x1 + L.gapX > r.x0;
-          const overlapY = y < r.y1 + L.gapY && y + height + L.gapY > r.y0;
-          if (overlapX && overlapY) { y = r.y1 + L.gapY; moved = true; }
-        }
-      }
-      placed.push({ x0, x1, y0: y, y1: y + height });
-      plaques.set(b.id, { x: x0, y });
-      for (const m of members) {
-        const sl = LAYOUT.slots.get(m.id)!;
-        cards.set(m.id, { x: UI.PAD + sl.col * stepX, y: y + L.plaque + sl.row * stepY });
-      }
-      w = Math.max(w, x1 + UI.PAD);
-      h = Math.max(h, y + height + UI.PAD);
-    });
-    const out = { cards, plaques, w, h };
-    this.packedCache.set(this.level, out);
-    return out;
+  private packed(): TreeLayout {
+    let t = this.packedCache.get(this.level);
+    if (!t) { t = packTree(this.L); this.packedCache.set(this.level, t); }
+    return t;
   }
 
   private cardPos(id: string): { x: number; y: number } {
@@ -296,31 +214,25 @@ export class MissionsPanel {
     svg.setAttribute('width', String(tree.w));
     svg.setAttribute('height', String(tree.h));
     svg.classList.add('mt-lines');
-    for (const m of MISSIONS) {
-      if (!m.parent) continue;
-      const a = this.cardPos(m.parent), b = this.cardPos(m.id);
-      const x1 = a.x + L.cardW, y1 = a.y + L.cardH / 2, x2 = b.x, y2 = b.y + L.cardH / 2;
-      const mid = x2 - Math.round(L.gapX / 2);
+    for (const k of this.packed().links) {
       const path = document.createElementNS(NS, 'path');
-      path.setAttribute('d', `M${x1} ${y1} H${mid} V${y2} H${x2}`);
-      const st = this.tracker.state(m);
-      path.setAttribute('class', `mt-line mt-line-${st === 'locked' ? 'locked' : this.tracker.isDone(m.parent) ? 'live' : 'locked'}`);
+      path.setAttribute('d', `M${k.x1} ${k.y1} H${k.mid} V${k.y2} H${k.x2}`);
+      const st = this.tracker.state(BY_ID.get(k.child)!);
+      path.setAttribute('class', `mt-line mt-line-${st === 'locked' ? 'locked' : this.tracker.isDone(k.parent) ? 'live' : 'locked'}`);
       svg.appendChild(path);
     }
     content.appendChild(svg);
 
     // Branch plaques
-    MISSION_BRANCHES.forEach((b, i) => {
-      const start = this.packed().plaques.get(b.id);
-      if (!start) return;
+    for (const p of this.packed().plaques.values()) {
       const plaque = document.createElement('div');
       plaque.className = 'mt-plaque';
-      plaque.textContent = `${i}. ${b.name}`;
-      plaque.style.left = `${start.x}px`;
-      plaque.style.top = `${start.y}px`;
+      plaque.textContent = p.label;
+      plaque.style.left = `${p.x}px`;
+      plaque.style.top = `${p.y}px`;
       plaque.style.fontSize = `${L.font}px`;
       content.appendChild(plaque);
-    });
+    }
 
     // Cards
     for (const m of MISSIONS) content.appendChild(this.card(m));

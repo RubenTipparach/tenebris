@@ -114,6 +114,20 @@ Locked.
 - **WHEN** the player opens Missions in a new world and presses Fit
 - **THEN** every branch is visible with its plaque, the first trunk card is marked Now and the rest Open or Locked
 
+### Requirement: Lines never overlap
+
+No line SHALL pass through a card or a plaque other than the two it joins,
+and lines from different parents SHALL never touch or run along each other,
+at every zoom level. Lines from one parent MAY share a run. Where a mission
+has several children in its own branch, those that lead on to other
+branches SHALL take the lower rows, so the lines dropping from them don't
+cut across their siblings.
+
+#### Scenario: The whole tree
+
+- **WHEN** the player opens Missions and presses Fit, or zooms to any step
+- **THEN** no line crosses a card, a plaque, or another parent's line
+
 ### Requirement: The tree pans, zooms in steps, and opens a card's details
 
 The tree SHALL pan by dragging and zoom in fixed steps that never stretch
