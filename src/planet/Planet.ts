@@ -3,7 +3,7 @@ import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS, SEQUOIA_TILESET, MOON_TILESET } from '../config/SolarSystemConfig';
+import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -35,6 +35,8 @@ export interface PlanetConfig {
   isSpawnPlanet?: boolean;  // If true, generate detailed terrain immediately. If false, only LOD until approached.
   seedOffset?: number;  // Added to the world seed so this planet gets its own landscape (default 0)
   city?: CityConfig;    // Ecumenopolis: the surface is city (src/shared/cityGen.ts), not natural terrain
+  biomes?: boolean;  // Climate biomes in the terrain generator (see TerrainConfig.biomes)
+  blockRemap?: Partial<Record<number, number>>;  // Generic block -> this planet's own (TerrainConfig.blockRemap)
 }
 
 export interface PlanetColumn {
@@ -471,33 +473,11 @@ export class Planet {
 
       // Prepare config for worker
       const config = {
-        blockRemap: this.config.tileset === SEQUOIA_TILESET ? {
-          // Sequoia's biomes in its own blocks: dry scrub lowlands (tree ferns),
-          // dry pale plains, redwood duff in the forest and the cold
-          [HexBlockType.GRASS]: HexBlockType.SEQ_SCRUB,
-          [HexBlockType.DRY_GRASS]: HexBlockType.SEQ_GRASS,
-          [HexBlockType.FOREST_FLOOR]: HexBlockType.SEQ_DUFF,
-          [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
-          [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
-          [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
-          // Sequoia's cold lowlands are redwood forest floor, not snow;
-          // its snow is only the peaks and poles
-          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DUFF,
-        } : this.config.texturePath === MOON_TILESET.stone ? {
-          // The Moon's minerals in its own rock: iron, aluminium, cobalt,
-          // lithium. No coal, copper or gold there - those veins stay rock
-          [HexBlockType.ORE_IRON]: HexBlockType.MOON_ORE_IRON,
-          [HexBlockType.ORE_ALUMINUM]: HexBlockType.MOON_ORE_ALUMINUM,
-          [HexBlockType.ORE_COBALT]: HexBlockType.MOON_ORE_COBALT,
-          [HexBlockType.ORE_LITHIUM]: HexBlockType.MOON_ORE_LITHIUM,
-          [HexBlockType.ORE_COAL]: HexBlockType.MOON_ROCK,
-          [HexBlockType.ORE_COPPER]: HexBlockType.MOON_ROCK,
-          [HexBlockType.ORE_GOLD]: HexBlockType.MOON_ROCK,
-        } : undefined,
-        // Sequoia always has its biomes (desert, rocky highlands, snow
-        // beside its grassland, in its own blocks via blockRemap); on Earth
-        // they are still the Debug-tab mockup
-        biomes: !this.config.texturePath && this.config.hasWater !== false && (this.config.tileset === SEQUOIA_TILESET || biomeMockupOn()),
+        // The planet's own blocks for the generic ones (SolarSystemConfig)
+        blockRemap: this.config.blockRemap,
+        // Climate biomes: always on a planet whose config has them (Sequoia,
+        // the living alien worlds); on Earth still the Debug-tab mockup
+        biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
         seed: this.seed,
         city: this.config.city,
         cityTileAngle: this.cityTileAngle(),

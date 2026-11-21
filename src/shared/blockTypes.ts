@@ -62,6 +62,42 @@ export enum HexBlockType {
   CITY_METAL = 42,       // industrial sheds
   CITY_PARK = 43,
   CITY_FOUNDATION = 44,  // the undercity below street level
+  // The living alien worlds' biome grounds (ids 45-69 are theirs). Each is
+  // its own drawn block; mined, they drop the planet's rock like grass drops
+  // dirt. Cinder: ember moss, ash plains, sulfur flats.
+  CINDER_EMBERMOSS = 45,
+  CINDER_ASH = 46,
+  CINDER_SULFUR = 47,
+  // Vesper: rose clay pans, rippled dunes, salt flats
+  VESPER_CLAY = 48,
+  VESPER_DUNE = 49,
+  VESPER_SALT = 50,
+  // Halcyon: verdigris moss, amethyst geode gravel, mint glass sand
+  HALCYON_MOSS = 51,
+  HALCYON_GEODE = 52,
+  HALCYON_GLASS = 53,
+  // Tessaly: lilac snow moss, frost crust, blue glaze
+  TESSALY_SNOWMOSS = 54,
+  TESSALY_FROST = 55,
+  TESSALY_GLAZE = 56,
+  // Umbra: glowing indigo moss, violet mycelium mat, black shale
+  UMBRA_MOSS = 57,
+  UMBRA_MYCEL = 58,
+  UMBRA_SHALE = 59,
+  // The jungle moons. Verdance: deep jungle floor, mangrove swamp, river
+  // bank, its red soil and its mossy green rock
+  VERD_JUNGLE = 60,
+  VERD_SWAMP = 61,
+  VERD_BANK = 62,
+  VERD_SOIL = 63,
+  VERD_ROCK = 64,
+  // Mirewood: blue-green jungle floor, black peat swamp, river bank, its
+  // dark soil and its banded rock
+  MIRE_JUNGLE = 65,
+  MIRE_SWAMP = 66,
+  MIRE_BANK = 67,
+  MIRE_SOIL = 68,
+  MIRE_ROCK = 69,
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -92,6 +128,36 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.CITY_NEON]: HexBlockType.STONE,
   [HexBlockType.CITY_METAL]: HexBlockType.STONE,
   [HexBlockType.CITY_FOUNDATION]: HexBlockType.STONE,
+  // Alien biome grounds: each planet's three grounds behave like GRASS,
+  // SAND and SNOW, so its distant LOD can wear them (its tileset's grass /
+  // sand / snow are those grounds' textures) and footsteps sound right
+  [HexBlockType.CINDER_EMBERMOSS]: HexBlockType.GRASS,
+  [HexBlockType.CINDER_ASH]: HexBlockType.SAND,
+  [HexBlockType.CINDER_SULFUR]: HexBlockType.SNOW,
+  [HexBlockType.VESPER_CLAY]: HexBlockType.GRASS,
+  [HexBlockType.VESPER_DUNE]: HexBlockType.SAND,
+  [HexBlockType.VESPER_SALT]: HexBlockType.SNOW,
+  [HexBlockType.HALCYON_MOSS]: HexBlockType.GRASS,
+  [HexBlockType.HALCYON_GEODE]: HexBlockType.SAND,
+  [HexBlockType.HALCYON_GLASS]: HexBlockType.SNOW,
+  [HexBlockType.TESSALY_SNOWMOSS]: HexBlockType.GRASS,
+  [HexBlockType.TESSALY_GLAZE]: HexBlockType.SAND,
+  [HexBlockType.TESSALY_FROST]: HexBlockType.SNOW,
+  [HexBlockType.UMBRA_MOSS]: HexBlockType.GRASS,
+  [HexBlockType.UMBRA_SHALE]: HexBlockType.SAND,
+  [HexBlockType.UMBRA_MYCEL]: HexBlockType.SNOW,
+  // Jungle moons: ordinary grass / dirt / sand / stone roles, so their
+  // tileset's textures (these blocks' own) dress their distant LOD
+  [HexBlockType.VERD_JUNGLE]: HexBlockType.GRASS,
+  [HexBlockType.VERD_SWAMP]: HexBlockType.SNOW,
+  [HexBlockType.VERD_BANK]: HexBlockType.SAND,
+  [HexBlockType.VERD_SOIL]: HexBlockType.DIRT,
+  [HexBlockType.VERD_ROCK]: HexBlockType.STONE,
+  [HexBlockType.MIRE_JUNGLE]: HexBlockType.GRASS,
+  [HexBlockType.MIRE_SWAMP]: HexBlockType.SNOW,
+  [HexBlockType.MIRE_BANK]: HexBlockType.SAND,
+  [HexBlockType.MIRE_SOIL]: HexBlockType.DIRT,
+  [HexBlockType.MIRE_ROCK]: HexBlockType.STONE,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -142,6 +208,34 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.CITY_METAL]: { top: 'cityDeck', side: 'cityMetal', bottom: 'cityDeck' },
   [HexBlockType.CITY_PARK]: { top: 'cityPark', side: 'cityParkSide', bottom: 'cityFoundation' },
   [HexBlockType.CITY_FOUNDATION]: sameFaces('cityFoundation'),
+  // Alien biome grounds: their own top, a side of the planet's rock under a
+  // lip of the top, and the planet's rock underneath (moonRock = the
+  // planet's own rock texture on a single-texture world)
+  [HexBlockType.CINDER_EMBERMOSS]: { top: 'cinderEmbermoss', side: 'cinderEmbermossSide', bottom: 'moonRock' },
+  [HexBlockType.CINDER_ASH]: { top: 'cinderAsh', side: 'cinderAshSide', bottom: 'moonRock' },
+  [HexBlockType.CINDER_SULFUR]: { top: 'cinderSulfur', side: 'cinderSulfurSide', bottom: 'moonRock' },
+  [HexBlockType.VESPER_CLAY]: { top: 'vesperClay', side: 'vesperClaySide', bottom: 'moonRock' },
+  [HexBlockType.VESPER_DUNE]: { top: 'vesperDune', side: 'vesperDuneSide', bottom: 'moonRock' },
+  [HexBlockType.VESPER_SALT]: { top: 'vesperSalt', side: 'vesperSaltSide', bottom: 'moonRock' },
+  [HexBlockType.HALCYON_MOSS]: { top: 'halcyonMoss', side: 'halcyonMossSide', bottom: 'moonRock' },
+  [HexBlockType.HALCYON_GEODE]: { top: 'halcyonGeode', side: 'halcyonGeodeSide', bottom: 'moonRock' },
+  [HexBlockType.HALCYON_GLASS]: { top: 'halcyonGlass', side: 'halcyonGlassSide', bottom: 'moonRock' },
+  [HexBlockType.TESSALY_SNOWMOSS]: { top: 'tessalySnowmoss', side: 'tessalySnowmossSide', bottom: 'moonRock' },
+  [HexBlockType.TESSALY_FROST]: { top: 'tessalyFrost', side: 'tessalyFrostSide', bottom: 'moonRock' },
+  [HexBlockType.TESSALY_GLAZE]: { top: 'tessalyGlaze', side: 'tessalyGlazeSide', bottom: 'moonRock' },
+  [HexBlockType.UMBRA_MOSS]: { top: 'umbraMoss', side: 'umbraMossSide', bottom: 'moonRock' },
+  [HexBlockType.UMBRA_MYCEL]: { top: 'umbraMycel', side: 'umbraMycelSide', bottom: 'moonRock' },
+  [HexBlockType.UMBRA_SHALE]: { top: 'umbraShale', side: 'umbraShaleSide', bottom: 'moonRock' },
+  [HexBlockType.VERD_JUNGLE]: { top: 'verdJungle', side: 'verdJungleSide', bottom: 'verdSoil' },
+  [HexBlockType.VERD_SWAMP]: { top: 'verdSwamp', side: 'verdSwampSide', bottom: 'verdSoil' },
+  [HexBlockType.VERD_BANK]: sameFaces('verdBank'),
+  [HexBlockType.VERD_SOIL]: sameFaces('verdSoil'),
+  [HexBlockType.VERD_ROCK]: sameFaces('verdRock'),
+  [HexBlockType.MIRE_JUNGLE]: { top: 'mireJungle', side: 'mireJungleSide', bottom: 'mireSoil' },
+  [HexBlockType.MIRE_SWAMP]: { top: 'mireSwamp', side: 'mireSwampSide', bottom: 'mireSoil' },
+  [HexBlockType.MIRE_BANK]: sameFaces('mireBank'),
+  [HexBlockType.MIRE_SOIL]: sameFaces('mireSoil'),
+  [HexBlockType.MIRE_ROCK]: sameFaces('mireRock'),
 };
 const DEFAULT_FACES = sameFaces('top');
 export function blockFaces(blockType: HexBlockType | number): BlockFaces {

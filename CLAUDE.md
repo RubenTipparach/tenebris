@@ -44,6 +44,17 @@ everywhere.
   regional stands through `standSpecies()` in `src/planet/Tree.ts`, one
   species per stand. A new planet's flora follows the same rule.
 
+- **JS client flora rosters** (one path: a body's `flora` table in
+  `src/config/SolarSystemConfig.ts` -> `FloraTreeManager` in
+  `src/planet/Tree.ts`; `assertFloraRostersDisjoint` throws at load if a
+  species is on two planets). Earth: pine / oak / birch. Sequoia: redwood /
+  treefern / lantern. Cinder: emberspire (ash) / thornwood (ember moss).
+  Vesper: balloon (clay) / spiralreed (dunes). Halcyon: crystaltree (moss) /
+  geodebloom (geode). Tessaly: frostcoral (frost) / iceflower (snow moss).
+  Umbra: glowcap (moss) / veilwillow (mycelium). Jungle moons - Verdance:
+  canopygiant / mangrove / fanpalm; Mirewood: elephantear / bottlecypress /
+  weepfern. Kessel, Nerith (and the Moon) stay lifeless.
+
 - **Never tint a biome - always draw a new block.** Standing instruction
   from the user. A biome's own look is its own block type with its own
   baked texture (`src/shared/blockTypes.ts` + `scripts/gen-biome-textures.py`),

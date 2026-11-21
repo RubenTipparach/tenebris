@@ -4,12 +4,12 @@ import { InputManager } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
-import { PlanetTreeManager, MushroomTreeManager, EarthTreeSpecies, standSpecies } from './planet/Tree';
+import { PlanetTreeManager, FloraTreeManager, FloraSpecies, EarthTreeSpecies, standSpecies } from './planet/Tree';
 import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
-import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, CelestialBodyConfig } from './config/SolarSystemConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -56,11 +56,13 @@ class PlanetGame {
   private player: PlanetPlayer;
   private blockInteraction: PlanetBlockInteraction;
   private treeManager: PlanetTreeManager;
-  private mushroomTreeManager: MushroomTreeManager | null = null;
+  // Each planet's own flora (Sequoia, the living alien worlds), scattered
+  // once its detailed terrain is ready; keyed by planet id
+  private floraManagers: Map<string, FloraTreeManager> = new Map();
   private earthAtmosphere: Atmosphere | null = null;
   private earthClouds: CloudSystem = null!;
-  // Atmospheres of the planets other than Earth (Sequoia, the city world)
-  private bodyAtmospheres: Atmosphere[] = [];
+  // Atmospheres of the other worlds that have one (Sequoia, the jungle moons)
+  private atmospheres: Atmosphere[] = [];
   private isReady: boolean = false;
   private elapsedTime: number = 0;
   private waterUpdateTimer: number = 0;
@@ -91,7 +93,6 @@ class PlanetGame {
   private teleportInProgress: boolean = false;
 
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
-  private sequoiaTreesScattered: boolean = false;
 
   constructor(private worldError?: string) {
     const container = document.getElementById('game-container');
@@ -134,6 +135,8 @@ class PlanetGame {
           detailRenderDistance: bodyConfig.detailRenderDistance,
           seedOffset: bodyConfig.terrain.seed,
           city: bodyConfig.terrain.city,
+          biomes: bodyConfig.terrain.biomes,
+          blockRemap: bodyConfig.terrain.blockRemap,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -621,11 +624,11 @@ class PlanetGame {
       await this.yieldToMainThread();
 
       // Create atmosphere for Sequoia (with reddish tint)
-      this.addBodyAtmosphere(this.sequoia, getBodyConfig('sequoia')!);
+      this.addAtmosphere('sequoia', this.sequoia);
 
       // NOTE: Mushroom trees require terrain data which is generated on-demand when approaching
       // Trees will be scattered in the update loop after terrain is ready
-      // (see scatterSequoiaTreesOnce() called when detailed terrain becomes available)
+      // (see scatterFloraOnce() called when detailed terrain becomes available)
 
       // Register LOD transition callback for atmosphere entry feedback
       this.sequoia.setLODTransitionCallback((enteringDetailedTerrain) => {
@@ -647,8 +650,7 @@ class PlanetGame {
       await planet.initialize();
       planet.updateBoundingSpheres();
       planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
-      const config = getBodyConfig(planet.getName());
-      if (config) this.addBodyAtmosphere(planet, config);
+      for (const [id, p] of this.planets) if (p === planet) this.addAtmosphere(id, planet);
     }
 
     const elapsed = performance.now() - startTime;
@@ -691,13 +693,22 @@ class PlanetGame {
       this.groundClutter.setEnabled(true);
     }
     {
+      // On Sequoia, the Moon, every living world (it has flora), and Earth
+      // with the biome mockup
       const pos = this.player.position;
       let on: Planet | null = null;
-      if (this.sequoia && pos.distanceTo(this.sequoia.center) < this.sequoia.radius * 1.2) on = this.sequoia;
-      else if (this.moon && pos.distanceTo(this.moon.center) < this.moon.radius * 1.2) on = this.moon;
-      else if (this.earthClutter && pos.distanceTo(this.earth.center) < this.earth.radius * 1.2) on = this.earth;
+      let nativeRock: THREE.Color | undefined;
+      for (const [id, planet] of this.planets) {
+        if (pos.distanceTo(planet.center) >= planet.radius * 1.2) continue;
+        const body = getBodyConfig(id);
+        const wanted = planet === this.earth ? this.earthClutter : planet === this.moon || !!body?.flora;
+        if (!wanted) continue;
+        on = planet;
+        if (planet !== this.moon && body?.visual.texturePath) nativeRock = new THREE.Color(body.visual.distantColor);
+        break;
+      }
       this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition), nativeRock);
     }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
@@ -789,26 +800,22 @@ class PlanetGame {
       this.sequoia.update(lodPosition, this.engine.camera, deltaTime, this.sharedFrustum);
       profiler.end('Sequoia Update');
 
-      // Scatter Sequoia trees once terrain is ready (deferred from initialization)
-      if (!this.sequoiaTreesScattered && this.sequoia.isDetailedTerrainEnabled()) {
-        this.scatterSequoiaTreesOnce();
-      }
     }
 
     // Update water shader for animation (Earth and Sequoia have water)
     const isUnderwater = this.player.getIsInWater();
     this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
-    if (this.sequoia.isInitialTerrainReady()) {
-      this.sequoia.updateWaterShader(this.elapsedTime, isUnderwater);
+    for (const [id, planet] of this.planets) {
+      if (planet !== this.earth && planet.isInitialTerrainReady() && getBodyConfig(id)?.terrain.hasWater) {
+        planet.updateWaterShader(this.elapsedTime, isUnderwater);
+      }
     }
 
     // Update atmospheres (need camera position for fresnel effect)
     if (this.earthAtmosphere) {
       this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
     }
-    for (const atmosphere of this.bodyAtmospheres) {
-      atmosphere.updateCameraPosition(this.engine.camera.position);
-    }
+    for (const atmosphere of this.atmospheres) atmosphere.updateCameraPosition(this.engine.camera.position);
 
     // Update clouds (slow rotation)
     this.earthClouds.update(deltaTime);
@@ -832,13 +839,18 @@ class PlanetGame {
       this.treeManager.updateVisibility(this.earth.getVisibleTreeChunks());
     }
 
-    // Same visibility handling for Sequoia's mushroom trees (only if Sequoia is initialized)
-    if (this.mushroomTreeManager && this.sequoia.isInitialTerrainReady()) {
-      if (this.sequoia.isInOrbitView()) {
-        this.mushroomTreeManager.setAllVisible(false);
-      } else {
-        this.mushroomTreeManager.updateVisibility(this.sequoia.getVisibleTreeChunks());
+    // Every other planet's own flora: scattered once its detailed terrain is
+    // ready (planets load lazily, so nothing is built at boot), then shown
+    // with its visible chunks like Earth's
+    for (const [id, planet] of this.planets) {
+      if (planet === this.earth || !planet.isInitialTerrainReady()) continue;
+      if (!this.floraManagers.has(id) && getBodyConfig(id)?.flora && planet.isDetailedTerrainEnabled()) {
+        this.scatterFloraOnce(id, planet);
       }
+      const flora = this.floraManagers.get(id);
+      if (!flora) continue;
+      if (planet.isInOrbitView()) flora.setAllVisible(false);
+      else flora.updateVisibility(planet.getVisibleTreeChunks());
     }
   }
 
@@ -871,43 +883,49 @@ class PlanetGame {
     return false;
   }
 
-  // Scatter mushroom trees on Sequoia - called once when terrain becomes ready
-  private scatterSequoiaTreesOnce(): void {
-    if (this.sequoiaTreesScattered) return;
-    this.sequoiaTreesScattered = true;
+  // A world's atmosphere shell (tinted per its config), if it has one
+  private addAtmosphere(id: string, planet: Planet): void {
+    const body = getBodyConfig(id);
+    if (!body?.hasAtmosphere || !PlayerConfig.ATMOSPHERE_ENABLED) return;
+    const atmosphere = createAtmosphere(planet.radius, calculateSunDirectionForPlanet(planet.center, this.sunPosition), body.visual.atmosphereTint);
+    atmosphere.setPosition(planet.center);
+    this.engine.scene.add(atmosphere.getMesh());
+    this.atmospheres.push(atmosphere);
+  }
 
-    console.log('[Deferred] Scattering Sequoia mushroom trees...');
-    const sequoiaSunDir = calculateSunDirectionForPlanet(this.sequoia.center, this.sunPosition);
-
-    this.mushroomTreeManager = new MushroomTreeManager(this.engine.scene, sequoiaSunDir);
-    const removedSequoiaTrees = gameStorage.getRemovedTrees('sequoia');
-    const removedSequoiaTiles = new Set(removedSequoiaTrees.map(t => t.tileIndex));
-    this.mushroomTreeManager.setChunkLookup((tileIndex) => this.sequoia.getTileChunkIndex(tileIndex));
-    this.mushroomTreeManager.scatterTrees(
-      this.sequoia.center,
-      this.sequoia.radius,
-      PlayerConfig.TREE_COUNT * 2,  // More trees since Sequoia is 2x larger
-      (direction) => this.sequoia.getSurfaceHeightInDirection(direction),
-      (direction) => this.sequoia.isUnderwaterInDirection(direction),
-      PlayerConfig.TERRAIN_SEED + 100,  // Different seed for variety
-      (direction) => this.sequoia.getTileIndexInDirection(direction),
-      (direction) => this.sequoia.getTileCenterInDirection(direction),
-      removedSequoiaTiles,
+  // Scatter a planet's own flora (its config's FloraTable) - called once,
+  // when its detailed terrain becomes ready. One path for every planet but
+  // Earth: which species grows on a tile is the one its ground grows.
+  private scatterFloraOnce(id: string, planet: Planet): void {
+    if (this.floraManagers.has(id)) return;
+    const body = getBodyConfig(id)!;
+    const table = body.flora!;
+    const t0 = performance.now();
+    const roster = [...new Set(Object.values(table).map(f => f!.species))] as FloraSpecies[];
+    const manager = new FloraTreeManager(this.engine.scene, roster, calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    this.floraManagers.set(id, manager);
+    const removed = new Set(gameStorage.getRemovedTrees(id).map(t => t.tileIndex));
+    manager.setChunkLookup((tileIndex) => planet.getTileChunkIndex(tileIndex));
+    // As many per area as Earth's TREE_COUNT, times the planet's density
+    const count = Math.round(PlayerConfig.TREE_COUNT * (body.floraDensity ?? 1) * (planet.radius / 100) ** 2);
+    manager.scatterTrees(
+      planet.center,
+      planet.radius,
+      count,
+      (direction) => planet.getSurfaceHeightInDirection(direction),
+      (direction) => planet.isUnderwaterInDirection(direction),
+      // Sequoia keeps the seed it always had (same forests in old saves)
+      PlayerConfig.TERRAIN_SEED + (id === 'sequoia' ? 100 : 100 + (body.terrain.seed ?? 0)),
+      (direction) => planet.getTileIndexInDirection(direction),
+      (direction) => planet.getTileCenterInDirection(direction),
+      removed,
       (tileIndex, roll) => {
-        // Sequoia's biomes: ferns and lantern trees in the grassland,
-        // redwoods on the snowy heights, the odd lantern tree in the
-        // desert, nothing on bare rock
-        // One tree species per biome, never a mix: tree ferns on the dry scrub
-        // lowlands, redwoods on the needle duff, scattered lantern trees on
-        // the dry plains; nothing in the desert, on rock or snow
-        const top = this.topBlock(this.sequoia, tileIndex);
-        if (top === HexBlockType.SEQ_SCRUB) return 'treefern';
-        if (top === HexBlockType.SEQ_DUFF) return 'redwood';
-        if (top === HexBlockType.SEQ_GRASS) return roll < 0.3 ? 'lantern' : null;
-        return null;
+        // One species per biome, never a mix: the one its ground grows
+        const f = table[this.topBlock(planet, tileIndex)];
+        return f && roll < f.chance ? f.species : null;
       }
     );
-    console.log('[Deferred] Sequoia mushroom trees scattered');
+    console.log(`[Flora] ${id}: ${manager.getTrees().length} plants (${roster.join(', ')}) in ${(performance.now() - t0).toFixed(0)}ms`);
   }
 
   // Setup debug keyboard shortcuts
@@ -1145,18 +1163,6 @@ class PlanetGame {
   }
 
   // A planet's atmosphere shell (with its config tint), if it has one
-  private addBodyAtmosphere(planet: Planet, config: CelestialBodyConfig): void {
-    if (!config.hasAtmosphere || !PlayerConfig.ATMOSPHERE_ENABLED) return;
-    const atmosphere = createAtmosphere(
-      planet.radius,
-      calculateSunDirectionForPlanet(planet.center, this.sunPosition),
-      config.visual.atmosphereTint
-    );
-    atmosphere.setPosition(planet.center);
-    this.engine.scene.add(atmosphere.getMesh());
-    this.bodyAtmospheres.push(atmosphere);
-  }
-
   private topBlock(planet: Planet, tileIndex: number): number {
     for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
       const b = planet.getBlock(tileIndex, d);

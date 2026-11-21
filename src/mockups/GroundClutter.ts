@@ -45,6 +45,7 @@ export class GroundClutter {
   private seqScrub: Tones = fallbackTones(0x559642, 0x9bb675, 0xcfaa81);
   private stone = new THREE.Color(0x8a8780);
   private moonStone = new THREE.Color(0x6e6e74);
+  private nativeRock: THREE.Color | null = null;
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
   private sinceBuild = 0;
@@ -76,8 +77,11 @@ export class GroundClutter {
     this.lastPlanet = null;
   }
 
-  /** planet: the world the player stands on (null in space). */
-  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3): void {
+  /** planet: the world the player stands on (null in space). nativeRock:
+   *  the colour of a rock world's own rock (its MOON_ROCK), moon grey if unset. */
+  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3, nativeRock?: THREE.Color): void {
+    if (nativeRock && !nativeRock.equals(this.nativeRock ?? this.moonStone)) { this.nativeRock = nativeRock.clone(); this.lastPlanet = null; }
+    if (!nativeRock && this.nativeRock) { this.nativeRock = null; this.lastPlanet = null; }
     if (!this.enabled) return;
     this.time += dt;
     this.sinceBuild += dt;
@@ -128,7 +132,8 @@ export class GroundClutter {
           for (const n of tile.neighbors) if (!seen.has(n)) { seen.add(n); next.push(n); }
           if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) continue;
 
-          const plan = clutterFor(block);
+          const alien = ALIEN_CLUTTER[block];
+          const plan = alien ?? clutterFor(block);
           if (!plan) continue;
           let seed = hash(ti);
           const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
@@ -150,7 +155,8 @@ export class GroundClutter {
             m.compose(pos, rot, scale);
             this.tufts.setMatrixAt(nTufts, m);
             const r = rnd();
-            const tone = plan.straw ? STRAW
+            const tone = alien?.tuft ? alien.tuft
+              : plan.straw ? STRAW
               : block === HexBlockType.SEQ_GRASS ? this.seqGrass
               : block === HexBlockType.SEQ_SCRUB ? this.seqScrub
               // Sequoia's other ground grows its own dry beige grass, never
@@ -170,7 +176,7 @@ export class GroundClutter {
             pos.addScaledVector(dir, -s * 0.15); // sink in a little
             m.compose(pos, rot, scale);
             this.rocks.setMatrixAt(nRocks, m);
-            col.copy(block === HexBlockType.MOON_ROCK ? this.moonStone : this.stone).multiplyScalar(0.8 + rnd() * 0.35);
+            col.copy(alien?.rock ?? (block === HexBlockType.MOON_ROCK ? this.nativeRock ?? this.moonStone : this.stone)).multiplyScalar(0.8 + rnd() * 0.35);
             this.rocks.setColorAt(nRocks, col);
             nRocks++;
           }
@@ -214,6 +220,47 @@ function clutterFor(block: number): Plan | null {
     default: return null;
   }
 }
+
+// The living alien worlds and jungle moons: each biome's tufts and stones in
+// its own planet's colours (tuft: dark / mid / light, from the ground's
+// palette; rock: the stones lying on it)
+interface AlienPlan extends Plan { tuft?: Tones; rock?: THREE.Color }
+const alien = (tufts: number, tuftsRand: number, rockChance: number, rocks: number, tuft: [number, number, number] | null, rock: number): AlienPlan =>
+  ({ tufts, tuftsRand, straw: false, rockChance, rocks, tuft: tuft ? fallbackTones(...tuft) : undefined, rock: new THREE.Color(rock) });
+const T = HexBlockType;
+const ALIEN_CLUTTER: Partial<Record<number, AlienPlan>> = {
+  // Cinder: red-orange ember tufts in the moss, obsidian shards on the ash,
+  // yellow sulfur lumps on the flats
+  [T.CINDER_EMBERMOSS]: alien(3, 4, 0.15, 1, [0x681712, 0xd4462b, 0xfb902f], 0x161612),
+  [T.CINDER_ASH]: alien(0, 1.2, 0.45, 3, [0x434137, 0x681712, 0xfe6420], 0x161612),
+  [T.CINDER_SULFUR]: alien(0, 0, 0.35, 2, null, 0xfaaf5c),
+  // Vesper: pink clay sprigs and red pebbles, gold dune grass, salt crystals
+  [T.VESPER_CLAY]: alien(0, 2, 0.25, 2, [0x841c1d, 0xc34988, 0xe69d69], 0x7d4636),
+  [T.VESPER_DUNE]: alien(1, 3, 0.08, 1, [0x8d4526, 0xc56d25, 0xfaaf5c], 0xab8465),
+  [T.VESPER_SALT]: alien(0, 0, 0.3, 3, null, 0xfffefe),
+  // Halcyon: verdigris tufts, amethyst crystals, mint glass pebbles
+  [T.HALCYON_MOSS]: alien(4, 5, 0.06, 1, [0x204f63, 0x53998b, 0x84e3b5], 0x3f8577),
+  [T.HALCYON_GEODE]: alien(0, 1, 0.55, 3, [0x4f1d83, 0x7d2dbd, 0x9e3ba2], 0x7d2dbd),
+  [T.HALCYON_GLASS]: alien(0, 0.8, 0.2, 2, [0x53998b, 0x84e3b5, 0xc1f1d8], 0xc1f1d8),
+  // Tessaly: lilac moss tufts, frost tufts, ice chunks on the glaze
+  [T.TESSALY_SNOWMOSS]: alien(3, 4, 0.08, 1, [0x3e3551, 0x69608b, 0x9e3ba2], 0x92a3b2),
+  [T.TESSALY_FROST]: alien(0, 2, 0.2, 2, [0x5d778d, 0x92a3b2, 0xd2f8ff], 0xd2f8ff),
+  [T.TESSALY_GLAZE]: alien(0, 0, 0.3, 2, null, 0x74effe),
+  // Umbra: indigo and glowing cyan tufts, violet mycelium sprigs, shale flakes
+  [T.UMBRA_MOSS]: alien(3, 4, 0.06, 1, [0x191954, 0x15578a, 0x74effe], 0x2b1f35),
+  [T.UMBRA_MYCEL]: alien(1, 3, 0.1, 1, [0x4f1d83, 0x7d2dbd, 0xc34988], 0x2b1f35),
+  [T.UMBRA_SHALE]: alien(0, 0, 0.5, 3, null, 0x161612),
+  // Verdance: thick emerald undergrowth, swamp sedge, bank grass
+  [T.VERD_JUNGLE]: alien(7, 6, 0.05, 1, [0x05582d, 0x297537, 0x559642], 0x3e586e),
+  [T.VERD_SWAMP]: alien(4, 4, 0.05, 1, [0x434137, 0x297537, 0x9bb675], 0x434137),
+  [T.VERD_BANK]: alien(1, 3, 0.25, 2, [0x297537, 0x559642, 0x9bb675], 0x5d778d),
+  [T.VERD_ROCK]: alien(0, 1, 0.5, 3, [0x05582d, 0x297537, 0x559642], 0x3e586e),
+  // Mirewood: lime and teal undergrowth, duckweed-green sedge, silt reeds
+  [T.MIRE_JUNGLE]: alien(7, 6, 0.04, 1, [0x297537, 0x53998b, 0x9bb675], 0x3e3551),
+  [T.MIRE_SWAMP]: alien(3, 4, 0.04, 1, [0x161612, 0x559642, 0x9bb675], 0x2b1f35),
+  [T.MIRE_BANK]: alien(1, 3, 0.25, 2, [0x204f63, 0x53998b, 0x84e3b5], 0x69608b),
+  [T.MIRE_ROCK]: alien(0, 0, 0.5, 3, null, 0x3e3551),
+};
 
 function isSequoiaBlock(block: number): boolean {
   return block === HexBlockType.SEQ_GRASS || block === HexBlockType.SEQ_DIRT || block === HexBlockType.SEQ_SAND
