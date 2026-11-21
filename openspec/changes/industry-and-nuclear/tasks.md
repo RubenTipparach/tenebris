@@ -15,19 +15,19 @@
 
 ## 3. Power grid and batteries
 
-- [ ] 3.1 PowerConfig ratings; per-network solver over CableNodeManager networks (supply, demand, battery charge/discharge), driving the existing isPowered flags; network readout in machine UIs. Verify: tests of the solver (overload stops machines, battery covers the gap and drains, surplus charges).
-- [ ] 3.2 Lead-acid, lithium-ion, solid-state batteries (recipes, placeable, charge saved). Verify: test capacities are increasing; headless a battery runs a furnace with the engine off.
+- [x] 3.1 PowerConfig ratings; per-network solver over CableNodeManager networks (supply, demand, battery charge/discharge), driving the existing isPowered flags; network readout in machine UIs. Verify: tests of the solver (overload stops machines, battery covers the gap and drains, surplus charges).
+- [x] 3.2 Lead-acid, lithium-ion, solid-state batteries (recipes, placeable, charge saved). Verify: test capacities are increasing; headless a battery runs a furnace with the engine off.
 
 ## 4. Oil industry
 
-- [ ] 4.1 Pump jack (needs OIL_SAND below, powered, tank, drains the pocket, "No oil here"). Verify: headless pump over a pocket fills a bucket.
-- [ ] 4.2 Refinery (crude -> kerosene + plastic, bucket back), KEROSENE in FUEL_SOURCES at 40 units. Verify: test of fuel units; headless refine.
+- [x] 4.1 Pump jack (needs OIL_SAND below, powered, tank, drains the pocket, "No oil here"). Verify: headless pump over a pocket fills a bucket.
+- [x] 4.2 Refinery (crude -> kerosene + plastic, bucket back), KEROSENE in FUEL_SOURCES at 40 units. Verify: test of fuel units; headless refine.
 
 ## 5. Nuclear
 
-- [ ] 5.1 Centrifuge (uranium ore -> enriched), fuel rod recipe at the workbench. Verify: headless enrich.
-- [ ] 5.2 Reactor: airless-only placement with the refusal message, fuel rods, 50 kW while fuelled. Verify: refused on Earth, runs on the Moon (headless).
-- [ ] 5.3 Nuclear fabricator: runs only on reactor-powered networks; makes the nuclear parts. Verify: refuses on steam power; prints on the Moon.
+- [x] 5.1 Centrifuge (uranium ore -> enriched), fuel rod recipe at the workbench. Verify: headless enrich.
+- [x] 5.2 Reactor: airless-only placement with the refusal message, fuel rods, 50 kW while fuelled. Verify: refused on Earth, runs on the Moon (headless).
+- [x] 5.3 Nuclear fabricator: runs only on reactor-powered networks; makes the nuclear parts. Verify: refuses on steam power; prints on the Moon.
 
 ## 6. Rocket tiers
 

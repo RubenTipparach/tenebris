@@ -167,6 +167,31 @@ See `proposal.md` for why. The pieces it builds on:
     a reactor;
   - it makes `NUCLEAR_THERMAL_ENGINE`, `ION_DRIVE`, `REACTOR_CORE` and
     `BATTERY_PACK`.
+  - Its recipes (`FABRICATOR_RECIPES` in `src/config/PowerConfig.ts`; the
+    ingredients are taken from the hotbar + bag when a job starts, and the
+    job runs while the network has reactor power):
+
+    | output | ingredients | time |
+    | --- | --- | --- |
+    | battery pack | 1 lithium-ion battery, 4 plastic, 4 aluminum ingots | 30 s |
+    | nuclear thermal engine | 2 fuel rods, 12 titanium ingots, 1 vacuum engine, 1 CPU chip | 60 s |
+    | reactor core | 4 fuel rods, 16 titanium ingots, 1 solid-state battery, 1 motherboard | 90 s |
+    | ion drive | 8 titanium ingots, 8 plastic, 12 copper ingots, 2 CPU chips, 2 power supplies | 90 s |
+
+- **The machines themselves** are made at the electronics workbench (3x3,
+  `ELECTRONICS_RECIPES`), all gated by `RecipeGate`:
+
+  | machine | grid (rows) |
+  | --- | --- |
+  | fuel rod | - E - / - Ti - / - E - (E = enriched uranium) |
+  | lead-acid battery | Fe S Fe / S Cu S / Fe S Fe (S = sulfur) |
+  | lithium-ion battery | Li Co Li / Cu Cu Cu / Li Co Li |
+  | solid-state battery | Ti P Ti / P Ti P / Ti P Ti (P = plastic) |
+  | pump jack | Fe Fe Fe / - Fe - / Cu PSU Cu |
+  | refinery | Al Al Al / Cu Fe Cu / Al PSU Al |
+  | centrifuge | Ti Ti Ti / Ti CPU Ti / Al PSU Al |
+  | fission reactor | Ti Ti Ti / Ti MB Ti / Ti PSU Ti |
+  | nuclear fabricator | Ti P Ti / CPU MB CPU / Ti PSU Ti |
 
 ### 6. Rocket tiers
 
