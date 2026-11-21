@@ -21,6 +21,7 @@ import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
+import { showTitleScreen, titleWanted } from './net/TitleScreen';
 import { CharacterCreator } from './net/CharacterCreator';
 import { loadMyLook } from './net/Avatar';
 import { WorldBrowser } from './net/WorldBrowser';
@@ -1354,10 +1355,16 @@ class PlanetGame {
       this.multiplayer?.setIdentity(name, look);
     });
     document.getElementById('character-btn')?.addEventListener('click', () => creator.open());
+    document.getElementById('menu-character')?.addEventListener('click', () => creator.open());
 
     // Server browser: list worlds, create one, join one (reloads into it)
     const browser = new WorldBrowser();
     document.getElementById('world-browser-btn')?.addEventListener('click', () => browser.open());
+    // The main menu's lobby button: the same server browser
+    document.getElementById('menu-multiplayer')?.addEventListener('click', () => browser.open());
+    const modeLabel = document.getElementById('menu-mode');
+    const here = currentWorld();
+    if (modeLabel) modeLabel.textContent = here ? `Online - ${here.name}` : 'Single player';
     if (this.worldError) showToast(this.worldError, { duration: 5000 });
 
     // In a server world: go online in it
@@ -1508,7 +1515,10 @@ class PlanetGame {
 
 // Start game when DOM is ready
 // The world (seed + save slot) is settled before anything is built
+// A session starts on the title screen (single player / multiplayer /
+// character); nothing is built until a world is picked
 document.addEventListener('DOMContentLoaded', async () => {
+  if (titleWanted()) await showTitleScreen();
   const { error } = await prepareWorld();
   new PlanetGame(error);
 });

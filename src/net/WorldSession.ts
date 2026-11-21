@@ -60,8 +60,8 @@ export async function createWorld(name: string, seed?: number): Promise<WorldInf
 /** Reload the page into a world (null = back to single player). */
 export function openWorld(worldId: string | null): void {
   const params = new URLSearchParams(window.location.search);
-  if (worldId) params.set('world', worldId);
-  else params.delete('world');
+  if (worldId) { params.set('world', worldId); params.delete('sp'); }
+  else { params.delete('world'); params.set('sp', '1'); }  // straight into single player, no title
   params.delete('mp');
   const q = params.toString();
   window.location.href = `${window.location.pathname}${q ? `?${q}` : ''}`;

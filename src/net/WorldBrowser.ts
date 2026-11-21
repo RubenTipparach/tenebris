@@ -16,7 +16,8 @@ export class WorldBrowser {
   private refreshTimer: number | null = null;
   private shown = '';
 
-  constructor() {
+  // beforeGame: opened from the title screen, nothing loaded yet
+  constructor(private beforeGame = false) {
     this.root = document.createElement('div');
     this.root.id = 'world-browser';
     this.root.innerHTML = `
@@ -63,7 +64,7 @@ export class WorldBrowser {
     const w = currentWorld();
     (this.root.querySelector('.wb-current') as HTMLElement).textContent = w
       ? `Playing: ${w.name}`
-      : 'Playing single player';
+      : this.beforeGame ? 'Join a world, or make one' : 'Playing single player';
     this.root.querySelector('.wb-offline')!.toggleAttribute('hidden', !w);
     if (!this.seedInput.value) this.rollSeed();
     this.root.classList.add('open');

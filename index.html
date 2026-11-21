@@ -371,6 +371,32 @@
       background: #3d8b40;
     }
 
+    /* Main menu: multiplayer lobby + character, under PLAY */
+    #menu-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 12px;
+    }
+    .menu-action {
+      padding: 9px 18px;
+      background: #2a6fdb;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-family: var(--game-font);
+      font-size: 16px;
+      letter-spacing: 1px;
+      cursor: pointer;
+    }
+    .menu-action:hover { background: #3a7ff0; }
+    #menu-mode {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 13px;
+      color: #9fb3c8;
+    }
+
     /* Teleport dropdown */
     .teleport-select {
       padding: 8px 16px;
@@ -1354,6 +1380,11 @@
     </div>
 
     <button id="start-button">PLAY</button>
+    <div id="menu-actions">
+      <button id="menu-multiplayer" class="menu-action">MULTIPLAYER</button>
+      <button id="menu-character" class="menu-action">CHARACTER</button>
+    </div>
+    <div id="menu-mode"></div>
   </div>
 
   <div id="hotbar-selection-label"></div>
