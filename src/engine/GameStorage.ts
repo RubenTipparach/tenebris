@@ -1112,6 +1112,25 @@ export class GameStorage {
     }
   }
 
+  // The player's waypoints in this world (navigation-and-orbits): their own
+  // key per world slot, written the moment they change
+  public getWaypoints(): unknown {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}waypoints`);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public saveWaypoints(list: unknown): void {
+    try {
+      localStorage.setItem(`tenebris_${worldPrefix}waypoints`, JSON.stringify(list));
+    } catch {
+      // storage blocked: kept for this session only
+    }
+  }
+
   // Music on/off is a setting of this device, not of a world or a save:
   // it lives under its own key, so the player-pose autosave (which rewrites
   // the player save) and switching worlds can't reset it

@@ -615,33 +615,7 @@ export class Planet {
       }));
 
       // Prepare config for worker
-      const config = {
-        // The planet's own blocks for the generic ones (SolarSystemConfig)
-        blockRemap: this.config.blockRemap,
-        // Climate biomes: always on a planet whose config has them (Sequoia,
-        // the living alien worlds); on Earth still the Debug-tab mockup
-        biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
-        city: this.config.city,
-        cityTileAngle: this.cityTileAngle(),
-        ...this.getShapeParams(),
-        hasWater: this.config.hasWater !== false && !this.config.texturePath,
-        isSingleTexturePlanet: !!this.config.texturePath,
-        polarThreshold: PlayerConfig.POLAR_THRESHOLD,
-        iceCover: this.config.iceCover ?? false,
-        metalRich: this.config.metalRich ?? false,
-        polarIceCap: PlayerConfig.POLAR_ICE_CAP,
-        polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
-        polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
-        // Ore configs
-        oreConfigs: this.ORE_CONFIGS.map(ore => ({
-          type: ore.type as number,
-          minDepth: ore.minDepth,
-          maxDepth: ore.maxDepth,
-          veinChance: ore.veinChance,
-          veinSize: ore.veinSize,
-          spreadFactor: ore.spreadFactor
-        }))
-      };
+      const config = this.terrainWorkerConfig();
 
       // Tiles are stored at their own index
       const tileMap = { get: (index: number) => this.polyhedron.tiles[index] };
@@ -714,6 +688,98 @@ export class Planet {
         config
       });
     });
+  }
+
+  // The terrain generator's settings for this planet (one copy: the full
+  // generation and the map's top-blocks-only run both use it)
+  private terrainWorkerConfig() {
+  return {
+      // The planet's own blocks for the generic ones (SolarSystemConfig)
+      blockRemap: this.config.blockRemap,
+      // Climate biomes: always on a planet whose config has them (Sequoia,
+      // the living alien worlds); on Earth still the Debug-tab mockup
+      biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
+      city: this.config.city,
+      cityTileAngle: this.cityTileAngle(),
+      ...this.getShapeParams(),
+      hasWater: this.config.hasWater !== false && !this.config.texturePath,
+      isSingleTexturePlanet: !!this.config.texturePath,
+      polarThreshold: PlayerConfig.POLAR_THRESHOLD,
+      iceCover: this.config.iceCover ?? false,
+      metalRich: this.config.metalRich ?? false,
+      polarIceCap: PlayerConfig.POLAR_ICE_CAP,
+      polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
+      polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
+      // Ore configs
+      oreConfigs: this.ORE_CONFIGS.map(ore => ({
+        type: ore.type as number,
+        minDepth: ore.minDepth,
+        maxDepth: ore.maxDepth,
+        veinChance: ore.veinChance,
+        veinSize: ore.veinSize,
+        spreadFactor: ore.spreadFactor
+      }))
+    };
+  }
+
+  /**
+   * The topmost non-air block of every tile, by tile index (0 = none): from
+   * the loaded columns, else from the terrain generator (top blocks only)
+   * with every edit applied - so a planet never visited, or released, maps
+   * exactly as it would generate. For the world map.
+   */
+  public async getTopBlocks(): Promise<Uint16Array> {
+    await this.initialize();
+    const tiles = this.polyhedron.tiles;
+    const out = new Uint16Array(tiles.length);
+    if (this.columns.size >= tiles.length) {
+      for (let i = 0; i < tiles.length; i++) out[i] = this.topBlockOf(i);
+      return out;
+    }
+    const worker = new Worker(new URL('../workers/terrainGenerationWorker.ts', import.meta.url), { type: 'module' });
+    const edits: Array<[number, number, number]> = [];
+    for (const [t, m] of this.editLog) for (const [d, b] of m) edits.push([t, d, b]);
+    return new Promise((resolve) => {
+      worker.onmessage = (e) => {
+        if (e.data?.type !== 'topBlocks') return;
+        worker.terminate();
+        resolve(e.data.top as Uint16Array);
+      };
+      worker.onerror = () => { worker.terminate(); resolve(out); };
+      worker.postMessage({
+        type: 'generateTopBlocks',
+        tiles: tiles.map(tile => ({ index: tile.index, center: { x: tile.center.x, y: tile.center.y, z: tile.center.z }, neighbors: tile.neighbors })),
+        config: this.terrainWorkerConfig(),
+        edits,
+      });
+    });
+  }
+
+  /** The topmost non-air block of a loaded tile (AIR when not loaded). */
+  public topBlockOf(tileIndex: number): HexBlockType {
+    const column = this.columns.get(tileIndex);
+    if (!column) return HexBlockType.AIR;
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
+      if (column.blocks[d] !== HexBlockType.AIR) return column.blocks[d];
+    }
+    return HexBlockType.AIR;
+  }
+
+  /** Whether this tile's blocks are loaded (its top block can be read now). */
+  public isTileLoaded(tileIndex: number): boolean {
+    return this.columns.has(tileIndex);
+  }
+
+  // Told the tile of every block edit (the map redraws it)
+  private editListeners = new Set<(tileIndex: number) => void>();
+  public onBlockEdit(listener: (tileIndex: number) => void): () => void {
+    this.editListeners.add(listener);
+    return () => this.editListeners.delete(listener);
+  }
+
+  /** The material a face key draws with on this planet (the map's colours). */
+  public getFaceMaterial(materialKey: string): THREE.Material {
+    return this.meshBuilder.getMaterial(materialKey);
   }
 
   private createBatchedMeshGroup(): void {
@@ -5214,6 +5280,8 @@ export class Planet {
       let logged = this.editLog.get(tileIndex);
       if (!logged) { logged = new Map(); this.editLog.set(tileIndex, logged); }
       logged.set(depth, blockType);
+      // after the block is set (the listener reads it back)
+      for (const listener of this.editListeners) queueMicrotask(() => listener(tileIndex));
     }
     const column = this.columns.get(tileIndex);
     if (!column) {

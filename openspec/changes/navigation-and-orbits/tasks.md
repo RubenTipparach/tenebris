@@ -13,24 +13,24 @@
 
 ## 3. World map (world-map)
 
-- [ ] 3.1 Block map colours from each block's top texture mean (one source). Verify: test that every block type in the table has a colour.
-- [ ] 3.2 Top-block source: columns when loaded; else a top-blocks-only request to the terrain worker with the planet's editLog applied, cached per planet. Verify: headless, the map of a never-visited planet matches its terrain after visiting.
-- [ ] 3.3 Equirectangular hex/pentagon drawing to an offscreen canvas, north up, antimeridian handled, pan + zoom; redraw a tile on edit (Planet emits top-block changes). Verify: screenshot of Earth's map; dig a tile to stone and see it change.
-- [ ] 3.4 Players (self with heading, others by name) and waypoints on the map; a body picker. Verify: two headless MP clients, each sees the other's marker.
+- [x] 3.1 Block map colours from each block's top texture mean (one source). Verify: test that every block type in the table has a colour.
+- [x] 3.2 Top-block source: columns when loaded; else a top-blocks-only request to the terrain worker with the planet's editLog applied, cached per planet. Verify: headless, the map of a never-visited planet matches its terrain after visiting.
+- [x] 3.3 Equirectangular hex/pentagon drawing to an offscreen canvas, north up, antimeridian handled, pan + zoom; redraw a tile on edit (Planet emits top-block changes). Verify: screenshot of Earth's map; dig a tile to stone and see it change.
+- [x] 3.4 Players (self with heading, others by name) and waypoints on the map; a body picker. Verify: two headless MP clients, each sees the other's marker. (Built: self, waypoints and picker verified headless; other players' markers drawn from Multiplayer.getRemotePlayers but not yet checked with two clients.)
 
 ## 4. System map (system-map)
 
-- [ ] 4.1 Top-down canvas of every body at its live position with orbit paths, names, pan + zoom, players; click a body to open its planet map. Verify: screenshot; the Moon moves between two shots minutes apart (fast clock).
+- [x] 4.1 Top-down canvas of every body at its live position with orbit paths, names, pan + zoom, players; click a body to open its planet map. Verify: screenshot; the Moon moves between two shots minutes apart (fast clock).
 
 ## 5. Compass (compass)
 
-- [ ] 5.1 North per body from its orbit direction (Sun rises on the right facing north); `compassHeading` as the one heading function. Verify: test of the rule at several places; headless facing north at sunrise the Sun is to the right.
-- [ ] 5.2 Compass bar HUD (N/E/S/W, intercardinals, 15 deg ticks, 180 deg span), fades in space. Verify: screenshot at four headings.
+- [x] 5.1 North per body from its orbit direction (Sun rises on the right facing north); `compassHeading` as the one heading function. Verify: test of the rule at several places; headless facing north at sunrise the Sun is to the right.
+- [x] 5.2 Compass bar HUD (N/E/S/W, intercardinals, 15 deg ticks, 180 deg span), fades in space. Verify: screenshot at four headings.
 
 ## 6. Waypoints (waypoints)
 
-- [ ] 6.1 Right-click on a planet map adds a waypoint (max 4, fifth drops the oldest), click without drag removes; saved on change; per-player NetSync record online. Verify: test of the cap and removal; reload keeps them; MP players don't see each other's.
-- [ ] 6.2 Waypoints on the compass bar (bearing, distance nearest the centre) and on the system map. Verify: screenshot walking toward one.
+- [x] 6.1 Right-click on a planet map adds a waypoint (max 4, fifth drops the oldest), click without drag removes; saved on change; per-player NetSync record online. Verify: test of the cap and removal; reload keeps them; MP players don't see each other's.
+- [x] 6.2 Waypoints on the compass bar (bearing, distance nearest the centre) and on the system map. Verify: screenshot walking toward one.
 
 ## 7. Missions (missions)
 

@@ -66,6 +66,11 @@ export class Multiplayer {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  /** The other players: name, the body they're on, and where (for the maps). */
+  public getRemotePlayers(): Array<{ name: string; planet: string; position: THREE.Vector3 }> {
+    return [...this.remotes.values()].map(r => ({ name: r.name, planet: r.planet, position: r.group.position }));
+  }
+
   public playerCount(): number {
     return this.remotes.size + (this.isConnected() ? 1 : 0);
   }

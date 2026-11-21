@@ -428,8 +428,26 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
 }
 
 // Worker message handler
-self.onmessage = (e: MessageEvent<GenerateTerrainMessage>) => {
+self.onmessage = (e: MessageEvent<GenerateTerrainMessage & { edits?: Array<[number, number, number]> }>) => {
   const { type, tiles, config } = e.data;
+
+  // The world map's question: only each tile's topmost non-air block, from
+  // the same generator, with the planet's edits applied
+  if ((type as string) === 'generateTopBlocks') {
+    const columns = generateTerrain(tiles, config);
+    for (const [t, d, b] of e.data.edits ?? []) {
+      const col = columns.get(t);
+      if (col && d >= 0 && d < col.length) col[d] = b;
+    }
+    let max = 0;
+    for (const t of tiles) max = Math.max(max, t.index + 1);
+    const top = new Uint16Array(max);
+    for (const [i, col] of columns) {
+      for (let d = col.length - 1; d >= 0; d--) if (col[d] !== 0) { top[i] = col[d]; break; }
+    }
+    (self as unknown as Worker).postMessage({ type: 'topBlocks', top }, [top.buffer]);
+    return;
+  }
 
   if (type === 'generateTerrain') {
     console.log(`[TerrainWorker] Generating terrain for ${tiles.length} tiles...`);
