@@ -110,6 +110,8 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.CITY_GLASS:
     case HexBlockType.CITY_NEON: return ItemType.GLASS;
     case HexBlockType.CITY_PARK: return ItemType.DIRT;
+    // A street lamp gives its light back as a torch
+    case HexBlockType.CITY_LAMP: return ItemType.TORCH;
     // Moons and asteroids: volcanic rock gives basalt (magma cools as it is
     // dug), frost and glacier ice give ice for fuel, meteoric iron gives iron
     case HexBlockType.BASALT: return ItemType.BASALT;

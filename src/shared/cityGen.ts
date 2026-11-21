@@ -49,6 +49,8 @@ export interface CityConfig {
   crownFloors: number;
   /** Chance a low/mid-rise has a neon storefront on its ground floor */
   storefrontChance: number;
+  /** Street lamps: one on the kerbside sidewalk every this many tiles along a street (0 = none) */
+  lampEvery: number;
   /** Far-LOD colour (hex) and night glow (0-1, city lights) per kind;
    *  the *Alt entries are every other lot, `wall` is building sides */
   lodPalette: Record<CityLodKey, [string, number]>;
@@ -76,6 +78,8 @@ export interface CitySample {
   district: number;
   /** Per-lot random 0-1 (crowns, storefronts, colour variation) */
   lotRoll: number;
+  /** A street lamp stands on this (kerbside sidewalk) tile */
+  lamp?: boolean;
 }
 
 // ---- hashing / noise (deterministic, seedable) ----
@@ -151,7 +155,13 @@ export function sampleCity(x: number, y: number, z: number, seed: number, cfg: C
 
   const base = { district, floors: 0, lotRoll: 0 };
   if (au.dEdge < 0 || av.dEdge < 0) return { ...base, kind: CityKind.ROAD };
-  if (au.dEdge < cfg.sidewalkWidth || av.dEdge < cfg.sidewalkWidth) return { ...base, kind: CityKind.SIDEWALK };
+  if (au.dEdge < cfg.sidewalkWidth || av.dEdge < cfg.sidewalkWidth) {
+    // Lamps on the kerb row, spaced along the street; not at the corners
+    const kerbU = au.dEdge < 1, kerbV = av.dEdge < 1;
+    const along = kerbU ? gv : gu;
+    const lamp = cfg.lampEvery > 0 && kerbU !== kerbV && Math.floor(along) % cfg.lampEvery === 0;
+    return { ...base, kind: CityKind.SIDEWALK, lamp };
+  }
 
   // Block -> lots
   const blockRoll = hashInts(face, au.cell, av.cell, 1, seed);
@@ -248,6 +258,8 @@ export function cityColumn(
     else if (storefront && d === groundDepth + 1) blocks[d] = HexBlockType.CITY_NEON;
     else blocks[d] = wall;
   }
+  // A street lamp on the pavement
+  if (s.lamp && floors === 0 && groundDepth + 1 < maxDepth) blocks[groundDepth + 1] = HexBlockType.CITY_LAMP;
   return blocks;
 }
 

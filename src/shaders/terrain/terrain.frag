@@ -13,6 +13,15 @@ uniform float underwaterFogNear;
 uniform float underwaterFogFar;
 uniform float underwaterDimming; // How much to dim underwater terrain (0-1)
 
+// Night lights (LightingConfig): the face's emissive mask, and light from
+// emitting blocks flooded through the voxels; both bright at night, faint by day
+uniform sampler2D glowTexture;
+uniform float glowNight;
+uniform float glowDay;
+uniform float blockLightNight;
+uniform float blockLightDay;
+uniform vec3 blockLightTint;
+
 // Torch light color (warm orange)
 const vec3 TORCH_LIGHT_COLOR = vec3(1.0, 0.7, 0.3);
 
@@ -22,6 +31,7 @@ varying vec2 vUv;
 varying float vSunBrightness;
 varying float vSkyLight; // Pre-calculated sky light based on depth from surface
 varying float vTorchLight; // Pre-baked torch light from vertex shader
+varying float vBlockLight; // Light from emitting blocks
 varying float vWaterDepth; // How far below water surface
 varying float vDistanceFromCamera;
 
@@ -65,6 +75,11 @@ void main() {
 
   // Add torch light AFTER depth dimming so torches illuminate underwater areas
   finalColor += torchContribution;
+
+  // Night lights: how much of a night it is here (0 at noon, 1 at night)
+  float night = 1.0 - vSunBrightness;
+  finalColor += texColor.rgb * blockLightTint * vBlockLight * mix(blockLightDay, blockLightNight, night);
+  finalColor += texture2D(glowTexture, vUv).rgb * mix(glowDay, glowNight, night);
 
   // Apply underwater fog when camera is underwater
   if (isUnderwater > 0.5) {

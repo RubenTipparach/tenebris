@@ -112,7 +112,10 @@ export enum HexBlockType {
   SULFUR = 76,
   // The Moon's titanium (ilmenite) - found on no other body. Numbered past
   // the crust family; drops Titanium Ore
-  MOON_ORE_TITANIUM = 90
+  MOON_ORE_TITANIUM = 90,
+  // The city's street lamps (cityGen puts them along the roads); they give
+  // off light (shared/voxelLight EMISSION)
+  CITY_LAMP = 91,
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -141,6 +144,7 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.CITY_GLASS]: HexBlockType.STONE,
   [HexBlockType.CITY_ROOF]: HexBlockType.STONE,
   [HexBlockType.CITY_NEON]: HexBlockType.STONE,
+  [HexBlockType.CITY_LAMP]: HexBlockType.STONE,
   [HexBlockType.CITY_METAL]: HexBlockType.STONE,
   [HexBlockType.CITY_FOUNDATION]: HexBlockType.STONE,
   // Alien biome grounds: each planet's three grounds behave like GRASS,
@@ -229,6 +233,7 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.CITY_GLASS]: { top: 'citySlab', side: 'cityGlass', bottom: 'citySlab' },
   [HexBlockType.CITY_ROOF]: { top: 'cityRoof', side: 'cityParapet', bottom: 'citySlab' },
   [HexBlockType.CITY_NEON]: { top: 'cityDeck', side: 'cityNeon', bottom: 'cityDeck' },
+  [HexBlockType.CITY_LAMP]: { top: 'cityLampTop', side: 'cityLamp', bottom: 'cityDeck' },
   [HexBlockType.CITY_METAL]: { top: 'cityDeck', side: 'cityMetal', bottom: 'cityDeck' },
   [HexBlockType.CITY_PARK]: { top: 'cityPark', side: 'cityParkSide', bottom: 'cityFoundation' },
   [HexBlockType.CITY_FOUNDATION]: sameFaces('cityFoundation'),
