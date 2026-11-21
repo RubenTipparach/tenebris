@@ -1,10 +1,9 @@
 # Continuous build for the Tenebris JS client.
 #
 # Every push to main builds the JS client (the dist/ landing build, the
-# heavyphoton.com/tenebris/ build and the itch.io zip), checks the JS
-# multiplayer server, and publishes dist/ to GitHub Pages
-# (https://rubentipparach.github.io/tenebris/). Branches only build when
-# run by hand (Actions > JS client - build > Run workflow). Deploys to itch.io,
+# heavyphoton.com/tenebris/ build and the itch.io zip) and checks the JS
+# multiplayer server. Branches only build when run by hand (Run workflow).
+# Publishing to GitHub Pages is its own workflow: pages.yml. Deploys to itch.io,
 # heavyphoton.com and the Fly server live in js-deploy.yml and run from
 # main.
 #
@@ -21,7 +20,7 @@
 # The Rust server used to be deployed to Fly from here on every push to
 # every branch. The JS server (server-js/) has replaced it on the
 # 'tenebris-c' app and is deployed from main by js-deploy.yml.
-name: JS client - build
+name: JS client - build + check (site, itch zip, server-js)
 
 on:
   # Only main builds automatically (and publishes to Pages); branch pushes
@@ -36,20 +35,16 @@ on:
         required: false
         default: ''
 
-# The Pages deploy job needs pages: write + id-token: write
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# One deploy at a time across the whole repo, not per-ref, so a newer
-# push cleanly supersedes an older in-flight run.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: js-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build dist, heavyphoton.com and itch.io builds; check server-js
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -130,13 +125,6 @@ jobs:
           path: dist
           retention-days: 3
 
-      # Publish dist/ (landing page + game) to GitHub Pages - see the
-      # `pages` job below.
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
       # The JS multiplayer server (server-js/) - install and syntax-check it
       # here; js-deploy.yml deploys it to the 'tenebris-c' Fly app from main.
       # (The Rust server is no longer deployed by CI: the JS server replaced
@@ -155,23 +143,3 @@ jobs:
   # frozen archive and the Rust port is the live target, so the job was
   # dropped rather than fixed. Nothing depended on it - it was
   # continue-on-error with no dependents.
-
-  # Publishes the build to https://rubentipparach.github.io/tenebris/ (from
-  # main, or from a branch run by hand; a branch may need allowing under
-  # Settings > Environments > github-pages > Deployment branches).
-  #
-  # Non-blocking: until Pages is enabled for the repo (Settings > Pages >
-  # Source: GitHub Actions) the deploy answers 404. That must not fail the
-  # run (and email a build failure on every push) - the build above is the
-  # real check.
-  pages:
-    needs: build
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

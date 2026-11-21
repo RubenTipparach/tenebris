@@ -18,7 +18,7 @@
 #   SITE_DISPATCH_TOKEN secret: a fine-grained PAT for
 #   heavyphoton.github.io with Contents: read and write. Without it the
 #   site still picks the change up on its hourly check.
-name: JS client - deploy (itch.io + heavyphoton.com + multiplayer server)
+name: JS client - release (itch.io + Fly.io server manual, heavyphoton.com on push)
 
 on:
   push:
@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   itch:
-    name: itch.io
+    name: itch.io - butler push ruben-tipparach/tenebris:html5
     # manual releases only
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -74,7 +74,7 @@ jobs:
           ./butler/butler push tenebris-itch.zip ruben-tipparach/tenebris:html5 --userversion "${GITHUB_SHA::7}"
 
   site:
-    name: heavyphoton.com
+    name: heavyphoton.com - trigger docs/tenebris rebuild
     runs-on: ubuntu-latest
     steps:
       - name: Trigger the heavyphoton.github.io deploy
@@ -93,7 +93,7 @@ jobs:
           echo "heavyphoton.com deploy triggered"
 
   server:
-    name: multiplayer server (tenebris-c)
+    name: Fly.io - deploy server-js to tenebris-c
     # ships with the itch.io release, after it succeeds
     needs: itch
     runs-on: ubuntu-latest

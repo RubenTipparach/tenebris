@@ -496,9 +496,12 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   (needs `FLY_API_TOKEN`) only after the itch push succeeds, so the server
   always matches the itch build.
 
-`static.yml` builds and verifies the client on every push to `main` and
-publishes it to GitHub Pages; on branches it only runs by hand (Run
-workflow), not on every push.
+`static.yml` ("JS client - build + check") builds and verifies the client
+on every push to `main`; on branches it only runs by hand (Run workflow).
+`pages.yml` ("GitHub Pages deploy")
+publishes `dist/` to GitHub Pages on every push to `main` (needs Settings >
+Pages > Source: GitHub Actions). Name workflows and jobs after exactly what
+they build or where they ship - never a bare "Deploy".
 
 Append `?debug` to the URL (or use the dev server) to get the game as
 `window.__tenebris` (and three.js as `window.__THREE`) in the console.
