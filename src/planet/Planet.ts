@@ -3,7 +3,7 @@ import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
+import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -15,7 +15,9 @@ import {
   BuildConfig,
   ChunkGeometryData
 } from './ChunkGeometryBuilder';
-import { PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
+import { CityConfig, sampleCity, cityColumn, cityFloors, cityLodColor, cityMeanFloors } from '../shared/cityGen';
+import { PackedBlocks, PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
+import { surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_CRATER, VOLCANO_RIM } from '../shared/terrainShape';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -33,6 +35,15 @@ export interface PlanetConfig {
   detailRenderDistance?: number;  // Override for detail terrain render distance (tiles from player)
   isSpawnPlanet?: boolean;  // If true, generate detailed terrain immediately. If false, only LOD until approached.
   seedOffset?: number;  // Added to the world seed so this planet gets its own landscape (default 0)
+  city?: CityConfig;    // Ecumenopolis: the surface is city (src/shared/cityGen.ts), not natural terrain
+  biomes?: boolean;  // Climate biomes in the terrain generator (see TerrainConfig.biomes)
+  blockRemap?: Partial<Record<number, number>>;  // Generic block -> this planet's own (TerrainConfig.blockRemap)
+  maxDepth?: number;    // Blocks below sea level (default PlayerConfig.TERRAIN_MAX_DEPTH); small bodies need fewer
+  // Rock-world landforms and crusts (single-texture bodies)
+  volcanoes?: number;   // volcano cones with a crater
+  iceCover?: boolean;   // frozen crust: frost over glacier ice
+  metalRich?: boolean;  // meteoric iron at the surface, extra ore below
+  spawnLatLon?: { latitude: number; longitude: number };  // the first volcano stands just beyond it
 }
 
 export interface PlanetColumn {
@@ -62,7 +73,19 @@ export class Planet {
   public radius: number;
   public center: THREE.Vector3;
 
-  private polyhedron: GoldbergPolyhedron;
+  // The full-resolution tile sphere. Built on first use, not in the
+  // constructor: at subdivision 7 it takes over a second and hundreds of MB,
+  // and a planet seen only from afar (its distant LOD) never needs it.
+  private polyhedronInstance: GoldbergPolyhedron | null = null;
+  private readonly subdivisions: number;
+  private get polyhedron(): GoldbergPolyhedron {
+    if (!this.polyhedronInstance) {
+      const t0 = performance.now();
+      this.polyhedronInstance = new GoldbergPolyhedron(this.radius, this.subdivisions);
+      console.log(`[Planet] ${this.config.name}: built ${this.polyhedronInstance.tiles.length} tiles in ${(performance.now() - t0).toFixed(0)}ms`);
+    }
+    return this.polyhedronInstance;
+  }
   private columns: Map<number, PlanetColumn> = new Map();
   private meshBuilder: HexBlockMeshBuilder;
   private scene: THREE.Scene;
@@ -244,11 +267,12 @@ export class Planet {
     console.log(`[Planet ${config.name}] Config LOD values: intermediate=${config.intermediateLODAltitude}, high=${config.highLODAltitude}, distant=${config.distantLODAltitude}`);
 
     this.SEA_LEVEL = config.seaLevel ?? PlayerConfig.TERRAIN_SEA_LEVEL;
-    this.MAX_DEPTH = this.SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
+    this.MAX_DEPTH = this.SEA_LEVEL + (config.maxDepth ?? PlayerConfig.TERRAIN_MAX_DEPTH);
     this.MAX_HEIGHT = PlayerConfig.TERRAIN_MAX_HEIGHT;
     this.seed = PlayerConfig.TERRAIN_SEED + (config.seedOffset ?? 0);
-    this.polyhedron = new GoldbergPolyhedron(radius, subdivisions);
-    const targetChunks = this.polyhedron.tiles.length / PlayerConfig.LOD_CHUNK_TARGET_TILES;
+    this.subdivisions = subdivisions;
+    // Goldberg tile count: 10 * 4^s + 2
+    const targetChunks = (10 * Math.pow(4, subdivisions) + 2) / PlayerConfig.LOD_CHUNK_TARGET_TILES;
     let chunkSub = 0;
     // Only switch layouts once 32 chunks would be well over target size
     // (Earth sits exactly on it and keeps its 32 chunks).
@@ -268,6 +292,30 @@ export class Planet {
     return rock
       ? new THREE.Color(rock).multiplyScalar(0.5 + 0.6 * heightFactor)
       : new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
+  }
+
+  // Angular size of one terrain tile: city streets are measured in tiles
+  // whichever mesh samples the city (detailed columns or a coarse LOD sphere)
+  private cityTileAngle(): number {
+    return Math.sqrt(4 * Math.PI / this.polyhedron.tiles.length);
+  }
+
+  // Far-LOD colour and night glow of a city planet at a direction
+  // (coarse: the LOD tiles span whole city blocks - see cityLodColor)
+  private cityLodTile(dir: THREE.Vector3, coarse: boolean): { color: THREE.Color; glow: number } {
+    const city = this.config.city!;
+    const s = sampleCity(dir.x, dir.y, dir.z, this.seed, city, this.cityTileAngle());
+    const [hex, glow] = cityLodColor(s, city, coarse);
+    return { color: new THREE.Color(hex), glow };
+  }
+
+  // Surface depth for the coarse LOD spheres (distant + fallback HIGH LOD):
+  // a city shows its smooth mean skyline there, not point-sampled spikes
+  private getLodSurfaceDepth(position: THREE.Vector3): number {
+    if (!this.config.city) return this.getHeightVariation(position);
+    const ground = this.getSeaLevelDepth();
+    const floors = cityMeanFloors(position.x, position.y, position.z, this.seed, this.config.city);
+    return ground + Math.min(this.MAX_DEPTH - 1 - ground, Math.round(floors));
   }
 
   // Convert depth to radius
@@ -334,7 +382,9 @@ export class Planet {
     this.meshBuilder.setPlanetCenter(this.center);
     // Set water level for terrain shader underwater dimming
     const waterSurfaceRadius = this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET;
-    this.meshBuilder.setWaterLevel(waterSurfaceRadius);
+    // A city's street level sits at its "sea level", but it has no sea:
+    // nothing on it is shaded as under water
+    this.meshBuilder.setWaterLevel(this.config.city ? 0 : waterSurfaceRadius);
 
     // For spawn planets, generate detailed terrain immediately
     // For non-spawn planets, only generate distant LOD - full terrain is generated when approaching
@@ -347,15 +397,12 @@ export class Planet {
       this.initializeLODChunks();
       this.createLODMesh();
     } else {
-      // LOD-only initialization - skip terrain generation entirely
-      // Distant LOD meshes use noise function directly (no terrain data needed)
-      // Full terrain will be generated on-demand when player approaches
+      // LOD-only initialization - skip terrain generation entirely.
+      // No chunked LOD yet either: until the real one is built from the
+      // terrain (enableDetailedTerrain, on approach), the distant LOD stands
+      // in for it (see update), so a far planet costs only its distant LOD.
       this.detailedTerrainEnabled = false;
       this.initializeLODChunks();
-      // Create fallback HIGH LOD mesh using noise (no terrain data yet)
-      // This ensures smooth transition when descending from distant LOD
-      this.createLODMesh();
-      // Mark as "ready" for distant viewing (no detailed terrain yet)
       this.initialTerrainBuilt = true;
       this.initialLODBuilt = true;
       console.log(`[Planet] ${this.config.name || 'Unknown'}: LOD-only mode (terrain on approach)`);
@@ -364,8 +411,27 @@ export class Planet {
     this.createDistantLODMeshes();
     this.createBatchedMeshGroup();
     this.initializeGeometryWorker();
+    this.fullyInitialized = true;
 
     console.log(`Planet created with ${this.polyhedron.getTileCount()} tiles`);
+  }
+
+  // Fully initialized (textures, materials, tiles, workers) - not just the
+  // distant LOD that initializeDistant() gives a far-away planet
+  private fullyInitialized = false;
+
+  /**
+   * The cheap start for a planet seen only from afar: its distant LOD
+   * spheres (a few low-subdivision meshes from the shape function), no
+   * textures, tile sphere, terrain or workers. update() then shows it from
+   * across the system, and loads the rest (initialize + terrain) when the
+   * player comes within its distant-LOD range. Idempotent.
+   */
+  public initializeDistant(): void {
+    if (this.distantLODMeshes.length > 0) return;
+    this.createDistantLODMeshes();
+    this.initialTerrainBuilt = true;
+    this.initialLODBuilt = true;
   }
 
   // Enable detailed terrain when the player approaches (or teleports to) a
@@ -394,6 +460,11 @@ export class Planet {
       this.terrainGenerationPromise = this.generateTerrainAsync();
     }
     return this.terrainGenerationPromise;
+  }
+
+  // A rock world's surface texture (its native rock), or undefined
+  public getSurfaceTexturePath(): string | undefined {
+    return this.config.texturePath;
   }
 
   public getName(): string {
@@ -443,36 +514,19 @@ export class Planet {
 
       // Prepare config for worker
       const config = {
-        blockRemap: this.config.tileset === SEQUOIA_TILESET ? {
-          [HexBlockType.GRASS]: HexBlockType.SEQ_GRASS,
-          [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
-          [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
-          [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
-          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_SNOW,
-        } : undefined,
-        // Sequoia always has its biomes (desert, rocky highlands, snow
-        // beside its grassland, in its own blocks via blockRemap); on Earth
-        // they are still the Debug-tab mockup
-        biomes: !this.config.texturePath && this.config.hasWater !== false && (this.config.tileset === SEQUOIA_TILESET || biomeMockupOn()),
-        seed: this.seed,
-        maxDepth: this.MAX_DEPTH,
-        seaLevel: this.SEA_LEVEL,
-        maxHeight: this.MAX_HEIGHT,
+        // The planet's own blocks for the generic ones (SolarSystemConfig)
+        blockRemap: this.config.blockRemap,
+        // Climate biomes: always on a planet whose config has them (Sequoia,
+        // the living alien worlds); on Earth still the Debug-tab mockup
+        biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
+        city: this.config.city,
+        cityTileAngle: this.cityTileAngle(),
+        ...this.getShapeParams(),
         hasWater: this.config.hasWater !== false && !this.config.texturePath,
         isSingleTexturePlanet: !!this.config.texturePath,
-        heightVariation: this.config.heightVariation ?? 1.0,
         polarThreshold: PlayerConfig.POLAR_THRESHOLD,
-        // Terrain generation parameters
-        continentScale: PlayerConfig.TERRAIN_CONTINENT_SCALE,
-        mountainScale: PlayerConfig.TERRAIN_MOUNTAIN_SCALE,
-        hillScale: PlayerConfig.TERRAIN_HILL_SCALE,
-        detailScale: PlayerConfig.TERRAIN_DETAIL_SCALE,
-        continentWeight: PlayerConfig.TERRAIN_CONTINENT_WEIGHT,
-        mountainHeight: PlayerConfig.TERRAIN_MOUNTAIN_HEIGHT,
-        hillWeight: PlayerConfig.TERRAIN_HILL_WEIGHT,
-        detailWeight: PlayerConfig.TERRAIN_DETAIL_WEIGHT,
-        oceanDepthPower: PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER,
-        terrainMaxDepth: PlayerConfig.TERRAIN_MAX_DEPTH,
+        iceCover: this.config.iceCover ?? false,
+        metalRich: this.config.metalRich ?? false,
         // Ore configs
         oreConfigs: this.ORE_CONFIGS.map(ore => ({
           type: ore.type as number,
@@ -490,8 +544,11 @@ export class Planet {
       // Handle worker response. The worker sends 'terrainBatch' messages and
       // a final 'terrainResult'; each is ingested in its own task.
       const boundingRadius = this.BLOCK_HEIGHT * this.MAX_DEPTH;
-      const ingest = (columnsArray: Array<[number, number[]]>) => {
-        for (const [tileIndex, blocks] of columnsArray) {
+      const ingest = (packed: PackedBlocks) => {
+        for (let i = 0; i < packed.indices.length; i++) {
+          const tileIndex = packed.indices[i];
+          const o = i * packed.stride;
+          const blocks = Array.from(packed.data.subarray(o, o + packed.lengths[i]));
           const tile = tileMap.get(tileIndex);
           if (!tile) continue;
 
@@ -523,9 +580,9 @@ export class Planet {
         const { type, columns } = e.data;
 
         if (type === 'terrainBatch') {
-          ingest(columns as Array<[number, number[]]>);
+          ingest(columns as PackedBlocks);
         } else if (type === 'terrainResult') {
-          ingest(columns as Array<[number, number[]]>);
+          ingest(columns as PackedBlocks);
 
           // Terminate worker
           this.terrainWorker?.terminate();
@@ -1871,11 +1928,12 @@ export class Planet {
   // Create simplified meshes for viewing from great distances
   // These sample actual terrain heights to match the generated planet
   private createDistantLODMeshes(): void {
+    if (this.distantLODMeshes.length > 0) return; // built early by initializeDistant
     // Create 3 levels of distant LOD with decreasing subdivision
     // Level 0: subdivision - 2 (used at distantLODAltitude)
     // Level 1: subdivision - 3 (used at distantLODAltitude * 2.5)
     // Level 2: subdivision - 4 (used at distantLODAltitude * 5, lowest detail)
-    const baseSub = this.polyhedron.subdivisions;
+    const baseSub = this.subdivisions;
     const lodLevels = [
       Math.max(1, baseSub - 2),
       Math.max(1, baseSub - 3),
@@ -1896,7 +1954,7 @@ export class Planet {
       let vertexOffset = 0;
 
       // First pass: calculate display radius for each tile
-      const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+      const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color; glow: number }>();
       const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
       const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
 
@@ -1910,18 +1968,26 @@ export class Planet {
       };
 
       for (const tile of lodPolyhedron.tiles) {
-        const surfaceDepth = this.getHeightVariation(tile.center);
+        const surfaceDepth = this.getLodSurfaceDepth(tile.center);
         const terrainRadius = this.depthToRadius(surfaceDepth);
         const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
         const displayRadius = isWater ? waterRadius : terrainRadius;
 
         // Polar biome detection for space-level LOD colors
-        const normalizedY = tile.center.clone().normalize().y;
+        const normalizedDir = tile.center.clone().normalize();
+        const normalizedY = normalizedDir.y;
         const polarThreshold = PlayerConfig.POLAR_THRESHOLD;
         const isPolar = Math.abs(normalizedY) > polarThreshold;
 
         let color: THREE.Color;
-        if (isSingleTexturePlanet) {
+        let glow = 0;
+        const volcano = this.config.volcanoes ? volcanoAt(normalizedDir.x, normalizedDir.y, normalizedDir.z, this.getShapeParams()).zone : 0;
+        if (this.config.city) {
+          ({ color, glow } = this.cityLodTile(tile.center, true));
+        } else if (volcano === VOLCANO_CRATER || volcano === VOLCANO_RIM) {
+          // Molten craters glow from across the system
+          color = new THREE.Color(lodColors.lava);
+        } else if (isSingleTexturePlanet) {
           // Single texture planets (like moon) use grey shading based on height
           const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
           color = this.singleTextureLodColor(heightFactor);
@@ -1939,7 +2005,7 @@ export class Planet {
           color = new THREE.Color(lodColors.land);
         }
 
-        tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+        tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color, glow });
       }
 
       // Second pass: create geometry
@@ -1998,9 +2064,10 @@ export class Planet {
             break;
           }
         }
-        // Torch light values: center = full brightness (1.0), edges = dim (0.3)
-        const centerTorchValue = hasTorch ? 1.0 : 0.0;
-        const edgeTorchValue = hasTorch ? 0.3 : 0.0;
+        // Torch light values: center = full brightness (1.0), edges = dim (0.3).
+        // A city's lights glow on its night side the same way.
+        const centerTorchValue = hasTorch ? 1.0 : tileData.glow;
+        const edgeTorchValue = hasTorch ? 0.3 : tileData.glow;
 
         // Fan triangulation from center
         const centerIdx = vertexOffset;
@@ -2026,8 +2093,11 @@ export class Planet {
         // (Only for non-water tiles)
         // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
         if (!tileData.isWater) {
-          // Use grey for single-texture planets (moon), brown for Earth
-          const sideColor = isSingleTexturePlanet
+          // Use grey for single-texture planets (moon), brown for Earth,
+          // lit building walls on a city
+          const sideColor = this.config.city
+            ? new THREE.Color(this.config.city.lodPalette.wall[0])
+            : isSingleTexturePlanet
             ? this.singleTextureLodColor(0.72)
             : new THREE.Color(0x8b7355);
           const numSides = tile.vertices.length;
@@ -2148,7 +2218,7 @@ export class Planet {
   private createFallbackHighLODMesh(): void {
     // Use subdivision that's 2x the highest detail distant LOD (which is baseSub - 2)
     // So fallback high LOD = baseSub - 1 (one level below full detail)
-    const baseSub = this.polyhedron.subdivisions;
+    const baseSub = this.subdivisions;
     const fallbackSub = Math.max(2, baseSub - 1);
     const fallbackPolyhedron = new GoldbergPolyhedron(this.radius, fallbackSub);
 
@@ -2163,7 +2233,7 @@ export class Planet {
     let vertexOffset = 0;
 
     // Calculate tile radii and colors
-    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color; glow: number }>();
     const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
     const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
     const isSingleTexturePlanet = !!this.config.texturePath;
@@ -2175,7 +2245,7 @@ export class Planet {
     };
 
     for (const tile of fallbackPolyhedron.tiles) {
-      const surfaceDepth = this.getHeightVariation(tile.center);
+      const surfaceDepth = this.getLodSurfaceDepth(tile.center);
       const terrainRadius = this.depthToRadius(surfaceDepth);
       const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
       const displayRadius = isWater ? waterRadius : terrainRadius;
@@ -2186,7 +2256,10 @@ export class Planet {
       const isPolar = Math.abs(normalizedY) > polarThreshold;
 
       let color: THREE.Color;
-      if (isSingleTexturePlanet) {
+      let glow = 0;
+      if (this.config.city) {
+        ({ color, glow } = this.cityLodTile(tile.center, false));
+      } else if (isSingleTexturePlanet) {
         const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
         color = this.singleTextureLodColor(heightFactor);
       } else if (isWater && isPolar) {
@@ -2201,7 +2274,7 @@ export class Planet {
         color = new THREE.Color(lodColors.land);
       }
 
-      tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+      tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color, glow });
     }
 
     // Generate geometry for each tile
@@ -2262,7 +2335,9 @@ export class Planet {
       // Generate side walls for edges where this tile is higher than neighbor
       // (Only for non-water tiles)
       if (!tileData.isWater) {
-        const sideColor = isSingleTexturePlanet
+        const sideColor = this.config.city
+          ? new THREE.Color(this.config.city.lodPalette.wall[0])
+          : isSingleTexturePlanet
           ? this.singleTextureLodColor(0.72)
           : new THREE.Color(0x8b7355);
         const numSides = tile.vertices.length;
@@ -3374,7 +3449,8 @@ export class Planet {
    * Get material name for a block type (for intermediate LOD)
    */
   private getBlockMaterialName(block: HexBlockType): string {
-    switch (block) {
+    // planet variants and biome surfaces use their base block's LOD material
+    switch (baseTerrainType(block)) {
       case HexBlockType.GRASS:
         return 'grass';
       case HexBlockType.DIRT:
@@ -3483,6 +3559,23 @@ export class Planet {
 
     // Generate ore veins before block assignment
     this.generateOreVeins();
+
+    if (this.config.city) {
+      // Ecumenopolis: the same city the terrain worker builds
+      const city = this.config.city;
+      const ground = this.getSeaLevelDepth();
+      const tileAngle = this.cityTileAngle();
+      for (const tile of this.polyhedron.tiles) {
+        const sample = sampleCity(tile.center.x, tile.center.y, tile.center.z, this.seed, city, tileAngle);
+        const blocks = cityColumn(sample, city, ground, this.MAX_DEPTH,
+          d => this.oreVeinCache.get(`${tile.index},${d}`)) as HexBlockType[];
+        this.columns.set(tile.index, {
+          tile, blocks, isDirty: true,
+          boundingSphere: new THREE.Sphere(tile.center.clone().add(this.center), this.BLOCK_HEIGHT * this.MAX_DEPTH),
+        });
+      }
+      return;
+    }
 
     // First pass: Generate height map with geographic features
     const heightMap = new Map<number, number>();
@@ -3905,261 +3998,45 @@ export class Planet {
     }
   }
 
+  // Surface depth under a direction - the shared shape function the terrain
+  // worker builds the blocks from, so far LODs and height lookups match them
   private getHeightVariation(position: THREE.Vector3): number {
-    const variation = this.config.heightVariation ?? 1.0;
-    const dir = position.clone().normalize();
-
-    // ============ SIMPLEX NOISE TERRAIN HEIGHT ============
-    // Following the approach from threejs-procedural-planets
-    // Use fractal Simplex noise with multiple octaves for natural terrain
-
-    // Parameters for terrain generation
-    const continentPeriod = PlayerConfig.TERRAIN_CONTINENT_SCALE;  // Lower = larger features
-    const mountainPeriod = PlayerConfig.TERRAIN_MOUNTAIN_SCALE;
-    const detailPeriod = PlayerConfig.TERRAIN_DETAIL_SCALE;
-
-    // ============ LAYER 1: Continental Base ============
-    // Large-scale land/ocean distribution using low-frequency fractal noise
-    // This determines the basic shape of continents and oceans
-    const continentNoise = this.fractalSimplex3D(
-      dir.x, dir.y, dir.z,
-      continentPeriod,
-      6,      // octaves
-      0.5,    // persistence
-      2.0     // lacunarity
-    );
-
-    // Apply sharpness to create more defined coastlines
-    // Values > 0 become land, values < 0 become ocean
-    const continentValue = Math.sign(continentNoise) * Math.pow(Math.abs(continentNoise), 0.8);
-
-    // ============ LAYER 2: Mountain Ridges ============
-    // Ridge noise creates sharp mountain peaks on land
-    const mountainNoise = this.ridgeSimplex3D(
-      dir.x, dir.y, dir.z,
-      mountainPeriod,
-      4,      // octaves
-      0.5,    // persistence
-      2.2     // lacunarity
-    );
-
-    // Mountains only appear on land (where continentValue > 0)
-    const landFactor = Math.max(0, continentValue);
-    const mountainHeight = mountainNoise * landFactor * PlayerConfig.TERRAIN_MOUNTAIN_HEIGHT;
-
-    // ============ LAYER 3: Hills and Variation ============
-    const hillNoise = this.fractalSimplex3D(
-      dir.x, dir.y, dir.z,
-      PlayerConfig.TERRAIN_HILL_SCALE,
-      3,
-      0.5,
-      2.0
-    );
-
-    // ============ LAYER 4: Surface Detail ============
-    const detailNoise = this.fractalSimplex3D(
-      dir.x, dir.y, dir.z,
-      detailPeriod,
-      2,
-      0.5,
-      2.0
-    );
-
-    // ============ COMBINE ALL LAYERS ============
-    // Height ranges from approximately -1 (deep ocean) to +1.5 (mountain peaks)
-    let height = continentValue * PlayerConfig.TERRAIN_CONTINENT_WEIGHT;
-    height += mountainHeight;
-    height += hillNoise * PlayerConfig.TERRAIN_HILL_WEIGHT * (landFactor > 0.1 ? 1.0 : 0.3);
-    height += detailNoise * PlayerConfig.TERRAIN_DETAIL_WEIGHT;
-
-    // ============ CONVERT HEIGHT TO DEPTH ============
-    // Depth system: 0 = bedrock (bottom), MAX_DEPTH-1 = sky (top)
-    // height > 0 = above sea level (land)
-    // height < 0 = below sea level (ocean floor)
-
-    // Scale height to block units
-    // SEA_LEVEL_DEPTH is where sea level sits (counting from bottom)
-    const SEA_LEVEL_DEPTH = this.MAX_DEPTH - 1 - this.SEA_LEVEL;
-
-    let depth: number;
-    if (height >= 0) {
-      // Land: height 0->1+ maps to depth SEA_LEVEL_DEPTH -> MAX_DEPTH-1 (higher terrain = higher depth)
-      const landHeight = height * this.MAX_HEIGHT * variation;
-      depth = SEA_LEVEL_DEPTH + landHeight;
-    } else {
-      // Ocean: height 0->-1 maps to depth SEA_LEVEL_DEPTH -> 0 (deeper ocean = lower depth)
-      const oceanFactor = Math.pow(Math.abs(height), PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER);
-      const oceanDepth = oceanFactor * PlayerConfig.TERRAIN_MAX_DEPTH * variation;
-      depth = SEA_LEVEL_DEPTH - oceanDepth;
+    if (this.config.city) {
+      // City: street level, plus the building standing there
+      const ground = this.getSeaLevelDepth();
+      const s = sampleCity(position.x, position.y, position.z, this.seed, this.config.city, this.cityTileAngle());
+      return ground + cityFloors(s, this.MAX_DEPTH - 1 - ground);
     }
-
-    // Clamp to valid range and return integer depth
-    return Math.max(0, Math.min(this.MAX_DEPTH - 1, Math.round(depth)));
+    return surfaceDepthAt(position, this.getShapeParams());
   }
 
-  // Simplex 3D noise - implementation based on Stefan Gustavson's work
-  private simplex3D(x: number, y: number, z: number): number {
-    // Skewing factors for 3D
-    const F3 = 1.0 / 3.0;
-    const G3 = 1.0 / 6.0;
-
-    // Incorporate seed
-    x += this.seed * 0.1;
-    y += this.seed * 0.13;
-    z += this.seed * 0.17;
-
-    // Skew input space to determine which simplex cell we're in
-    const s = (x + y + z) * F3;
-    const i = Math.floor(x + s);
-    const j = Math.floor(y + s);
-    const k = Math.floor(z + s);
-
-    const t = (i + j + k) * G3;
-    const X0 = i - t;
-    const Y0 = j - t;
-    const Z0 = k - t;
-
-    const x0 = x - X0;
-    const y0 = y - Y0;
-    const z0 = z - Z0;
-
-    // Determine which simplex we're in
-    let i1: number, j1: number, k1: number;
-    let i2: number, j2: number, k2: number;
-
-    if (x0 >= y0) {
-      if (y0 >= z0) {
-        i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 1; k2 = 0;
-      } else if (x0 >= z0) {
-        i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 0; k2 = 1;
-      } else {
-        i1 = 0; j1 = 0; k1 = 1; i2 = 1; j2 = 0; k2 = 1;
-      }
-    } else {
-      if (y0 < z0) {
-        i1 = 0; j1 = 0; k1 = 1; i2 = 0; j2 = 1; k2 = 1;
-      } else if (x0 < z0) {
-        i1 = 0; j1 = 1; k1 = 0; i2 = 0; j2 = 1; k2 = 1;
-      } else {
-        i1 = 0; j1 = 1; k1 = 0; i2 = 1; j2 = 1; k2 = 0;
-      }
+  private shapeParams: ShapeParams | null = null;
+  private getShapeParams(): ShapeParams {
+    if (!this.shapeParams) {
+      const spawn = this.config.spawnLatLon;
+      const d = spawn ? this.getDirectionFromLatLon(spawn.latitude, spawn.longitude) : null;
+      this.shapeParams = {
+        seed: this.seed,
+        maxDepth: this.MAX_DEPTH,
+        seaLevel: this.SEA_LEVEL,
+        maxHeight: this.MAX_HEIGHT,
+        heightVariation: this.config.heightVariation ?? 1.0,
+        continentScale: PlayerConfig.TERRAIN_CONTINENT_SCALE,
+        mountainScale: PlayerConfig.TERRAIN_MOUNTAIN_SCALE,
+        hillScale: PlayerConfig.TERRAIN_HILL_SCALE,
+        detailScale: PlayerConfig.TERRAIN_DETAIL_SCALE,
+        continentWeight: PlayerConfig.TERRAIN_CONTINENT_WEIGHT,
+        mountainHeight: PlayerConfig.TERRAIN_MOUNTAIN_HEIGHT,
+        hillWeight: PlayerConfig.TERRAIN_HILL_WEIGHT,
+        detailWeight: PlayerConfig.TERRAIN_DETAIL_WEIGHT,
+        oceanDepthPower: PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER,
+        terrainMaxDepth: this.MAX_DEPTH - this.SEA_LEVEL,
+        volcanoes: this.config.volcanoes ?? 0,
+        radius: this.radius,
+        spawnDir: d ? { x: d.x, y: d.y, z: d.z } : undefined,
+      };
     }
-
-    const x1 = x0 - i1 + G3;
-    const y1 = y0 - j1 + G3;
-    const z1 = z0 - k1 + G3;
-    const x2 = x0 - i2 + 2.0 * G3;
-    const y2 = y0 - j2 + 2.0 * G3;
-    const z2 = z0 - k2 + 2.0 * G3;
-    const x3 = x0 - 1.0 + 3.0 * G3;
-    const y3 = y0 - 1.0 + 3.0 * G3;
-    const z3 = z0 - 1.0 + 3.0 * G3;
-
-    // Calculate contribution from four corners
-    let n0 = 0, n1 = 0, n2 = 0, n3 = 0;
-
-    let t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
-    if (t0 >= 0) {
-      t0 *= t0;
-      n0 = t0 * t0 * this.grad3D(i, j, k, x0, y0, z0);
-    }
-
-    let t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
-    if (t1 >= 0) {
-      t1 *= t1;
-      n1 = t1 * t1 * this.grad3D(i + i1, j + j1, k + k1, x1, y1, z1);
-    }
-
-    let t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
-    if (t2 >= 0) {
-      t2 *= t2;
-      n2 = t2 * t2 * this.grad3D(i + i2, j + j2, k + k2, x2, y2, z2);
-    }
-
-    let t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
-    if (t3 >= 0) {
-      t3 *= t3;
-      n3 = t3 * t3 * this.grad3D(i + 1, j + 1, k + 1, x3, y3, z3);
-    }
-
-    // Sum contributions and scale to [-1, 1]
-    return 32.0 * (n0 + n1 + n2 + n3);
-  }
-
-  // Gradient function for Simplex noise
-  private grad3D(ix: number, iy: number, iz: number, x: number, y: number, z: number): number {
-    // Hash the grid coordinates to get a gradient index
-    const hash = this.hash3D(ix, iy, iz) & 15;
-
-    // Gradients for 3D (12 edges of a cube, duplicated for 16 total)
-    const gradients = [
-      [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
-      [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
-      [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
-      [1, 1, 0], [-1, 1, 0], [0, -1, 1], [0, -1, -1]
-    ];
-
-    const g = gradients[hash];
-    return g[0] * x + g[1] * y + g[2] * z;
-  }
-
-  // Fractal Simplex noise with multiple octaves
-  private fractalSimplex3D(
-    x: number, y: number, z: number,
-    period: number,
-    octaves: number,
-    persistence: number,
-    lacunarity: number
-  ): number {
-    let value = 0;
-    let amplitude = 1;
-    let frequency = period;
-    let maxValue = 0;
-
-    for (let i = 0; i < octaves; i++) {
-      value += this.simplex3D(x * frequency, y * frequency, z * frequency) * amplitude;
-      maxValue += amplitude;
-      amplitude *= persistence;
-      frequency *= lacunarity;
-    }
-
-    return value / maxValue;
-  }
-
-  // Ridge noise for mountain ranges (inverted absolute value creates sharp peaks)
-  private ridgeSimplex3D(
-    x: number, y: number, z: number,
-    period: number,
-    octaves: number,
-    persistence: number,
-    lacunarity: number
-  ): number {
-    let value = 0;
-    let amplitude = 1;
-    let frequency = period;
-    let maxValue = 0;
-
-    for (let i = 0; i < octaves; i++) {
-      // Absolute value creates valleys at zero crossings
-      // Inverting (1 - abs) makes them peaks
-      const noise = this.simplex3D(x * frequency, y * frequency, z * frequency);
-      const ridge = 1.0 - Math.abs(noise);
-      // Square the ridge for sharper peaks
-      value += ridge * ridge * amplitude;
-      maxValue += amplitude;
-      amplitude *= persistence;
-      frequency *= lacunarity;
-    }
-
-    return value / maxValue;
-  }
-
-  // Hash function for noise
-  private hash3D(x: number, y: number, z: number): number {
-    const s = this.seed;
-    let h = (x * 374761393 + y * 668265263 + z * 1274126177 + s) | 0;
-    h = ((h ^ (h >> 13)) * 1274126177) | 0;
-    return h ^ (h >> 16);
+    return this.shapeParams;
   }
 
   // Update planet state. Pass pre-computed frustum to avoid recalculating per planet.
@@ -4209,6 +4086,17 @@ export class Planet {
 
     // Check for distant LOD (viewing from another planet)
     const distantLODLevel = this.getDistantLODLevel(distToCenter);
+
+    // Within distant-LOD range of a planet that has no terrain yet: load it
+    // now (a far planet holds only its distant LOD), and keep showing the
+    // distant LOD until the rest is ready
+    if (distantLODLevel < 0 && !this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
+      this.enableDetailedTerrain();
+    }
+    if (!this.fullyInitialized) {
+      this.setDistantLODVisible(Math.max(0, distantLODLevel));
+      return;
+    }
 
     // Track LOD level changes even when using distant LOD
     const highLODAlt = this.getHighLODAltitude();
@@ -5999,6 +5887,10 @@ export class Planet {
     prevTileIndex: number;  // Tile index of the air block before the hit
     prevDepth: number;      // Depth of the air block before the hit
   } | null {
+    // Out of reach of this planet, or no blocks yet: nothing to hit (and
+    // don't build its tile sphere just to find that out)
+    if (this.columns.size === 0 || origin.distanceTo(this.center) > this.radius + maxDistance) return null;
+
     // Step along the ray and check for solid blocks
     const stepSize = 0.2; // Small steps for accuracy
     const rayDir = direction.clone().normalize();

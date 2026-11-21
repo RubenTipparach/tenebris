@@ -52,8 +52,13 @@ function showToast(message: string, duration: number = 3000): void {
   }, duration);
 }
 
-// Calculate max terrain depth for collision checks
-const MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
+// Column height (blocks) of the planet being collided with. Planets differ:
+// a volcanic moon has a taller column, an asteroid a shorter one, so this
+// follows the current planet (useColumnsOf) rather than one fixed number.
+let MAX_TERRAIN_DEPTH = PlayerConfig.TERRAIN_SEA_LEVEL + PlayerConfig.TERRAIN_MAX_DEPTH;
+function useColumnsOf(planet: Planet | null): void {
+  if (planet) MAX_TERRAIN_DEPTH = planet.getMaxDepth();
+}
 
 // Per-frame block column cache - stores block types for tiles already queried this frame
 // Key: tileIndex, Value: array of block types indexed by depth
@@ -67,6 +72,7 @@ function getCachedBlock(planet: Planet, tileIndex: number, depth: number): HexBl
   if (planet !== blockColumnCachePlanet) {
     blockColumnCache.clear();
     blockColumnCachePlanet = planet;
+    useColumnsOf(planet);
   }
 
   let column = blockColumnCache.get(tileIndex);
@@ -91,6 +97,7 @@ function clearBlockCache(): void {
 // Returns the depth of the best floor, or -1 if none found
 // Depth system: 0 = bedrock, MAX_DEPTH-1 = sky
 function findWalkableFloorAtRadius(planet: Planet, tileIndex: number, targetRadius: number): number {
+  useColumnsOf(planet);
   let bestDepth = -1;
   let bestDist = Infinity;
 
@@ -202,6 +209,7 @@ export class PlanetPlayer {
     this.inputManager = inputManager;
     this.addPlanet(planet); // Use default gravity config based on planet radius
     this.currentPlanet = planet;
+    useColumnsOf(planet);
     this.velocity = new THREE.Vector3();
 
     // Start on the surface of the planet (1m above ground)
@@ -563,6 +571,7 @@ export class PlanetPlayer {
   }
 
   public update(deltaTime: number): void {
+    useColumnsOf(this.currentPlanet);
     // Clear block column cache at start of each frame
     clearBlockCache();
 
@@ -601,6 +610,7 @@ export class PlanetPlayer {
       showToast('Entering Atmosphere', 3000);
       this.transitionTimer = PlayerConfig.ROLL_SLERP_DURATION;
       this.currentPlanet = planet;
+      useColumnsOf(planet);
       // No rotation changes - just start the timed roll slerp
       logRotation('ENTERING ATMOSPHERE - AFTER');
     }
@@ -618,6 +628,7 @@ export class PlanetPlayer {
     // Update current planet reference
     if (planet && !this.isInSpace) {
       this.currentPlanet = planet;
+      useColumnsOf(planet);
     }
 
     if (this.isInSpace) {

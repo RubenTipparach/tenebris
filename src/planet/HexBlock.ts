@@ -1,3 +1,4 @@
+import { loadingManager } from '../engine/LoadingManager';
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -21,6 +22,78 @@ export enum FaceType {
   BOTTOM = 'bottom',
   SIDE = 'side'
 }
+
+// Drawn block materials (scripts/gen-biome-textures.py): key -> /textures/<file>.png
+const BIOME_TEXTURES: [string, string][] = [
+  ['forestFloor', 'biomes/forest_floor'], ['forestFloorSide', 'biomes/forest_floor_side'],
+  ['dryGrass', 'biomes/dry_grass'], ['dryGrassSide', 'biomes/dry_grass_side'],
+  ['seqScrub', 'biomes/seq_scrub'], ['seqScrubSide', 'biomes/seq_scrub_side'],
+  ['seqDuff', 'biomes/seq_duff'], ['seqDuffSide', 'biomes/seq_duff_side'],
+  ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
+  ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
+  // The ecumenopolis (scripts/gen-city-textures.py)
+  ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
+  ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],
+  ['cityGlass', 'city/glass'], ['cityRoof', 'city/roof'], ['cityParapet', 'city/parapet'],
+  ['cityNeon', 'city/neon'], ['cityDeck', 'city/deck'], ['cityMetal', 'city/metal'],
+  ['cityPark', 'city/park'], ['cityParkSide', 'city/park_side'], ['cityFoundation', 'city/foundation'],
+  // The living alien worlds' grounds: top, and side (the planet's rock under a lip)
+  ['cinderEmbermoss', 'alien/cinder_embermoss'], ['cinderEmbermossSide', 'alien/cinder_embermoss_side'], ['cinderAsh', 'alien/cinder_ash'], ['cinderAshSide', 'alien/cinder_ash_side'],
+  ['cinderSulfur', 'alien/cinder_sulfur'], ['cinderSulfurSide', 'alien/cinder_sulfur_side'],
+  ['vesperClay', 'alien/vesper_clay'], ['vesperClaySide', 'alien/vesper_clay_side'], ['vesperDune', 'alien/vesper_dune'], ['vesperDuneSide', 'alien/vesper_dune_side'],
+  ['vesperSalt', 'alien/vesper_salt'], ['vesperSaltSide', 'alien/vesper_salt_side'],
+  ['halcyonMoss', 'alien/halcyon_moss'], ['halcyonMossSide', 'alien/halcyon_moss_side'], ['halcyonGeode', 'alien/halcyon_geode'], ['halcyonGeodeSide', 'alien/halcyon_geode_side'],
+  ['halcyonGlass', 'alien/halcyon_glass'], ['halcyonGlassSide', 'alien/halcyon_glass_side'],
+  ['tessalySnowmoss', 'alien/tessaly_snowmoss'], ['tessalySnowmossSide', 'alien/tessaly_snowmoss_side'], ['tessalyFrost', 'alien/tessaly_frost'], ['tessalyFrostSide', 'alien/tessaly_frost_side'],
+  ['tessalyGlaze', 'alien/tessaly_glaze'], ['tessalyGlazeSide', 'alien/tessaly_glaze_side'],
+  ['umbraMoss', 'alien/umbra_moss'], ['umbraMossSide', 'alien/umbra_moss_side'], ['umbraMycel', 'alien/umbra_mycel'], ['umbraMycelSide', 'alien/umbra_mycel_side'],
+  ['umbraShale', 'alien/umbra_shale'], ['umbraShaleSide', 'alien/umbra_shale_side'],
+  // The jungle moons: ground tops (+ sides over the moon's soil), bank, soil, rock
+  ['verdJungle', 'alien/verdance_jungle'], ['verdJungleSide', 'alien/verdance_jungle_side'],
+  ['verdSwamp', 'alien/verdance_swamp'], ['verdSwampSide', 'alien/verdance_swamp_side'],
+  ['verdBank', 'alien/verdance_bank'], ['verdSoil', 'alien/verdance_soil'], ['verdRock', 'alien/verdance_rock'],
+  ['mireJungle', 'alien/mirewood_jungle'], ['mireJungleSide', 'alien/mirewood_jungle_side'],
+  ['mireSwamp', 'alien/mirewood_swamp'], ['mireSwampSide', 'alien/mirewood_swamp_side'],
+  ['mireBank', 'alien/mirewood_bank'], ['mireSoil', 'alien/mirewood_soil'], ['mireRock', 'alien/mirewood_rock'],
+  // Moons and asteroids (scripts/gen-body-textures.py)
+  ['basalt', 'bodies/basalt'], ['basaltSide', 'bodies/basalt_side'],
+  ['magma', 'bodies/magma'],
+  ['lavaRock', 'bodies/lava_rock'], ['lavaRockSide', 'bodies/lava_rock_side'],
+  ['sulfur', 'bodies/sulfur'], ['sulfurSide', 'bodies/sulfur_side'],
+  ['frost', 'bodies/frost'], ['frostSide', 'bodies/frost_side'],
+  ['blueIce', 'bodies/blue_ice'],
+  ['ironNickel', 'bodies/iron_nickel'],
+];
+
+// Materials that light themselves (molten rock): drawn unlit, so they glow
+// on the night side and underground
+const SELF_LIT = new Set(['magma']);
+function selfLitMaterial(texture: THREE.Texture): THREE.Material {
+  // The terrain shader writes texels as they are; a basic material converts
+  // to the output colour space, so tag (a copy of) the texture sRGB to match
+  const tex = texture.clone();
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return new THREE.MeshBasicMaterial({ map: tex });
+}
+
+// Magenta/black checker for a texture that failed to load
+let missing: THREE.DataTexture | null = null;
+function missingTexture(): THREE.Texture {
+  if (!missing) {
+    const d = new Uint8Array(4 * 4 * 4);
+    for (let i = 0; i < 16; i++) {
+      const on = ((i % 4) + Math.floor(i / 4)) % 2 === 0;
+      d.set(on ? [255, 0, 255, 255] : [0, 0, 0, 255], i * 4);
+    }
+    missing = new THREE.DataTexture(d, 4, 4);
+    missing.needsUpdate = true;
+  }
+  return missing;
+}
+
+// Texture loads shared by every planet's mesh builder (see loadTexture)
+const textureCache = new Map<string, Promise<THREE.Texture>>();
 
 export class HexBlockMeshBuilder {
   private textureLoader: THREE.TextureLoader;
@@ -84,6 +157,15 @@ export class HexBlockMeshBuilder {
   ): Promise<void> {
     // Use provided tileset or default to Earth tileset
     const ts = tileset || EARTH_TILESET;
+    // Start every texture this planet needs at once (they're cached, so the
+    // awaits below then resolve as each arrives instead of one by one)
+    const wanted = new Set<string>();
+    for (const set of [ts, EARTH_TILESET, SEQUOIA_TILESET, MOON_TILESET]) {
+      for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
+    }
+    if (singleTexturePath) wanted.add(singleTexturePath);
+    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/${file}.png`);
+    await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
     const waterDeepColor = waterColors?.deepColor || PlayerConfig.WATER_DEEP_COLOR;
@@ -255,6 +337,11 @@ export class HexBlockMeshBuilder {
     this.materials.set('seqSand', createTerrainMaterial(await loadFixed(q.sand)));
     this.materials.set('seqSnow', createTerrainMaterial(await loadFixed(q.snow)));
     this.materials.set('seqSnowSide', createTerrainMaterial(await loadFixed(q.dirtSnow)));
+    // Biome surfaces (scripts/gen-biome-textures.py)
+    for (const [key, file] of BIOME_TEXTURES) {
+      const tex = await loadFixed(`/textures/${file}.png`);
+      this.materials.set(key, SELF_LIT.has(key) ? selfLitMaterial(tex) : createTerrainMaterial(tex));
+    }
     const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
     const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);
 
@@ -434,17 +521,29 @@ export class HexBlockMeshBuilder {
   private loadTexture(path: string): Promise<THREE.Texture> {
     // Prepend base URL for production builds (e.g., GitHub Pages subdirectory)
     const fullPath = getAssetPath(path);
-    return new Promise((resolve, reject) => {
+    // One load per texture for the whole session, shared by every planet
+    // (each planet's block set used to re-load ~20 textures one after
+    // another, which held a first teleport on "Loading planet..." for
+    // half a minute)
+    const cached = textureCache.get(fullPath);
+    if (cached) return cached;
+    const promise = new Promise<THREE.Texture>((resolve) => {
       this.textureLoader.load(
         fullPath,
         resolve,
         undefined,
-        (error) => {
+        () => {
+          // A missing texture must never hang loading (it used to reject the
+          // planet's whole initialization, leaving the loading bar stuck):
+          // draw a placeholder, say which file, and carry on
           console.error(`[HexBlock] Failed to load texture: ${fullPath} (original: ${path})`);
-          reject(error);
+          loadingManager.reportProblem(`Missing texture: ${path}`);
+          resolve(missingTexture());
         }
       );
     });
+    textureCache.set(fullPath, promise);
+    return promise;
   }
 
   public getMaterial(faceType: string): THREE.Material {

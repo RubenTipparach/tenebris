@@ -4,6 +4,7 @@ import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { SEQUOIA_TILESET } from '../config/SolarSystemConfig';
+import { forEachSurfaceTile, tileHash } from '../planet/SurfaceTiles';
 
 /**
  * Ground clutter around the player (Sequoia; Earth with the biome mockup), after Pale Blue Dot's
@@ -40,7 +41,15 @@ export class GroundClutter {
   private rockMaterial: THREE.ShaderMaterial;
   private grass: Tones = fallbackTones(0x2f7d2a, 0x4fae3a, 0x86d45a);
   private seqGrass: Tones = fallbackTones(0x6a7a2a, 0x93a33c, 0xc2cf6a);
+  // Sequoia's dry grass green (Sweaft-64 olives): its grass tufts, on a
+  // beige ground - Sequoia has tufts, just no green grass ground
+  private seqScrub: Tones = fallbackTones(0x559642, 0x9bb675, 0xcfaa81);
   private stone = new THREE.Color(0x8a8780);
+  private moonStone = new THREE.Color(0x6e6e74);
+  // Each rock world's own stone (sampled from its surface texture), and the
+  // volcanic stone of the basalt family
+  private bodyStone = new Map<string, THREE.Color>();
+  private basaltStone = new THREE.Color(0x2c2c25);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
   private sinceBuild = 0;
@@ -62,6 +71,8 @@ export class GroundClutter {
     sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/moon.png')).then(t => { if (t) { this.moonStone = t.mid; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/bodies/basalt_side.png')).then(t => { if (t) { this.basaltStone = t.mid; this.lastPlanet = null; } });
   }
 
   public setEnabled(on: boolean): void {
@@ -89,84 +100,87 @@ export class GroundClutter {
     this.rebuild(player, planet);
   }
 
+  // The stone colour of a rock world's native rock (moon rock is drawn in
+  // each body's own texture): sampled once per texture, the Moon's grey
+  // until it arrives
+  private nativeStone(planet: Planet): THREE.Color {
+    const tex = planet.getSurfaceTexturePath();
+    if (!tex) return this.moonStone;
+    let c = this.bodyStone.get(tex);
+    if (!c) {
+      c = this.moonStone.clone();
+      this.bodyStone.set(tex, c);
+      sampleTones(getAssetPath(tex)).then(t => { if (t) { c!.copy(t.mid); this.lastPlanet = null; } });
+    }
+    return c;
+  }
+
   private rebuild(player: THREE.Vector3, planet: Planet): void {
     this.lastPlanet = planet;
+    const native = this.nativeStone(planet);
     this.lastCenter.copy(player);
     this.sinceBuild = 0;
-    const start = planet.getTileAtPoint(player);
     let nTufts = 0, nRocks = 0;
-    if (start) {
-      const maxDepth = planet.getMaxDepth();
-      const seen = new Set<number>([start.index]);
-      let frontier = [start.index];
-      const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const yaw = new THREE.Quaternion();
-      const Y = new THREE.Vector3(0, 1, 0);
-      const pos = new THREE.Vector3();
-      const scale = new THREE.Vector3();
-      const col = new THREE.Color();
-      while (frontier.length) {
-        const next: number[] = [];
-        for (const ti of frontier) {
-          const tile = planet.getTileByIndex(ti);
-          if (!tile) continue;
-          const dir = tile.center.clone().normalize();
-          let top = -1, block: number = HexBlockType.AIR;
-          for (let d = maxDepth - 1; d >= 0; d--) {
-            const b = planet.getBlock(ti, d);
-            if (b !== HexBlockType.AIR) { top = d; block = b; break; }
-          }
-          const ground = top >= 0 ? planet.depthToRadius(top) : 0;
-          const tileWorld = planet.center.clone().addScaledVector(dir, ground);
-          if (tileWorld.distanceTo(player) > RADIUS) continue;
-          for (const n of tile.neighbors) if (!seen.has(n)) { seen.add(n); next.push(n); }
-          if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) continue;
-
-          const plan = clutterFor(block);
-          if (!plan) continue;
-          let seed = hash(ti);
-          const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
-          q.setFromUnitVectors(Y, dir);
-          const place = () => {
-            // random point inside the hex: towards a corner, scaled down
-            const v = tile.vertices[Math.floor(rnd() * tile.vertices.length)];
-            const t = Math.sqrt(rnd()) * 0.82;
-            const p = tile.center.clone().lerp(v, t).normalize();
-            pos.copy(planet.center).addScaledVector(p, ground);
-            yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
-            return q.clone().multiply(yaw);
-          };
-          const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
-          for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
-            const rot = place();
-            const s = 0.7 + rnd() * 0.6;
-            scale.set(s, s * (0.8 + rnd() * 0.5), s);
-            m.compose(pos, rot, scale);
-            this.tufts.setMatrixAt(nTufts, m);
-            const r = rnd();
-            const tone = plan.straw ? STRAW : block === HexBlockType.SEQ_GRASS ? this.seqGrass : this.grass;
-            col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
-            this.tufts.setColorAt(nTufts, col);
-            nTufts++;
-          }
-          const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
-          for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
-            const rot = place();
-            const big = rnd() < 0.25;
-            const s = big ? 0.35 + rnd() * 0.35 : 0.08 + rnd() * 0.12;
-            scale.set(s * (0.8 + rnd() * 0.5), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.5));
-            pos.addScaledVector(dir, -s * 0.15); // sink in a little
-            m.compose(pos, rot, scale);
-            this.rocks.setMatrixAt(nRocks, m);
-            col.copy(this.stone).multiplyScalar(0.8 + rnd() * 0.35);
-            this.rocks.setColorAt(nRocks, col);
-            nRocks++;
-          }
-        }
-        frontier = next;
+    const maxDepth = planet.getMaxDepth();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const yaw = new THREE.Quaternion();
+    const Y = new THREE.Vector3(0, 1, 0);
+    const pos = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const col = new THREE.Color();
+    forEachSurfaceTile(planet, player, RADIUS, (tile, dir, top, block, ground) => {
+      const ti = tile.index;
+      if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) return;
+      const alien = ALIEN_CLUTTER[block];
+      const plan = alien ?? clutterFor(block);
+      if (!plan) return;
+      let seed = tileHash(ti);
+      const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+      q.setFromUnitVectors(Y, dir);
+      const place = () => {
+        // random point inside the hex: towards a corner, scaled down
+        const v = tile.vertices[Math.floor(rnd() * tile.vertices.length)];
+        const t = Math.sqrt(rnd()) * 0.82;
+        const p = tile.center.clone().lerp(v, t).normalize();
+        pos.copy(planet.center).addScaledVector(p, ground);
+        yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
+        return q.clone().multiply(yaw);
+      };
+      const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
+      for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
+        const rot = place();
+        const s = 0.7 + rnd() * 0.6;
+        scale.set(s, s * (0.8 + rnd() * 0.5), s);
+        m.compose(pos, rot, scale);
+        this.tufts.setMatrixAt(nTufts, m);
+        const r = rnd();
+        const tone = alien?.tuft ? alien.tuft
+          : plan.straw ? STRAW
+          : block === HexBlockType.SEQ_GRASS ? this.seqGrass
+          : block === HexBlockType.SEQ_SCRUB ? this.seqScrub
+          // Sequoia's other ground grows its own dry beige grass, never
+          // Earth's green
+          : isSequoiaBlock(block) ? this.seqGrass
+          : this.grass;
+        col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
+        this.tufts.setColorAt(nTufts, col);
+        nTufts++;
       }
-    }
+      const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
+      for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
+        const rot = place();
+        const big = rnd() < 0.25;
+        const s = big ? 0.35 + rnd() * 0.35 : 0.08 + rnd() * 0.12;
+        scale.set(s * (0.8 + rnd() * 0.5), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.5));
+        pos.addScaledVector(dir, -s * 0.15); // sink in a little
+        m.compose(pos, rot, scale);
+        this.rocks.setMatrixAt(nRocks, m);
+        col.copy(alien?.rock ?? (block === HexBlockType.MOON_ROCK ? native : isVolcanic(block) ? this.basaltStone : this.stone)).multiplyScalar(0.8 + rnd() * 0.35);
+        this.rocks.setColorAt(nRocks, col);
+        nRocks++;
+      }
+    });
     this.tufts.count = nTufts;
     this.rocks.count = nRocks;
     this.tufts.instanceMatrix.needsUpdate = true;
@@ -192,15 +206,68 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.SEQ_DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
     case HexBlockType.SEQ_SAND: return { tufts: 0, tuftsRand: 1.2, straw: true, rockChance: 0.15, rocks: 2 };
     case HexBlockType.SEQ_SNOW: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
+    // The Moon: no plants, a field of boulders and pebbles in its own grey
+    case HexBlockType.MOON_ROCK: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.4, rocks: 3 };
+    // Biome surfaces: dry scrub tufts (in its own beige / olive tones), a few
+    // tufts in the forests, straw on the savanna
+    case HexBlockType.SEQ_SCRUB: return { tufts: 5, tuftsRand: 5, straw: false, rockChance: 0.06, rocks: 1 };
+    case HexBlockType.SEQ_DUFF: return { tufts: 0, tuftsRand: 1.5, straw: false, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.FOREST_FLOOR: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.15, rocks: 2 };
+    case HexBlockType.DRY_GRASS: return { tufts: 3, tuftsRand: 4, straw: true, rockChance: 0.1, rocks: 1 };
+    // Moons and asteroids: lifeless, so stones only - volcanic bombs on the
+    // cones, a few on the lava fields and iron; bare ice and magma stay clear
+    case HexBlockType.BASALT: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.45, rocks: 3 };
+    case HexBlockType.LAVA_ROCK: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
+    case HexBlockType.SULFUR: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.15, rocks: 1 };
+    case HexBlockType.IRON_NICKEL: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.3, rocks: 2 };
     default: return null;
   }
 }
 
-function hash(n: number): number {
-  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  return (h ^ (h >>> 16)) >>> 0;
+// The living alien worlds and jungle moons: each biome's tufts and stones in
+// its own planet's colours (tuft: dark / mid / light, from the ground's
+// palette; rock: the stones lying on it)
+interface AlienPlan extends Plan { tuft?: Tones; rock?: THREE.Color }
+const alien = (tufts: number, tuftsRand: number, rockChance: number, rocks: number, tuft: [number, number, number] | null, rock: number): AlienPlan =>
+  ({ tufts, tuftsRand, straw: false, rockChance, rocks, tuft: tuft ? fallbackTones(...tuft) : undefined, rock: new THREE.Color(rock) });
+const T = HexBlockType;
+const ALIEN_CLUTTER: Partial<Record<number, AlienPlan>> = {
+  // Cinder: red-orange ember tufts in the moss, obsidian shards on the ash,
+  // yellow sulfur lumps on the flats
+  [T.CINDER_EMBERMOSS]: alien(3, 4, 0.15, 1, [0x681712, 0xd4462b, 0xfb902f], 0x161612),
+  [T.CINDER_ASH]: alien(0, 1.2, 0.45, 3, [0x434137, 0x681712, 0xfe6420], 0x161612),
+  [T.CINDER_SULFUR]: alien(0, 0, 0.35, 2, null, 0xfaaf5c),
+  // Vesper: pink clay sprigs and red pebbles, gold dune grass, salt crystals
+  [T.VESPER_CLAY]: alien(0, 2, 0.25, 2, [0x841c1d, 0xc34988, 0xe69d69], 0x7d4636),
+  [T.VESPER_DUNE]: alien(1, 3, 0.08, 1, [0x8d4526, 0xc56d25, 0xfaaf5c], 0xab8465),
+  [T.VESPER_SALT]: alien(0, 0, 0.3, 3, null, 0xfffefe),
+  // Halcyon: verdigris tufts, amethyst crystals, mint glass pebbles
+  [T.HALCYON_MOSS]: alien(4, 5, 0.06, 1, [0x204f63, 0x53998b, 0x84e3b5], 0x3f8577),
+  [T.HALCYON_GEODE]: alien(0, 1, 0.55, 3, [0x4f1d83, 0x7d2dbd, 0x9e3ba2], 0x7d2dbd),
+  [T.HALCYON_GLASS]: alien(0, 0.8, 0.2, 2, [0x53998b, 0x84e3b5, 0xc1f1d8], 0xc1f1d8),
+  // Tessaly: lilac moss tufts, frost tufts, ice chunks on the glaze
+  [T.TESSALY_SNOWMOSS]: alien(3, 4, 0.08, 1, [0x3e3551, 0x69608b, 0x9e3ba2], 0x92a3b2),
+  [T.TESSALY_FROST]: alien(0, 2, 0.2, 2, [0x5d778d, 0x92a3b2, 0xd2f8ff], 0xd2f8ff),
+  [T.TESSALY_GLAZE]: alien(0, 0, 0.3, 2, null, 0x74effe),
+  // Umbra: indigo and glowing cyan tufts, violet mycelium sprigs, shale flakes
+  [T.UMBRA_MOSS]: alien(3, 4, 0.06, 1, [0x191954, 0x15578a, 0x74effe], 0x2b1f35),
+  [T.UMBRA_MYCEL]: alien(1, 3, 0.1, 1, [0x4f1d83, 0x7d2dbd, 0xc34988], 0x2b1f35),
+  [T.UMBRA_SHALE]: alien(0, 0, 0.5, 3, null, 0x161612),
+  // Verdance: thick emerald undergrowth, swamp sedge, bank grass
+  [T.VERD_JUNGLE]: alien(7, 6, 0.05, 1, [0x05582d, 0x297537, 0x559642], 0x3e586e),
+  [T.VERD_SWAMP]: alien(4, 4, 0.05, 1, [0x434137, 0x297537, 0x9bb675], 0x434137),
+  [T.VERD_BANK]: alien(1, 3, 0.25, 2, [0x297537, 0x559642, 0x9bb675], 0x5d778d),
+  [T.VERD_ROCK]: alien(0, 1, 0.5, 3, [0x05582d, 0x297537, 0x559642], 0x3e586e),
+  // Mirewood: lime and teal undergrowth, duckweed-green sedge, silt reeds
+  [T.MIRE_JUNGLE]: alien(7, 6, 0.04, 1, [0x297537, 0x53998b, 0x9bb675], 0x3e3551),
+  [T.MIRE_SWAMP]: alien(3, 4, 0.04, 1, [0x161612, 0x559642, 0x9bb675], 0x2b1f35),
+  [T.MIRE_BANK]: alien(1, 3, 0.25, 2, [0x204f63, 0x53998b, 0x84e3b5], 0x69608b),
+  [T.MIRE_ROCK]: alien(0, 0, 0.5, 3, null, 0x3e3551),
+};
+
+function isSequoiaBlock(block: number): boolean {
+  return block === HexBlockType.SEQ_GRASS || block === HexBlockType.SEQ_DIRT || block === HexBlockType.SEQ_SAND
+    || block === HexBlockType.SEQ_SNOW || block === HexBlockType.SEQ_SCRUB || block === HexBlockType.SEQ_DUFF;
 }
 
 function fallbackTones(d: number, m: number, l: number): Tones {
@@ -359,4 +426,8 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       }
     `,
   });
+}
+
+function isVolcanic(block: number): boolean {
+  return block === HexBlockType.BASALT || block === HexBlockType.LAVA_ROCK || block === HexBlockType.SULFUR;
 }
