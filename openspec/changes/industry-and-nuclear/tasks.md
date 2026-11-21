@@ -2,10 +2,10 @@
 
 ## 1. Foundation: items, blocks, generation, buckets
 
-- [ ] 1.1 New ItemTypes + ITEM_DATA (names, stack sizes, mine times) for every item in design 1-6, each with an icon from scripts/gen-item-icons.py. Verify: a test that every ItemType has ITEM_DATA and an existing icon file.
-- [ ] 1.2 New blocks CLAY, OIL_SAND, ORE_URANIUM with drawn textures (block-textures skill: Sweaft-64 palette, top-left light, no AA) and BLOCK_FACES; drops (clay -> CLAY item, Vesper clay too). Verify: scripts/block-audit.py sheet shows them.
-- [ ] 1.3 Generation: clay on Earth's shores, oil pockets deep on Earth/Verdance/Mirewood, uranium veins deep on the Moon/Cinder/metal asteroids, all in per-planet config. Verify: a worker test or headless scan finds each where it belongs and never elsewhere (uranium absent on Earth).
-- [ ] 1.4 Buckets: bucket on OIL_SAND -> CRUDE_OIL_BUCKET (cell to stone), on MAGMA -> LAVA_BUCKET (cell to basalt); LAVA_BUCKET as furnace fuel (12 smelts, bucket back); CLAY -> BRICK smelt. Verify: tests + headless scoop on Cinder.
+- [x] 1.1 New ItemTypes + ITEM_DATA (names, stack sizes, mine times) for every item in design 1-6, each with an icon from scripts/gen-item-icons.py. Verify: a test that every ItemType has ITEM_DATA and an existing icon file.
+- [x] 1.2 New blocks CLAY, OIL_SAND, ORE_URANIUM with drawn textures (block-textures skill: Sweaft-64 palette, top-left light, no AA) and BLOCK_FACES; drops (clay -> CLAY item, Vesper clay too). Verify: scripts/block-audit.py sheet shows them.
+- [x] 1.3 Generation: clay on Earth's shores, oil pockets deep on Earth/Verdance/Mirewood, uranium veins deep on the Moon/Cinder/metal asteroids, all in per-planet config. Verify: a worker test or headless scan finds each where it belongs and never elsewhere (uranium absent on Earth).
+- [x] 1.4 Buckets: bucket on OIL_SAND -> CRUDE_OIL_BUCKET (cell to stone), on MAGMA -> LAVA_BUCKET (cell to basalt); LAVA_BUCKET as furnace fuel (12 smelts, bucket back); CLAY -> BRICK smelt. Verify: tests + headless scoop on Cinder.
 
 ## 2. Cooking
 

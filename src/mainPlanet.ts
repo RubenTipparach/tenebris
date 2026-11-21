@@ -166,6 +166,8 @@ class PlanetGame {
           volcanoes: bodyConfig.terrain.volcanoes,
           iceCover: bodyConfig.terrain.iceCover,
           metalRich: bodyConfig.terrain.metalRich,
+          extraOres: bodyConfig.terrain.extraOres,
+          shoreClay: bodyConfig.terrain.shoreClay,
           spawnLatLon: bodyConfig.spawn,
         }
       );

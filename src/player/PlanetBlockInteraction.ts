@@ -20,6 +20,8 @@ import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, TorchManager } from '../planet/Torch';
 import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
+import { SMELTS_PER_COAL } from '../config/SmeltingRecipes';
+import { bucketFill } from '../config/BucketFills';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
 import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
 import { SteamEngineManager, PlacedSteamEngine } from '../planet/SteamEngine';
@@ -91,7 +93,7 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // The living alien worlds' grounds drop the planet's rock (its soil:
     // MOON_ROCK is a single-texture world's native rock)
     case HexBlockType.CINDER_EMBERMOSS: case HexBlockType.CINDER_ASH: case HexBlockType.CINDER_SULFUR:
-    case HexBlockType.VESPER_CLAY: case HexBlockType.VESPER_DUNE: case HexBlockType.VESPER_SALT:
+    case HexBlockType.VESPER_DUNE: case HexBlockType.VESPER_SALT:
     case HexBlockType.HALCYON_MOSS: case HexBlockType.HALCYON_GEODE: case HexBlockType.HALCYON_GLASS:
     case HexBlockType.TESSALY_SNOWMOSS: case HexBlockType.TESSALY_FROST: case HexBlockType.TESSALY_GLAZE:
     case HexBlockType.UMBRA_MOSS: case HexBlockType.UMBRA_MYCEL: case HexBlockType.UMBRA_SHALE:
@@ -131,6 +133,12 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.FROST: return ItemType.ICE;
     case HexBlockType.BLUE_ICE: return ItemType.ICE;
     case HexBlockType.IRON_NICKEL: return ItemType.ORE_IRON;
+    // Industry resources: clay (Earth's, and Vesper's clay ground - it is
+    // clay), uranium ore; oil sand gives nothing dug (oil is pumped or
+    // scooped with a bucket)
+    case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
+    case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
+    case HexBlockType.OIL_SAND: return ItemType.NONE;
     default: return ItemType.NONE;
   }
 }
@@ -165,6 +173,8 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.SEQ_SNOW: return HexBlockType.SEQ_SNOW;
     case ItemType.BASALT: return HexBlockType.BASALT;
     case ItemType.SULFUR: return HexBlockType.SULFUR;
+    case ItemType.CLAY: return HexBlockType.CLAY;
+    case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
     default: return HexBlockType.AIR;
   }
 }
@@ -1955,7 +1965,7 @@ export class PlanetBlockInteraction {
     }
     // Convert fuel back to coal (approximately)
     if (furnace.fuelAmount > 0) {
-      const coalToReturn = Math.ceil(furnace.fuelAmount / 8); // 8 smelts per coal
+      const coalToReturn = Math.ceil(furnace.fuelAmount / SMELTS_PER_COAL);
       this.inventory.addItem(ItemType.COAL, coalToReturn);
     }
 
@@ -3826,9 +3836,11 @@ export class PlanetBlockInteraction {
   }
 
   /**
-   * An empty bucket in hand + right click on water fills it. Water is an
-   * infinite source here: the block stays. Walks the view ray (water is not
-   * a raycast target) and fills at the first water block within reach.
+   * An empty bucket in hand + right click on a liquid fills it (BucketFills:
+   * water, oil sand, magma). Water is an infinite source here: the block
+   * stays; oil sand and magma leave stone / basalt, written and saved the
+   * same frame. Walks the view ray (water is not a raycast target) and fills
+   * at the first fillable block within reach.
    */
   private tryFillBucket(origin: THREE.Vector3, direction: THREE.Vector3): boolean {
     const step = PlayerConfig.BUCKET_RAY_STEP;
@@ -3844,13 +3856,20 @@ export class PlanetBlockInteraction {
         const tile = planet.getTileAtPoint(point);
         if (!tile) continue;
         const block = planet.getBlock(tile.index, depth);
-        if (block === HexBlockType.WATER) {
+        const fill = bucketFill(block);
+        if (fill) {
           if (!this.inventory.useSelectedItem()) return false;
-          if (this.inventory.addItem(ItemType.WATER_BUCKET, 1) > 0) {
+          const name = ITEM_DATA[fill.fills].name;
+          if (this.inventory.addItem(fill.fills, 1) > 0) {
             this.inventory.addItem(ItemType.BUCKET, 1);   // no room: keep the empty bucket
-            showToast('No room for a Water Bucket', { duration: 2000 });
+            showToast(`No room for a ${name}`, { duration: 2000 });
           } else {
-            showToast('Filled a Water Bucket', { duration: 2000 });
+            showToast(`Filled a ${name}`, { duration: 2000 });
+            if (fill.leaves !== undefined) {
+              // World edit: persisted the same frame (and synced via the save)
+              planet.setBlock(tile.index, depth, fill.leaves);
+              gameStorage.saveTileChange(this.getPlanetId(planet), tile.index, depth, fill.leaves);
+            }
           }
           this.updateHotbarUI();
           this.saveInventory();

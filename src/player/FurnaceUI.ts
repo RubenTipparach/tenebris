@@ -1,5 +1,6 @@
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlacedFurnace, SMELTING_RECIPES } from '../planet/Furnace';
+import { furnaceFuel, SMELTS_PER_COAL } from '../config/SmeltingRecipes';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 
@@ -23,7 +24,7 @@ export class FurnaceUI {
   private fuelBarElement: HTMLElement | null = null;
 
   // Fuel constant for UI display and adding fuel
-  private readonly FUEL_PER_COAL = 8; // Each coal smelts 8 items
+  private readonly FUEL_PER_COAL = SMELTS_PER_COAL; // the gauge counts in coal
 
   // Slot type identifiers for drag/drop
   private readonly SLOT_FUEL = 'furnace-fuel';
@@ -456,10 +457,7 @@ export class FurnaceUI {
     const quantity = slotData.quantity;
 
     if (targetSlotType === this.SLOT_FUEL) {
-      // Only accept coal for fuel
-      if (slotData.itemType === ItemType.COAL) {
-        this.currentFurnace.fuelAmount += quantity * this.FUEL_PER_COAL;
-        this.inventory.removeItem(ItemType.COAL, quantity);
+      if (this.burnFuel(slotData.itemType, quantity)) {
         this.updateUI();
         this.notifyChanges();
       }
@@ -520,12 +518,9 @@ export class FurnaceUI {
         }
       }
     } else if (slotType === this.SLOT_FUEL) {
-      // Right-click fuel: add half of held coal
+      // Right-click fuel: add half of the held fuel
       const selectedItem = this.inventory.getSelectedItem();
-      if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
-        const halfCount = Math.ceil(selectedItem.quantity / 2);
-        this.currentFurnace.fuelAmount += halfCount * this.FUEL_PER_COAL;
-        this.inventory.removeItem(ItemType.COAL, halfCount);
+      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, Math.ceil(selectedItem.quantity / 2))) {
         this.updateUI();
         this.notifyChanges();
       }
@@ -596,16 +591,30 @@ export class FurnaceUI {
         }
       }
     } else if (slotType === this.SLOT_FUEL) {
-      // Shift+click fuel: we can't really return fuel as coal (it's converted)
-      // Just add all held coal instead
+      // Shift+click fuel: fuel can't come back out (it's burnt), so add all
+      // the held fuel instead
       const selectedItem = this.inventory.getSelectedItem();
-      if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
-        this.currentFurnace.fuelAmount += selectedItem.quantity * this.FUEL_PER_COAL;
-        this.inventory.removeItem(ItemType.COAL, selectedItem.quantity);
+      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, selectedItem.quantity)) {
         this.updateUI();
         this.notifyChanges();
       }
     }
+  }
+
+  /**
+   * Feed `count` of a fuel (SmeltingRecipes FURNACE_FUELS) into the open
+   * furnace: adds its smelts, takes the items, and gives back any container
+   * (a lava bucket's empty bucket). False when the item doesn't burn.
+   */
+  private burnFuel(itemType: ItemType, count: number): boolean {
+    const fuel = furnaceFuel(itemType);
+    if (!this.currentFurnace || !fuel || count <= 0) return false;
+    const taken = Math.min(count, this.inventory.getItemCount(itemType));
+    if (taken <= 0) return false;
+    this.inventory.removeItem(itemType, taken);
+    this.currentFurnace.fuelAmount += taken * fuel.smelts;
+    if (fuel.returns !== undefined) this.inventory.addItem(fuel.returns, taken);
+    return true;
   }
 
   private notifyChanges(): void {
@@ -619,10 +628,8 @@ export class FurnaceUI {
 
     const selectedItem = this.inventory.getSelectedItem();
 
-    // If holding coal, add one as fuel
-    if (selectedItem.itemType === ItemType.COAL && selectedItem.quantity > 0) {
-      this.currentFurnace.fuelAmount += this.FUEL_PER_COAL;
-      this.inventory.removeItem(ItemType.COAL, 1);
+    // If holding fuel, add one
+    if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, 1)) {
       this.updateUI();
       this.notifyChanges();
     }

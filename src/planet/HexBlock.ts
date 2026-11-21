@@ -33,6 +33,8 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
   ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
   ['moonOreTitanium', 'moon/ore_titanium'],
+  // Industry resources (scripts/gen-biome-textures.py)
+  ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
   // The ecumenopolis (scripts/gen-city-textures.py)
   ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
   ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],

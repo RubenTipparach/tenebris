@@ -1,3 +1,4 @@
+import { Deposit, SHORE_CLAY } from '../config/ResourceConfig';
 import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
@@ -43,6 +44,8 @@ export interface PlanetConfig {
   volcanoes?: number;   // volcano cones with a crater
   iceCover?: boolean;   // frozen crust: frost over glacier ice
   metalRich?: boolean;  // meteoric iron at the surface, extra ore below
+  extraOres?: Deposit[];  // deposits beyond the common ores (ResourceConfig)
+  shoreClay?: boolean;    // clay patches on the shores (ResourceConfig SHORE_CLAY)
   spawnLatLon?: { latitude: number; longitude: number };  // the first volcano stands just beyond it
 }
 
@@ -709,11 +712,12 @@ export class Planet {
       polarThreshold: PlayerConfig.POLAR_THRESHOLD,
       iceCover: this.config.iceCover ?? false,
       metalRich: this.config.metalRich ?? false,
+      shoreClay: this.config.shoreClay ? SHORE_CLAY : undefined,
       polarIceCap: PlayerConfig.POLAR_ICE_CAP,
       polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
       polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
       // Ore configs
-      oreConfigs: this.ORE_CONFIGS.map(ore => ({
+      oreConfigs: [...this.ORE_CONFIGS, ...(this.config.extraOres ?? [])].map(ore => ({
         type: ore.type as number,
         minDepth: ore.minDepth,
         maxDepth: ore.maxDepth,

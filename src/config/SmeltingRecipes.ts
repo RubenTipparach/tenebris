@@ -17,8 +17,32 @@ export const SMELTING_RECIPES: SmeltingRecipe[] = [
   { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
   { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
   { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 1 },  // the Moon's
+  { input: ItemType.CLAY, output: ItemType.BRICK, outputQuantity: 1 },                   // fired clay
   // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
 ];
+
+/**
+ * What burns in the furnace, and for how long: `smelts` is how many items
+ * one unit smelts. `returns` is the container given back (a lava bucket
+ * leaves its empty bucket). The one table every furnace fuel path reads.
+ */
+export interface FurnaceFuel {
+  itemType: ItemType;
+  smelts: number;
+  returns?: ItemType;
+}
+
+export const FURNACE_FUELS: FurnaceFuel[] = [
+  { itemType: ItemType.COAL, smelts: 8 },
+  { itemType: ItemType.LAVA_BUCKET, smelts: 12, returns: ItemType.BUCKET },
+];
+
+export function furnaceFuel(itemType: ItemType): FurnaceFuel | undefined {
+  return FURNACE_FUELS.find(f => f.itemType === itemType);
+}
+
+/** Coal's worth of smelts: the unit the furnace's fuel gauge counts in */
+export const SMELTS_PER_COAL = furnaceFuel(ItemType.COAL)!.smelts;
 
 export interface ElectricSmeltingRecipe {
   input: ItemType;

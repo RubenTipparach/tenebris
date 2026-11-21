@@ -116,6 +116,12 @@ export enum HexBlockType {
   // The city's street lamps (cityGen puts them along the roads); they give
   // off light (shared/voxelLight EMISSION)
   CITY_LAMP = 91,
+  // Industry resources (openspec industry-and-nuclear): Earth's shore clay,
+  // deep oil sand (pumped, or scooped with a bucket) and uranium ore (the
+  // Moon, Cinder, metal asteroids)
+  CLAY = 92,
+  OIL_SAND = 93,
+  ORE_URANIUM = 94,
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -185,6 +191,9 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.MOON_ORE_TITANIUM]: HexBlockType.MOON_ROCK,
   [HexBlockType.FROST]: HexBlockType.SNOW,
   [HexBlockType.BLUE_ICE]: HexBlockType.SNOW,
+  [HexBlockType.CLAY]: HexBlockType.SAND,
+  [HexBlockType.OIL_SAND]: HexBlockType.STONE,
+  [HexBlockType.ORE_URANIUM]: HexBlockType.STONE,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -208,6 +217,9 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.ORE_LITHIUM]: sameFaces('oreLithium'),
   [HexBlockType.ORE_ALUMINUM]: sameFaces('oreAluminum'),
   [HexBlockType.ORE_COBALT]: sameFaces('oreCobalt'),
+  [HexBlockType.CLAY]: sameFaces('clay'),
+  [HexBlockType.OIL_SAND]: sameFaces('oilSand'),
+  [HexBlockType.ORE_URANIUM]: sameFaces('oreUranium'),
   [HexBlockType.SNOW]: { top: 'snow', side: 'snowSide', bottom: 'dirtSnow' },
   [HexBlockType.DIRT_SNOW]: sameFaces('dirtSnow'),
   [HexBlockType.ICE]: sameFaces('ice'),

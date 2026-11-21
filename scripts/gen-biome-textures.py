@@ -49,6 +49,11 @@ And the jungle moons' blocks (public/textures/alien/<moon>_<block>.png):
            (banded violet-grey rock)
   The ground tops' sides are the moon's own soil under a lip.
 
+And the industry resource blocks (public/textures/resources/*.png, all faces):
+  clay         Earth's shore clay: grey-brown slabs with drying cracks
+  oil_sand     dark tar-soaked sand with glossy tar beads
+  ore_uranium  dark rock with green uraninite nodules
+
 Deterministic. Run from the repo root:  python3 scripts/gen-biome-textures.py
 """
 import os
@@ -650,6 +655,60 @@ def jungle_moons():
         print('wrote', moon)
 
 
+# ---- Industry resources (openspec industry-and-nuclear) ---------------------
+
+RES = {
+    'clay': R('#41322c', '#725244', '#a09f91', '#92a3b2', '#bfcad7'),
+    'tarsand': R('#010000', '#161612', '#2c2c25', '#41322c', '#725244'),
+    'tar': R('#010000', '#011c34', '#1f3b52'),
+    'urock': R('#161612', '#2c2c25', '#434137', '#a09f91'),
+    'uraninite': R('#010000', '#003227', '#05582d', '#559642', '#9bb675', '#c1f1d8'),
+}
+
+
+def res_clay(rng):
+    """Earth's shore clay: smooth grey-brown slabs, drying cracks, a few wet smears"""
+    t = Tile(RES['clay'], 2)
+    plates(t, rng, RES['clay'][1:4], 8, RES['clay'][0])
+    cushions(t, rng, RES['clay'], 4, [3], ((3, 1), (4, 1), (2, 1)))
+    specks(t, rng, RES['clay'][4], 3)
+    return t.px
+
+
+def res_oil_sand(rng):
+    """Oil sand: dark sand grains soaked in tar, glossy tar beads with a cold sheen"""
+    t = Tile(RES['tarsand'], 2)
+    t.ground(rng, RES['tarsand'], [1, 2, 3], [3, 4, 2])
+    specks(t, rng, RES['tarsand'][4], 10)
+    cushions(t, rng, RES['tar'], 7, [0], ((2, 2), (3, 2), (2, 3)))
+    for _ in range(5):                                      # sheen on a bead's top left
+        x, y = rng.randrange(N), rng.randrange(N)
+        if t.px[y][x] == RES['tar'][1]:
+            t.put(x, y, RES['tar'][2])
+    return t.px
+
+
+def res_ore_uranium(rng):
+    """Uranium ore: dark rock with uraninite nodules rimmed in yellow-green"""
+    t = Tile(RES['urock'], 1)
+    t.ground(rng, RES['urock'], [0, 1, 2], [2, 4, 2])
+    cushions(t, rng, RES['urock'], 6, [2], ((3, 2), (2, 3), (3, 3)))
+    cushions(t, rng, RES['uraninite'], 6, [2, 3], ((2, 2), (3, 2), (2, 3), (3, 3)))
+    specks(t, rng, RES['uraninite'][5], 3)
+    return t.px
+
+
+def resources():
+    out = os.path.join(ROOT, 'resources')
+    os.makedirs(out, exist_ok=True)
+    rrng = random.Random(9191)                             # own rng: the tiles above don't change
+    for name, draw in [('clay', res_clay), ('oil_sand', res_oil_sand), ('ore_uranium', res_ore_uranium)]:
+        px = draw(rrng)
+        check(px)
+        write_png(os.path.join(out, f'{name}.png'), px)
+        print('wrote resource', name)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     rng = random.Random(4242)
@@ -675,6 +734,7 @@ def main():
         print('wrote moon ore', name)
     alien_grounds()
     jungle_moons()
+    resources()
 
 
 if __name__ == '__main__':
