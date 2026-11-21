@@ -34,7 +34,20 @@ export interface LandedRocket {
   // Its cargo hold (the home pad's slots, shared) and the pad it flew from
   cargo: InventorySlot[] | null;
   pad: PlacedLaunchPad | null;
+
+  // Its address in a multiplayer world (the 'landedRocket' record key):
+  // the same on every client that sees it
+  netKey: string;
 }
+
+/** Told when a landed rocket appears or goes (multiplayer publishes it) */
+export interface LandedRocketListener {
+  created(rocket: LandedRocket): void;
+  removed(rocket: LandedRocket): void;
+}
+
+const newNetKey = (): string =>
+  `lr-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 
 /**
  * Manager for landed rockets in the world
@@ -44,6 +57,11 @@ export class LandedRocketManager {
   private landedRockets: Map<string, LandedRocket> = new Map();
   private planets: PlanetGravitySource[] = [];
   private nextId: number = 0;
+  private listener: LandedRocketListener | null = null;
+
+  public setListener(listener: LandedRocketListener | null): void {
+    this.listener = listener;
+  }
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -74,7 +92,8 @@ export class LandedRocketManager {
     groundNormal: THREE.Vector3,
     fuelPercent: number,
     cargo: InventorySlot[] | null = null,
-    pad: PlacedLaunchPad | null = null
+    pad: PlacedLaunchPad | null = null,
+    netKey: string = newNetKey()
   ): LandedRocket {
     const id = `landed_rocket_${this.nextId++}`;
 
@@ -97,6 +116,7 @@ export class LandedRocketManager {
       boundingRadius: maxRadius,
       cargo,
       pad,
+      netKey,
     };
 
     this.landedRockets.set(id, landedRocket);
@@ -108,6 +128,7 @@ export class LandedRocketManager {
     }
 
     console.log(`Created landed rocket ${id} at position`, position);
+    this.listener?.created(landedRocket);
     return landedRocket;
   }
 
@@ -120,7 +141,25 @@ export class LandedRocketManager {
 
     this.landedRockets.delete(id);
     console.log(`Removed landed rocket ${id}`);
+    this.listener?.removed(rocket);
     return rocket;
+  }
+
+  /** The landed rocket with this multiplayer key */
+  public getByNetKey(netKey: string): LandedRocket | undefined {
+    for (const rocket of this.landedRockets.values()) if (rocket.netKey === netKey) return rocket;
+    return undefined;
+  }
+
+  /**
+   * Remove a landed rocket from the world entirely (another player boarded
+   * it): unlike removeLandedRocket, nobody takes over its pivot and parts
+   */
+  public destroyLandedRocket(id: string): void {
+    const rocket = this.removeLandedRocket(id);
+    if (!rocket) return;
+    rocket.pivot.parent?.remove(rocket.pivot);
+    for (const part of rocket.parts) part.dispose();
   }
 
   /**
