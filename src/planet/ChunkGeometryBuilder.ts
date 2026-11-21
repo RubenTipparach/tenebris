@@ -1,6 +1,7 @@
 // Main-thread chunk geometry builder for immediate block updates
 // This runs synchronously on the CPU for fast visual feedback
 
+import { bakeSkyField, edgeNeighbors, skyAt, LightColumn, SkyField } from '../shared/voxelLight';
 import * as THREE from 'three';
 import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
@@ -11,7 +12,6 @@ import {
   vec3Normalize,
   vec3Negate
 } from '../shared/vec3';
-import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT } from '../shared/geometry';
 
 // Geometry data structure
 export interface GeometryData {
@@ -151,7 +151,7 @@ function mergeGeometry(
   uvs: number[],
   indices: number[],
   _sunDirection: Vec3,
-  skyLightLevel: number,
+  skyLightLevel: number | number[],  // one level, or one per vertex
   torches: TorchData[] = []
 ): void {
   const vertexCount = positions.length / 3;
@@ -163,7 +163,7 @@ function mergeGeometry(
 
   for (let i = 0; i < vertexCount; i++) {
     target.colors.push(1, 1, 1);
-    target.skyLight.push(skyLightLevel);
+    target.skyLight.push(typeof skyLightLevel === 'number' ? skyLightLevel : skyLightLevel[i]);
 
     const px = positions[i * 3];
     const py = positions[i * 3 + 1];
@@ -383,21 +383,35 @@ function buildWaterWallAtDepth(
 }
 
 // Build geometry for single column
+// Side faces' light: each quad (4 vertices, edge i) from the cell beside it
+function sideLights(field: SkyField, edges: number[], depth: number): number[] {
+  const out: number[] = [];
+  for (const n of edges) {
+    const l = n < 0 ? 1 : skyAt(field, n, depth);
+    out.push(l, l, l, l);
+  }
+  return out;
+}
+
+/** The light region for a set of columns: them (spreading) and their neighbour ring. */
+function lightRegion(columns: ColumnData[], neighborDataMap: Map<number, NeighborData>): { field: SkyField; edgesOf: (c: ColumnData) => number[] } {
+  const region = new Map<number, LightColumn>();
+  for (const [t, n] of neighborDataMap) region.set(t, { blocks: n.blocks });
+  const byTile = new Map<number, ColumnData>();
+  for (const c of columns) { region.set(c.tileIndex, { blocks: c.blocks, neighbors: c.tile.neighbors }); byTile.set(c.tileIndex, c); }
+  const field = bakeSkyField(region);
+  const verticesOf = (t: number) => byTile.get(t)?.tile.vertices ?? neighborDataMap.get(t)?.vertices;
+  return { field, edgesOf: (c) => edgeNeighbors(c.tile.vertices, c.tile.neighbors, verticesOf) };
+}
+
 function buildColumnGeometry(
   column: ColumnData,
   neighborDataMap: Map<number, NeighborData>,
   config: BuildConfig,
-  chunkData: ChunkGeometryData
+  chunkData: ChunkGeometryData,
+  field: SkyField,
+  edges: number[]
 ): void {
-  // Find surface depth
-  let surfaceDepth = 0;
-  for (let d = column.blocks.length - 1; d >= 0; d--) {
-    if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
-      surfaceDepth = d;
-      break;
-    }
-  }
-
   const torches = config.torches || [];
 
   for (let depth = 0; depth < column.blocks.length; depth++) {
@@ -434,15 +448,13 @@ function buildColumnGeometry(
 
     if (innerRadius <= 0) continue;
 
-    const depthFromSurface = surfaceDepth - depth;
-
+    
     // Which material each face of this block uses (shared table)
     const faces = blockFaces(blockType);
 
-    let skyLightLevel = 1.0;
-    if (depthFromSurface > 0) {
-      skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
-    }
+    // Voxel sky light (shared/voxelLight): each face is lit by the cell it faces
+    const topLight = skyAt(field, column.tileIndex, depth + 1);
+    const bottomLight = skyAt(field, column.tileIndex, depth - 1);
 
     // Top face
     if (isWater ? true : hasTopExposed) {
@@ -451,7 +463,7 @@ function buildColumnGeometry(
         if (isWater) {
           mergeGeometry(bufferFor(chunkData, 'water'), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
         } else {
-          mergeGeometry(bufferFor(chunkData, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel, torches);
+          mergeGeometry(bufferFor(chunkData, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches);
         }
       }
     }
@@ -460,8 +472,7 @@ function buildColumnGeometry(
     if (!isWater && hasBottomExposed) {
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
-        const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        mergeGeometry(bufferFor(chunkData, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
+        mergeGeometry(bufferFor(chunkData, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomLight, torches);
 
       }
     }
@@ -470,7 +481,7 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
-        mergeGeometry(bufferFor(chunkData, faces.side), sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
+        mergeGeometry(bufferFor(chunkData, faces.side), sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, sideLights(field, edges, depth), torches);
 
       }
     }
@@ -496,8 +507,9 @@ export function buildChunkGeometryImmediate(
 ): ChunkGeometryData {
   const chunkData: ChunkGeometryData = {};
 
+  const light = lightRegion(columns, neighborData);
   for (const column of columns) {
-    buildColumnGeometry(column, neighborData, config, chunkData);
+    buildColumnGeometry(column, neighborData, config, chunkData, light.field, light.edgesOf(column));
 
     // Build water walls
     for (let depth = 0; depth < column.blocks.length; depth++) {
