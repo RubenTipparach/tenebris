@@ -24,6 +24,7 @@ export interface RocketStats {
   cargoSlots: number;
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
+  mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
 }
 
 export function partStats(itemType: ItemType): RocketPartStats | undefined {
@@ -38,8 +39,54 @@ export function cargoMass(cargo: readonly InventorySlot[] | null | undefined): n
   return n * ROCKET_CONFIG.CARGO.massPerItem;
 }
 
-/** Sum a stack of parts (bottom to top) into the rocket's numbers. */
-export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0): RocketStats {
+/**
+ * Engine modes (design 6b): a stack with more than one engine type can fire
+ * one type at a time - lift on the chemical engine, cruise on the ion drive -
+ * or all of them together. `null` is "All". A stack with one engine type has
+ * only All.
+ */
+export type EngineMode = ItemType | null;
+
+/** The engine types in a stack, bottom to top, each once. */
+export function engineTypes(itemTypes: readonly ItemType[]): ItemType[] {
+  const out: ItemType[] = [];
+  for (const t of itemTypes) {
+    const s = partStats(t);
+    if (s?.thrust && s.specificImpulse && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** The modes a stack can fly in: All, then each engine type (just All for one type). */
+export function engineModes(itemTypes: readonly ItemType[]): EngineMode[] {
+  const types = engineTypes(itemTypes);
+  return types.length > 1 ? [null, ...types] : [null];
+}
+
+/** A mode that is still valid for this stack (a part removed falls back to All). */
+export function validEngineMode(itemTypes: readonly ItemType[], mode: EngineMode | undefined): EngineMode {
+  return mode != null && engineModes(itemTypes).includes(mode) ? mode : null;
+}
+
+/** The mode after `mode` in the cycle. */
+export function nextEngineMode(itemTypes: readonly ItemType[], mode: EngineMode): EngineMode {
+  const modes = engineModes(itemTypes);
+  const i = modes.indexOf(validEngineMode(itemTypes, mode));
+  return modes[(i + 1) % modes.length];
+}
+
+/** What the HUD calls a mode. */
+export function engineModeLabel(mode: EngineMode): string {
+  return mode == null ? 'All engines' : ITEM_DATA[mode]?.name ?? 'Engine';
+}
+
+/**
+ * Sum a stack of parts (bottom to top) into the rocket's numbers. With a
+ * `mode`, only engines of that type fire (thrust and fuel flow); mass,
+ * tanks and cargo are the whole stack's either way.
+ */
+export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0, mode: EngineMode = null): RocketStats {
+  const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
   let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0;
   const problems: string[] = [];
@@ -56,7 +103,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
       if (!problems.includes(msg)) problems.push(msg);
       continue;  // a part that can't work gives no thrust
     }
-    if (s.thrust && s.specificImpulse) {
+    if (s.thrust && s.specificImpulse && (firing == null || itemType === firing)) {
       thrust += s.thrust;
       massFlow += s.thrust / (s.specificImpulse * g0);
     }
@@ -65,7 +112,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, tier, problems };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, tier, problems, mode: firing };
 }
 
 /** Delta-v left with `fuelUnits` in the tanks */
@@ -135,7 +182,36 @@ const LANDING_GAIN = 2;
 const LANDING_MIN_BRAKE = 0.5;
 const LANDING_SAFE_SHARE = 0.5;  // touchdown target: this share of the damage threshold   // m/s^2: a weak engine still gets a gentle profile
 
-export function simulateTransfer(stats: RocketStats, from: TransferBody, to: TransferBody, fuelUnits = stats.fuelCapacity): TransferResult {
+/**
+ * A flight profile for a multi-engine rocket (design 6b): `lift` fires inside
+ * either body's gravity well (take-off and landing need thrust), `cruise`
+ * between them (efficiency). Both are the same stack in different modes, so
+ * they share mass and tanks.
+ */
+export interface FlightProfile {
+  lift: RocketStats;
+  cruise: RocketStats;
+}
+
+/** The lift (most thrust) and cruise (best exhaust velocity) modes of a stack, or null with one engine type */
+export function liftCruiseProfile(itemTypes: readonly ItemType[], extraDryMass = 0): FlightProfile | null {
+  const types = engineTypes(itemTypes);
+  if (types.length < 2) return null;
+  const each = types.map(t => computeRocketStats(itemTypes, extraDryMass, t)).filter(s => s.thrust > 0);
+  if (each.length < 2) return null;
+  const lift = each.reduce((a, b) => (b.thrust > a.thrust ? b : a));
+  const cruise = each.reduce((a, b) => (b.exhaustVelocity > a.exhaustVelocity ? b : a));
+  return { lift, cruise };
+}
+
+// The simulated pilot gives up after this long (s). A low-thrust (ion)
+// cruise outlasts it; scripts/rocket-tech-report.ts estimates those
+export const TRANSFER_MAX_S = 1200;
+
+export function simulateTransfer(stats: RocketStats | FlightProfile, from: TransferBody, to: TransferBody, fuelUnits?: number): TransferResult {
+  const profile: FlightProfile = 'lift' in stats ? stats : { lift: stats, cruise: stats };
+  const base = profile.lift;
+  if (fuelUnits === undefined) fuelUnits = base.fuelCapacity;
   const dt = 1 / ROCKET_CONFIG.PHYSICS.dampingReferenceFps;
   const damp = dampingFactor(ROCKET_CONFIG.PHYSICS.linearDamping, dt);
   const span = Math.hypot(to.center.x - from.center.x, to.center.y - from.center.y, to.center.z - from.center.z);
@@ -153,8 +229,10 @@ export function simulateTransfer(stats: RocketStats, from: TransferBody, to: Tra
   let s = from.surfaceRadius + ROCKET_CONFIG.THRESHOLDS.groundedCheckDistance;
   let v = 0, fuel = fuelUnits, dvUsed = 0, t = 0;
   let phase: 'burn' | 'coast' = 'burn';
-  const maxT = 1200;
-  while (t < maxT) {
+  const fromWell = from.radius * GRAVITY_WELL.FALLOFF_RADIUS_MULT;
+  while (t < TRANSFER_MAX_S) {
+    // Lift engines inside a gravity well, cruise engines between
+    const stats = s < fromWell || span - s < targetWell ? profile.lift : profile.cruise;
     const mass = stats.dryMass + fuel * ROCKET_CONFIG.FUEL_KG_PER_UNIT;
     let throttle = 0, dir = 1;
     if (span - s > targetFull) {

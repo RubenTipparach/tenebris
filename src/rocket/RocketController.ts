@@ -7,7 +7,7 @@ import { RocketCamera } from './RocketCamera';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor } from './RocketPerformance';
+import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode } from './RocketPerformance';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -160,8 +160,10 @@ export class RocketController {
     surfaceNormal: THREE.Vector3,
     planets: PlanetGravitySource[],
     fuelUnits: number | null = null,
-    cargo: InventorySlot[] | null = null
+    cargo: InventorySlot[] | null = null,
+    engineMode: EngineMode = null
   ): void {
+    this.engineMode = engineMode;
     this.parts = [...parts];
     this.planets = planets;
     this.cargo = cargo;
@@ -487,7 +489,9 @@ export class RocketController {
    * hold carries) - summed in RocketPerformance, the one source of the numbers
    */
   private calculateMassProperties(): void {
-    const stats = computeRocketStats(stackItemTypes(this.parts), cargoMass(this.cargo));
+    const types = stackItemTypes(this.parts);
+    this.engineMode = validEngineMode(types, this.engineMode);
+    const stats = computeRocketStats(types, cargoMass(this.cargo), this.engineMode);
     this.totalDryMass = stats.dryMass;
     this.totalWetMass = stats.wetMass;
     this.totalFuelCapacity = stats.fuelCapacity;
@@ -497,6 +501,28 @@ export class RocketController {
 
     // Start with full fuel
     this.currentFuel = this.totalFuelCapacity;
+  }
+
+  // Which engines fire (design 6b): null = all of them
+  private engineMode: EngineMode = null;
+
+  public getEngineMode(): EngineMode {
+    return this.engineMode;
+  }
+
+  /** The modes this rocket can fly in (just All for one engine type) */
+  public getEngineModes(): EngineMode[] {
+    return engineModes(stackItemTypes(this.parts));
+  }
+
+  /** Switch to the next engine mode (fuel kept); false if there is only one */
+  public cycleEngineMode(): boolean {
+    const types = stackItemTypes(this.parts);
+    if (engineModes(types).length < 2) return false;
+    this.engineMode = nextEngineMode(types, this.engineMode);
+    this.refreshCargoMass();
+    this.onChanged?.();
+    return true;
   }
 
   /** Re-weigh the rocket after its cargo changed (fuel level kept) */
@@ -1431,8 +1457,10 @@ export class RocketController {
     groundNormal: THREE.Vector3,
     fuelPercent: number,
     planets: PlanetGravitySource[],
-    cargo: InventorySlot[] | null = null
+    cargo: InventorySlot[] | null = null,
+    engineMode: EngineMode = null
   ): void {
+    this.engineMode = engineMode;
     // Reuse the existing pivot and parts
     this.pivot = pivot;
     this.parts = parts;

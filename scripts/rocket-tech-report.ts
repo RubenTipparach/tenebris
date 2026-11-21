@@ -10,9 +10,23 @@
 // between two of them changes: every trip is flown at SAMPLES moments
 // spread over the pair's synodic period (the time their alignment repeats)
 // and reported as its best and worst - the launch window.
+//
+// A stack with more than one engine type (design 6b) is flown lift-then-
+// cruise: its highest-thrust mode inside a gravity well (take-off, landing),
+// its most efficient mode between. Per-mode numbers are listed too.
+//
+// Ion cruise is reported analytically as well: the game's linear damping
+// caps a rocket's speed at a terminal speed proportional to its
+// acceleration, so a low-thrust cruise is a long steady burn - longer than
+// a simulated pilot should sit through. The estimate is that burn: the leg
+// between the two wells at terminal speed, its time and its fuel.
 
 import { ItemType, ITEM_DATA } from '../src/player/Inventory';
-import { computeRocketStats, simulateTransfer, surfaceTWR, TransferBody } from '../src/rocket/RocketPerformance';
+import {
+  computeRocketStats, dampingFactor, engineModeLabel, engineModes, liftCruiseProfile, RocketStats,
+  simulateTransfer, surfaceTWR, TRANSFER_MAX_S, TransferBody,
+} from '../src/rocket/RocketPerformance';
+import { GRAVITY_WELL, ROCKET_CONFIG } from '../src/config/RocketConfig';
 import { getBodyConfig } from '../src/config/SolarSystemConfig';
 import { PlayerConfig } from '../src/config/PlayerConfig';
 import { orbitOf, positionAt } from '../src/world/Orbits';
@@ -47,6 +61,19 @@ function synodicS(a: string, b: string): number {
   return 1 / Math.abs(1 / ta - 1 / tb);
 }
 
+// The steady cruise burn of `stats` across the leg between two bodies' gravity
+// wells: terminal speed v* = a dt d / (1 - d) (per-frame damping d), time
+// leg / v*, fuel flow x time. Mass is taken full (the slowest case).
+function cruiseEstimate(stats: RocketStats, from: TransferBody, to: TransferBody, span: number) {
+  const dt = 1 / ROCKET_CONFIG.PHYSICS.dampingReferenceFps;
+  const d = dampingFactor(ROCKET_CONFIG.PHYSICS.linearDamping, dt);
+  const accel = stats.thrust / stats.wetMass;
+  const terminal = (accel * dt * d) / (1 - d);
+  const leg = Math.max(0, span - (from.radius + to.radius) * GRAVITY_WELL.FALLOFF_RADIUS_MULT);
+  const seconds = leg / terminal;
+  return { leg, terminal, seconds, fuel: seconds * stats.fuelFlow };
+}
+
 const STACKS: [string, ItemType[]][] = [
   ['Tier 1: Rocket Engine + Medium Tank + Command Module', [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 1 + Cargo Bay', [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
@@ -57,7 +84,11 @@ const STACKS: [string, ItemType[]][] = [
   ['Rocket Engine + Large Tank (mixed)', [ItemType.ROCKET_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 3: Nuclear Thermal Engine + Large Tank + Command Module', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 3 + Battery Pack', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.BATTERY_PACK, ItemType.COMMAND_MODULE]],
+  ['Tier 3: Rocket Engine (lift) + Nuclear Thermal Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 3: two Rocket Engines (lift) + Nuclear Thermal Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 4: Rocket Engine (lift) + Ion Drive + Reactor Core + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 4: two Rocket Engines (lift) + Ion Drive + Reactor Core + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Tier 4: two Rocket Engines (lift) + Ion Drive + Reactor Core + Medium Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 4: Ion Drive + Reactor Core + Large Tank (in space)', [ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Ion Drive with no Reactor Core (cannot fire)', [ItemType.ION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
 ];
@@ -76,9 +107,32 @@ for (const [label, parts] of STACKS) {
   console.log(`  TWR full: Earth ${surfaceTWR(s, 1).toFixed(2)}, Moon ${surfaceTWR(s, 0.4).toFixed(2)}, Cinder ${surfaceTWR(s, 0.6).toFixed(2)}`);
   for (const p of s.problems) console.log(`  CANNOT FIRE: ${p}`);
   if (s.thrust <= 0) continue;
+  const modes = engineModes(parts);
+  const profile = liftCruiseProfile(parts);
+  if (modes.length > 1) {
+    for (const m of modes) {
+      const ms = computeRocketStats(parts, 0, m);
+      console.log(`  mode ${engineModeLabel(m).padEnd(22)} thrust ${String(ms.thrust).padStart(6)} N, Isp-eff ${(ms.exhaustVelocity / 9.81).toFixed(0).padStart(4)} s, ` +
+        `burn ${(ms.fuelCapacity / ms.fuelFlow).toFixed(0).padStart(5)} s, DELTA-V ${ms.deltaV.toFixed(0).padStart(5)} m/s, TWR Earth ${surfaceTWR(ms, 1).toFixed(2)}, Moon ${surfaceTWR(ms, 0.4).toFixed(2)}`);
+    }
+    if (profile) console.log(`  flown lift-then-cruise: ${engineModeLabel(profile.lift.mode)} in a gravity well, ${engineModeLabel(profile.cruise.mode)} between`);
+  }
+  // The engine the trip lifts off on, and what flies it
+  const lifter = profile?.lift ?? s;
+  const flown = profile ?? s;
   for (const [a, b] of TRIPS) {
     const from0 = body(a);
-    if (surfaceTWR(s, from0.gravity) <= 1) {
+    if (profile && profile.cruise.exhaustVelocity > profile.lift.exhaustVelocity) {
+      const to0 = body(b);
+      const span0 = Math.hypot(to0.center.x - from0.center.x, to0.center.y - from0.center.y, to0.center.z - from0.center.z);
+      const c = cruiseEstimate(profile.cruise, from0, to0, span0);
+      const over = c.seconds > TRANSFER_MAX_S;
+      console.log(`    ${from0.name.padEnd(8)} -> ${to0.name.padEnd(8)} ${engineModeLabel(profile.cruise.mode)} cruise (analytic, t=0): ${c.leg.toFixed(0)} m between wells at ${c.terminal.toFixed(2)} m/s ` +
+        `= ${(c.seconds / 60).toFixed(1)} min burn, ${c.fuel.toFixed(1)} of ${s.fuelCapacity} u fuel` +
+        (c.fuel > s.fuelCapacity ? ' - MORE THAN THE TANKS HOLD' : '') + (over ? ` (longer than the ${TRANSFER_MAX_S} s simulation, not flown)` : ''));
+      if (over) continue;
+    }
+    if (surfaceTWR(lifter, from0.gravity) <= 1) {
       console.log(`    ${from0.name.padEnd(8)} -> ${body(b).name.padEnd(8)} cannot lift off (TWR < 1)`);
       continue;
     }
@@ -92,10 +146,10 @@ for (const [label, parts] of STACKS) {
       const t = (period * i) / n;
       const from = body(a, t), to = body(b, t);
       const km = Math.hypot(to.center.x - from.center.x, to.center.y - from.center.y, to.center.z - from.center.z);
-      const r = simulateTransfer(s, from, to);
+      const r = simulateTransfer(flown, from, to);
       if (!r.landed) {
         fails++;
-        worstFail = r.fuelUsed >= s.fuelCapacity - 0.01 ? `out of fuel at ${km.toFixed(0)} m` : `hard landing ${r.impactSpeed.toFixed(1)} m/s at ${km.toFixed(0)} m`;
+        worstFail = r.seconds >= TRANSFER_MAX_S ? `not there after ${TRANSFER_MAX_S} s simulated` : r.fuelUsed >= s.fuelCapacity - 0.01 ? `out of fuel at ${km.toFixed(0)} m` : `hard landing ${r.impactSpeed.toFixed(1)} m/s at ${km.toFixed(0)} m`;
         continue;
       }
       const m = { dv: r.deltaVUsed, fuel: r.fuelUsed, t, km };
