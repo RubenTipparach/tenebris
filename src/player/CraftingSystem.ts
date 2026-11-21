@@ -89,6 +89,57 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.STORAGE_CHEST, quantity: 1 },
   },
+  // Cooking stations (src/config/CookingConfig.ts)
+  // Campfire: sticks crossed over a ring of stones
+  //  .S.
+  //  S.S
+  //  TTT   (S stick, T stone)
+  {
+    name: 'Campfire',
+    inputs: [
+      { itemType: ItemType.STICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.STICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.STICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CAMPFIRE, quantity: 1 },
+  },
+  // Kiln: a ring of bricks (bricks are fired clay, from the furnace)
+  {
+    name: 'Kiln',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 2 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 6 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 7 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.KILN, quantity: 1 },
+  },
+  // Oven: bricks round an iron plate
+  //  BBB
+  //  BIB
+  //  BBB
+  {
+    name: 'Oven',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 2 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 6 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 7 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.OVEN, quantity: 1 },
+  },
   // Steam Engine (iron frame with copper and aluminum core)
   // III
   // CAC

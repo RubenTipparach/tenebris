@@ -12,12 +12,14 @@
  *   caught      key = ItemType of the fish landed
  *   caughtOn    key = body id the fish was landed on
  *   reached     a waypoint set 200 m or more away was reached
+ *   cooked      key = ItemType a campfire, kiln or oven made
+ *   ate         key = ItemType of the dish eaten
  *
  * Items gained are not an event: they are read off the inventory itself
  * (src/player/MissionTracker.ts), since they arrive by many paths.
  */
 export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed'
-  | 'smelted' | 'caught' | 'caughtOn' | 'reached';
+  | 'smelted' | 'caught' | 'caughtOn' | 'reached' | 'cooked' | 'ate';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

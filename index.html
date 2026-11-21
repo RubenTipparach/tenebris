@@ -163,6 +163,25 @@
       z-index: 100;
     }
 
+    /* Well fed (cooking): time left on the meal, just above the hotbar */
+    .well-fed-chip {
+      position: fixed;
+      bottom: 84px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 3px 10px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #008751;
+      border-radius: 10px;
+      color: #FFEC27;
+      font-family: var(--game-font);
+      font-size: 12px;
+      letter-spacing: 1px;
+      pointer-events: none;
+      z-index: 100;
+      display: none;
+    }
+
     .hotbar-slot {
       width: 50px;
       height: 50px;

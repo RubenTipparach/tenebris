@@ -9,8 +9,9 @@
 
 ## 2. Cooking
 
-- [ ] 2.1 Campfire, Kiln, Oven machines (place, UI as item slot grids incl. the hotbar, save/sync via records): cooked fish, clay pot, fish stew (bucket back). Verify: headless cook a fish and a stew.
-- [ ] 2.2 Eating (use a dish in hand) and the well-fed state (FoodConfig, saved, HUD chip; mining and jetpack modifiers). Verify: test of the timer/restart; headless mining time drops while fed.
+- [x] 2.1 Campfire, Kiln, Oven machines (place, UI as item slot grids incl. the hotbar, save/sync via records): cooked fish, clay pot, fish stew (bucket back). Verify: headless cook a fish and a stew.
+- [x] 2.2 Eating (use a dish in hand) and the well-fed state (FoodConfig, saved, HUD chip; mining and jetpack modifiers). Verify: test of the timer/restart; headless mining time drops while fed.
+  - Note: the jetpack has no fuel drain in the JS client yet (thrust is unlimited), so well fed only speeds mining today; `wellFedFactor()` is the multiplier to apply when a drain lands.
 
 ## 3. Power grid and batteries
 
