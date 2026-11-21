@@ -36,6 +36,10 @@ interface TerrainConfig extends ShapeParams {
   // body's meteoric iron at the surface and extra ore below
   iceCover?: boolean;
   metalRich?: boolean;
+  // Rock worlds: polar ice caps (PlayerConfig.POLAR_ICE_CAP*); cap 0 = none
+  polarIceCap?: number;
+  polarIceCapEdgeNoise?: number;
+  polarIceCapDepth?: number;
   // Ore configs
   oreConfigs: OreConfig[];
 }
@@ -191,11 +195,30 @@ const ICY_ICE_POCKET_PERMILLE = 70;
 const IRON_POCKET_PERMILLE = 40;
 const METAL_ORE_MULTIPLIER = 3;
 
+// A rock world's polar ice cap: past the cap latitude, with a ragged edge.
+// Ice moons are frozen all over already, and volcano cones melt through
+function inPolarIceCap(tile: TileData, config: TerrainConfig): boolean {
+  if (!config.isSingleTexturePlanet || config.iceCover || !config.polarIceCap) return false;
+  const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
+  const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
+  if (config.volcanoes && volcanoAt(x, y, z, config).zone !== VOLCANO_NONE) return false;
+  const edge = fractalSimplex3D(x, y, z, CRUST_PATCH_SCALE, 2, 0.5, 2.0, config.seed + 404);
+  return Math.abs(y) > config.polarIceCap + edge * (config.polarIceCapEdgeNoise ?? 0);
+}
+
 function rockWorldCrust(tile: TileData, surfaceDepth: number, heightMap: Map<number, number>, config: TerrainConfig): Crust | null {
   const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
   const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
   const roll = (hash3D(tile.index, 4421, 977, config.seed) >>> 0) % 1000;
   const patch = fractalSimplex3D(x, y, z, CRUST_PATCH_SCALE, 2, 0.5, 2.0, config.seed + 303);
+
+  // Polar ice cap: frost on top (blue ice where it breaks out on a step),
+  // glacier ice below - mined, both give Ice (rocket fuel)
+  if (inPolarIceCap(tile, config)) {
+    let steep = 0;
+    for (const n of tile.neighbors) steep = Math.max(steep, Math.abs((heightMap.get(n) ?? surfaceDepth) - surfaceDepth));
+    return { top: steep >= BLUE_ICE_STEP ? HexBlockType.BLUE_ICE : HexBlockType.FROST, under: HexBlockType.BLUE_ICE, thickness: config.polarIceCapDepth ?? ICE_SHEET_DEPTH };
+  }
 
   if (config.volcanoes) {
     const zone = volcanoAt(x, y, z, config).zone;
@@ -302,7 +325,7 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
       if (surfaceDepth < base || beachTiles.has(tile.index)) continue;
       const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
       const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
-      if (Math.abs(y) > config.polarThreshold) continue;
+      if (Math.abs(y) > config.polarThreshold || inPolarIceCap(tile, config)) continue;
       const altFrac = (surfaceDepth - base) / maxAlt;
       // Temperature: warm at the equator, cold toward the poles and up high
       const temp = 1 - Math.abs(y) / config.polarThreshold

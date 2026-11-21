@@ -7,6 +7,8 @@ import { PlacedLaunchPad } from '../planet/LaunchPad';
 import { InputManager } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
 import { LandedRocketUI } from './LandedRocketUI';
+import { InventorySlot } from '../player/Inventory';
+import { computeRocketStats, stackItemTypes } from './RocketPerformance';
 
 /**
  * Manages the rocket flight mode
@@ -27,6 +29,17 @@ export class RocketFlightManager {
 
   // Planet data for gravity
   private planets: PlanetGravitySource[] = [];
+
+  // The pad the active rocket belongs to: it keeps the rocket's fuel and
+  // cargo record, saved through onRocketChangedCallback
+  private activePad: PlacedLaunchPad | null = null;
+  private onRocketChangedCallback: ((pad: PlacedLaunchPad | null) => void) | null = null;
+  private onOpenCargoCallback: ((cargo: InventorySlot[]) => void) | null = null;
+
+  /** How a landed rocket's Cargo button opens the hold (beside the inventory) */
+  public setOnOpenCargoCallback(callback: (cargo: InventorySlot[]) => void): void {
+    this.onOpenCargoCallback = callback;
+  }
 
   // Callbacks
   private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null) => void) | null = null;
@@ -76,6 +89,11 @@ export class RocketFlightManager {
     // Set up landed rocket UI callbacks
     this.landedRocketUI.setOnBoardCallback((rocket) => {
       this.boardLandedRocket(rocket);
+    });
+
+    this.landedRocketUI.setOnRefuelCallback((rocket) => this.refuelLanded(rocket));
+    this.landedRocketUI.setOnCargoCallback((rocket) => {
+      if (rocket.cargo) this.onOpenCargoCallback?.(rocket.cargo);
     });
 
     this.landedRocketUI.setOnCloseCallback(() => {
@@ -134,6 +152,42 @@ export class RocketFlightManager {
   }
 
   /**
+   * Set callback for when a rocket's fuel or cargo changed (save its pad)
+   */
+  public setOnRocketChangedCallback(callback: (pad: PlacedLaunchPad | null) => void): void {
+    this.onRocketChangedCallback = callback;
+  }
+
+  /** Write the active rocket's fuel back to its pad and save */
+  private recordActiveRocket(): void {
+    if (!this.rocketController) return;
+    if (this.activePad) this.activePad.fuel = this.rocketController.getFuelUnits();
+    this.onRocketChangedCallback?.(this.activePad);
+  }
+
+  /** The cargo hold of the rocket being flown (null when not flying) */
+  public getActiveCargo(): InventorySlot[] | null {
+    return this.rocketController?.getCargo() ?? null;
+  }
+
+  /**
+   * Refuel a landed rocket from outside (its panel's Refuel button): the same
+   * fuel source as refuelling on board
+   */
+  public refuelLanded(rocket: LandedRocket): void {
+    const stats = computeRocketStats(stackItemTypes(rocket.parts));
+    const have = (rocket.fuelPercent / 100) * stats.fuelCapacity;
+    const wanted = stats.fuelCapacity - have;
+    if (wanted <= 0) return;
+    const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted, rocket.cargo) : wanted;
+    if (supplied <= 0) return;
+    const fuel = Math.min(stats.fuelCapacity, have + supplied);
+    rocket.fuelPercent = stats.fuelCapacity > 0 ? (fuel / stats.fuelCapacity) * 100 : 0;
+    if (rocket.pad) rocket.pad.fuel = fuel;
+    this.onRocketChangedCallback?.(rocket.pad);
+  }
+
+  /**
    * Set callback for when flight mode ends
    */
   public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null) => void): void {
@@ -168,6 +222,7 @@ export class RocketFlightManager {
     this.flightUI.hide();
     this.rocketController.dispose();
     this.rocketController = null;
+    this.activePad = null;
     this.isInFlightMode = false;
 
     // Call respawn callback with position
@@ -208,14 +263,19 @@ export class RocketFlightManager {
       launchPad.rocketParts,
       launchPad.position,
       surfaceNormal,
-      this.planets
+      this.planets,
+      launchPad.fuel,
+      launchPad.cargo
     );
+    this.activePad = launchPad;
+    this.rocketController.onChanged = () => this.recordActiveRocket();
 
     // Board the rocket (sets up camera)
     if (!this.rocketController.board(this.camera)) {
       console.error('Failed to board rocket');
       this.rocketController.dispose();
       this.rocketController = null;
+      this.activePad = null;
       return false;
     }
 
@@ -257,6 +317,9 @@ export class RocketFlightManager {
     // Get rocket position BEFORE exiting (for player spawn)
     const rocketPosition = hasLaunched ? this.rocketController.getPosition().clone() : null;
 
+    // The pad keeps the rocket's fuel record
+    this.recordActiveRocket();
+
     // Exit the rocket
     this.rocketController.exit();
 
@@ -272,7 +335,9 @@ export class RocketFlightManager {
         this.rocketController.getPosition(),
         this.rocketController.getOrientation(),
         this.rocketController.getPosition().clone().normalize(), // Ground normal (away from origin)
-        this.rocketController.getFuelPercent()
+        this.rocketController.getFuelPercent(),
+        this.rocketController.getCargo(),
+        this.activePad
       );
 
       // Don't dispose - the rocket stays in the world
@@ -285,6 +350,7 @@ export class RocketFlightManager {
     }
 
     this.rocketController = null;
+    this.activePad = null;
     this.isInFlightMode = false;
 
     // Call exit callback with position (null if exiting at launch pad, position if landed elsewhere)
@@ -318,8 +384,11 @@ export class RocketFlightManager {
       landedRocket.orientation,
       landedRocket.groundNormal,
       landedRocket.fuelPercent,
-      this.planets
+      this.planets,
+      landedRocket.cargo
     );
+    this.activePad = landedRocket.pad;
+    this.rocketController.onChanged = () => this.recordActiveRocket();
 
     // Board the rocket (sets up camera)
     if (!this.rocketController.boardLanded(this.camera)) {
@@ -331,9 +400,12 @@ export class RocketFlightManager {
         landedRocket.position,
         landedRocket.orientation,
         landedRocket.groundNormal,
-        landedRocket.fuelPercent
+        landedRocket.fuelPercent,
+        landedRocket.cargo,
+        landedRocket.pad
       );
       this.rocketController = null;
+      this.activePad = null;
       return false;
     }
 

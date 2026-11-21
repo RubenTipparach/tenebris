@@ -204,15 +204,19 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     output: { itemType: ItemType.GLASS, quantity: 8 },
   },
   // Rocket fuel: water ice split into hydrogen and oxygen. Ice is found on
-  // Earth's poles, under the Moon's polar surface and in its rock; snow (a
-  // row of three) works too.
+  // Earth's poles, the ice caps of the Moon and the other rock worlds, and
+  // in their rock; snow (a row of three) works too. Ice also refuels a
+  // rocket raw (ROCKET_CONFIG.FUEL_SOURCES: 8 units an Ice); refined, two
+  // Ice make one 25-unit Rocket Fuel - more fuel, and far less to carry.
+  //  .I.
   //  .I.
   {
     name: 'Rocket Fuel (ice)',
     inputs: [
+      { itemType: ItemType.ICE, quantity: 1, slot: 1 },
       { itemType: ItemType.ICE, quantity: 1, slot: 4 },
     ],
-    output: { itemType: ItemType.ROCKET_FUEL, quantity: 2 },
+    output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
   },
   //  SSS
   {
@@ -223,6 +227,19 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
       { itemType: ItemType.SNOW, quantity: 1, slot: 5 },
     ],
     output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
+  },
+  // Bucket: three iron ingots in a V. Fill it at water, refuel with it
+  //  ...
+  //  I.I
+  //  .I.
+  {
+    name: 'Bucket',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.BUCKET, quantity: 1 },
   },
   {
     name: 'Rocket Fuel (Sequoia snow)',

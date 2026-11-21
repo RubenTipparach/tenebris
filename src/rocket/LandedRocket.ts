@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { RocketPart } from '../planet/RocketPart';
 import { PlanetGravitySource } from './RocketController';
+import { InventorySlot } from '../player/Inventory';
+import { PlacedLaunchPad } from '../planet/LaunchPad';
 
 /**
  * Represents a rocket that has successfully landed in the world
@@ -28,6 +30,10 @@ export interface LandedRocket {
 
   // For raycasting/interaction detection
   boundingRadius: number;
+
+  // Its cargo hold (the home pad's slots, shared) and the pad it flew from
+  cargo: InventorySlot[] | null;
+  pad: PlacedLaunchPad | null;
 }
 
 /**
@@ -66,7 +72,9 @@ export class LandedRocketManager {
     position: THREE.Vector3,
     orientation: THREE.Quaternion,
     groundNormal: THREE.Vector3,
-    fuelPercent: number
+    fuelPercent: number,
+    cargo: InventorySlot[] | null = null,
+    pad: PlacedLaunchPad | null = null
   ): LandedRocket {
     const id = `landed_rocket_${this.nextId++}`;
 
@@ -87,6 +95,8 @@ export class LandedRocketManager {
       groundNormal: groundNormal.clone(),
       fuelPercent,
       boundingRadius: maxRadius,
+      cargo,
+      pad,
     };
 
     this.landedRockets.set(id, landedRocket);

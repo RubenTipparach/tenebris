@@ -2,6 +2,7 @@ import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
+import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR } from '../rocket/RocketPerformance';
 
 // Rocket validation result
 export interface RocketValidationResult {
@@ -51,6 +52,27 @@ export class LaunchPadUI {
   private validationMessageElement: HTMLElement | null = null;
 
   private readonly MAX_HEIGHT = 8;
+
+  // The rocket's numbers, refuelling and its cargo hold
+  private refuelBtn: HTMLButtonElement | null = null;
+  private cargoBtn: HTMLButtonElement | null = null;
+  private statsElement: HTMLElement | null = null;
+  private onRefuelCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  private onOpenCargoCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  private gravityLookup: ((pad: PlacedLaunchPad) => number) | null = null;
+
+  public setOnRefuelCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onRefuelCallback = callback;
+  }
+
+  public setOnOpenCargoCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onOpenCargoCallback = callback;
+  }
+
+  /** Gravity strength (1 = Earth) of the body a pad stands on, for its TWR */
+  public setGravityLookup(lookup: (pad: PlacedLaunchPad) => number): void {
+    this.gravityLookup = lookup;
+  }
 
   constructor(inventory: Inventory) {
     this.inventory = inventory;
@@ -151,6 +173,13 @@ export class LaunchPadUI {
         <div class="validation-message"></div>
       </div>
 
+      <div class="launchpad-stats" id="launchpad-stats"></div>
+
+      <div class="launchpad-controls">
+        <button class="launchpad-btn small" id="launchpad-refuel-btn">Refuel</button>
+        <button class="launchpad-btn small" id="launchpad-cargo-btn">Cargo</button>
+      </div>
+
       <div class="launchpad-controls">
         <button class="launchpad-btn" id="launchpad-board-btn" disabled>Board Rocket</button>
       </div>
@@ -181,6 +210,9 @@ export class LaunchPadUI {
     }
 
     this.boardRocketBtn = document.getElementById('launchpad-board-btn') as HTMLButtonElement;
+    this.refuelBtn = document.getElementById('launchpad-refuel-btn') as HTMLButtonElement;
+    this.cargoBtn = document.getElementById('launchpad-cargo-btn') as HTMLButtonElement;
+    this.statsElement = document.getElementById('launchpad-stats');
     this.statusElement = document.getElementById('launchpad-status');
     this.engineSlot = document.getElementById('launchpad-engine');
     this.validationMessageElement = document.getElementById('launchpad-validation');
@@ -390,6 +422,16 @@ export class LaunchPadUI {
     if (this.boardRocketBtn) {
       this.boardRocketBtn.addEventListener('click', () => this.handleBoardRocket());
     }
+    this.refuelBtn?.addEventListener('click', () => {
+      if (!this.currentLaunchPad || !this.onRefuelCallback) return;
+      this.onRefuelCallback(this.currentLaunchPad);
+      this.updateUI();
+      this.notifyChanges();
+    });
+    this.cargoBtn?.addEventListener('click', () => {
+      if (!this.currentLaunchPad || !this.onOpenCargoCallback) return;
+      this.onOpenCargoCallback(this.currentLaunchPad);
+    });
   }
 
   private handleSegmentSlotClick(slotIndex: number): void {
@@ -908,6 +950,41 @@ export class LaunchPadUI {
         font-family: 'Courier New', monospace;
       }
 
+      .launchpad-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px 12px;
+        margin-bottom: 8px;
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+        color: #AAA;
+      }
+
+      .launchpad-stats .stat {
+        display: flex;
+        justify-content: space-between;
+        gap: 6px;
+      }
+
+      .launchpad-stats .stat b {
+        color: #3EE0FF;
+      }
+
+      .launchpad-stats .stat.warn b,
+      .launchpad-stats .stat-note {
+        color: #FF004D;
+      }
+
+      .launchpad-stats .stat-note {
+        grid-column: 1 / 3;
+        text-align: center;
+      }
+
+      .launchpad-btn.small {
+        padding: 6px 14px;
+        font-size: 12px;
+      }
+
       .launchpad-controls {
         display: flex;
         justify-content: center;
@@ -1083,6 +1160,39 @@ export class LaunchPadUI {
     }
   }
 
+  /** Public so a refuel / cargo change elsewhere can refresh the readout */
+  public refresh(): void {
+    this.updateUI();
+  }
+
+  /** The rocket's fuel, delta-v, TWR here and cargo space */
+  private updateStats(): void {
+    if (!this.statsElement || !this.currentLaunchPad) return;
+    const pad = this.currentLaunchPad;
+    const types = pad.rocketParts.map(p => p.itemType);
+    const stats = computeRocketStats(types, cargoMass(pad.cargo));
+    const hasRocket = types.length > 0;
+    if (this.refuelBtn) this.refuelBtn.disabled = !hasRocket || stats.fuelCapacity <= 0;
+    if (this.cargoBtn) this.cargoBtn.disabled = stats.cargoSlots <= 0;
+    if (!hasRocket) {
+      this.statsElement.innerHTML = '';
+      return;
+    }
+    const fuel = pad.fuel ?? stats.fuelCapacity;
+    const gravity = this.gravityLookup ? this.gravityLookup(pad) : 1;
+    const twr = surfaceTWR(stats, gravity, fuel);
+    const twrText = Number.isFinite(twr) ? twr.toFixed(2) : '-';
+    const used = pad.cargo.filter(sl => sl.itemType !== ItemType.NONE).length;
+    this.statsElement.innerHTML = `
+      <div class="stat"><span>Fuel</span><b>${Math.round(fuel)}/${stats.fuelCapacity}</b></div>
+      <div class="stat"><span>dV</span><b>${Math.round(deltaVWith(stats, fuel))} m/s</b></div>
+      <div class="stat ${twr < 1 ? 'warn' : ''}"><span>TWR</span><b>${twrText}</b></div>
+      <div class="stat"><span>Cargo</span><b>${used}/${stats.cargoSlots}</b></div>
+      <div class="stat"><span>Tier</span><b>${stats.tier}</b></div>
+      ${twr < 1 && stats.thrust > 0 ? '<div class="stat-note">Too heavy to lift off here</div>' : ''}
+    `;
+  }
+
   private updateUI(): void {
     if (!this.launchPadSectionElement || !this.currentLaunchPad) return;
 
@@ -1236,6 +1346,8 @@ export class LaunchPadUI {
         }
       }
     }
+
+    this.updateStats();
 
     // Validate rocket and update UI
     const validation = this.validateRocket(this.currentLaunchPad);

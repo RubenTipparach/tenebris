@@ -1,16 +1,19 @@
-import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedStorageChest, CHEST_SLOTS } from '../planet/StorageChest';
 import { PlacedGarbagePile, GARBAGE_PILE_SLOTS } from '../planet/GarbagePile';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 
+// A rocket's cargo hold: the launch pad's slot array (any size)
+export interface RocketCargoHold { slots: InventorySlot[]; }
+
 // Union type for storage containers
-type StorageContainer = PlacedStorageChest | PlacedGarbagePile;
+type StorageContainer = PlacedStorageChest | PlacedGarbagePile | RocketCargoHold;
 
 export class StorageUI {
   private inventory: Inventory;
   private currentStorage: StorageContainer | null = null;
-  private storageType: 'chest' | 'garbage' | null = null;
+  private storageType: 'chest' | 'garbage' | 'cargo' | null = null;
   private storageSectionElement: HTMLElement | null = null;
   private storageGridElement: HTMLElement | null = null;
   private isOpen: boolean = false;
@@ -83,6 +86,15 @@ export class StorageUI {
 
       .storage-section.garbage h3 {
         color: #666;
+      }
+
+      .storage-section.cargo h3 {
+        color: #3EE0FF;
+      }
+
+      .storage-section.cargo .storage-slot {
+        background: rgba(29, 43, 83, 0.5);
+        border-color: #29ADFF;
       }
 
       .storage-grid {
@@ -162,7 +174,12 @@ export class StorageUI {
     if (!this.storageGridElement) return;
     this.storageGridElement.innerHTML = '';
 
-    const slotCount = this.storageType === 'garbage' ? GARBAGE_PILE_SLOTS : CHEST_SLOTS;
+    const slotCount = this.storageType === 'garbage' ? GARBAGE_PILE_SLOTS
+      : this.storageType === 'cargo' ? (this.currentStorage?.slots.length ?? 0) : CHEST_SLOTS;
+    // A cargo hold is as big as the rocket's parts make it
+    const columns = Math.max(1, Math.min(9, slotCount));
+    this.storageGridElement.style.gridTemplateColumns = `repeat(${columns}, 40px)`;
+    this.storageGridElement.style.gridTemplateRows = `repeat(${Math.max(1, Math.ceil(slotCount / columns))}, 40px)`;
 
     for (let i = 0; i < slotCount; i++) {
       const slot = document.createElement('div');
@@ -472,6 +489,13 @@ export class StorageUI {
     this.openStorage('Storage Chest');
   }
 
+  /** A rocket's cargo hold, next to the hotbar + bag like any storage */
+  public openCargo(hold: RocketCargoHold, title: string): void {
+    this.currentStorage = hold;
+    this.storageType = 'cargo';
+    this.openStorage(title);
+  }
+
   public openGarbagePile(pile: PlacedGarbagePile): void {
     this.currentStorage = pile;
     this.storageType = 'garbage';
@@ -485,6 +509,7 @@ export class StorageUI {
     if (titleEl) titleEl.textContent = title;
 
     this.storageSectionElement.classList.toggle('garbage', this.storageType === 'garbage');
+    this.storageSectionElement.classList.toggle('cargo', this.storageType === 'cargo');
     this.createStorageSlots();
     this.storageSectionElement.style.display = 'flex';
     this.isOpen = true;
@@ -516,7 +541,7 @@ export class StorageUI {
     return this.currentStorage;
   }
 
-  public getStorageType(): 'chest' | 'garbage' | null {
+  public getStorageType(): 'chest' | 'garbage' | 'cargo' | null {
     return this.storageType;
   }
 

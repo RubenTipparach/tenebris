@@ -18,6 +18,16 @@ export class LandedRocketUI {
   // Callbacks
   private onBoardCallback: ((rocket: LandedRocket) => void) | null = null;
   private onCloseCallback: (() => void) | null = null;
+  private onRefuelCallback: ((rocket: LandedRocket) => void) | null = null;
+  private onCargoCallback: ((rocket: LandedRocket) => void) | null = null;
+
+  public setOnRefuelCallback(callback: (rocket: LandedRocket) => void): void {
+    this.onRefuelCallback = callback;
+  }
+
+  public setOnCargoCallback(callback: (rocket: LandedRocket) => void): void {
+    this.onCargoCallback = callback;
+  }
 
   constructor() {
     this.container = document.createElement('div');
@@ -39,6 +49,10 @@ export class LandedRocketUI {
           <div class="button-section">
             <button class="board-btn">Board Rocket</button>
           </div>
+          <div class="button-section side-buttons">
+            <button class="side-btn refuel-btn">Refuel</button>
+            <button class="side-btn cargo-btn">Cargo</button>
+          </div>
         </div>
       </div>
     `;
@@ -53,6 +67,21 @@ export class LandedRocketUI {
 
     // Set up event listeners
     this.boardButton.addEventListener('click', () => this.handleBoard());
+    (this.container.querySelector('.refuel-btn') as HTMLButtonElement).addEventListener('click', () => {
+      if (!this.currentRocket || !this.onRefuelCallback) return;
+      this.onRefuelCallback(this.currentRocket);
+      this.updateDisplay();
+    });
+    (this.container.querySelector('.cargo-btn') as HTMLButtonElement).addEventListener('click', () => {
+      if (!this.currentRocket || !this.onCargoCallback) return;
+      const rocket = this.currentRocket;
+      // Hand over to the inventory + cargo panels
+      this.isOpen = false;
+      this.container.style.display = 'none';
+      this.currentRocket = null;
+      MenuManager.unregisterMenu('landed-rocket-ui');
+      this.onCargoCallback(rocket);
+    });
     this.closeButton.addEventListener('click', () => this.close());
 
     // Handle keyboard
@@ -194,6 +223,28 @@ export class LandedRocketUI {
         letter-spacing: 1px;
         cursor: pointer;
         transition: all 0.2s;
+      }
+
+      .side-buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .side-btn {
+        flex: 1;
+        padding: 8px;
+        background: #1D2B53;
+        border: 2px solid #29ADFF;
+        border-radius: 4px;
+        color: #FFF1E8;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .side-btn:hover {
+        background: #29ADFF;
+        color: #000000;
       }
 
       .board-btn:hover {

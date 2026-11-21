@@ -21,6 +21,7 @@ export const ELECTRIC_SMELTING_RECIPES: ElectricSmeltingRecipe[] = [
   { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 2 },
   { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 2 },
   { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 2 },
+  { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 2 },
 ];
 
 export interface PlacedElectricFurnace {

@@ -2,7 +2,12 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
-import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
+import { showToast } from '../utils/toast';
+import { RocketController } from '../rocket/RocketController';
+import { computeRocketStats, slotStore } from '../rocket/RocketPerformance';
+import { ROCKET_CONFIG } from '../config/RocketConfig';
+import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, TorchManager } from '../planet/Torch';
 import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
@@ -91,6 +96,8 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
     case HexBlockType.MOON_ORE_COBALT: return ItemType.ORE_COBALT;
     case HexBlockType.MOON_ORE_LITHIUM: return ItemType.ORE_LITHIUM;
+    // ...and titanium, which only the Moon has
+    case HexBlockType.MOON_ORE_TITANIUM: return ItemType.ORE_TITANIUM;
     // The city is built of stone and glass; its park lawns are soil
     case HexBlockType.CITY_ROAD:
     case HexBlockType.CITY_SIDEWALK:
@@ -131,6 +138,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.ORE_LITHIUM: return HexBlockType.ORE_LITHIUM;
     case ItemType.ORE_ALUMINUM: return HexBlockType.ORE_ALUMINUM;
     case ItemType.ORE_COBALT: return HexBlockType.ORE_COBALT;
+    case ItemType.ORE_TITANIUM: return HexBlockType.MOON_ORE_TITANIUM;
     // Snow biome blocks can be placed
     case ItemType.SNOW: return HexBlockType.SNOW;
     case ItemType.ICE: return HexBlockType.ICE;
@@ -488,11 +496,43 @@ export class PlanetBlockInteraction {
       return result;
     });
     this.launchPadUI.setOnRemoveRocketPartCallback((pad) => {
+      if (this.launchPadManager.topPartHoldsCargo(pad)) {
+        showToast('Empty the cargo hold first - that part holds cargo', { duration: 3000 });
+        return null;
+      }
       const removedPart = this.launchPadManager.removeRocketPart(pad);
       if (removedPart) {
         this.saveLaunchPadStates();
       }
       return removedPart;
+    });
+    // The pad's rocket: refuel from the cargo hold + inventory (the same fuel
+    // source as on board), open its cargo hold, its TWR on this body
+    this.launchPadUI.setOnRefuelCallback((pad) => {
+      const capacity = computeRocketStats(pad.rocketParts.map(p => p.itemType)).fuelCapacity;
+      const have = pad.fuel ?? capacity;
+      const wanted = capacity - have;
+      if (wanted <= 0) {
+        showToast('Tanks are full', { duration: 2000 });
+        return;
+      }
+      const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted, pad.cargo) : wanted;
+      if (supplied <= 0) return;
+      pad.fuel = Math.min(capacity, have + supplied);
+      this.saveLaunchPadStates();
+      this.saveInventory();
+    });
+    this.launchPadUI.setOnOpenCargoCallback((pad) => {
+      this.launchPadUI.close();
+      this.openRocketCargo(pad.cargo);
+    });
+    this.launchPadUI.setGravityLookup((pad) => {
+      let best = this.planets[0], bestD = Infinity;
+      for (const planet of this.planets) {
+        const d = planet.center.distanceTo(pad.planetCenter);
+        if (d < bestD) { bestD = d; best = planet; }
+      }
+      return getBodyConfig(this.getPlanetId(best))?.gravity.strength ?? 1;
     });
     // Board rocket callback - will be set by external system (mainPlanet.ts)
     // this.launchPadUI.setOnBoardRocketCallback() is set externally
@@ -528,6 +568,8 @@ export class PlanetBlockInteraction {
     this.storageUI.setOnSaveCallback(() => {
       this.saveInventory();
       this.saveAllStorageStates();
+      // A rocket's cargo hold saves with its launch pad
+      if (this.storageUI.getStorageType() === 'cargo') this.saveLaunchPadStates();
     });
     this.storageUI.setOnOpenInventoryCallback(() => {
       this.craftingSystem.open();
@@ -1189,6 +1231,13 @@ export class PlanetBlockInteraction {
     // Raycast to find targeted block or tree
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
+
+    // An empty bucket fills at water (right click)
+    if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.BUCKET &&
+        this.tryFillBucket(origin, direction)) {
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      return;
+    }
 
     // Set up raycaster once for all object tests
     this.raycaster.set(origin, direction);
@@ -3575,6 +3624,9 @@ export class PlanetBlockInteraction {
             const parts = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE];
             for (let i = 0; i < parts.length; i++) this.launchPadManager.addSegment(pad);
             for (const part of parts) await this.launchPadManager.addRocketPart(pad, part);
+            // Ready to fly: full tanks, and fuel for the way back in the hold
+            pad.fuel = null;
+            slotStore(pad.cargo).addItem(ItemType.ROCKET_FUEL, ROCKET_CONFIG.STARTER_KIT.cargoRocketFuel);
             this.saveLaunchPadStates();
             console.log(`Starter rocket placed on tile ${tileIndex}`);
             return true;
@@ -3658,6 +3710,51 @@ export class PlanetBlockInteraction {
     return this.torchManager;
   }
 
+  /**
+   * Open a rocket's cargo hold beside the hotbar + bag (from its launch pad
+   * or a landed rocket's panel)
+   */
+  public openRocketCargo(cargo: InventorySlot[], title = 'Rocket Cargo'): void {
+    this.storageUI.openCargo({ slots: cargo }, title);
+  }
+
+  /**
+   * An empty bucket in hand + right click on water fills it. Water is an
+   * infinite source here: the block stays. Walks the view ray (water is not
+   * a raycast target) and fills at the first water block within reach.
+   */
+  private tryFillBucket(origin: THREE.Vector3, direction: THREE.Vector3): boolean {
+    const step = PlayerConfig.BUCKET_RAY_STEP;
+    const point = new THREE.Vector3();
+    for (let d = 0; d <= this.MAX_REACH; d += step) {
+      point.copy(origin).addScaledVector(direction, d);
+      for (const planet of this.planets) {
+        const r = point.distanceTo(planet.center);
+        const maxDepth = planet.getMaxDepth();
+        // Block `depth` spans (depthToRadius(depth) - blockHeight, depthToRadius(depth)]
+        const depth = Math.ceil((r - planet.depthToRadius(0)) / planet.getBlockHeight());
+        if (depth < 0 || depth >= maxDepth) continue;
+        const tile = planet.getTileAtPoint(point);
+        if (!tile) continue;
+        const block = planet.getBlock(tile.index, depth);
+        if (block === HexBlockType.WATER) {
+          if (!this.inventory.useSelectedItem()) return false;
+          if (this.inventory.addItem(ItemType.WATER_BUCKET, 1) > 0) {
+            this.inventory.addItem(ItemType.BUCKET, 1);   // no room: keep the empty bucket
+            showToast('No room for a Water Bucket', { duration: 2000 });
+          } else {
+            showToast('Filled a Water Bucket', { duration: 2000 });
+          }
+          this.updateHotbarUI();
+          this.saveInventory();
+          return true;
+        }
+        if (block !== HexBlockType.AIR) return false;   // the ray hit ground first
+      }
+    }
+    return false;
+  }
+
   public getLaunchPadUI(): LaunchPadUI {
     return this.launchPadUI;
   }
@@ -3720,8 +3817,10 @@ export class PlanetBlockInteraction {
     }
   }
 
-  // Save all launch pad states to local storage
-  private saveLaunchPadStates(): void {
+  // Save all launch pad states to local storage (their rockets' fuel and
+  // cargo included) - public so the flight system saves a rocket the moment
+  // its fuel or cargo changes
+  public saveLaunchPadStates(): void {
     const launchPads = this.launchPadManager.getLaunchPads();
     for (const pad of launchPads) {
       // The pad's planet is the one whose centre it was placed around (tile
@@ -3745,7 +3844,9 @@ export class PlanetBlockInteraction {
         rocketParts: pad.rocketParts.map(part => ({
           itemType: part.itemType,
           heightIndex: part.heightIndex
-        }))
+        })),
+        fuel: pad.fuel ?? undefined,
+        cargo: pad.cargo.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
       });
     }
   }
@@ -4296,7 +4397,16 @@ export class PlanetBlockInteraction {
           // the ground was levelled when the pad was placed; rebuild the
           // platform without touching blocks
           this.launchPadPlatform(planet, savedPad.surroundingTileIndices, 0, innerRadius, false)
-        );
+        ).then(pad => {
+          // The rocket's tanks and cargo hold (absent in older saves: full, empty)
+          if (!pad) return;
+          pad.fuel = savedPad.fuel ?? null;
+          savedPad.cargo?.forEach((slot, i) => {
+            if (i < pad.cargo.length && ITEM_DATA[slot.itemType as ItemType]) {
+              pad.cargo[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };
+            }
+          });
+        });
       }
     }
 

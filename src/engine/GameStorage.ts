@@ -153,6 +153,8 @@ export interface SavedLaunchPad {
   segmentCount: number;
   rocketBlocks: number;
   rocketParts?: SavedRocketPart[];  // New: saved rocket parts stack
+  fuel?: number;                    // fuel units in the rocket's tanks (absent = full)
+  cargo?: { itemType: number; quantity: number }[];  // the rocket's cargo hold
 }
 
 // Music state for persistence

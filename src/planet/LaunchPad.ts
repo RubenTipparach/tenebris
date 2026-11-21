@@ -3,7 +3,9 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { getAssetPath } from '../utils/assetPath';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { ItemType, ITEM_DATA, RocketPartType } from '../player/Inventory';
+import { ItemType, ITEM_DATA, RocketPartType, InventorySlot } from '../player/Inventory';
+import { ROCKET_CONFIG } from '../config/RocketConfig';
+import { cargoSlotsFor, compactCargo, computeRocketStats } from '../rocket/RocketPerformance';
 import { RocketPart } from './RocketPart';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
@@ -63,6 +65,12 @@ export interface PlacedLaunchPad {
   rocketMeshes: THREE.Mesh[];
   // Rocket parts stack (uses RocketPart class)
   rocketParts: RocketPart[];
+  // The rocket's cargo hold: as many slots as its parts give
+  // (ROCKET_CONFIG.PARTS cargoSlots). The flying / landed rocket shares this
+  // array, so the cargo travels with it and saves with the pad
+  cargo: InventorySlot[];
+  // Fuel units in the rocket's tanks; null = full (pads from older saves)
+  fuel: number | null;
   // Legacy support - computed from rocketParts
   hasRocketEngine: boolean;
   rocketEngineMesh: THREE.Group | null;
@@ -758,6 +766,8 @@ export class LaunchPadManager {
       rocketBlocks: 0,
       rocketMeshes: [],
       rocketParts: [],
+      cargo: [],
+      fuel: ROCKET_CONFIG.NEW_PAD_FUEL,
       hasRocketEngine: false,
       rocketEngineMesh: null,
     };
@@ -849,6 +859,8 @@ export class LaunchPadManager {
       rocketBlocks: 0,
       rocketMeshes: [],
       rocketParts: [],
+      cargo: [],
+      fuel: null,
       hasRocketEngine: false,
       rocketEngineMesh: null,
     };
@@ -1124,8 +1136,9 @@ export class LaunchPadManager {
     partGroup.position.copy(partPos);
     partGroup.quaternion.copy(quaternion);
 
-    // Scale the part
-    partGroup.scale.setScalar(this.ROCKET_PART_SCALE);
+    // Scale the part (a part may stretch the shared model, e.g. a 2-unit tank)
+    const ms = itemData.rocketPart.modelScale ?? { x: 1, y: 1, z: 1 };
+    partGroup.scale.set(this.ROCKET_PART_SCALE * ms.x, this.ROCKET_PART_SCALE * ms.y, this.ROCKET_PART_SCALE * ms.z);
 
     // Add to launch pad
     launchPad.mesh.add(partGroup);
@@ -1139,6 +1152,7 @@ export class LaunchPadManager {
     );
 
     launchPad.rocketParts.push(rocketPart);
+    this.syncRocketHold(launchPad);
 
     // Update legacy hasRocketEngine flag for backwards compatibility
     if (itemData.rocketPart.partType === RocketPartType.ENGINE) {
@@ -1157,8 +1171,15 @@ export class LaunchPadManager {
       return null;
     }
 
+    // The hold shrinks with the part: its items must fit in what is left
+    const remaining = cargoSlotsFor(launchPad.rocketParts.slice(0, -1).map(p => p.itemType));
+    if (!compactCargo(launchPad.cargo, remaining)) {
+      return null;
+    }
+
     const removedPart = launchPad.rocketParts.pop()!;
     launchPad.mesh.remove(removedPart.mesh);
+    this.syncRocketHold(launchPad);
 
     // Update legacy flags
     const hasEngine = launchPad.rocketParts.some(
@@ -1170,6 +1191,25 @@ export class LaunchPadManager {
     }
 
     return removedPart;
+  }
+
+  /**
+   * Size the pad's cargo hold to its parts and clamp its fuel to the tanks
+   */
+  private syncRocketHold(launchPad: PlacedLaunchPad): void {
+    const types = launchPad.rocketParts.map(p => p.itemType);
+    const slots = cargoSlotsFor(types);
+    while (launchPad.cargo.length < slots) launchPad.cargo.push({ itemType: ItemType.NONE, quantity: 0 });
+    if (launchPad.cargo.length > slots) launchPad.cargo.length = slots;
+    if (launchPad.fuel !== null) {
+      launchPad.fuel = Math.min(launchPad.fuel, computeRocketStats(types).fuelCapacity);
+    }
+  }
+
+  /** Would removing the top part spill cargo that can't fit in the rest of the hold? */
+  public topPartHoldsCargo(launchPad: PlacedLaunchPad): boolean {
+    const remaining = cargoSlotsFor(launchPad.rocketParts.slice(0, -1).map(p => p.itemType));
+    return launchPad.cargo.filter(s => s.itemType !== ItemType.NONE).length > remaining;
   }
 
   /**
@@ -1225,6 +1265,7 @@ export class LaunchPadManager {
       launchPad.rocketParts.length
     );
     launchPad.rocketParts.push(rocketPart);
+    this.syncRocketHold(launchPad);
 
     // Legacy flags
     launchPad.hasRocketEngine = true;
