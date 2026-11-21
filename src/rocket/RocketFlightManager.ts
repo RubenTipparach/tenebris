@@ -308,15 +308,20 @@ export class RocketFlightManager {
    * Exit flight mode - returns player to normal play
    * If rocket has launched (left initial position), it persists in the world
    * If rocket never launched (still at launch pad), it returns to docked state
+   *
+   * `force` leaves the rocket even where the player may not climb out (the
+   * pilot ran out of air in a cabin with no power, openspec
+   * wool-air-and-reentry design 4): the ship is parked where it is, as on any
+   * exit, so it never vanishes.
    */
-  public exitFlightMode(): void {
+  public exitFlightMode(force = false): void {
     if (!this.isInFlightMode || !this.rocketController) {
       return;
     }
 
     // Check if we can exit
     const stateInfo = this.rocketController.getStateMachine().getStateInfo();
-    if (!stateInfo.canExit) {
+    if (!stateInfo.canExit && !force) {
       console.log('Cannot exit rocket in current state');
       return;
     }

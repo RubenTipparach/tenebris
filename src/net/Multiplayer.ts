@@ -3,7 +3,7 @@ import { Planet } from '../planet/Planet';
 import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
 import { clearWorldSave } from '../engine/GameStorage';
-import { Avatar, Look, sanitizeLook } from './Avatar';
+import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
 import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
 /**
@@ -120,8 +120,16 @@ export class Multiplayer {
   /** A new name / look from the character creator: everyone sees it at once. */
   public setIdentity(name: string, look: Look): void {
     this.name = name;
+    this.look = { ...look, suit: this.look.suit };
+    this.sendJson({ t: 'hello', name, look: this.look });
+  }
+
+  /** The space suit went on or came off: it rides the look, so everyone sees it. */
+  public setSuit(worn: boolean): void {
+    const look: Look = { ...this.look };
+    if (worn) look.suit = SUIT_ON; else delete look.suit;
     this.look = look;
-    this.sendJson({ t: 'hello', name, look });
+    this.sendJson({ t: 'hello', name: this.name, look });
   }
 
   public disconnect(): void {

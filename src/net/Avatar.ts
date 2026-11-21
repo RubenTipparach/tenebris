@@ -25,7 +25,17 @@ export const LOOK_OPTIONS = {
 } as const;
 
 export type LookSlot = keyof typeof LOOK_OPTIONS;
-export type Look = { [K in LookSlot]: string };
+/**
+ * A look: the creator's picks, plus `suit: 'on'` while a space suit is worn
+ * (openspec wool-air-and-reentry, design 4) - not a creator pick, it rides
+ * the same synced look so other players see the suit.
+ */
+export type Look = { [K in LookSlot]: string } & { suit?: typeof SUIT_ON };
+export const SUIT_ON = 'on';
+
+// The space suit over the clothes: white body, grey gloves / boots / air
+// pack, a helmet with a dark visor (PICO-8 colours)
+const SUIT_LOOK = { BODY: '#fff1e8', TRIM: '#c2c3c7', VISOR: '#1d2b53', PACK: [0.36, 0.42, 0.14] } as const;
 export const LOOK_SLOTS = Object.keys(LOOK_OPTIONS) as LookSlot[];
 
 // Body proportions (model units = metres; eyes at 0, feet at FEET_Y)
@@ -62,6 +72,7 @@ export function sanitizeLook(raw: unknown, seed = 0): Look {
       const v = (raw as Record<string, unknown>)[slot];
       if (typeof v === 'string' && (LOOK_OPTIONS[slot] as readonly string[]).includes(v)) look[slot] = v;
     }
+    if ((raw as Record<string, unknown>).suit === SUIT_ON) look.suit = SUIT_ON;
   }
   return look;
 }
@@ -118,7 +129,11 @@ export class Avatar {
     model.add(this.parts.body);
     this.rest.set(this.parts.body, new THREE.Vector3());
 
-    const skin = mat(look.skin), shirt = mat(look.shirt), pants = mat(look.pants), boots = mat(look.boots), hair = mat(look.hair);
+    const suit = look.suit === SUIT_ON;
+    const skin = mat(look.skin);
+    const shirt = mat(suit ? SUIT_LOOK.BODY : look.shirt), pants = mat(suit ? SUIT_LOOK.BODY : look.pants);
+    const boots = mat(suit ? SUIT_LOOK.TRIM : look.boots), hair = mat(suit ? SUIT_LOOK.BODY : look.hair);
+    const hands = suit ? boots : skin;
     const dark = mat('#000000');
 
     // Torso
@@ -129,13 +144,18 @@ export class Avatar {
     const hy = R.HEAD_Y - R.SHOULDER_Y;
     head.add(box(R.HEAD, R.HEAD, R.HEAD, skin, hy));
     for (const ex of [-0.08, 0.08]) head.add(box(0.06, 0.06, 0.02, dark, hy + 0.03, ex, R.HEAD / 2 + 0.005));
-    this.addHair(head, look.style, hair, mat('#29adff'), hy, box);
+    this.addHair(head, suit ? 'helmet' : look.style, hair, mat(suit ? SUIT_LOOK.VISOR : '#29adff'), hy, box);
+    // The suit's air pack on the back (the model faces +Z)
+    if (suit) {
+      const [pw, ph, pd] = SUIT_LOOK.PACK;
+      this.parts.body.add(box(pw, ph, pd, boots, R.HIP_Y + th * 0.55, 0, -(td + pd) / 2));
+    }
     // Arms hang from the shoulders: sleeve then hand
     const [aw, ah, ad] = R.ARM;
     for (const [side, x] of [['armL', R.ARM_X], ['armR', -R.ARM_X]] as const) {
       const arm = pivot(side, x, R.SHOULDER_Y);
       arm.add(box(aw, ah * 0.75, ad, shirt, -ah * 0.375));
-      arm.add(box(aw * 0.9, ah * 0.25, ad * 0.9, skin, -ah * 0.875));
+      arm.add(box(aw * 0.9, ah * 0.25, ad * 0.9, hands, -ah * 0.875));
     }
     // Legs hang from the hips: trousers then boots
     const [lw, lh, ld] = R.LEG;

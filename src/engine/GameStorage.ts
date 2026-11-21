@@ -1172,6 +1172,7 @@ export class GameStorage {
     for (const planetId of PLANET_IDS) {
       localStorage.removeItem(planetStorageKey(planetId));
     }
+    localStorage.removeItem(`tenebris_${worldPrefix}suit`);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
   }
 
@@ -1210,6 +1211,25 @@ export class GameStorage {
     try {
       if (state) localStorage.setItem(`tenebris_${worldPrefix}wellfed`, JSON.stringify(state));
       else localStorage.removeItem(`tenebris_${worldPrefix}wellfed`);
+    } catch {
+      // storage blocked: kept for this session only
+    }
+  }
+
+  // The space suit and its tank air (src/player/AirSystem.ts): its own key
+  // per world slot, written the frame the suit goes on or comes off
+  public getSuit<T>(): T | null {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}suit`);
+      return raw ? JSON.parse(raw) as T : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveSuit(state: object): void {
+    try {
+      localStorage.setItem(`tenebris_${worldPrefix}suit`, JSON.stringify(state));
     } catch {
       // storage blocked: kept for this session only
     }

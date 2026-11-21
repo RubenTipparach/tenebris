@@ -20,6 +20,7 @@ import { GridResult, formatWatts, formatWh } from '../power/PowerGrid';
 const KIND_TITLES: Record<string, string> = {
   pumpJack: 'Pump Jack', refinery: 'Refinery', centrifuge: 'Centrifuge',
   reactor: 'Fission Reactor', nuclearFabricator: 'Nuclear Fabricator', battery: 'Battery',
+  gasCollector: 'Gas Collector',
 };
 
 export interface MachineUICallbacks {
@@ -90,6 +91,9 @@ export class MachineUI extends BaseModalMenu {
       const lives = m.rodLifeS.map(l => l > 0 ? `${Math.ceil(l / 60)} min` : 'spent').join(', ');
       el.appendChild(this.line(`Rods burning: ${lives}  -  ${formatWatts(POWER_CONFIG.SUPPLY_W.reactor ?? 0)} while fuelled`));
     }
+    if (m.kind === 'gasCollector') {
+      el.appendChild(this.line(`Put empty tanks in - one fills with air every ${MACHINE_CONFIG.gasCollector.fillS} s`));
+    }
     const demand = POWER_CONFIG.DEMAND_W[m.kind];
     if (demand) el.appendChild(this.line(`Draws ${formatWatts(demand)} while working`, '#aaa'));
 
@@ -117,6 +121,7 @@ export class MachineUI extends BaseModalMenu {
       case 'pumpJack': return m.progressS / MACHINE_CONFIG.PUMP_UNIT_S;
       case 'refinery': return m.progressS / MACHINE_CONFIG.REFINE_S;
       case 'centrifuge': return m.progressS / MACHINE_CONFIG.ENRICH_S;
+      case 'gasCollector': return m.progressS / MACHINE_CONFIG.gasCollector.fillS;
       case 'nuclearFabricator': {
         const r = FABRICATOR_RECIPES.find(x => x.output === m.job);
         return r ? m.progressS / r.timeS : null;

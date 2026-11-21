@@ -167,3 +167,31 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   tickMachine(p, 0.25, { oilBelow: false, reactorPower: false });
   ok(p.status === 'No oil here' && p.tank === 0 && p.outputs[0].itemType === ItemType.CRUDE_OIL_BUCKET, 'a dry pump jack still fills a bucket from its tank');
 }
+
+// ---- gas collector (openspec wool-air-and-reentry, task 5.3)
+{
+  const fillS = MACHINE_CONFIG.gasCollector.fillS;
+  const g = newMachineState(ItemType.GAS_COLLECTOR, 10, 30, new THREE.Vector3(), 0);
+  ok(g.kind === 'gasCollector' && g.inputs.length === 1 && g.outputs.length === 1, 'a gas collector has one input and one output slot');
+  ok((D.gasCollector ?? 0) > 0, `it draws ${D.gasCollector} W`);
+  tickMachine(g, 1, { oilBelow: false, reactorPower: false });
+  ok(g.status === 'Needs empty tanks' && !wantsPower(g, false), 'empty: "Needs empty tanks" and draws nothing');
+  ok(loadInput(g, ItemType.OXYGEN_TANK, 1) === 0 && loadInput(g, ItemType.BUCKET, 1) === 0, 'it takes nothing but empty tanks');
+  ok(loadInput(g, ItemType.EMPTY_TANK, 3) === 3 && wantsPower(g, false), 'it takes empty tanks, and then wants power');
+  g.powered = false;
+  tickMachine(g, fillS * 2, { oilBelow: false, reactorPower: false });
+  ok(g.status === 'No power' && g.outputs[0].itemType === ItemType.NONE, 'no power, no fill');
+  g.powered = true;
+  tickMachine(g, fillS / 2, { oilBelow: false, reactorPower: false });
+  ok(g.status === 'Filling' && g.outputs[0].itemType === ItemType.NONE, 'on power it fills ("Filling")');
+  const fx = tickMachine(g, fillS / 2, { oilBelow: false, reactorPower: false });
+  ok(fx.event === 'bottled' && g.outputs[0].itemType === ItemType.OXYGEN_TANK && g.outputs[0].quantity === 1 && g.inputs[0].quantity === 2,
+    'after fillS one empty tank becomes an oxygen tank (a bottled event)');
+  tickMachine(g, fillS, { oilBelow: false, reactorPower: false });
+  ok(g.outputs[0].quantity === 2 && g.inputs[0].quantity === 1, 'one tank per fillS');
+  g.outputs[0].quantity = 16;
+  tickMachine(g, fillS, { oilBelow: false, reactorPower: false });
+  ok(g.status === 'Output full' && g.inputs[0].quantity === 1, 'a full output stops it ("Output full")');
+  const back = machineFromRecord(JSON.parse(JSON.stringify(machineRecord(g))));
+  ok(back.kind === 'gasCollector' && back.inputs[0].quantity === 1 && back.outputs[0].itemType === ItemType.OXYGEN_TANK, 'its slots survive the saved record');
+}
