@@ -16,8 +16,10 @@ interface TerrainConfig {
   // Replace generic terrain blocks with a planet's own block IDs
   // (e.g. GRASS -> SEQ_GRASS on Sequoia); keys and values are HexBlockType
   blockRemap?: Record<number, number>;
-  // Mockup: climate biomes (deserts, tundra, rocky highlands, alpine snow,
-  // stone cliffs) built from existing blocks. Earth only.
+  // Climate biomes (deserts, tundra, forest, rocky highlands, alpine snow,
+  // stone cliffs) in the generic blocks, which blockRemap turns into a
+  // planet's own (Sequoia, the living alien worlds; Earth as a mockup).
+  // On a dry single-texture world they lie on its rock, basins included.
   biomes?: boolean;
   seed: number;
   maxDepth: number;
@@ -423,16 +425,20 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
 
   // Biome mockup: surface block per land tile from climate + terrain
   const biomeTop = new Map<number, number>();
-  if (config.biomes && !config.isSingleTexturePlanet) {
+  if (config.biomes) {
+    // Altitude is measured from the sea; a world without water has no sea,
+    // so from its lowest ground (its old ocean basins are land too)
+    let base = SEA_LEVEL_DEPTH;
+    if (!config.hasWater) for (const d of heightMap.values()) base = Math.min(base, d);
     let maxAlt = 1;
-    for (const d of heightMap.values()) maxAlt = Math.max(maxAlt, d - SEA_LEVEL_DEPTH);
+    for (const d of heightMap.values()) maxAlt = Math.max(maxAlt, d - base);
     for (const tile of tiles) {
       const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
-      if (surfaceDepth < SEA_LEVEL_DEPTH || beachTiles.has(tile.index)) continue;
+      if (surfaceDepth < base || beachTiles.has(tile.index)) continue;
       const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
       const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
       if (Math.abs(y) > config.polarThreshold) continue;
-      const altFrac = (surfaceDepth - SEA_LEVEL_DEPTH) / maxAlt;
+      const altFrac = (surfaceDepth - base) / maxAlt;
       // Temperature: warm at the equator, cold toward the poles and up high
       const temp = 1 - Math.abs(y) / config.polarThreshold
         + 0.35 * fractalSimplex3D(x, y, z, BIOME_TEMP_SCALE, 2, 0.35, 2.0, config.seed + 101)
@@ -477,7 +483,10 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
         const nearPole = Math.abs(normalizedY) > config.polarThreshold * 0.85;
         const polarIce = nearPole && depth < surfaceDepth && depth >= surfaceDepth - 4 && roll < 600;
         const icePocket = depth < surfaceDepth - 2 && roll < 15;
-        if (oreType !== undefined) {
+        if (depth === surfaceDepth && biomeTop.has(tile.index)) {
+          // A living rock world: its biome's ground on top of the rock
+          blocks.push(biomeTop.get(tile.index)!);
+        } else if (oreType !== undefined) {
           blocks.push(oreType);
         } else if (polarIce || icePocket) {
           blocks.push(HexBlockType.ICE);

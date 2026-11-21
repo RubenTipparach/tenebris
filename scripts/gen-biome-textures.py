@@ -26,6 +26,29 @@ Blocks:
 Also the Moon's ore blocks (public/textures/moon/ore_*.png): moon.png with
 the mineral drawn into it as lit nodules.
 
+And the living alien worlds' grounds (public/textures/alien/<planet>_<ground>.png),
+three per planet, each side the planet's own rock (planets/<id>.png, reused as
+shipped) under a lip of the top:
+  cinder   embermoss (glowing red-orange cushions on charcoal), ash (grey ash
+           plains with ember specks), sulfur (orange-yellow crust, dark cracks)
+  vesper   clay (rose clay pans, cracked), dune (orange sand in ripples),
+           salt (white salt polygons)
+  halcyon  moss (verdigris cushions), geode (amethyst gravel with glints),
+           glass (mint glass sand, sparkles)
+  tessaly  snowmoss (lilac moss on snow), frost (frost crust with ice stars),
+           glaze (blue glaze plates, cracked)
+  umbra    moss (indigo moss with glowing specks), mycel (violet mycelium
+           threads), shale (black shale plates)
+
+And the jungle moons' blocks (public/textures/alien/<moon>_<block>.png):
+  verdance jungle (emerald broad-leaf litter), swamp (olive mangrove mud with
+           pools and algae), bank (pale wet sand, pebbles), soil (red
+           laterite), rock (grey-blue rock with moss)
+  mirewood jungle (lime and teal leaves, magenta blossoms), swamp (black peat
+           under duckweed), bank (grey silt), soil (dark peat soil), rock
+           (banded violet-grey rock)
+  The ground tops' sides are the moon's own soil under a lip.
+
 Deterministic. Run from the repo root:  python3 scripts/gen-biome-textures.py
 """
 import os
@@ -247,6 +270,383 @@ def side(rng, top_px, soil, lip=3):
     return px, exempt
 
 
+# ---- The living alien worlds ------------------------------------------------
+
+def R(*hs):
+    return [rgb(h) for h in hs]
+
+
+ALIEN = {
+    'charcoal': R('#010000', '#161612', '#2c2c25', '#434137'),
+    'ember': R('#2e0d06', '#681712', '#a61e1f', '#d4462b', '#fe6420', '#fb902f'),
+    'ash': R('#2c2c25', '#434137', '#a09f91', '#bfcad7'),
+    'sulfur': R('#2e0d06', '#8d4526', '#c56d25', '#fb902f', '#faaf5c'),
+    'rose': R('#561c27', '#841c1d', '#c34988', '#dd576d', '#e69d69'),
+    'dune': R('#8d4526', '#c56d25', '#fb902f', '#faaf5c', '#eab798'),
+    'salt': R('#5d778d', '#92a3b2', '#bfcad7', '#fffefe'),
+    'verdigris': R('#0c2f44', '#204f63', '#53998b', '#84e3b5', '#c1f1d8'),
+    'amethyst': R('#230c44', '#4f1d83', '#7d2dbd', '#9e3ba2', '#d2f8ff'),
+    'mint': R('#53998b', '#84e3b5', '#c1f1d8', '#fffefe'),
+    'snow': R('#92a3b2', '#bfcad7', '#d2f8ff', '#fffefe'),
+    'lilac': R('#2b1f35', '#3e3551', '#69608b', '#9e3ba2', '#c34988'),
+    'frost': R('#3e586e', '#5d778d', '#92a3b2', '#d2f8ff', '#fffefe'),
+    'glaze': R('#011c34', '#15578a', '#1096c3', '#74effe', '#d2f8ff'),
+    'indigo': R('#010e1a', '#191954', '#2b1f35', '#3e3551', '#69608b'),
+    'glow': R('#15578a', '#1096c3', '#74effe', '#d2f8ff'),
+    'mycel': R('#170916', '#230c44', '#4f1d83', '#7d2dbd', '#9e3ba2', '#c34988'),
+    'shale': R('#010000', '#161612', '#2c2c25', '#1f3b52', '#3e586e'),
+}
+
+
+def cushions(t, rng, ramp, n, bodies, sizes=((3, 2), (2, 3), (3, 3), (4, 3))):
+    for _ in range(n):
+        w, h = rng.choice(sizes)
+        t.clump(blob(rng.randrange(N), rng.randrange(N), w, h), ramp, rng.choice(bodies))
+
+
+def specks(t, rng, colour, n):
+    for _ in range(n):
+        t.put(rng.randrange(N), rng.randrange(N), colour)
+
+
+def cracks(t, rng, colour, n, length):
+    for _ in range(n):
+        x, y = rng.randrange(N), rng.randrange(N)
+        d = rng.choice([(1, 0), (0, 1), (1, 1), (1, -1)])
+        for _ in range(length):
+            t.put(x, y, colour)
+            if rng.random() < 0.35:
+                d = rng.choice([(1, 0), (0, 1), (1, 1), (1, -1)])
+            x, y = x + d[0], y + d[1]
+
+
+def plates(t, rng, ramp, cell, line):
+    """Polygon plates: a jittered grid of cells, each one tone, edged in `line`."""
+    pts = [((gx * cell + rng.randrange(cell)) % N, (gy * cell + rng.randrange(cell)) % N, rng.choice(range(1, len(ramp))))
+           for gy in range(N // cell) for gx in range(N // cell)]
+    owner = {}
+    for y in range(N):
+        for x in range(N):
+            best = None
+            for i, (px, py, _) in enumerate(pts):
+                dx = min(abs(x - px), N - abs(x - px)); dy = min(abs(y - py), N - abs(y - py))
+                d = dx * dx + dy * dy
+                if best is None or d < best[0]:
+                    best = (d, i)
+            owner[(x, y)] = best[1]
+            t.put(x, y, ramp[pts[best[1]][2]])
+    for y in range(N):
+        for x in range(N):
+            if owner[(x, y)] != owner[((x + 1) % N, y)] or owner[(x, y)] != owner[(x, (y + 1) % N)]:
+                t.put(x, y, line)
+    # light from the top left: the pixel under/right of an edge is one up
+    for y in range(N):
+        for x in range(N):
+            o = owner[(x, y)]
+            if t.px[y][x] != line and (owner[((x - 1) % N, y)] != o or owner[(x, (y - 1) % N)] != o):
+                k = pts[o][2]
+                t.put(x, y, ramp[min(len(ramp) - 1, k + 1)])
+
+
+def cinder_embermoss(rng):
+    t = Tile(ALIEN['charcoal'], 1)
+    t.ground(rng, ALIEN['charcoal'], [0, 1, 2], [1, 3, 2])
+    cushions(t, rng, ALIEN['ember'], 13, [2, 3, 4], ((3, 3), (4, 3), (3, 4), (4, 4)))
+    specks(t, rng, ALIEN['ember'][5], 4)
+    return t.px
+
+
+def cinder_ash(rng):
+    t = Tile(ALIEN['ash'], 1)
+    t.ground(rng, ALIEN['ash'], [0, 1], [2, 5])
+    cushions(t, rng, ALIEN['ash'], 7, [1, 2], ((3, 2), (4, 2), (2, 2)))
+    specks(t, rng, ALIEN['ember'][4], 3)
+    specks(t, rng, ALIEN['ember'][3], 3)
+    return t.px
+
+
+def cinder_sulfur(rng):
+    t = Tile(ALIEN['sulfur'], 3)
+    plates(t, rng, ALIEN['sulfur'][1:], 5, ALIEN['sulfur'][0])
+    specks(t, rng, ALIEN['sulfur'][4], 3)
+    return t.px
+
+
+def vesper_clay(rng):
+    t = Tile(ALIEN['rose'], 2)
+    plates(t, rng, ALIEN['rose'][1:], 6, ALIEN['rose'][0])
+    return t.px
+
+
+def vesper_dune(rng):
+    t = Tile(ALIEN['dune'], 2)
+    t.ground(rng, ALIEN['dune'], [2, 3], [3, 2])
+    for k in range(4):                                     # ripples: wavy 2 px bands, lit edge above
+        y0 = k * 4
+        for x in range(N):
+            y = y0 + (1 if (x // 3 + k) % 4 in (1, 2) else 0)
+            t.put(x, y, ALIEN['dune'][4])
+            t.put(x, y + 1, ALIEN['dune'][1])
+            t.put(x, y + 2, ALIEN['dune'][0] if x % 5 == 0 else ALIEN['dune'][1])
+    return t.px
+
+
+def vesper_salt(rng):
+    t = Tile(ALIEN['salt'], 2)
+    plates(t, rng, ALIEN['salt'][1:], 5, ALIEN['salt'][0])
+    return t.px
+
+
+def halcyon_moss(rng):
+    t = Tile(ALIEN['verdigris'], 1)
+    t.ground(rng, ALIEN['verdigris'], [0, 1], [1, 3])
+    cushions(t, rng, ALIEN['verdigris'], 12, [2, 3])
+    specks(t, rng, ALIEN['verdigris'][4], 3)
+    return t.px
+
+
+def halcyon_geode(rng):
+    t = Tile(ALIEN['amethyst'], 0)
+    t.ground(rng, ALIEN['amethyst'], [0, 1], [3, 2])
+    cushions(t, rng, ALIEN['amethyst'], 14, [2], ((2, 2), (3, 2), (2, 3)))
+    specks(t, rng, ALIEN['amethyst'][4], 4)
+    return t.px
+
+
+def halcyon_glass(rng):
+    t = Tile(ALIEN['mint'], 1)
+    t.ground(rng, ALIEN['mint'], [0, 1, 2], [1, 4, 2])
+    cushions(t, rng, ALIEN['mint'], 5, [1], ((3, 2), (2, 2)))
+    specks(t, rng, ALIEN['mint'][3], 6)
+    return t.px
+
+
+def tessaly_snowmoss(rng):
+    t = Tile(ALIEN['snow'], 2)
+    t.ground(rng, ALIEN['snow'], [1, 2, 3], [2, 3, 2])
+    cushions(t, rng, ALIEN['lilac'], 11, [2, 3], ((3, 3), (4, 3), (3, 2)))
+    return t.px
+
+
+def tessaly_frost(rng):
+    t = Tile(ALIEN['frost'], 2)
+    t.ground(rng, ALIEN['frost'], [1, 2], [2, 3])
+    for _ in range(6):                                     # ice stars: a lit plus with a bright heart
+        x, y = rng.randrange(N), rng.randrange(N)
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            t.put(x + dx, y + dy, ALIEN['frost'][3])
+        t.put(x + 1, y + 1, ALIEN['frost'][0])
+        t.put(x, y, ALIEN['frost'][4])
+    return t.px
+
+
+def tessaly_glaze(rng):
+    t = Tile(ALIEN['glaze'], 2)
+    plates(t, rng, ALIEN['glaze'][1:], 8, ALIEN['glaze'][0])
+    specks(t, rng, ALIEN['glaze'][4], 4)
+    return t.px
+
+
+def umbra_moss(rng):
+    t = Tile(ALIEN['indigo'], 1)
+    t.ground(rng, ALIEN['indigo'], [0, 1], [2, 3])
+    cushions(t, rng, ALIEN['indigo'], 11, [2, 3])
+    for _ in range(4):                                     # glowing spore specks, a lit pair
+        x, y = rng.randrange(N), rng.randrange(N)
+        t.put(x, y, ALIEN['glow'][2])
+        t.put(x + 1, y, ALIEN['glow'][1])
+    return t.px
+
+
+def umbra_mycel(rng):
+    t = Tile(ALIEN['mycel'], 1)
+    t.ground(rng, ALIEN['mycel'], [0, 1], [2, 3])
+    for _ in range(9):                                     # threads, 2 wide, lit on top
+        x, y = rng.randrange(N), rng.randrange(N)
+        d = rng.choice([(1, 0), (1, 1), (1, -1)])
+        cells = []
+        for i in range(rng.choice([4, 5, 6])):
+            cells += [(x, y), (x, y + 1)]
+            if rng.random() < 0.3:
+                d = rng.choice([(1, 0), (1, 1), (1, -1)])
+            x, y = x + d[0], y + d[1]
+        t.clump(cells, ALIEN['mycel'], 3)
+    specks(t, rng, ALIEN['mycel'][5], 3)
+    return t.px
+
+
+def umbra_shale(rng):
+    t = Tile(ALIEN['shale'], 1)
+    for y in range(N):                                     # layered plates: bands of one tone
+        band = (y // 3) % 3
+        for x in range(N):
+            t.put(x, y, ALIEN['shale'][1 + band if band < 2 else 1])
+    for k in range(N // 3):                                # a lit lip on each layer, broken
+        y = k * 3
+        for x in range(N):
+            if (x + k * 5) % 7 < 5:
+                t.put(x, y, ALIEN['shale'][4] if (x + k) % 6 == 0 else ALIEN['shale'][3])
+    cracks(t, rng, ALIEN['shale'][0], 3, 3)
+    return t.px
+
+
+ALIEN_GROUNDS = {
+    'cinder': [('embermoss', cinder_embermoss), ('ash', cinder_ash), ('sulfur', cinder_sulfur)],
+    'vesper': [('clay', vesper_clay), ('dune', vesper_dune), ('salt', vesper_salt)],
+    'halcyon': [('moss', halcyon_moss), ('geode', halcyon_geode), ('glass', halcyon_glass)],
+    'tessaly': [('snowmoss', tessaly_snowmoss), ('frost', tessaly_frost), ('glaze', tessaly_glaze)],
+    'umbra': [('moss', umbra_moss), ('mycel', umbra_mycel), ('shale', umbra_shale)],
+}
+
+
+def alien_grounds():
+    out = os.path.join(ROOT, 'alien')
+    os.makedirs(out, exist_ok=True)
+    arng = random.Random(4545)                             # own rng: the tiles above don't change
+    for planet, grounds in ALIEN_GROUNDS.items():
+        rock = read_png(os.path.join(ROOT, 'planets', f'{planet}.png'))
+        for name, draw in grounds:
+            top = draw(arng)
+            check(top)
+            write_png(os.path.join(out, f'{planet}_{name}.png'), top)
+            s, exempt = side(arng, top, rock)
+            check(s, exempt)
+            write_png(os.path.join(out, f'{planet}_{name}_side.png'), s)
+            print('wrote', planet, name)
+
+
+JUNGLE = {
+    'emerald': R('#003227', '#05582d', '#297537', '#559642', '#9bb675'),
+    'mud': R('#161612', '#2c2c25', '#434137', '#725244'),
+    'pool': R('#0c2f44', '#204f63', '#53998b'),
+    'wetsand': R('#725244', '#ab8465', '#cfaa81', '#eab798'),
+    'laterite': R('#2e0d06', '#561c27', '#733126', '#8d4526', '#a8633e'),
+    'bluerock': R('#011c34', '#1f3b52', '#3e586e', '#5d778d', '#92a3b2'),
+    'lime': R('#0c2f44', '#05582d', '#297537', '#53998b', '#9bb675', '#c1f1d8'),
+    'peat': R('#010000', '#161612', '#2b1f35', '#41322c'),
+    'duckweed': R('#297537', '#559642', '#9bb675'),
+    'silt': R('#434137', '#5d778d', '#92a3b2', '#a09f91'),
+    'darksoil': R('#170916', '#2f1525', '#41322c', '#522b2f'),
+    'band': R('#170916', '#2b1f35', '#3e3551', '#69608b', '#92a3b2'),
+}
+
+
+def leaves(t, rng, ramp, n, bodies):
+    """Broad leaves, 3x2 / 2x3 / 4x2, lit from the top left."""
+    cushions(t, rng, ramp, n, bodies, ((3, 2), (2, 3), (4, 2), (3, 3)))
+
+
+def verdance_jungle(rng):
+    t = Tile(JUNGLE['emerald'], 1)
+    t.ground(rng, JUNGLE['emerald'], [0, 1], [2, 3])
+    leaves(t, rng, JUNGLE['emerald'], 14, [2, 3])
+    specks(t, rng, rgb('#fe6420'), 2)                      # a fallen fruit or two
+    return t.px
+
+
+def verdance_swamp(rng):
+    t = Tile(JUNGLE['mud'], 2)
+    t.ground(rng, JUNGLE['mud'], [1, 2], [3, 2])
+    for _ in range(3):                                     # dark pools
+        t.clump(blob(rng.randrange(N), rng.randrange(N), 4, 3), JUNGLE['pool'], 1)
+    cushions(t, rng, JUNGLE['emerald'], 6, [2], ((2, 2), (3, 2)))  # algae and seedlings
+    return t.px
+
+
+def verdance_bank(rng):
+    t = Tile(JUNGLE['wetsand'], 1)
+    t.ground(rng, JUNGLE['wetsand'], [1, 2], [3, 2])
+    cushions(t, rng, JUNGLE['wetsand'], 5, [1], ((2, 2), (3, 2)))
+    cushions(t, rng, JUNGLE['bluerock'], 3, [2], ((2, 2),))
+    return t.px
+
+
+def verdance_soil(rng):
+    t = Tile(JUNGLE['laterite'], 2)
+    t.ground(rng, JUNGLE['laterite'], [1, 2, 3], [2, 4, 2])
+    cushions(t, rng, JUNGLE['laterite'], 5, [3], ((2, 2), (3, 2)))
+    specks(t, rng, JUNGLE['laterite'][0], 6)
+    return t.px
+
+
+def verdance_rock(rng):
+    t = Tile(JUNGLE['bluerock'], 2)
+    plates(t, rng, JUNGLE['bluerock'][1:], 6, JUNGLE['bluerock'][0])
+    cushions(t, rng, JUNGLE['emerald'], 4, [2], ((3, 2), (2, 2)))   # moss
+    return t.px
+
+
+def mirewood_jungle(rng):
+    t = Tile(JUNGLE['lime'], 2)
+    t.ground(rng, JUNGLE['lime'], [1, 2], [2, 3])
+    leaves(t, rng, JUNGLE['lime'], 12, [3, 4])
+    for _ in range(3):                                     # magenta blossoms, a lit pair
+        x, y = rng.randrange(N), rng.randrange(N)
+        t.put(x, y, rgb('#fa3a64')); t.put(x + 1, y, rgb('#c34988')); t.put(x, y + 1, rgb('#c34988'))
+    return t.px
+
+
+def mirewood_swamp(rng):
+    t = Tile(JUNGLE['peat'], 1)
+    t.ground(rng, JUNGLE['peat'], [0, 1, 2], [3, 3, 1])
+    cushions(t, rng, JUNGLE['duckweed'], 10, [1], ((2, 2), (3, 2), (2, 1)))
+    return t.px
+
+
+def mirewood_bank(rng):
+    t = Tile(JUNGLE['silt'], 2)
+    t.ground(rng, JUNGLE['silt'], [1, 2], [3, 2])
+    for k in range(3):                                     # drying ripples
+        y0 = k * 5 + 1
+        for x in range(N):
+            t.put(x, y0 + (1 if (x // 4 + k) % 2 else 0), JUNGLE['silt'][3])
+    cushions(t, rng, JUNGLE['silt'], 3, [1], ((2, 2),))
+    return t.px
+
+
+def mirewood_soil(rng):
+    t = Tile(JUNGLE['darksoil'], 2)
+    t.ground(rng, JUNGLE['darksoil'], [1, 2], [2, 3])
+    cushions(t, rng, JUNGLE['darksoil'], 5, [2], ((2, 2), (3, 2)))
+    specks(t, rng, JUNGLE['duckweed'][0], 3)               # roots
+    return t.px
+
+
+def mirewood_rock(rng):
+    t = Tile(JUNGLE['band'], 2)
+    for y in range(N):                                     # bands, lit top edge of each
+        k = [1, 2, 3, 2][(y // 4) % 4]
+        for x in range(N):
+            t.put(x, y, JUNGLE['band'][k + 1 if y % 4 == 0 else k])
+    cracks(t, rng, JUNGLE['band'][0], 4, 4)
+    return t.px
+
+
+JUNGLE_MOONS = {
+    'verdance': (verdance_soil, verdance_rock, verdance_bank, [('jungle', verdance_jungle), ('swamp', verdance_swamp)]),
+    'mirewood': (mirewood_soil, mirewood_rock, mirewood_bank, [('jungle', mirewood_jungle), ('swamp', mirewood_swamp)]),
+}
+
+
+def jungle_moons():
+    out = os.path.join(ROOT, 'alien')
+    os.makedirs(out, exist_ok=True)
+    jrng = random.Random(6262)
+    for moon, (soil_fn, rock_fn, bank_fn, grounds) in JUNGLE_MOONS.items():
+        blocks = {'soil': soil_fn(jrng), 'rock': rock_fn(jrng), 'bank': bank_fn(jrng)}
+        for name, px in blocks.items():
+            check(px)
+            write_png(os.path.join(out, f'{moon}_{name}.png'), px)
+        for name, draw in grounds:
+            top = draw(jrng)
+            check(top)
+            write_png(os.path.join(out, f'{moon}_{name}.png'), top)
+            sd, exempt = side(jrng, top, blocks['soil'])
+            check(sd)
+            write_png(os.path.join(out, f'{moon}_{name}_side.png'), sd)
+        print('wrote', moon)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     rng = random.Random(4242)
@@ -270,6 +670,8 @@ def main():
         check(px, exempt)
         write_png(os.path.join(ROOT, 'moon', f'ore_{name}.png'), px)
         print('wrote moon ore', name)
+    alien_grounds()
+    jungle_moons()
 
 
 if __name__ == '__main__':

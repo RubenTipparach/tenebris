@@ -3,6 +3,8 @@
 // Makes it easy to add new bodies by defining their properties here
 
 import * as THREE from 'three';
+import { HexBlockType } from '../shared/blockTypes';
+import type { FloraSpecies, EarthTreeSpecies } from '../planet/Tree';
 
 /**
  * Types of celestial bodies
@@ -104,7 +106,22 @@ export interface TerrainConfig {
   waterColor?: string;
   /** Deep water color override (hex string, defaults to PlayerConfig.WATER_DEEP_COLOR) */
   waterDeepColor?: string;
+  /** Climate biomes (terrainGenerationWorker biomeTop): deserts, forest,
+   *  tundra, rocky highlands... in the generic blocks, which blockRemap then
+   *  turns into this planet's own */
+  biomes?: boolean;
+  /** Replace generic terrain blocks with this planet's own block IDs
+   *  (e.g. GRASS -> SEQ_SCRUB on Sequoia, a biome's top -> CINDER_ASH) */
+  blockRemap?: Partial<Record<number, HexBlockType>>;
 }
+
+/**
+ * What grows where on a planet: per ground block, the ONE species that grows
+ * on it (one tree species per biome, never a mix) and the chance a scatter
+ * attempt on that ground plants it. Ground not listed grows nothing.
+ * Every species belongs to exactly one planet (assertFloraRostersDisjoint).
+ */
+export type FloraTable = Partial<Record<number, { species: FloraSpecies; chance: number }>>;
 
 /**
  * Configuration for planet tileset textures
@@ -218,16 +235,47 @@ interface BarrenWorld {
   gravity: number;            // 1 = Earth
   colour: string;             // distant and far-LOD colour
   seed: number;               // offset from the world seed
+  life?: AlienLife;           // biomes and plants (none = lifeless rock)
 }
 
 /**
- * A lifeless, landable rock planet with its own surface texture
+ * A living alien world's biomes and plants. Its terrain keeps its rock (the
+ * planet texture), polar ice and ores; on top, the climate biomes of the
+ * shared generator (terrainGenerationWorker biomeTop) are drawn in the
+ * planet's own grounds, and each ground grows at most one species.
+ */
+interface AlienLife {
+  /** The three grounds (public/textures/alien/<id>_<name>.png), in the
+   *  order of the base block each behaves like: GRASS, SAND, SNOW. Their
+   *  textures are also the planet's tileset grass / sand / snow, so the
+   *  distant LOD wears them. */
+  grounds: [[string, HexBlockType], [string, HexBlockType], [string, HexBlockType]];
+  /** Which ground each generic climate biome becomes: mild (GRASS), wet
+   *  (FOREST_FLOOR), cold (DIRT_SNOW), warm and dry (DRY_GRASS), hot desert
+   *  (SAND). Highlands, cliffs and peaks stay the planet's bare rock. */
+  climate: { mild: HexBlockType; wet: HexBlockType; cold: HexBlockType; warm: HexBlockType; hot: HexBlockType };
+  flora: FloraTable;
+  floraDensity: number;
+}
+
+/**
+ * A landable rock planet with its own surface texture
  * (public/textures/planets/<id>.png, from scripts/gen-planet-textures.py).
- * No water, atmosphere, flora or fauna; native rock, polar ice and ore
- * veins come from the single-texture terrain generator, like the Moon's.
+ * No water or atmosphere; native rock, polar ice and ore veins come from the
+ * single-texture terrain generator, like the Moon's. Without `life` it is
+ * lifeless rock; with it, alien biomes and plants grow on that rock.
  */
 function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
   const texture = `/textures/planets/${w.id}.png`;
+  const life = w.life;
+  const ground = (i: number) => `/textures/alien/${w.id}_${life!.grounds[i][0]}.png`;
+  const tileset = singleTextureTileset(texture);
+  if (life) {
+    tileset.grass = ground(0);
+    tileset.sand = ground(1);
+    tileset.snow = ground(2);
+    tileset.dirtSnow = ground(2);
+  }
   return {
     id: w.id,
     name: w.name,
@@ -250,14 +298,103 @@ function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
     terrain: {
       hasWater: false,
       seed: w.seed,
+      biomes: !!life,
+      blockRemap: life ? {
+        [HexBlockType.GRASS]: life.climate.mild,
+        [HexBlockType.FOREST_FLOOR]: life.climate.wet,
+        [HexBlockType.DIRT_SNOW]: life.climate.cold,
+        [HexBlockType.DRY_GRASS]: life.climate.warm,
+        [HexBlockType.SAND]: life.climate.hot,
+        [HexBlockType.STONE]: HexBlockType.MOON_ROCK,
+        [HexBlockType.SNOW]: HexBlockType.MOON_ROCK,
+      } : undefined,
     },
-    tileset: singleTextureTileset(texture),
+    tileset,
+    flora: life?.flora,
+    floraDensity: life?.floraDensity,
     spawn: {
       ...daySideSpawn(w.position),
       altitudeAboveSurface: 3,
     },
     landable: true,
     hasAtmosphere: false,
+  };
+}
+
+/** What makes one jungle moon different from the next */
+interface JungleWorld {
+  id: string;
+  name: string;
+  radius: number;
+  subdivisions: number;
+  position: { x: number; y: number; z: number };
+  seed: number;
+  /** Its blocks: [deep jungle, swamp, river bank, soil, rock] */
+  blocks: [HexBlockType, HexBlockType, HexBlockType, HexBlockType, HexBlockType];
+  water: string;
+  waterDeep: string;
+  land: string;          // distant / LOD colour of its jungle
+  atmosphereTint: string;
+  flora: FloraTable;
+  floraDensity: number;
+}
+
+/**
+ * A lush jungle moon: Earth's generator (oceans and lakes, beaches, climate
+ * biomes) in the moon's own blocks - deep jungle where Earth has grassland,
+ * savanna or desert, swamp where it is wet or cold, river bank on the
+ * shores, its own soil and rock - and its own jungle species
+ * (public/textures/alien/<id>_*.png).
+ */
+function jungleMoon(w: JungleWorld): CelestialBodyConfig {
+  const [jungle, swamp, bank, soil, rock] = w.blocks;
+  const tex = (name: string) => `/textures/alien/${w.id}_${name}.png`;
+  return {
+    id: w.id,
+    name: w.name,
+    type: CelestialBodyType.MOON,
+    radius: w.radius,
+    subdivisions: w.subdivisions,
+    position: w.position,
+    visual: {
+      heightVariation: 0.8,
+      terrainStyle: TerrainStyle.EARTH_LIKE,
+      distantColor: w.land,
+      atmosphereTint: w.atmosphereTint,
+      lodColors: { land: w.land, water: w.water, ice: '#b8e0f0', snow: w.land, rock: '#5d778d' },
+    },
+    gravity: { strength: 0.8, fullRadiusMultiplier: 1.3, falloffRadiusMultiplier: 1.8 },
+    terrain: {
+      hasWater: true,
+      seaLevel: 12,
+      seed: w.seed,
+      waterColor: w.water,
+      waterDeepColor: w.waterDeep,
+      biomes: true,
+      blockRemap: {
+        [HexBlockType.GRASS]: jungle,
+        [HexBlockType.DRY_GRASS]: jungle,
+        [HexBlockType.FOREST_FLOOR]: swamp,
+        [HexBlockType.DIRT_SNOW]: swamp,
+        [HexBlockType.SAND]: bank,
+        [HexBlockType.DIRT]: soil,
+        [HexBlockType.STONE]: rock,
+        [HexBlockType.SNOW]: rock,
+      },
+    },
+    // Its blocks' own textures, so its distant LOD wears them too
+    tileset: {
+      basePath: '/textures/alien',
+      stone: tex('rock'), dirt: tex('soil'), grass: tex('jungle'), dirtGrass: tex('jungle_side'),
+      sand: tex('bank'), wood: tex('soil'), snow: tex('swamp'), dirtSnow: tex('swamp'),
+      ice: '/textures/ice.png', water: '/textures/water.png', glass: '/textures/glass.png',
+      mineralsPath: '/textures/minerals/earth',
+    },
+    spawn: { ...daySideSpawn(w.position), altitudeAboveSurface: 3 },
+    landable: true,
+    hasAtmosphere: true,
+    flora: w.flora,
+    floraDensity: w.floraDensity,
   };
 }
 
@@ -338,6 +475,11 @@ export interface CelestialBodyConfig {
   landable: boolean;
   /** Whether this body has an atmosphere (affects re-entry, sound, etc.) */
   hasAtmosphere: boolean;
+  /** Trees / alien plants per biome ground (none = no flora) */
+  flora?: FloraTable;
+  /** How thick the flora grows: scatter attempts per unit of surface area
+   *  relative to Earth's PlayerConfig.TREE_COUNT (default 1) */
+  floraDensity?: number;
   /** Altitude where INTERMEDIATE LOD activates (above this = simplified terrain, below = full detail blocks).
    *  LOD levels: DETAILED (0 to here) -> INTERMEDIATE (here to highLODAltitude) -> HIGH -> DISTANT
    *  If not set, defaults to: radius * 0.25 */
@@ -471,6 +613,17 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       terrain: {
         hasWater: false,
+        // The Moon's minerals in its own rock: iron, aluminium, cobalt,
+        // lithium. No coal, copper or gold there - those veins stay rock
+        blockRemap: {
+          [HexBlockType.ORE_IRON]: HexBlockType.MOON_ORE_IRON,
+          [HexBlockType.ORE_ALUMINUM]: HexBlockType.MOON_ORE_ALUMINUM,
+          [HexBlockType.ORE_COBALT]: HexBlockType.MOON_ORE_COBALT,
+          [HexBlockType.ORE_LITHIUM]: HexBlockType.MOON_ORE_LITHIUM,
+          [HexBlockType.ORE_COAL]: HexBlockType.MOON_ROCK,
+          [HexBlockType.ORE_COPPER]: HexBlockType.MOON_ROCK,
+          [HexBlockType.ORE_GOLD]: HexBlockType.MOON_ROCK,
+        },
       },
       tileset: MOON_TILESET,
       spawn: {
@@ -515,7 +668,31 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         seaLevel: 12,
         waterColor: '#2a6655',      // Greenish water
         waterDeepColor: '#1a4433',  // Darker greenish deep water
+        // Sequoia always has its biomes, in its own blocks: dry scrub
+        // lowlands (tree ferns), dry pale plains, redwood duff in the forest
+        // and the cold
+        biomes: true,
+        blockRemap: {
+          [HexBlockType.GRASS]: HexBlockType.SEQ_SCRUB,
+          [HexBlockType.DRY_GRASS]: HexBlockType.SEQ_GRASS,
+          [HexBlockType.FOREST_FLOOR]: HexBlockType.SEQ_DUFF,
+          [HexBlockType.DIRT]: HexBlockType.SEQ_DIRT,
+          [HexBlockType.SAND]: HexBlockType.SEQ_SAND,
+          [HexBlockType.SNOW]: HexBlockType.SEQ_SNOW,
+          // Sequoia's cold lowlands are redwood forest floor, not snow;
+          // its snow is only the peaks and poles
+          [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DUFF,
+        },
       },
+      // One species per biome: tree ferns on the dry scrub, redwoods on the
+      // needle duff, scattered lantern trees on the dry plains; nothing in
+      // the desert, on rock or snow
+      flora: {
+        [HexBlockType.SEQ_SCRUB]: { species: 'treefern', chance: 1 },
+        [HexBlockType.SEQ_DUFF]: { species: 'redwood', chance: 1 },
+        [HexBlockType.SEQ_GRASS]: { species: 'lantern', chance: 0.3 },
+      },
+      floraDensity: 0.5,
       tileset: SEQUOIA_TILESET,
       spawn: {
         latitude: 30,
@@ -531,26 +708,123 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     },
 
     // =========================================================================
-    // THE BARREN WORLDS - eight more landable planets (lifeless rock)
+    // THE BARREN WORLDS - eight more landable planets. Five of them have
+    // alien life (biomes in their own grounds, one plant species per biome,
+    // every species only on its own planet); Kessel and Nerith stay lifeless
     // =========================================================================
     // Spread round Earth at 1.5-4 km so the rocket reaches each in a few
     // minutes, and kept clear of the sun (1000, 0, 4000).
+    // Cinder: ash plains bristling with glowing obsidian ember spires, red
+    // ember-moss hollows under thorn trees hung with burning pods, and bare
+    // sulfur flats
     barrenPlanet({ id: 'cinder', name: 'Cinder', radius: 45, subdivisions: 5, position: { x: -1600, y: 150, z: 900 },
-      heightVariation: 0.9, gravity: 0.6, colour: '#5a3a30', seed: 101 }),
+      heightVariation: 0.9, gravity: 0.6, colour: '#5a3a30', seed: 101,
+      life: {
+        grounds: [['embermoss', HexBlockType.CINDER_EMBERMOSS], ['ash', HexBlockType.CINDER_ASH], ['sulfur', HexBlockType.CINDER_SULFUR]],
+        climate: { mild: HexBlockType.CINDER_ASH, wet: HexBlockType.CINDER_EMBERMOSS, cold: HexBlockType.CINDER_EMBERMOSS, warm: HexBlockType.CINDER_SULFUR, hot: HexBlockType.CINDER_SULFUR },
+        flora: {
+          [HexBlockType.CINDER_ASH]: { species: 'emberspire', chance: 0.9 },
+          [HexBlockType.CINDER_EMBERMOSS]: { species: 'thornwood', chance: 1 },
+        },
+        floraDensity: 2,
+      },
+    }),
+    // Vesper: orange dunes of spiral reeds, rose clay pans of bulbous
+    // balloon cacti, and white salt flats where nothing grows
     barrenPlanet({ id: 'vesper', name: 'Vesper', radius: 60, subdivisions: 5, position: { x: 2200, y: -100, z: -600 },
-      heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202 }),
+      heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202,
+      life: {
+        grounds: [['clay', HexBlockType.VESPER_CLAY], ['dune', HexBlockType.VESPER_DUNE], ['salt', HexBlockType.VESPER_SALT]],
+        climate: { mild: HexBlockType.VESPER_DUNE, wet: HexBlockType.VESPER_CLAY, cold: HexBlockType.VESPER_SALT, warm: HexBlockType.VESPER_DUNE, hot: HexBlockType.VESPER_SALT },
+        flora: {
+          [HexBlockType.VESPER_CLAY]: { species: 'balloon', chance: 0.8 },
+          [HexBlockType.VESPER_DUNE]: { species: 'spiralreed', chance: 0.6 },
+        },
+        floraDensity: 2,
+      },
+    }),
+    // Halcyon: verdigris moss under crystal trees with faceted canopies,
+    // amethyst geode fields sprouting violet shard blooms, mint glass sands
     barrenPlanet({ id: 'halcyon', name: 'Halcyon', radius: 55, subdivisions: 5, position: { x: -900, y: -250, z: -1800 },
-      heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303 }),
+      heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303,
+      life: {
+        grounds: [['moss', HexBlockType.HALCYON_MOSS], ['geode', HexBlockType.HALCYON_GEODE], ['glass', HexBlockType.HALCYON_GLASS]],
+        climate: { mild: HexBlockType.HALCYON_MOSS, wet: HexBlockType.HALCYON_MOSS, cold: HexBlockType.HALCYON_GEODE, warm: HexBlockType.HALCYON_GLASS, hot: HexBlockType.HALCYON_GLASS },
+        flora: {
+          [HexBlockType.HALCYON_MOSS]: { species: 'crystaltree', chance: 1 },
+          [HexBlockType.HALCYON_GEODE]: { species: 'geodebloom', chance: 0.7 },
+        },
+        floraDensity: 2,
+      },
+    }),
     barrenPlanet({ id: 'ferrum', name: 'Ferrum', radius: 90, subdivisions: 6, position: { x: 2600, y: 300, z: 2200 },
       heightVariation: 1.0, gravity: 0.9, colour: '#953b25', seed: 404 }),
+    // Tessaly: frost crust reefs of frost coral, lilac snow moss under tall
+    // ice-flower spires, and bare blue glaze
     barrenPlanet({ id: 'tessaly', name: 'Tessaly', radius: 50, subdivisions: 5, position: { x: -2400, y: 400, z: -400 },
-      heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505 }),
+      heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505,
+      life: {
+        grounds: [['snowmoss', HexBlockType.TESSALY_SNOWMOSS], ['glaze', HexBlockType.TESSALY_GLAZE], ['frost', HexBlockType.TESSALY_FROST]],
+        climate: { mild: HexBlockType.TESSALY_FROST, wet: HexBlockType.TESSALY_SNOWMOSS, cold: HexBlockType.TESSALY_GLAZE, warm: HexBlockType.TESSALY_SNOWMOSS, hot: HexBlockType.TESSALY_GLAZE },
+        flora: {
+          [HexBlockType.TESSALY_FROST]: { species: 'frostcoral', chance: 0.7 },
+          [HexBlockType.TESSALY_SNOWMOSS]: { species: 'iceflower', chance: 0.9 },
+        },
+        floraDensity: 2,
+      },
+    }),
     barrenPlanet({ id: 'nerith', name: 'Nerith', radius: 38, subdivisions: 5, position: { x: 300, y: -500, z: -2600 },
       heightVariation: 0.7, gravity: 0.45, colour: '#61708a', seed: 606 }),
     barrenPlanet({ id: 'kessel', name: 'Kessel', radius: 25, subdivisions: 4, position: { x: -300, y: 600, z: 2400 },
       heightVariation: 1.0, gravity: 0.25, colour: '#655d77', seed: 707 }),
+    // Umbra: dark indigo moss lit by clusters of bioluminescent glowcaps,
+    // violet mycelium mats under veil willows trailing glowing tendrils,
+    // and black shale
     barrenPlanet({ id: 'umbra', name: 'Umbra', radius: 45, subdivisions: 5, position: { x: 3600, y: -200, z: 600 },
-      heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808 }),
+      heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808,
+      life: {
+        grounds: [['moss', HexBlockType.UMBRA_MOSS], ['shale', HexBlockType.UMBRA_SHALE], ['mycel', HexBlockType.UMBRA_MYCEL]],
+        climate: { mild: HexBlockType.UMBRA_MOSS, wet: HexBlockType.UMBRA_MYCEL, cold: HexBlockType.UMBRA_SHALE, warm: HexBlockType.UMBRA_MOSS, hot: HexBlockType.UMBRA_SHALE },
+        flora: {
+          [HexBlockType.UMBRA_MOSS]: { species: 'glowcap', chance: 0.8 },
+          [HexBlockType.UMBRA_MYCEL]: { species: 'veilwillow', chance: 1 },
+        },
+        floraDensity: 2,
+      },
+    }),
+
+    // =========================================================================
+    // THE JUNGLE MOONS - lush moons of the gas giants (Verdance of Brontes,
+    // Mirewood of Aurelia), each with its own jungle species.
+    // PLACEHOLDER positions (near Sequoia) until the gas giants' moons are
+    // placed for real; the gas giants are still a far-field mockup.
+    // =========================================================================
+    // Verdance: emerald deep jungle under giant buttressed canopy trees hung
+    // with lianas, olive mangrove swamps on stilt roots, fan palms on the
+    // pale river banks; red laterite soil
+    jungleMoon({ id: 'verdance', name: 'Verdance', radius: 75, subdivisions: 6, position: { x: 1300, y: 250, z: -300 },
+      seed: 909, water: '#2f6b52', waterDeep: '#18402f', land: '#2f7a3a', atmosphereTint: '#c8ffd0',
+      blocks: [HexBlockType.VERD_JUNGLE, HexBlockType.VERD_SWAMP, HexBlockType.VERD_BANK, HexBlockType.VERD_SOIL, HexBlockType.VERD_ROCK],
+      flora: {
+        [HexBlockType.VERD_JUNGLE]: { species: 'canopygiant', chance: 1 },
+        [HexBlockType.VERD_SWAMP]: { species: 'mangrove', chance: 1 },
+        [HexBlockType.VERD_BANK]: { species: 'fanpalm', chance: 0.6 },
+      },
+      floraDensity: 3.5,
+    }),
+    // Mirewood: lime-and-teal jungle of giant elephant-ear plants, black peat
+    // swamps of bottle-trunked swamp cypress, and grey silt banks under
+    // drooping weeping ferns; dark peat soil, banded violet rock
+    jungleMoon({ id: 'mirewood', name: 'Mirewood', radius: 70, subdivisions: 6, position: { x: 1200, y: -300, z: 900 },
+      seed: 1010, water: '#3a5a40', waterDeep: '#1d2f22', land: '#4f8a44', atmosphereTint: '#e0ffc0',
+      blocks: [HexBlockType.MIRE_JUNGLE, HexBlockType.MIRE_SWAMP, HexBlockType.MIRE_BANK, HexBlockType.MIRE_SOIL, HexBlockType.MIRE_ROCK],
+      flora: {
+        [HexBlockType.MIRE_JUNGLE]: { species: 'elephantear', chance: 1 },
+        [HexBlockType.MIRE_SWAMP]: { species: 'bottlecypress', chance: 1 },
+        [HexBlockType.MIRE_BANK]: { species: 'weepfern', chance: 0.7 },
+      },
+      floraDensity: 3.5,
+    }),
 
     // =========================================================================
     // EXAMPLE: Additional bodies that could be added
@@ -676,3 +950,21 @@ export function getGravityRadii(body: CelestialBodyConfig): { fullRadius: number
     falloffRadius: body.radius * body.gravity.falloffRadiusMultiplier,
   };
 }
+
+/**
+ * Every flora species grows on exactly ONE planet (CLAUDE.md: each planet's
+ * flora roster is its own). Checked at load against the real tables, Earth's
+ * trees included: a species leaking onto a second planet throws.
+ */
+export function assertFloraRostersDisjoint(bodies: CelestialBodyConfig[], earthSpecies: readonly string[]): void {
+  const owner = new Map<string, string>(earthSpecies.map(sp => [sp, 'earth']));
+  for (const body of bodies) {
+    const own = new Set(Object.values(body.flora ?? {}).map(f => f!.species as string));
+    for (const sp of own) {
+      const other = owner.get(sp);
+      if (other && other !== body.id) throw new Error(`Flora species '${sp}' grows on both ${other} and ${body.id}`);
+      owner.set(sp, body.id);
+    }
+  }
+}
+assertFloraRostersDisjoint(SOLAR_SYSTEM.bodies, ['pine', 'oak', 'birch'] satisfies EarthTreeSpecies[]);

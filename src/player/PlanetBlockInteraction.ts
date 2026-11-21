@@ -72,6 +72,20 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.DRY_GRASS: return ItemType.DIRT;
     case HexBlockType.SEQ_SCRUB: return ItemType.SEQ_DIRT;
     case HexBlockType.SEQ_DUFF: return ItemType.SEQ_DIRT;
+    // The living alien worlds' grounds drop the planet's rock (its soil:
+    // MOON_ROCK is a single-texture world's native rock)
+    case HexBlockType.CINDER_EMBERMOSS: case HexBlockType.CINDER_ASH: case HexBlockType.CINDER_SULFUR:
+    case HexBlockType.VESPER_CLAY: case HexBlockType.VESPER_DUNE: case HexBlockType.VESPER_SALT:
+    case HexBlockType.HALCYON_MOSS: case HexBlockType.HALCYON_GEODE: case HexBlockType.HALCYON_GLASS:
+    case HexBlockType.TESSALY_SNOWMOSS: case HexBlockType.TESSALY_FROST: case HexBlockType.TESSALY_GLAZE:
+    case HexBlockType.UMBRA_MOSS: case HexBlockType.UMBRA_MYCEL: case HexBlockType.UMBRA_SHALE:
+      return ItemType.MOON_ROCK;
+    // The jungle moons: their grounds and soil drop dirt, their rock stone
+    case HexBlockType.VERD_JUNGLE: case HexBlockType.VERD_SWAMP: case HexBlockType.VERD_SOIL:
+    case HexBlockType.MIRE_JUNGLE: case HexBlockType.MIRE_SWAMP: case HexBlockType.MIRE_SOIL:
+      return ItemType.DIRT;
+    case HexBlockType.VERD_BANK: case HexBlockType.MIRE_BANK: return ItemType.SAND;
+    case HexBlockType.VERD_ROCK: case HexBlockType.MIRE_ROCK: return ItemType.STONE;
     // The Moon's minerals give the ordinary ores
     case HexBlockType.MOON_ORE_IRON: return ItemType.ORE_IRON;
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;

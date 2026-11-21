@@ -31,6 +31,24 @@ const BIOME_TEXTURES: [string, string][] = [
   ['seqDuff', 'biomes/seq_duff'], ['seqDuffSide', 'biomes/seq_duff_side'],
   ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
   ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
+  // The living alien worlds' grounds: top, and side (the planet's rock under a lip)
+  ['cinderEmbermoss', 'alien/cinder_embermoss'], ['cinderEmbermossSide', 'alien/cinder_embermoss_side'], ['cinderAsh', 'alien/cinder_ash'], ['cinderAshSide', 'alien/cinder_ash_side'],
+  ['cinderSulfur', 'alien/cinder_sulfur'], ['cinderSulfurSide', 'alien/cinder_sulfur_side'],
+  ['vesperClay', 'alien/vesper_clay'], ['vesperClaySide', 'alien/vesper_clay_side'], ['vesperDune', 'alien/vesper_dune'], ['vesperDuneSide', 'alien/vesper_dune_side'],
+  ['vesperSalt', 'alien/vesper_salt'], ['vesperSaltSide', 'alien/vesper_salt_side'],
+  ['halcyonMoss', 'alien/halcyon_moss'], ['halcyonMossSide', 'alien/halcyon_moss_side'], ['halcyonGeode', 'alien/halcyon_geode'], ['halcyonGeodeSide', 'alien/halcyon_geode_side'],
+  ['halcyonGlass', 'alien/halcyon_glass'], ['halcyonGlassSide', 'alien/halcyon_glass_side'],
+  ['tessalySnowmoss', 'alien/tessaly_snowmoss'], ['tessalySnowmossSide', 'alien/tessaly_snowmoss_side'], ['tessalyFrost', 'alien/tessaly_frost'], ['tessalyFrostSide', 'alien/tessaly_frost_side'],
+  ['tessalyGlaze', 'alien/tessaly_glaze'], ['tessalyGlazeSide', 'alien/tessaly_glaze_side'],
+  ['umbraMoss', 'alien/umbra_moss'], ['umbraMossSide', 'alien/umbra_moss_side'], ['umbraMycel', 'alien/umbra_mycel'], ['umbraMycelSide', 'alien/umbra_mycel_side'],
+  ['umbraShale', 'alien/umbra_shale'], ['umbraShaleSide', 'alien/umbra_shale_side'],
+  // The jungle moons: ground tops (+ sides over the moon's soil), bank, soil, rock
+  ['verdJungle', 'alien/verdance_jungle'], ['verdJungleSide', 'alien/verdance_jungle_side'],
+  ['verdSwamp', 'alien/verdance_swamp'], ['verdSwampSide', 'alien/verdance_swamp_side'],
+  ['verdBank', 'alien/verdance_bank'], ['verdSoil', 'alien/verdance_soil'], ['verdRock', 'alien/verdance_rock'],
+  ['mireJungle', 'alien/mirewood_jungle'], ['mireJungleSide', 'alien/mirewood_jungle_side'],
+  ['mireSwamp', 'alien/mirewood_swamp'], ['mireSwampSide', 'alien/mirewood_swamp_side'],
+  ['mireBank', 'alien/mirewood_bank'], ['mireSoil', 'alien/mirewood_soil'], ['mireRock', 'alien/mirewood_rock'],
 ];
 
 // Magenta/black checker for a texture that failed to load
