@@ -265,11 +265,14 @@ export class CloudSystem {
     this.material.uniforms.sunDirection.value.copy(sunDirection).normalize();
   }
 
-  // Animate clouds rotating slowly around the planet
-  public update(deltaTime: number): void {
+  // Animate clouds rotating slowly around the planet. worldTimeS (online:
+  // seconds since the server world began, the same for every player) pins
+  // the rotation to the shared clock so everyone sees the same sky.
+  public update(deltaTime: number, worldTimeS: number | null = null): void {
     // Rotation around Y axis (in local space) - default speed gives full rotation in ~10 minutes
     const speed = this.config.rotationSpeed ?? 0.01;
-    this.clouds.rotation.y += deltaTime * speed;
+    if (worldTimeS !== null) this.clouds.rotation.y = (worldTimeS * speed) % (Math.PI * 2);
+    else this.clouds.rotation.y += deltaTime * speed;
   }
 
   public setVisible(visible: boolean): void {

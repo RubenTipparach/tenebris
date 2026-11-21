@@ -72,6 +72,8 @@ let worldEpochMs: number | null = null;
 let myId = 0;
 // Other players: id -> the planet they're on
 const peers = new Map<number, string>();
+// ...and where they are (world position, last reported)
+const peerPos = new Map<number, [number, number, number]>();
 
 export const netSync = {
   /** Connected to a server world? */
@@ -126,6 +128,16 @@ export const netSync = {
     return out;
   },
 
+  /** World positions of the other players on a planet (last reported pose). */
+  peerPositionsOn(planet: string): [number, number, number][] {
+    const out: [number, number, number][] = [];
+    for (const [id, p] of peers) {
+      const pos = peerPos.get(id);
+      if (p === planet && pos) out.push(pos);
+    }
+    return out;
+  },
+
   /**
    * Whether this client simulates the shared things on `planet` (animals):
    * the lowest player id there. Always true offline.
@@ -152,15 +164,16 @@ export function attachTransport(t: Transport | null, id = 0, serverNow?: number,
   transport = t;
   myId = id;
   lastState.clear();
-  if (!t) peers.clear();
+  if (!t) { peers.clear(); peerPos.clear(); }
   if (t && worldId) loadKnown(worldId);
   if (serverNow !== undefined) clockOffsetMs = serverNow - Date.now();
   worldEpochMs = epoch ?? null;
 }
 
-export function setPeer(id: number, planet: string | null): void {
-  if (planet === null) peers.delete(id);
-  else peers.set(id, planet);
+export function setPeer(id: number, planet: string | null, pos?: ArrayLike<number>): void {
+  if (planet === null) { peers.delete(id); peerPos.delete(id); return; }
+  peers.set(id, planet);
+  if (pos && pos.length >= 3) peerPos.set(id, [pos[0], pos[1], pos[2]]);
 }
 
 /**
