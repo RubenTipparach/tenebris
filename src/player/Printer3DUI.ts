@@ -967,7 +967,7 @@ export class Printer3DUI {
       const outputHtml = `
         <div class="recipe-output">
           <img src="${getAssetPath(outputData?.texture || '')}" alt="${outputData?.name || 'Unknown'}">
-          <span class="recipe-output-name">${recipe.name}${lockedBy ? ` - ${lockedBy}` : ''}</span>
+          <span class="recipe-output-name">${recipe.name}${lockedBy ? ` - Unlocked by: ${lockedBy}` : ''}</span>
           <span class="recipe-output-qty">x${recipe.outputQuantity}</span>
         </div>
       `;

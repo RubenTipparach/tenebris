@@ -23,3 +23,10 @@ export function recipeOpen(output: number): boolean {
 export function recipeLockedBy(output: number): string | null {
   return gate ? gate.lockedBy(output) : null;
 }
+
+/** "Unlocked by: <mission>" for a locked recipe, else null: the one label
+ *  every place that lists or refuses a recipe shows. */
+export function recipeLockedLabel(output: number): string | null {
+  const by = recipeLockedBy(output);
+  return by ? `Unlocked by: ${by}` : null;
+}

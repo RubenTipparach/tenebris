@@ -9,6 +9,7 @@ import techFrag from '../shaders/tech/tech.frag';
 export { ELECTRIC_SMELTING_RECIPES } from '../config/SmeltingRecipes';
 export type { ElectricSmeltingRecipe } from '../config/SmeltingRecipes';
 import { electricRecipeFor, electricBatchReady } from '../config/SmeltingRecipes';
+import { recipeOpen } from '../player/RecipeGate';
 
 export interface PlacedElectricFurnace {
   mesh: THREE.Mesh;
@@ -371,6 +372,7 @@ export class ElectricFurnaceManager {
       // while the load covers a whole batch (an alloy waits for its additive)
       const recipe = electricRecipeFor(furnace.smeltingItem, furnace.additiveItem);
       if (!furnace.isPowered || !recipe || !electricBatchReady(recipe, furnace.inputCount, furnace.additiveCount)) continue;
+      if (!recipeOpen(recipe.output)) continue;  // locked by a mission (src/player/RecipeGate)
       if (furnace.outputItem !== null && furnace.outputItem !== recipe.output) continue;
 
       furnace.smeltingProgress += deltaTime / this.SMELT_TIME;

@@ -11,8 +11,11 @@ import { ItemType } from '../player/Inventory';
  * Rules:
  * - every mission but the first has exactly ONE parent (the line drawn);
  *   an extra need is a hidden `after` gate (no line);
- * - `unlocks` are recipe outputs: locked until this mission is done; a
- *   recipe no mission names is open from the start;
+ * - `unlocks` are recipe outputs: locked until this mission is done. EVERY
+ *   recipe (crafting grid, workbench, 3D printer, nuclear fabricator,
+ *   campfire, kiln, oven, furnace and electric-furnace smelts) is locked in
+ *   a new world until its mission is done, save the short STARTER_RECIPES
+ *   list; each is named by exactly one mission (the test holds that);
  * - ids are saved in worlds: never rename or reuse one.
  *
  * Objective kinds (counted only after the mission opens):
@@ -27,13 +30,24 @@ import { ItemType } from '../player/Inventory';
  *   caught      land a fish (`item` = that species, or any)
  *   caughtOn    land a fish on `body` ('*' = any body not in `exclude`)
  *   reached     reach a waypoint set 200 m or more away
+ *   cooked      a campfire, kiln or oven makes `item`
+ *   ate         eat `item` (a dish)
+ *   pumped      a pump jack fills a tank
+ *   refined     a refinery refines a batch of crude
+ *   enriched    a centrifuge enriches uranium
+ *   reactorBuilt place a fission reactor (off-world only)
+ *   onBattery   a network keeps its machines running on battery charge
+ *   fueled      refuel a rocket with `item`
+ *   launchedWith take off in a rocket whose stack holds `item`
  * `distinct` counts different keys once each (kinds of fish, worlds).
  *
  * Text is shown in game: plain ASCII, short.
  */
 export type ObjectiveKind =
   | 'gained' | 'crafted' | 'placed' | 'smelted' | 'padComplete' | 'assembled'
-  | 'launched' | 'landed' | 'caught' | 'caughtOn' | 'reached';
+  | 'launched' | 'landed' | 'caught' | 'caughtOn' | 'reached'
+  | 'cooked' | 'ate' | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
+  | 'onBattery' | 'fueled' | 'launchedWith';
 
 export interface MissionObjective {
   kind: ObjectiveKind;
@@ -47,7 +61,8 @@ export interface MissionObjective {
 
 export type MissionBranch =
   | 'trunk' | 'mining' | 'power' | 'electronics' | 'rocketry' | 'moon'
-  | 'light' | 'fishing' | 'about';
+  | 'light' | 'fishing' | 'about'
+  | 'cooking' | 'construction' | 'oil' | 'storage' | 'nuclear';
 
 export interface Mission {
   id: string;
@@ -65,16 +80,27 @@ export interface Mission {
 export const MISSION_BRANCHES: { id: MissionBranch; name: string }[] = [
   { id: 'trunk', name: 'Hands to fire' },
   { id: 'mining', name: 'Mining and smelting' },
+  { id: 'cooking', name: 'Clay and cooking' },
   { id: 'power', name: 'Power' },
+  { id: 'storage', name: 'Power storage' },
   { id: 'electronics', name: 'Electronics' },
+  { id: 'oil', name: 'Oil' },
   { id: 'rocketry', name: 'Rocketry' },
   { id: 'moon', name: 'The Moon and beyond' },
+  { id: 'nuclear', name: 'Nuclear' },
   { id: 'light', name: 'Light and storage' },
+  { id: 'construction', name: 'Construction' },
   { id: 'fishing', name: 'Fishing' },
   { id: 'about', name: 'Getting about' },
 ];
 
 const I = ItemType;
+
+/**
+ * The only recipes open in a new world: what the trunk's first missions
+ * ask for (Make planks). Everything else waits on a mission.
+ */
+export const STARTER_RECIPES: ItemType[] = [I.WOOD, I.STICK];
 
 // Order matters only for which open mission is "Now": the first open one.
 export const MISSIONS: Mission[] = [
@@ -103,7 +129,7 @@ export const MISSIONS: Mission[] = [
       { kind: 'crafted', item: I.FURNACE, count: 1, label: 'Furnace made' },
       { kind: 'placed', item: I.FURNACE, count: 1, label: 'Furnace placed' },
     ],
-    unlocks: [],
+    unlocks: [I.COAL, I.GLASS],
   },
 
   // ---- mining and smelting: the furnace's ores, ending in light metals
@@ -113,12 +139,12 @@ export const MISSIONS: Mission[] = [
       { kind: 'gained', item: I.ORE_IRON, count: 3, label: 'Iron ore' },
       { kind: 'crafted', item: I.COAL, count: 8, label: 'Coal' },
     ],
-    unlocks: [],
+    unlocks: [I.INGOT_IRON],
   },
   {
     id: 'ingots', branch: 'mining', icon: I.INGOT_IRON, parent: 'iron', title: 'Smelt iron', help: 'Put iron ore and coal in the furnace.',
     objectives: [{ kind: 'smelted', item: I.INGOT_IRON, count: 3, label: 'Iron ingots' }],
-    unlocks: [I.BUCKET],
+    unlocks: [I.BUCKET, I.INGOT_COPPER],
   },
   {
     id: 'bucket', branch: 'mining', icon: I.WATER_BUCKET, parent: 'ingots', title: 'Carry water', help: 'Craft a bucket and fill it at water.',
@@ -131,7 +157,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'copper', branch: 'mining', icon: I.INGOT_COPPER, parent: 'ingots', title: 'Smelt copper', help: 'Find copper ore and smelt it.',
     objectives: [{ kind: 'smelted', item: I.INGOT_COPPER, count: 3, label: 'Copper ingots' }],
-    unlocks: [I.CABLE, I.COPPER_PIPE],
+    unlocks: [I.CABLE, I.COPPER_PIPE, I.INGOT_ALUMINUM, I.INGOT_GOLD],
   },
   {
     id: 'lightmetals', branch: 'mining', icon: I.INGOT_ALUMINUM, parent: 'copper', title: 'Light metals', help: 'Smelt aluminum and gold.',
@@ -159,7 +185,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'efurnace', branch: 'power', icon: I.ELECTRIC_FURNACE, parent: 'cables', title: 'Electric furnace', help: 'Place it on the cables.',
     objectives: [{ kind: 'placed', item: I.ELECTRIC_FURNACE, count: 1, label: 'Electric furnace' }],
-    unlocks: [],
+    unlocks: [I.INGOT_LITHIUM, I.INGOT_COBALT],
   },
   {
     id: 'raremetals', branch: 'power', icon: I.INGOT_COBALT, parent: 'efurnace', title: 'Rare metals', help: 'The electric furnace smelts lithium and cobalt.',
@@ -179,7 +205,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'workbench', branch: 'electronics', icon: I.ELECTRONICS_WORKBENCH, parent: 'raremetals', title: 'Electronics workbench', help: 'Craft one and place it on power.',
     objectives: [{ kind: 'placed', item: I.ELECTRONICS_WORKBENCH, count: 1, label: 'Workbench' }],
-    unlocks: [I.CPU_CHIP, I.RAM_MODULE, I.MOTHERBOARD, I.POWER_SUPPLY, I.PRINT_NOZZLE],
+    unlocks: [I.CPU_CHIP, I.RAM_MODULE, I.MOTHERBOARD, I.POWER_SUPPLY, I.PRINT_NOZZLE, I.BATTERY_LEAD_ACID],
   },
   {
     id: 'chips', branch: 'electronics', icon: I.CPU_CHIP, parent: 'workbench', title: 'Make chips', help: 'Make the parts at the workbench.',
@@ -260,7 +286,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'moonmetal', branch: 'moon', icon: I.ORE_TITANIUM, parent: 'moon', title: 'Moon metal', help: 'Mine titanium ore on the Moon.',
     objectives: [{ kind: 'gained', item: I.ORE_TITANIUM, count: 3, label: 'Titanium ore' }],
-    unlocks: [],
+    unlocks: [I.INGOT_TITANIUM],
   },
   {
     id: 'titanium', branch: 'moon', icon: I.INGOT_TITANIUM, parent: 'moonmetal', title: 'Smelt titanium', help: 'Smelt the ore.',
@@ -331,6 +357,201 @@ export const MISSIONS: Mission[] = [
     objectives: [{ kind: 'reached', count: 1, label: 'Waypoint' }],
     unlocks: [],
   },
+
+  // ---- (appended: the ids below came with industry-and-nuclear. Order is
+  // the "Now" order, so the main line above leads.)
+
+  // ---- clay and cooking: the furnace fires clay, bricks build the kitchen
+  {
+    id: 'clay', branch: 'cooking', icon: I.CLAY, parent: 'furnace', title: 'Find clay', help: 'Dig clay on riverbanks and lake shores.',
+    objectives: [{ kind: 'gained', item: I.CLAY, count: 4, label: 'Clay' }],
+    unlocks: [I.BRICK],
+  },
+  {
+    id: 'bricks', branch: 'cooking', icon: I.BRICK, parent: 'clay', title: 'Fire bricks', help: 'Smelt clay in the furnace.',
+    objectives: [{ kind: 'smelted', item: I.BRICK, count: 4, label: 'Bricks' }],
+    unlocks: [I.CAMPFIRE],
+  },
+  {
+    id: 'campfire', branch: 'cooking', icon: I.CAMPFIRE, parent: 'bricks', title: 'Light a campfire', help: 'Craft a campfire from sticks and stone.',
+    objectives: [{ kind: 'placed', item: I.CAMPFIRE, count: 1, label: 'Campfire' }],
+    unlocks: [I.COOKED_FISH],
+  },
+  {
+    id: 'cookfish', branch: 'cooking', icon: I.COOKED_FISH, parent: 'campfire', after: ['fish'], title: 'Cook a fish', help: 'Put a fish on the campfire.',
+    objectives: [{ kind: 'cooked', item: I.COOKED_FISH, count: 1, label: 'Cooked fish' }],
+    unlocks: [I.KILN],
+  },
+  {
+    id: 'kiln', branch: 'cooking', icon: I.KILN, parent: 'cookfish', title: 'Build a kiln', help: 'Craft a kiln from bricks and place it.',
+    objectives: [{ kind: 'placed', item: I.KILN, count: 1, label: 'Kiln' }],
+    unlocks: [I.CLAY_POT],
+  },
+  {
+    id: 'pot', branch: 'cooking', icon: I.CLAY_POT, parent: 'kiln', title: 'Make a pot', help: 'Fire clay in the kiln.',
+    objectives: [{ kind: 'cooked', item: I.CLAY_POT, count: 1, label: 'Clay pot' }],
+    unlocks: [I.OVEN],
+  },
+  {
+    id: 'oven', branch: 'cooking', icon: I.OVEN, parent: 'pot', after: ['ingots'], title: 'Build an oven', help: 'Craft an oven from bricks and iron.',
+    objectives: [{ kind: 'placed', item: I.OVEN, count: 1, label: 'Oven' }],
+    unlocks: [I.FISH_STEW],
+  },
+  {
+    id: 'stew', branch: 'cooking', icon: I.FISH_STEW, parent: 'oven', after: ['bucket'], title: 'Make fish stew', help: 'A fish, a water bucket and a pot in the oven.',
+    objectives: [{ kind: 'cooked', item: I.FISH_STEW, count: 1, label: 'Fish stew' }],
+    unlocks: [],
+  },
+  {
+    id: 'eat', branch: 'cooking', icon: I.FISH_STEW, parent: 'stew', title: 'Eat well', help: 'Eat the stew: well fed, you dig faster.',
+    objectives: [{ kind: 'ate', item: I.FISH_STEW, count: 1, label: 'Stew eaten' }],
+    unlocks: [],
+  },
+
+  // ---- construction: clay, brick, concrete, then steel
+  {
+    id: 'clayblock', branch: 'construction', icon: I.CLAY, parent: 'chest', after: ['clay'], title: 'Build with clay', help: 'Place clay blocks.',
+    objectives: [{ kind: 'placed', item: I.CLAY, count: 4, label: 'Clay blocks' }],
+    unlocks: [I.BRICK_BLOCK],
+  },
+  {
+    id: 'brickwall', branch: 'construction', icon: I.BRICK_BLOCK, parent: 'clayblock', title: 'Brick wall', help: 'Craft brick blocks from bricks and build a wall.',
+    objectives: [{ kind: 'placed', item: I.BRICK_BLOCK, count: 8, label: 'Brick blocks' }],
+    unlocks: [I.CEMENT],
+  },
+  {
+    id: 'cement', branch: 'construction', icon: I.CEMENT, parent: 'brickwall', after: ['kiln'], title: 'Make cement', help: 'Burn clay with stone in the kiln.',
+    objectives: [{ kind: 'cooked', item: I.CEMENT, count: 2, label: 'Cement' }],
+    unlocks: [I.CONCRETE_BLOCK],
+  },
+  {
+    id: 'concrete', branch: 'construction', icon: I.CONCRETE_BLOCK, parent: 'cement', after: ['bucket'], title: 'Pour concrete', help: 'Mix cement, sand, stone and water.',
+    objectives: [{ kind: 'placed', item: I.CONCRETE_BLOCK, count: 8, label: 'Concrete blocks' }],
+    unlocks: [I.STEEL_INGOT],
+  },
+  {
+    id: 'steel', branch: 'construction', icon: I.STEEL_INGOT, parent: 'concrete', after: ['efurnace'], title: 'Make steel', help: 'Iron ingots with coal in the electric furnace.',
+    objectives: [{ kind: 'smelted', item: I.STEEL_INGOT, count: 2, label: 'Steel ingots' }],
+    unlocks: [I.STEEL_GIRDER],
+  },
+  {
+    id: 'girders', branch: 'construction', icon: I.STEEL_GIRDER, parent: 'steel', title: 'Steel frame', help: 'Craft girders and raise a frame.',
+    objectives: [{ kind: 'placed', item: I.STEEL_GIRDER, count: 4, label: 'Girders' }],
+    unlocks: [I.STEEL_GLASS],
+  },
+  {
+    id: 'steelglass', branch: 'construction', icon: I.STEEL_GLASS, parent: 'girders', title: 'Framed glass', help: 'Steel and glass make strong windows.',
+    objectives: [{ kind: 'placed', item: I.STEEL_GLASS, count: 4, label: 'Steel glass' }],
+    unlocks: [],
+  },
+
+  // ---- oil: crude from the deep, refined into kerosene and plastic
+  {
+    id: 'crude', branch: 'oil', icon: I.CRUDE_OIL_BUCKET, parent: 'chips', after: ['bucket'], title: 'Strike oil', help: 'Dig deep for oil sand and scoop it with a bucket.',
+    objectives: [{ kind: 'gained', item: I.CRUDE_OIL_BUCKET, count: 1, label: 'Crude oil' }],
+    unlocks: [I.PUMP_JACK],
+  },
+  {
+    id: 'pumpjack', branch: 'oil', icon: I.PUMP_JACK, parent: 'crude', title: 'Pump jack', help: 'Place it on power over oil sand.',
+    objectives: [
+      { kind: 'placed', item: I.PUMP_JACK, count: 1, label: 'Pump jack' },
+      { kind: 'pumped', count: 1, label: 'Oil pumped' },
+    ],
+    unlocks: [I.REFINERY],
+  },
+  {
+    id: 'refinery', branch: 'oil', icon: I.REFINERY, parent: 'pumpjack', title: 'Refinery', help: 'Place a refinery on power.',
+    objectives: [{ kind: 'placed', item: I.REFINERY, count: 1, label: 'Refinery' }],
+    unlocks: [],
+  },
+  {
+    id: 'kerosene', branch: 'oil', icon: I.KEROSENE, parent: 'refinery', title: 'Refine crude', help: 'Crude makes kerosene and plastic.',
+    objectives: [
+      { kind: 'refined', count: 1, label: 'Refined' },
+      { kind: 'gained', item: I.PLASTIC, count: 2, label: 'Plastic' },
+    ],
+    unlocks: [],
+  },
+  {
+    id: 'kerofuel', branch: 'oil', icon: I.KEROSENE, parent: 'kerosene', after: ['assemble'], title: 'Kerosene rocket', help: 'Fuel a rocket with kerosene.',
+    objectives: [{ kind: 'fueled', item: I.KEROSENE, count: 1, label: 'Kerosene' }],
+    unlocks: [],
+  },
+
+  // ---- power storage: denser batteries
+  {
+    id: 'leadacid', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'raremetals', after: ['workbench'], title: 'Store power', help: 'Make a lead-acid battery and place it on a network.',
+    objectives: [{ kind: 'placed', item: I.BATTERY_LEAD_ACID, count: 1, label: 'Lead-acid battery' }],
+    unlocks: [],
+  },
+  {
+    id: 'onbattery', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'leadacid', title: 'Run on battery', help: 'Keep a machine running when the generators fall short.',
+    objectives: [{ kind: 'onBattery', count: 1, label: 'On battery' }],
+    unlocks: [I.BATTERY_LITHIUM],
+  },
+  {
+    id: 'lithium', branch: 'storage', icon: I.BATTERY_LITHIUM, parent: 'onbattery', title: 'Lithium-ion', help: 'A denser cell from lithium and cobalt.',
+    objectives: [{ kind: 'placed', item: I.BATTERY_LITHIUM, count: 1, label: 'Lithium-ion battery' }],
+    unlocks: [I.BATTERY_SOLID_STATE],
+  },
+  {
+    id: 'solidstate', branch: 'storage', icon: I.BATTERY_SOLID_STATE, parent: 'lithium', after: ['kerosene'], title: 'Solid-state', help: 'The densest cell: titanium and plastic.',
+    objectives: [{ kind: 'placed', item: I.BATTERY_SOLID_STATE, count: 1, label: 'Solid-state battery' }],
+    unlocks: [],
+  },
+
+  // ---- nuclear: off-world reactors and the engines they build
+  {
+    id: 'uranium', branch: 'nuclear', icon: I.ORE_URANIUM, parent: 'vacuum', after: ['lithium'], title: 'Find uranium', help: 'Mine deep on the Moon or Cinder.',
+    objectives: [{ kind: 'gained', item: I.ORE_URANIUM, count: 4, label: 'Uranium ore' }],
+    unlocks: [I.CENTRIFUGE],
+  },
+  {
+    id: 'centrifuge', branch: 'nuclear', icon: I.CENTRIFUGE, parent: 'uranium', title: 'Enrich uranium', help: 'Spin the ore in a centrifuge on power.',
+    objectives: [
+      { kind: 'placed', item: I.CENTRIFUGE, count: 1, label: 'Centrifuge' },
+      { kind: 'enriched', count: 1, label: 'Enriched' },
+    ],
+    unlocks: [I.FUEL_ROD],
+  },
+  {
+    id: 'fuelrods', branch: 'nuclear', icon: I.FUEL_ROD, parent: 'centrifuge', title: 'Fuel rods', help: 'Make fuel rods at the workbench.',
+    objectives: [{ kind: 'crafted', item: I.FUEL_ROD, count: 2, label: 'Fuel rods' }],
+    unlocks: [I.REACTOR],
+  },
+  {
+    id: 'reactor', branch: 'nuclear', icon: I.REACTOR, parent: 'fuelrods', title: 'Reactor off-world', help: 'Build a reactor on an airless world or in orbit.',
+    objectives: [{ kind: 'reactorBuilt', count: 1, label: 'Reactor' }],
+    unlocks: [I.NUCLEAR_FABRICATOR],
+  },
+  {
+    id: 'fabricator', branch: 'nuclear', icon: I.NUCLEAR_FABRICATOR, parent: 'reactor', title: 'Nuclear fabricator', help: 'Place it on the reactor network.',
+    objectives: [{ kind: 'placed', item: I.NUCLEAR_FABRICATOR, count: 1, label: 'Fabricator' }],
+    unlocks: [I.NUCLEAR_THERMAL_ENGINE],
+  },
+  {
+    id: 'ntr', branch: 'nuclear', icon: I.NUCLEAR_THERMAL_ENGINE, parent: 'fabricator', title: 'Nuclear engine', help: 'Fabricate a nuclear thermal engine.',
+    objectives: [{ kind: 'crafted', item: I.NUCLEAR_THERMAL_ENGINE, count: 1, label: 'Nuclear engine' }],
+    unlocks: [],
+  },
+  {
+    id: 'ntrlaunch', branch: 'nuclear', icon: I.NUCLEAR_THERMAL_ENGINE, parent: 'ntr', title: 'Nuclear launch', help: 'Launch with the nuclear engine in the stack.',
+    objectives: [{ kind: 'launchedWith', item: I.NUCLEAR_THERMAL_ENGINE, count: 1, label: 'Nuclear launch' }],
+    unlocks: [I.REACTOR_CORE, I.ION_DRIVE, I.BATTERY_PACK],
+  },
+  {
+    id: 'ioncore', branch: 'nuclear', icon: I.REACTOR_CORE, parent: 'ntrlaunch', after: ['solidstate'], title: 'Ion drive', help: 'Fabricate a reactor core and an ion drive.',
+    objectives: [
+      { kind: 'crafted', item: I.REACTOR_CORE, count: 1, label: 'Reactor core' },
+      { kind: 'crafted', item: I.ION_DRIVE, count: 1, label: 'Ion drive' },
+    ],
+    unlocks: [],
+  },
+  {
+    id: 'ionflight', branch: 'nuclear', icon: I.ION_DRIVE, parent: 'ioncore', title: 'Fly the ion drive', help: 'Launch with the ion drive and its reactor core.',
+    objectives: [{ kind: 'launchedWith', item: I.ION_DRIVE, count: 1, label: 'Ion flight' }],
+    unlocks: [],
+  },
 ];
 
 // How often (s) held items are read for "gained" objectives
@@ -343,14 +564,16 @@ export const REACH_SET_FAR_M = 200;
 /** The tree panel's designed zoom levels (whole px, never a CSS scale). */
 export const MISSION_TREE_UI = {
   LEVELS: [
-    { cardW: 24, cardH: 18, gapX: 6, gapY: 5, plaque: 12, font: 8, icon: 12, detail: 0 },    // the whole tree: icons only
+    { cardW: 18, cardH: 14, gapX: 4, gapY: 4, plaque: 11, font: 7, icon: 10, detail: 0 },    // the whole tree, deepest branch (nuclear) included
+    { cardW: 24, cardH: 18, gapX: 6, gapY: 5, plaque: 12, font: 8, icon: 12, detail: 0 },    // icons only
     { cardW: 64, cardH: 30, gapX: 18, gapY: 12, plaque: 18, font: 10, icon: 16, detail: 0 },  // frames and icons
     { cardW: 120, cardH: 40, gapX: 24, gapY: 14, plaque: 20, font: 11, icon: 20, detail: 1 }, // icon and title
     { cardW: 170, cardH: 74, gapX: 30, gapY: 18, plaque: 22, font: 12, icon: 24, detail: 2 }, // + objectives
     { cardW: 210, cardH: 104, gapX: 36, gapY: 22, plaque: 22, font: 13, icon: 28, detail: 3 }, // + counts and unlocks
     { cardW: 250, cardH: 128, gapX: 44, gapY: 26, plaque: 24, font: 14, icon: 32, detail: 3 }, // full card
   ],
-  START_LEVEL: 4,
+  START_LEVEL: 5,
+  UNLOCK_ICON: 16,      // a card's unlock icons, px
   PAD: 24,              // margin round the tree, px
   PLAQUE_CHAR_W: 0.75,  // a branch plaque's width per character, in font sizes (packing)
   SIDE_W: 300,          // side panel width, px

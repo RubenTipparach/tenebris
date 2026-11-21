@@ -16,13 +16,13 @@ import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
-import { drawFuel, slotStore } from './rocket/RocketPerformance';
+import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
-import { emitGameEvent } from './engine/GameEvents';
+import { emitGameEvent, onGameEvent } from './engine/GameEvents';
 import { advanceGameTime, framePositionAt, gameTimeS, orbitOf, setLocalGameTime, useNetworkClock } from './world/Orbits';
 import { ORBIT_CONFIG } from './config/OrbitConfig';
 import { PlanetObjectRouter, planetObjectScene, setPlanetObjectRouter } from './world/PlanetFrames';
@@ -491,9 +491,18 @@ class PlanetGame {
         }
         const what = draw.used.map(u => `${u.count} ${ITEM_DATA[u.itemType].name}`).join(', ');
         showToast(`Refuelled +${Math.round(draw.supplied)} (${what})`, { duration: 3000 });
+        for (const u of draw.used) emitGameEvent('fueled', u.itemType, u.count);
         this.blockInteraction.onInventoryChanged();
         return draw.supplied;
       };
+
+      // A launch names the parts in its stack (missions: launch on a
+      // nuclear engine, fly the ion drive)
+      onGameEvent((type) => {
+        if (type !== 'launched') return;
+        const parts = this.rocketFlightManager?.getRocketController()?.getParts() ?? [];
+        for (const t of new Set(stackItemTypes(parts))) emitGameEvent('launchedWith', t);
+      });
 
       // A rocket's fuel / cargo changed (refuelled, landed, exited): its pad
       // keeps the record - save it now

@@ -52,23 +52,49 @@ opens SHALL count toward it.
 
 ### Requirement: Missions unlock recipes
 
-A recipe that a mission lists in its unlocks SHALL be locked until that
-mission is done. In the crafting, workbench and printer lists a locked
-recipe SHALL be shown dimmed, with the name of the mission that unlocks it,
-and SHALL NOT be craftable. A recipe that no mission lists SHALL be open
-from the start.
+Every recipe SHALL be locked in a new world until the mission that unlocks
+it is done: crafting grid, workbench, 3D printer, nuclear fabricator,
+campfire, kiln, oven, and furnace and electric-furnace smelts and alloys.
+Only a short starter list in the mission config (planks and sticks) SHALL
+be open from the start. Every recipe SHALL be on the starter list or in
+exactly one mission's unlocks.
+
+#### Scenario: A new world
+
+- **WHEN** a player opens the crafting grid in a new world
+- **THEN** only planks and sticks can be made
+
+#### Scenario: A mission done
+
+- **WHEN** the player completes Build a furnace
+- **THEN** coal and glass can be crafted
+
+### Requirement: Locked recipes are shown and refused
+
+Wherever recipes are listed (crafting, workbench, printer, fabricator and
+cooking-station panels) a locked recipe SHALL be shown dimmed with
+"Unlocked by: <mission>" and SHALL NOT be made. A station SHALL NOT cook
+or smelt a locked recipe, and a furnace SHALL refuse an input whose smelt
+is locked, with the same message.
 
 #### Scenario: A locked recipe
 
 - **WHEN** the player opens the 3D printer before the mission that unlocks the Rocket Engine is done
-- **THEN** the Rocket Engine is shown dimmed with that mission's name, and printing it is refused
+- **THEN** the Rocket Engine is shown dimmed with "Unlocked by: Raise the tower", and printing it is refused
+
+#### Scenario: A locked smelt
+
+- **WHEN** the player puts clay in a furnace before Find clay is done
+- **THEN** the furnace refuses it with "Unlocked by: Find clay" and fires no brick
 
 ### Requirement: Old worlds keep what they could make
 
 A world saved before the tree SHALL open with every mission it already
 satisfies counted as done. Any recipe whose output the world has already
 crafted, carries, or has placed SHALL count as unlocked, so no world loses
-a recipe it could use before.
+a recipe it could use before. The same SHALL hold once more for a world
+whose tree was saved before every recipe was locked: what it has crafted,
+carries or has placed stays unlocked.
 
 #### Scenario: A veteran world
 

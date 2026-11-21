@@ -42,4 +42,5 @@
 
 ## 7. Missions
 
-- [ ] 7.1 New branches (clay and cooking, oil, power storage, nuclear, construction) per design 7; coverage test passes with every new recipe reached; new events where needed (cooked, ate, pumped, refined, reactorBuilt, launchedWith). Verify: missions test suite.
+- [x] 7.1 New branches (clay and cooking, oil, power storage, nuclear, construction) per design 7; coverage test passes with every new recipe reached; new events where needed (cooked, ate, pumped, refined, reactorBuilt, launchedWith). Verify: missions test suite.
+  - Every recipe now waits on a mission (owner, 2026-11-21): only STARTER_RECIPES is open in a new world; the test holds each recipe to the starters or exactly one mission; locked recipes show "Unlocked by: <mission>" in every list, the cooking stations gain a recipe strip, the furnaces refuse a locked smelt.

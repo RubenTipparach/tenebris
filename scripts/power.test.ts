@@ -18,6 +18,7 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   // one steam engine runs one electric furnace
   const r = solveNetwork([{ id: 'e', watts: S.steamEngine! }], [{ id: 'f', watts: D.electricFurnace! }], [], 1);
   ok(r.powered && r.supplyW === 2000 && r.demandW === 1000, 'a steam engine runs an electric furnace');
+  ok(!r.onBattery, 'a network its generators cover is not on battery');
 }
 {
   // overload: one engine, a furnace + a refinery + a centrifuge -> every machine stops
@@ -31,6 +32,7 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   const dt = 60;  // a minute a step
   let r = solveNetwork([], [{ id: 'f', watts: D.electricFurnace! }], [bat], dt);
   ok(r.powered, 'a battery runs a furnace with no generator');
+  ok(r.onBattery, 'it is on battery (the Run on battery mission counts it)');
   ok(near(r.batteryCharge.get('b')!, 100 - 1000 * dt / 3600), 'it drains by watts x hours');
   let steps = 0;
   let charge = r.batteryCharge.get('b')!;

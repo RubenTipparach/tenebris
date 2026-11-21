@@ -294,6 +294,7 @@ export class PlanetBlockInteraction {
   private machineUI!: MachineUI;
   private miningMachineTarget: { machine: PlacedMachine } | null = null;
   private gridByTile = new Map<number, GridResult>();  // last solve, by member tile
+  private wasOnBattery = false;  // the last solve had a network running on battery
   private powerSolveTimer = 0;
   private machineSaveTimer = 0;
 
@@ -1542,7 +1543,7 @@ export class PlanetBlockInteraction {
       }
       const cooker = this.cookerManager.getByMesh(cookerHit.object);
       if (rightClick && this.rightClickCooldown === 0 && cooker) {
-        this.storageUI.openCooker(cooker, COOKERS[cooker.kind].title);
+        this.storageUI.openCooker(cooker, cooker.kind);
         this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && cooker) {
         this.handleCookerMining(deltaTime, cooker);
@@ -4261,6 +4262,7 @@ export class PlanetBlockInteraction {
     const demandW = (k: keyof typeof POWER_CONFIG.DEMAND_W) => POWER_CONFIG.DEMAND_W[k] ?? 0;
 
     const grid = new Map<number, GridResult>();
+    let anyOnBattery = false;
     const cablePos = new Map(this.cableNodeManager.getPlacedCables().map(c => [c.id, c.position]));
     for (const net of this.cableNodeManager.getNetworks()) {
       const near = cablePos.get(net.cables[0]);  // which planet this network is on
@@ -4303,6 +4305,7 @@ export class PlanetBlockInteraction {
         if (wantsPower(m, oil.get(m) ?? false)) cons.push({ id: `machine${t}`, watts: demandW(m.kind) });
       }
       const result = solveNetwork(gens, cons, bats, dt);
+      if (result.onBattery) anyOnBattery = true;
       for (const t of members) grid.set(t, result);
       for (const b of bats) {
         const m = this.machineAt(Number(b.id.slice('battery'.length)), near);
@@ -4310,6 +4313,9 @@ export class PlanetBlockInteraction {
       }
     }
     this.gridByTile = grid;
+    // A network that just went over to its batteries (a mission counts it)
+    if (anyOnBattery && !this.wasOnBattery) emitGameEvent('onBattery');
+    this.wasOnBattery = anyOnBattery;
 
     // The isPowered flags the older machines already read
     for (const f of this.electricFurnaceManager.getPlacedElectricFurnaces()) this.electricFurnaceManager.setFurnacePowered(f.tileIndex, this.nodePowered(f.tileIndex));

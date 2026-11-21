@@ -1,4 +1,4 @@
-import { MISSIONS, Mission, MissionObjective } from '../config/Missions';
+import { MISSIONS, Mission, MissionObjective, STARTER_RECIPES } from '../config/Missions';
 import type { GameEventType, GameEventKey } from '../engine/GameEvents';
 import type { RecipeGate } from './RecipeGate';
 
@@ -23,7 +23,13 @@ export interface MissionSave {
   low: Record<string, Record<string, number>>;    // per open mission, per gained item
   seen: Record<string, string[][]>;               // per open mission, per distinct objective
   legacy: number[];                               // recipe outputs open from an old world
+  /** The gate rule the save was made under: GATE_RULE_ALL_LOCKED once every
+   *  recipe waits on a mission; missing in a save from before that. */
+  rule?: number;
 }
+
+/** Saves made since every recipe (not only the ones a mission named) waits on a mission. */
+export const GATE_RULE_ALL_LOCKED = 2;
 
 /** The first version's linear save (its ids are the tree's). */
 interface LinearSave { index: number; progress?: number[]; low?: Record<string, number> }
@@ -40,6 +46,7 @@ export interface WorldState {
 const BY_ID = new Map(MISSIONS.map(m => [m.id, m]));
 const UNLOCKED_BY = new Map<number, Mission>();
 for (const m of MISSIONS) for (const u of m.unlocks) UNLOCKED_BY.set(u, m);
+const STARTER = new Set<number>(STARTER_RECIPES);
 
 export class MissionTracker implements RecipeGate {
   private done = new Set<string>();
@@ -67,7 +74,7 @@ export class MissionTracker implements RecipeGate {
   }
 
   public save(): MissionSave {
-    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy] };
+    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED };
   }
 
   // ---- the tree ----------------------------------------------------------
@@ -109,13 +116,18 @@ export class MissionTracker implements RecipeGate {
 
   // ---- unlocking (RecipeGate) --------------------------------------------
 
+  /** Every recipe is locked until its mission is done, but the starters
+   *  and what an old world already had (legacy). */
   public recipeOpen(output: number): boolean {
+    if (STARTER.has(output) || this.legacy.has(output)) return true;
     const by = UNLOCKED_BY.get(output);
-    return !by || this.done.has(by.id) || this.legacy.has(output);
+    return !!by && this.done.has(by.id);
   }
 
   public lockedBy(output: number): string | null {
-    return this.recipeOpen(output) ? null : UNLOCKED_BY.get(output)!.title;
+    if (this.recipeOpen(output)) return null;
+    // the coverage test keeps every recipe on a mission; '?' never shows
+    return UNLOCKED_BY.get(output)?.title ?? '?';
   }
 
   // ---- an existing world -------------------------------------------------
@@ -138,14 +150,23 @@ export class MissionTracker implements RecipeGate {
         }
       }
     }
-    for (const output of UNLOCKED_BY.keys()) {
-      if (world.held(output) > 0 || world.placedMachines(output) > 0) this.legacy.add(output);
-    }
+    this.keepWhatTheWorldHas(world);
     this.prog = {};
     this.low = {};
     this.seen = {};
     this.fitAll();
     return skipped;
+  }
+
+  /**
+   * Every recipe whose output the world carries or has placed stays open
+   * (an old world never loses a recipe it could use before). Also run once
+   * for a tree save from before every recipe was locked (no `rule`).
+   */
+  public keepWhatTheWorldHas(world: WorldState): void {
+    for (const output of UNLOCKED_BY.keys()) {
+      if (world.held(output) > 0 || world.placedMachines(output) > 0) this.legacy.add(output);
+    }
   }
 
   // ---- counting -----------------------------------------------------------
