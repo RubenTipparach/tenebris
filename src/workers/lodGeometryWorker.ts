@@ -2,7 +2,7 @@
 // Optimized: pre-computed normalizations, cached surface data, reduced passes
 
 import { PackedTileData, PackedBlocks, unpackTiles, unpackBlocks, packFloatAttributes } from './packedTiles';
-import { HexBlockType, baseTerrainType } from '../shared/blockTypes';
+import { HexBlockType, baseTerrainType, isClearSolid } from '../shared/blockTypes';
 
 // Vector3-like operations using plain objects
 interface Vec3 {
@@ -507,7 +507,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         torchLight = chunk.snowTorchLight;
         indices = chunk.snowIndices;
         vertexOffset = chunk.snowVertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         positions = chunk.icePositions;
         normals = chunk.iceNormals;
         uvs = chunk.iceUvs;
@@ -580,7 +580,7 @@ self.onmessage = (e: MessageEvent<BuildLODGeometryMessage>) => {
         chunk.woodVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
         chunk.snowVertexOffset = vertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         chunk.iceVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
         chunk.moonRockVertexOffset = vertexOffset;

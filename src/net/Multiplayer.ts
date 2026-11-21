@@ -62,8 +62,20 @@ export class Multiplayer {
     };
   }
 
+  // Where a planet is drawn in this client's frame, minus its configured
+  // position (live orbits: the body you are on stays put, the rest move)
+  private frameOffset: ((planet: string) => THREE.Vector3) | null = null;
+  public setFrameOffset(fn: (planet: string) => THREE.Vector3): void {
+    this.frameOffset = fn;
+  }
+
   public isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** The other players: name, the body they're on, and where (for the maps). */
+  public getRemotePlayers(): Array<{ name: string; planet: string; position: THREE.Vector3 }> {
+    return [...this.remotes.values()].map(r => ({ name: r.name, planet: r.planet, position: r.group.position }));
   }
 
   public playerCount(): number {
@@ -125,7 +137,10 @@ export class Multiplayer {
     // Smoothly move avatars toward their last reported pose
     const k = Math.min(1, dt * SMOOTHING);
     for (const r of this.remotes.values()) {
-      r.group.position.lerp(r.target, k);
+      // A pose is in the sender's frame, where their planet sits at its
+      // configured position; shift it to where that planet is in ours
+      const shown = this.frameOffset ? r.target.clone().add(this.frameOffset(r.planet)) : r.target;
+      r.group.position.lerp(shown, k);
       r.group.quaternion.slerp(r.targetQ, k);
       r.avatar.animate(dt, r.speed);
     }

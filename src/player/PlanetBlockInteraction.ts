@@ -4,6 +4,18 @@ import { PlanetPlayer } from './PlanetPlayer';
 import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
+import { emitGameEvent } from '../engine/GameEvents';
+import { CookerManager, PlacedCooker } from '../planet/Cookers';
+import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
+import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
+
+// An engine, a fuel tank and a command module on the pad: a rocket that flies
+const ENGINES = new Set<ItemType>([ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE]);
+const TANKS = new Set<ItemType>([ItemType.FUEL_TANK, ItemType.MEDIUM_FUEL_TANK, ItemType.LARGE_FUEL_TANK]);
+function hasFlyableRocket(pad: { rocketParts: { itemType: ItemType }[] }): boolean {
+  const types = pad.rocketParts.map(p => p.itemType);
+  return types.some(t => ENGINES.has(t)) && types.some(t => TANKS.has(t)) && types.includes(ItemType.COMMAND_MODULE);
+}
 import { RocketController } from '../rocket/RocketController';
 import { computeRocketStats, slotStore } from '../rocket/RocketPerformance';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
@@ -11,6 +23,8 @@ import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, TorchManager } from '../planet/Torch';
 import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
+import { SMELTS_PER_COAL } from '../config/SmeltingRecipes';
+import { bucketFill } from '../config/BucketFills';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
 import { GarbagePileManager, PlacedGarbagePile } from '../planet/GarbagePile';
 import { SteamEngineManager, PlacedSteamEngine } from '../planet/SteamEngine';
@@ -34,10 +48,15 @@ import { Printer3DUI } from './Printer3DUI';
 import { LaunchPadUI } from './LaunchPadUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
-import { gameStorage, torchKey, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
+import { planetObjectScene } from '../world/PlanetFrames';
+import { gameStorage, torchKey, SavedCooker, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
 import { netSync } from '../net/NetSync';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
+import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine } from '../planet/Machines';
+import { MACHINE_CONFIG, MACHINE_KIND_OF, POWER_CONFIG } from '../config/PowerConfig';
+import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } from '../power/PowerGrid';
+import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
 
@@ -81,7 +100,7 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // The living alien worlds' grounds drop the planet's rock (its soil:
     // MOON_ROCK is a single-texture world's native rock)
     case HexBlockType.CINDER_EMBERMOSS: case HexBlockType.CINDER_ASH: case HexBlockType.CINDER_SULFUR:
-    case HexBlockType.VESPER_CLAY: case HexBlockType.VESPER_DUNE: case HexBlockType.VESPER_SALT:
+    case HexBlockType.VESPER_DUNE: case HexBlockType.VESPER_SALT:
     case HexBlockType.HALCYON_MOSS: case HexBlockType.HALCYON_GEODE: case HexBlockType.HALCYON_GLASS:
     case HexBlockType.TESSALY_SNOWMOSS: case HexBlockType.TESSALY_FROST: case HexBlockType.TESSALY_GLAZE:
     case HexBlockType.UMBRA_MOSS: case HexBlockType.UMBRA_MYCEL: case HexBlockType.UMBRA_SHALE:
@@ -110,6 +129,8 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.CITY_GLASS:
     case HexBlockType.CITY_NEON: return ItemType.GLASS;
     case HexBlockType.CITY_PARK: return ItemType.DIRT;
+    // A street lamp gives its light back as a torch
+    case HexBlockType.CITY_LAMP: return ItemType.TORCH;
     // Moons and asteroids: volcanic rock gives basalt (magma cools as it is
     // dug), frost and glacier ice give ice for fuel, meteoric iron gives iron
     case HexBlockType.BASALT: return ItemType.BASALT;
@@ -119,6 +140,17 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.FROST: return ItemType.ICE;
     case HexBlockType.BLUE_ICE: return ItemType.ICE;
     case HexBlockType.IRON_NICKEL: return ItemType.ORE_IRON;
+    // Industry resources: clay (Earth's, and Vesper's clay ground - it is
+    // clay), uranium ore; oil sand gives nothing dug (oil is pumped or
+    // scooped with a bucket)
+    case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
+    case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
+    case HexBlockType.OIL_SAND: return ItemType.NONE;
+    // Building materials come back as themselves
+    case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
+    case HexBlockType.CONCRETE_BLOCK: return ItemType.CONCRETE_BLOCK;
+    case HexBlockType.STEEL_GIRDER: return ItemType.STEEL_GIRDER;
+    case HexBlockType.STEEL_GLASS: return ItemType.STEEL_GLASS;
     default: return ItemType.NONE;
   }
 }
@@ -153,8 +185,29 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.SEQ_SNOW: return HexBlockType.SEQ_SNOW;
     case ItemType.BASALT: return HexBlockType.BASALT;
     case ItemType.SULFUR: return HexBlockType.SULFUR;
+    case ItemType.CLAY: return HexBlockType.CLAY;
+    case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
+    case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
+    case ItemType.CONCRETE_BLOCK: return HexBlockType.CONCRETE_BLOCK;
+    case ItemType.STEEL_GIRDER: return HexBlockType.STEEL_GIRDER;
+    case ItemType.STEEL_GLASS: return HexBlockType.STEEL_GLASS;
     default: return HexBlockType.AIR;
   }
+}
+
+// An electric furnace's save record: the one shape both save points write
+function electricFurnaceSave(f: PlacedElectricFurnace): Omit<SavedElectricFurnace, 'tileIndex'> {
+  return {
+    position: { x: f.position.x, y: f.position.y, z: f.position.z },
+    rotation: f.rotation,
+    smeltingItem: f.smeltingItem,
+    smeltingProgress: f.smeltingProgress,
+    inputCount: f.inputCount,
+    additiveItem: f.additiveItem,
+    additiveCount: f.additiveCount,
+    outputItem: f.outputItem,
+    outputCount: f.outputCount,
+  };
 }
 
 // Every kind of saved world object, in load order (machines before the
@@ -163,9 +216,11 @@ const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['torch', () => gameStorage.getTorches()],
   ['furnace', () => gameStorage.getFurnaces()],
   ['chest', () => gameStorage.getStorageChests()],
+  ['cooker', () => gameStorage.getCookers()],
   ['garbagePile', () => gameStorage.getGarbagePiles()],
   ['steamEngine', () => gameStorage.getSteamEngines()],
   ['hydroGenerator', () => gameStorage.getHydroGenerators()],
+  ['machine', () => gameStorage.getMachines()],
   ['copperPipe', () => gameStorage.getCopperPipes()],
   ['cable', () => gameStorage.getCables()],
   ['electricFurnace', () => gameStorage.getElectricFurnaces()],
@@ -200,6 +255,13 @@ export class PlanetBlockInteraction {
 
   // Storage system
   private storageChestManager: StorageChestManager;
+  // Campfires, kilns and ovens (cooking), and the well-fed state eating gives
+  private cookerManager: CookerManager;
+  private miningCookerTarget: PlacedCooker | null = null;
+  private wellFed: WellFed | null = null;
+  private wellFedLoaded = false;
+  private wellFedSaveTimer = 0;
+  private wellFedChip: HTMLElement | null = null;
   private garbagePileManager: GarbagePileManager;
   private storageUI: StorageUI;
   private miningStorageTarget: { chest: PlacedStorageChest } | null = null;
@@ -226,6 +288,15 @@ export class PlanetBlockInteraction {
   private cableNodeManager: CableNodeManager;
   private miningCableTarget: { cable: PlacedCable } | null = null;
   private cableConnectionRebuildTimer: number = 0;
+
+  // Industry machines + the power grid (openspec industry-and-nuclear, design 3-5)
+  private machineManager!: MachineManager;
+  private machineUI!: MachineUI;
+  private miningMachineTarget: { machine: PlacedMachine } | null = null;
+  private gridByTile = new Map<number, GridResult>();  // last solve, by member tile
+  private wasOnBattery = false;  // the last solve had a network running on battery
+  private powerSolveTimer = 0;
+  private machineSaveTimer = 0;
 
   // Electric furnace system
   private electricFurnaceManager: ElectricFurnaceManager;
@@ -284,7 +355,7 @@ export class PlanetBlockInteraction {
     this.inventory = new Inventory();
 
     // Initialize torch systems
-    this.torchManager = new TorchManager(scene);
+    this.torchManager = new TorchManager(planetObjectScene(scene));
     this.heldTorch = new HeldTorch(player.camera, scene);
 
     // Initialize furnace systems with planet center and sun direction for lighting
@@ -295,7 +366,7 @@ export class PlanetBlockInteraction {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
-    this.furnaceManager = new FurnaceManager(scene, planetCenter, sunDirection);
+    this.furnaceManager = new FurnaceManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.furnaceManager.setOnSmeltCompleteCallback(() => {
       // Save all furnace states when smelting completes (even when UI is closed)
       this.saveAllFurnaceStates();
@@ -320,14 +391,20 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize storage systems with planet center and sun direction for lighting
-    this.storageChestManager = new StorageChestManager(scene, planetCenter, sunDirection);
-    this.garbagePileManager = new GarbagePileManager(scene, planetCenter, sunDirection);
+    this.storageChestManager = new StorageChestManager(planetObjectScene(scene), planetCenter, sunDirection);
+    this.cookerManager = new CookerManager(planetObjectScene(scene), planetCenter, sunDirection);
+    this.cookerManager.setOnCooked((cooker, item) => {
+      this.saveCooker(cooker);
+      emitGameEvent('cooked', item);
+      if (this.storageUI.getCurrentStorage() === cooker) this.storageUI.refresh();
+    });
+    this.garbagePileManager = new GarbagePileManager(planetObjectScene(scene), planetCenter, sunDirection);
 
     // Initialize steam engine system
-    this.steamEngineManager = new SteamEngineManager(scene, planetCenter, sunDirection);
+    this.steamEngineManager = new SteamEngineManager(planetObjectScene(scene), planetCenter, sunDirection);
 
     // Initialize hydro generator system
-    this.hydroGeneratorManager = new HydroGeneratorManager(scene, planetCenter, sunDirection);
+    this.hydroGeneratorManager = new HydroGeneratorManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.hydroGeneratorUI = new HydroGeneratorUI();
     this.hydroGeneratorUI.setOnCloseCallback(() => {
       // Hydro generator close is handled by inventory menu close
@@ -337,7 +414,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize copper pipe system
-    this.copperPipeManager = new CopperPipeManager(scene, planetCenter, sunDirection);
+    this.copperPipeManager = new CopperPipeManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.copperPipeUI = new CopperPipeUI();
     this.copperPipeUI.setOnCloseCallback(() => {
       // Pipe UI close is handled by clicking elsewhere
@@ -368,11 +445,11 @@ export class PlanetBlockInteraction {
     );
 
     // Initialize cable node system (for power connections)
-    this.cableNodeManager = new CableNodeManager(scene, planetCenter, sunDirection);
+    this.cableNodeManager = new CableNodeManager(planetObjectScene(scene), planetCenter, sunDirection);
     // Machine callbacks are set after all managers are initialized (see below)
 
     // Initialize electric furnace system
-    this.electricFurnaceManager = new ElectricFurnaceManager(scene, planetCenter, sunDirection);
+    this.electricFurnaceManager = new ElectricFurnaceManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.electricFurnaceManager.setOnSmeltCompleteCallback(() => {
       this.saveAllElectricFurnaceStates();
     });
@@ -395,7 +472,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize electronics workbench system
-    this.electronicsWorkbenchManager = new ElectronicsWorkbenchManager(scene, planetCenter, sunDirection);
+    this.electronicsWorkbenchManager = new ElectronicsWorkbenchManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.electronicsWorkbenchUI = new ElectronicsWorkbenchUI(this.inventory);
     this.electronicsWorkbenchUI.setOnCloseCallback(() => {
       // Electronics workbench close is handled by inventory menu close
@@ -409,19 +486,10 @@ export class PlanetBlockInteraction {
     this.electronicsWorkbenchUI.setOnUpdateInventoryCallback(() => {
       this.craftingSystem.updateInventorySlotsPublic();
     });
-    this.electronicsWorkbenchUI.setIsPoweredCallback((tileIndex) => {
-      // Check if workbench is connected to a running power source via cables
-      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        tileIndex,
-        (steamTileIndex) => {
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          return engine?.isRunning ?? false;
-        }
-      );
-    });
+    this.electronicsWorkbenchUI.setIsPoweredCallback((tileIndex) => this.nodePowered(tileIndex));
 
     // Initialize computer system
-    this.computerManager = new ComputerManager(scene, planetCenter, sunDirection);
+    this.computerManager = new ComputerManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.computerUI = new ComputerUI();
     this.computerUI.setOnCloseCallback(() => {
       // Computer close callback
@@ -429,18 +497,10 @@ export class PlanetBlockInteraction {
     this.computerUI.setOnOpenInventoryCallback(() => {
       this.craftingSystem.open();
     });
-    this.computerUI.setIsPoweredCallback((tileIndex) => {
-      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        tileIndex,
-        (steamTileIndex) => {
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          return engine?.isRunning ?? false;
-        }
-      );
-    });
+    this.computerUI.setIsPoweredCallback((tileIndex) => this.nodePowered(tileIndex));
 
     // Initialize 3D printer system
-    this.printer3DManager = new Printer3DManager(scene, planetCenter, sunDirection);
+    this.printer3DManager = new Printer3DManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.printer3DUI = new Printer3DUI(this.inventory);
     this.printer3DUI.setOnItemCrafted((itemType, quantity) => {
       this.inventory.addItem(itemType, quantity);
@@ -468,7 +528,7 @@ export class PlanetBlockInteraction {
 
     // Initialize launch pad system
     const planetRadius = earthPlanet?.radius || 100;
-    this.launchPadManager = new LaunchPadManager(scene, planetCenter, sunDirection, planetRadius);
+    this.launchPadManager = new LaunchPadManager(planetObjectScene(scene), planetCenter, sunDirection, planetRadius);
     this.launchPadUI = new LaunchPadUI(this.inventory);
     this.launchPadUI.setOnCloseCallback(() => {
       // Launch pad close callback
@@ -521,7 +581,9 @@ export class PlanetBlockInteraction {
         showToast(`A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`, { duration: 3500 });
         return false;
       }
+      const hadRocket = hasFlyableRocket(pad);
       const result = await this.launchPadManager.addRocketPart(pad, itemType);
+      if (result && !hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
       if (result) {
         this.saveLaunchPadStates();
       }
@@ -540,6 +602,8 @@ export class PlanetBlockInteraction {
     });
     // The pad's rocket: refuel from the cargo hold + inventory (the same fuel
     // source as on board), open its cargo hold, its TWR on this body
+    // The launch engine mode is part of the pad's record
+    this.launchPadUI.setOnEngineModeCallback(() => this.saveLaunchPadStates());
     this.launchPadUI.setOnRefuelCallback((pad) => {
       const capacity = computeRocketStats(pad.rocketParts.map(p => p.itemType)).fuelCapacity;
       const have = pad.fuel ?? capacity;
@@ -576,8 +640,24 @@ export class PlanetBlockInteraction {
       (tileIndex) => this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex),
       (tileIndex) => this.computerManager.getComputerAtTile(tileIndex),
       (tileIndex) => this.printer3DManager.getPrinter3DAtTile(tileIndex),
-      (tileIndex) => this.getNeighborTileIndices(tileIndex)
+      (tileIndex, near) => this.getNeighborTileIndices(tileIndex, near)
     );
+
+    // Industry machines, batteries and hydro generators join the same cable
+    // networks as generic grid nodes
+    this.machineManager = new MachineManager(planetObjectScene(scene), planetCenter, sunDirection);
+    this.machineUI = new MachineUI(this.inventory, {
+      onMachineChanged: (m) => this.saveMachine(m),
+      onInventoryChanged: () => { this.updateHotbarUI(); this.saveInventory(); },
+      gridFor: (m) => this.gridByTile.get(m.tileIndex),
+    });
+    this.cableNodeManager.setPowerNodeLookup((tileIndex, near) => {
+      const m = this.machineAt(tileIndex, near);
+      if (m) return { kind: m.kind, position: m.position };
+      const h = this.hydroGeneratorManager.getHydroGeneratorAtTile(tileIndex);
+      if (h) return { kind: 'hydroGenerator', position: h.position };
+      return undefined;
+    });
 
     // Set up hydro generator connection callback
     this.hydroGeneratorUI.setConnectionCallback((hydroTileIndex) => {
@@ -602,6 +682,10 @@ export class PlanetBlockInteraction {
       this.saveAllStorageStates();
       // A rocket's cargo hold saves with its launch pad
       if (this.storageUI.getStorageType() === 'cargo') this.saveLaunchPadStates();
+      if (this.storageUI.getStorageType() === 'cooker') {
+        const station = this.cookerManager.getPlaced().find(c => c === this.storageUI.getCurrentStorage());
+        if (station) this.saveCooker(station);
+      }
     });
     this.storageUI.setOnOpenInventoryCallback(() => {
       this.craftingSystem.open();
@@ -1203,6 +1287,10 @@ export class PlanetBlockInteraction {
     // Update furnace smelting progress
     this.furnaceManager.update(deltaTime);
 
+    // Cooking stations, and the well-fed clock
+    this.cookerManager.update(deltaTime);
+    this.updateWellFed(deltaTime);
+
     // Update electric furnace smelting progress
     this.electricFurnaceManager.update(deltaTime);
 
@@ -1227,8 +1315,10 @@ export class PlanetBlockInteraction {
     if (this.cableConnectionRebuildTimer >= this.PIPE_CONNECTION_REBUILD_INTERVAL) {
       this.cableConnectionRebuildTimer = 0;
       this.cableNodeManager.rebuildAllConnections();
-      this.updateElectricFurnacePowerStatus();
     }
+
+    // Balance every cable network and run the industry machines
+    this.updatePowerGrid(deltaTime);
 
     // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();
@@ -1240,6 +1330,7 @@ export class PlanetBlockInteraction {
       this.electricFurnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.electronicsWorkbenchManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
+      this.cookerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
@@ -1249,6 +1340,9 @@ export class PlanetBlockInteraction {
       this.printer3DManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.launchPadManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
+
+    // A machine panel is open: no mining or placing behind it
+    if (this.machineUI.isOpen()) { this.resetMining(); return; }
 
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
@@ -1285,6 +1379,7 @@ export class PlanetBlockInteraction {
     const torchMeshes = this.torchManager.getTorchMeshes();
     const furnaceMeshes = this.furnaceManager.getFurnaceMeshes();
     const storageChestMeshes = this.storageChestManager.getChestMeshes();
+    const cookerMeshes = this.cookerManager.getMeshes();
     const garbagePileMeshes = this.garbagePileManager.getPileMeshes();
     const steamEngineMeshes = this.steamEngineManager.getSteamEngineMeshes();
     const hydroGeneratorMeshes = this.hydroGeneratorManager.getHydroGeneratorMeshes();
@@ -1295,12 +1390,14 @@ export class PlanetBlockInteraction {
     const computerMeshes = this.computerManager.getComputerMeshes();
     const printer3DMeshes = this.printer3DManager.getPrinter3DMeshes();
     const launchPadMeshes = this.launchPadManager.getMeshes();
+    const machineMeshes = this.machineManager.getMeshes();
 
     // Combine all meshes - push to avoid creating intermediate arrays
     for (const m of treeMeshes) allInteractableMeshes.push(m);
     for (const m of torchMeshes) allInteractableMeshes.push(m);
     for (const m of furnaceMeshes) allInteractableMeshes.push(m);
     for (const m of storageChestMeshes) allInteractableMeshes.push(m);
+    for (const m of cookerMeshes) allInteractableMeshes.push(m);
     for (const m of garbagePileMeshes) allInteractableMeshes.push(m);
     for (const m of steamEngineMeshes) allInteractableMeshes.push(m);
     for (const m of hydroGeneratorMeshes) allInteractableMeshes.push(m);
@@ -1311,6 +1408,7 @@ export class PlanetBlockInteraction {
     for (const m of computerMeshes) allInteractableMeshes.push(m);
     for (const m of printer3DMeshes) allInteractableMeshes.push(m);
     for (const m of launchPadMeshes) allInteractableMeshes.push(m);
+    for (const m of machineMeshes) allInteractableMeshes.push(m);
 
     // Single raycast for all interactable objects (sorted by distance automatically)
     const allIntersects = this.raycaster.intersectObjects(allInteractableMeshes, true);
@@ -1320,6 +1418,7 @@ export class PlanetBlockInteraction {
     const torchIntersects: THREE.Intersection[] = [];
     const furnaceIntersects: THREE.Intersection[] = [];
     const storageChestIntersects: THREE.Intersection[] = [];
+    const cookerIntersects: THREE.Intersection[] = [];
     const garbagePileIntersects: THREE.Intersection[] = [];
     const steamEngineIntersects: THREE.Intersection[] = [];
     const hydroGeneratorIntersects: THREE.Intersection[] = [];
@@ -1330,6 +1429,7 @@ export class PlanetBlockInteraction {
     const computerIntersects: THREE.Intersection[] = [];
     const printer3DIntersects: THREE.Intersection[] = [];
     const launchPadIntersects: THREE.Intersection[] = [];
+    const machineIntersects: THREE.Intersection[] = [];
 
     for (const hit of allIntersects) {
       const obj = hit.object;
@@ -1341,6 +1441,7 @@ export class PlanetBlockInteraction {
         if (data.isTorch) { torchIntersects.push(hit); break; }
         if (data.furnaceId !== undefined) { furnaceIntersects.push(hit); break; }
         if (data.isStorageChest) { storageChestIntersects.push(hit); break; }
+        if (data.isCooker) { cookerIntersects.push(hit); break; }
         if (data.isGarbagePile) { garbagePileIntersects.push(hit); break; }
         if (data.isSteamEngine) { steamEngineIntersects.push(hit); break; }
         if (data.isHydroGenerator) { hydroGeneratorIntersects.push(hit); break; }
@@ -1351,6 +1452,7 @@ export class PlanetBlockInteraction {
         if (data.isComputer) { computerIntersects.push(hit); break; }
         if (data.is3DPrinter) { printer3DIntersects.push(hit); break; }
         if (data.isLaunchPad) { launchPadIntersects.push(hit); break; }
+        if (data.isMachine) { machineIntersects.push(hit); break; }
         checkObj = checkObj.parent;
       }
     }
@@ -1392,6 +1494,7 @@ export class PlanetBlockInteraction {
     let torchHit: THREE.Intersection | null = null;
     let furnaceHit: THREE.Intersection | null = null;
     let storageChestHit: THREE.Intersection | null = null;
+    const cookerHit: THREE.Intersection | null = cookerIntersects[0] ?? null;
     let garbagePileHit: THREE.Intersection | null = null;
     let steamEngineHit: THREE.Intersection | null = null;
     let hydroGeneratorHit: THREE.Intersection | null = null;
@@ -1408,6 +1511,7 @@ export class PlanetBlockInteraction {
     const torchDistance = torchIntersects.length > 0 ? torchIntersects[0].distance : Infinity;
     const furnaceDistance = furnaceIntersects.length > 0 ? furnaceIntersects[0].distance : Infinity;
     const storageChestDistance = storageChestIntersects.length > 0 ? storageChestIntersects[0].distance : Infinity;
+    const cookerDistance = cookerHit ? cookerHit.distance : Infinity;
     const garbagePileDistance = garbagePileIntersects.length > 0 ? garbagePileIntersects[0].distance : Infinity;
     const steamEngineDistance = steamEngineIntersects.length > 0 ? steamEngineIntersects[0].distance : Infinity;
     const hydroGeneratorDistance = hydroGeneratorIntersects.length > 0 ? hydroGeneratorIntersects[0].distance : Infinity;
@@ -1418,10 +1522,36 @@ export class PlanetBlockInteraction {
     const computerDistance = computerIntersects.length > 0 ? computerIntersects[0].distance : Infinity;
     const printer3DDistance = printer3DIntersects.length > 0 ? printer3DIntersects[0].distance : Infinity;
     const launchPadDistance = launchPadIntersects.length > 0 ? launchPadIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
+    const machineDistance = machineIntersects.length > 0 ? machineIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(machineDistance, treeDistance, torchDistance, furnaceDistance, storageChestDistance, cookerDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
 
+    // A dish in hand and no machine in reach: right click eats it
+    if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
+        closestObjectDistance === Infinity) {
+      this.eatSelected();
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      return;
+    }
+
+    let machineHit: THREE.Intersection | null = null;
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (cookerHit && cookerDistance <= closestObjectDistance) {
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+      const cooker = this.cookerManager.getByMesh(cookerHit.object);
+      if (rightClick && this.rightClickCooldown === 0 && cooker) {
+        this.storageUI.openCooker(cooker, cooker.kind);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && cooker) {
+        this.handleCookerMining(deltaTime, cooker);
+      } else {
+        this.resetMining();
+      }
+    } else if (machineDistance <= closestObjectDistance && machineDistance < Infinity) {
+      machineHit = machineIntersects[0];
     } else if (cableDistance <= closestObjectDistance && cableDistance < Infinity) {
       hitCable = true;
       cableHit = cableIntersects[0];
@@ -1468,7 +1598,21 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitCable && cableHit) {
+    if (machineHit) {
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+      const machine = this.machineManager.getByMesh(machineHit.object);
+      if (rightClick && this.rightClickCooldown === 0 && machine) {
+        this.machineUI.openFor(machine);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && machine) {
+        this.handleMachineMining(deltaTime, machine);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitCable && cableHit) {
       // No wireframe for cables
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -1827,7 +1971,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[itemType].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Play mining hit sound
@@ -1854,7 +1998,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[itemType].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Play mining hit sound
@@ -1915,7 +2059,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.FURNACE].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Play mining hit sound
@@ -1941,7 +2085,7 @@ export class PlanetBlockInteraction {
     }
     // Convert fuel back to coal (approximately)
     if (furnace.fuelAmount > 0) {
-      const coalToReturn = Math.ceil(furnace.fuelAmount / 8); // 8 smelts per coal
+      const coalToReturn = Math.ceil(furnace.fuelAmount / SMELTS_PER_COAL);
       this.inventory.addItem(ItemType.COAL, coalToReturn);
     }
 
@@ -1956,6 +2100,127 @@ export class PlanetBlockInteraction {
 
     // Remove the furnace from the world
     this.furnaceManager.removeFurnace(furnace);
+  }
+
+  // ---- cooking stations ----------------------------------------------------
+
+  private async placeCooker(planet: Planet, tileIndex: number, depth: number, kind: CookerKind): Promise<void> {
+    if (this.cookerManager.getAtTile(tileIndex) || this.storageChestManager.getChestAtTile(tileIndex) ||
+        this.furnaceManager.getFurnaceAtTile(tileIndex) || this.garbagePileManager.getPileAtTile(tileIndex)) {
+      return;  // one station per tile
+    }
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+    // depth is the air above the block it stands on
+    const groundRadius = planet.depthToRadius(depth) - planet.getBlockHeight();
+    const ground = tile.center.clone().normalize().multiplyScalar(groundRadius).add(planet.center);
+    if (!this.inventory.useSelectedItem()) return;
+    const facing = this.cookerManager.facingToward(ground, planet.center, this.player.getForwardVector());
+    const cooker = await this.cookerManager.place(kind, ground, planet.center, tileIndex, facing);
+    this.updateHotbarUI();
+    this.saveInventory();
+    this.saveCooker(cooker);
+  }
+
+  private saveCooker(cooker: PlacedCooker): void {
+    gameStorage.saveCooker(this.planetIdAt(cooker.position), cooker.tileIndex, {
+      kind: cooker.kind,
+      position: { x: cooker.position.x, y: cooker.position.y, z: cooker.position.z },
+      rotation: cooker.rotation,
+      slots: cooker.slots.map(sl => ({ itemType: sl.itemType, quantity: sl.quantity })),
+      progress: cooker.progress,
+    });
+  }
+
+  private handleCookerMining(deltaTime: number, cooker: PlacedCooker): void {
+    if (this.miningCookerTarget !== cooker) {
+      this.resetMining();
+      this.miningCookerTarget = cooker;
+      this.miningProgress = 0;
+    }
+    const mineTime = ITEM_DATA[COOKERS[cooker.kind].item].mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
+    this.updateMiningUI(this.miningProgress);
+    this.playMiningSound(this.player.position);
+    if (this.miningProgress >= 1) {
+      this.breakCooker(cooker);
+      this.resetMining();
+    }
+  }
+
+  // Take a station up: it and everything in it go back to the player
+  // (what doesn't fit is left as a garbage pile, as a chest's is)
+  private breakCooker(cooker: PlacedCooker): void {
+    if (this.storageUI.getCurrentStorage() === cooker) this.storageUI.close();
+    const overflow: { itemType: ItemType; quantity: number }[] = [];
+    for (const item of [{ itemType: COOKERS[cooker.kind].item, quantity: 1 }, ...cooker.slots]) {
+      if (item.itemType === ItemType.NONE || item.quantity <= 0) continue;
+      const left = this.inventory.addItem(item.itemType, item.quantity);
+      if (left > 0) overflow.push({ itemType: item.itemType, quantity: left });
+    }
+    this.updateHotbarUI();
+    this.saveInventory();
+    gameStorage.removeCooker(this.planetIdAt(cooker.position), cooker.tileIndex);
+    if (overflow.length > 0) this.createGarbagePileWithItems(cooker.position.clone(), cooker.tileIndex, overflow);
+    this.cookerManager.remove(cooker);
+  }
+
+  // ---- eating ----------------------------------------------------------------
+
+  /** Mining speed while well fed: mining time x (1 - strength). */
+  private mineSpeed(): number {
+    return 1 / wellFedFactor(this.wellFed);
+  }
+
+  private eatSelected(): void {
+    const item = this.inventory.getSelectedItem().itemType;
+    const fed = eat(item);
+    if (!fed || !this.inventory.useSelectedItem()) return;
+    this.wellFed = fed;  // restarts any running timer - never stacks
+    this.wellFedLoaded = true;
+    this.wellFedSaveTimer = FOOD_CONFIG.SAVE_EVERY_S;
+    gameStorage.saveWellFed(fed);
+    emitGameEvent('ate', item);
+    this.updateHotbarUI();
+    this.saveInventory();
+    this.renderWellFedChip();
+  }
+
+  private updateWellFed(dt: number): void {
+    if (!this.wellFedLoaded) {
+      this.wellFedLoaded = true;
+      this.wellFed = gameStorage.getWellFed<WellFed>();
+    }
+    if (!this.wellFed) return;
+    this.wellFed = tickWellFed(this.wellFed, dt);
+    this.wellFedSaveTimer -= dt;
+    if (!this.wellFed || this.wellFedSaveTimer <= 0) {
+      this.wellFedSaveTimer = FOOD_CONFIG.SAVE_EVERY_S;
+      gameStorage.saveWellFed(this.wellFed);
+    }
+    this.renderWellFedChip();
+  }
+
+  /** The player's well-fed state, if fed (for tests and the console). */
+  public getWellFed(): WellFed | null {
+    return this.wellFed;
+  }
+
+  // The HUD chip: "Well fed 2:31" while it lasts
+  private renderWellFedChip(): void {
+    if (!this.wellFedChip) {
+      this.wellFedChip = document.createElement('div');
+      this.wellFedChip.id = 'well-fed-chip';
+      this.wellFedChip.className = 'well-fed-chip';
+      document.body.appendChild(this.wellFedChip);
+    }
+    if (!this.wellFed) {
+      this.wellFedChip.style.display = 'none';
+      return;
+    }
+    const s = Math.ceil(this.wellFed.remainingS);
+    this.wellFedChip.textContent = `Well fed ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    this.wellFedChip.style.display = 'block';
   }
 
   private handleStorageChestMining(deltaTime: number, chest: PlacedStorageChest): void {
@@ -1974,7 +2239,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.STORAGE_CHEST].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Play mining hit sound
@@ -2036,7 +2301,7 @@ export class PlanetBlockInteraction {
     const mineTime = 0.5;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2097,7 +2362,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.STEAM_ENGINE].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2147,7 +2412,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.HYDRO_GENERATOR].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2198,7 +2463,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.COPPER_PIPE].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2246,7 +2511,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.CABLE].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2294,7 +2559,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.ELECTRIC_FURNACE].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2326,7 +2591,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.ELECTRONICS_WORKBENCH].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2375,7 +2640,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.COMPUTER].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2425,7 +2690,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.PRINTER_3D].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2476,7 +2741,7 @@ export class PlanetBlockInteraction {
     const mineTime = ITEM_DATA[ItemType.LAUNCH_PAD_BLOCK].mineTime;
 
     // Increase progress
-    this.miningProgress += deltaTime / mineTime;
+    this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
     this.updateMiningUI(this.miningProgress);
 
     // Check if mining complete
@@ -2534,6 +2799,9 @@ export class PlanetBlockInteraction {
 
     if (furnace.smeltingItem !== null && furnace.inputCount > 0) {
       droppedItems.push({ itemType: furnace.smeltingItem, quantity: furnace.inputCount });
+    }
+    if (furnace.additiveItem !== null && furnace.additiveCount > 0) {
+      droppedItems.push({ itemType: furnace.additiveItem, quantity: furnace.additiveCount });
     }
     if (furnace.outputItem !== null && furnace.outputCount > 0) {
       droppedItems.push({ itemType: furnace.outputItem, quantity: furnace.outputCount });
@@ -2605,7 +2873,9 @@ export class PlanetBlockInteraction {
   }
 
   private resetMining(): void {
+    this.miningCookerTarget = null;
     this.miningTarget = null;
+    this.miningMachineTarget = null;
     this.miningTreeTarget = null;
     this.miningFurnaceTarget = null;
     this.miningStorageTarget = null;
@@ -2721,6 +2991,13 @@ export class PlanetBlockInteraction {
       return;
     }
 
+    // Cooking stations (campfire, kiln, oven)
+    const cookerKind = cookerKindOf(selectedSlot.itemType);
+    if (cookerKind) {
+      this.placeCooker(planet, tileIndex, depth, cookerKind);
+      return;
+    }
+
     // Handle storage chest placement separately
     if (selectedSlot.itemType === ItemType.STORAGE_CHEST) {
       this.placeStorageChest(planet, tileIndex, depth);
@@ -2766,6 +3043,12 @@ export class PlanetBlockInteraction {
     // Handle computer placement
     if (selectedSlot.itemType === ItemType.COMPUTER) {
       this.placeComputer(planet, tileIndex, depth);
+      return;
+    }
+
+    // Industry machines and batteries (one path for all of them)
+    if (MACHINE_KIND_OF[selectedSlot.itemType]) {
+      this.placeMachine(planet, tileIndex, depth, selectedSlot.itemType);
       return;
     }
 
@@ -3365,15 +3648,7 @@ export class PlanetBlockInteraction {
       // Save electric furnace placement to game storage
       if (placedFurnace) {
         const planetId = this.getPlanetId(planet);
-        gameStorage.saveElectricFurnace(planetId, tileIndex, {
-          position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
-          rotation: placedFurnace.rotation,
-          smeltingItem: placedFurnace.smeltingItem,
-          smeltingProgress: placedFurnace.smeltingProgress,
-          inputCount: placedFurnace.inputCount,
-          outputItem: placedFurnace.outputItem,
-          outputCount: placedFurnace.outputCount
-        });
+        gameStorage.saveElectricFurnace(planetId, tileIndex, electricFurnaceSave(placedFurnace));
 
         // Rebuild cable connections so nearby cables can connect to this furnace
         this.cableNodeManager.rebuildAllConnections();
@@ -3571,12 +3846,14 @@ export class PlanetBlockInteraction {
     const hex = this.padHex(planet, tileIndex, level, outerRadius - padHeight, true);
     if (!hex) return 'Nothing to build on';
     if (pad) {
+      const wasComplete = pad.isComplete;
       this.launchPadManager.addHex(pad, hex);
       for (const other of touching.slice(1)) {
         const otherKey = other.centerTileIndex;
         if (this.launchPadManager.mergeInto(pad, other)) gameStorage.removeLaunchPad(this.getPlanetId(planet), otherKey);
       }
       this.saveLaunchPadStates();
+      if (!wasComplete && pad.isComplete) emitGameEvent('padComplete');
       return pad;
     }
     const created = await this.launchPadManager.createPad(planet.center, hex, outerRadius);
@@ -3784,6 +4061,15 @@ export class PlanetBlockInteraction {
     return this.inventory;
   }
 
+  /** Sunlight on the machines and the launch pads (live orbits: day and night). */
+  public setSunDirection(dir: THREE.Vector3): void {
+    for (const m of [this.furnaceManager, this.storageChestManager, this.cookerManager, this.garbagePileManager, this.steamEngineManager,
+      this.hydroGeneratorManager, this.copperPipeManager, this.cableNodeManager, this.electricFurnaceManager,
+      this.electronicsWorkbenchManager, this.computerManager, this.printer3DManager, this.launchPadManager, this.machineManager]) {
+      m.setSunDirection(dir);
+    }
+  }
+
   public getCraftingSystem(): CraftingSystem {
     return this.craftingSystem;
   }
@@ -3801,9 +4087,11 @@ export class PlanetBlockInteraction {
   }
 
   /**
-   * An empty bucket in hand + right click on water fills it. Water is an
-   * infinite source here: the block stays. Walks the view ray (water is not
-   * a raycast target) and fills at the first water block within reach.
+   * An empty bucket in hand + right click on a liquid fills it (BucketFills:
+   * water, oil sand, magma). Water is an infinite source here: the block
+   * stays; oil sand and magma leave stone / basalt, written and saved the
+   * same frame. Walks the view ray (water is not a raycast target) and fills
+   * at the first fillable block within reach.
    */
   private tryFillBucket(origin: THREE.Vector3, direction: THREE.Vector3): boolean {
     const step = PlayerConfig.BUCKET_RAY_STEP;
@@ -3819,13 +4107,20 @@ export class PlanetBlockInteraction {
         const tile = planet.getTileAtPoint(point);
         if (!tile) continue;
         const block = planet.getBlock(tile.index, depth);
-        if (block === HexBlockType.WATER) {
+        const fill = bucketFill(block);
+        if (fill) {
           if (!this.inventory.useSelectedItem()) return false;
-          if (this.inventory.addItem(ItemType.WATER_BUCKET, 1) > 0) {
+          const name = ITEM_DATA[fill.fills].name;
+          if (this.inventory.addItem(fill.fills, 1) > 0) {
             this.inventory.addItem(ItemType.BUCKET, 1);   // no room: keep the empty bucket
-            showToast('No room for a Water Bucket', { duration: 2000 });
+            showToast(`No room for a ${name}`, { duration: 2000 });
           } else {
-            showToast('Filled a Water Bucket', { duration: 2000 });
+            showToast(`Filled a ${name}`, { duration: 2000 });
+            if (fill.leaves !== undefined) {
+              // World edit: persisted the same frame (and synced via the save)
+              planet.setBlock(tile.index, depth, fill.leaves);
+              gameStorage.saveTileChange(this.getPlanetId(planet), tile.index, depth, fill.leaves);
+            }
           }
           this.updateHotbarUI();
           this.saveInventory();
@@ -3855,7 +4150,10 @@ export class PlanetBlockInteraction {
   }
 
   // Get neighbor tile indices for pipe connection detection
-  private getNeighborTileIndices(tileIndex: number): number[] {
+  private getNeighborTileIndices(tileIndex: number, near?: THREE.Vector3): number[] {
+    // Tile indices repeat from planet to planet: with a position, use its planet
+    const on = near ? this.planetOf(near) : undefined;
+    if (on) return (on.getTileByIndex(tileIndex)?.neighbors as number[] | undefined) ?? [];
     // Find which planet has this tile
     for (const planet of this.planets) {
       const tile = planet.getTileByIndex(tileIndex);
@@ -3911,6 +4209,7 @@ export class PlanetBlockInteraction {
         })),
         fuel: pad.fuel ?? undefined,
         cargo: pad.cargo.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
+        engineMode: pad.engineMode ?? null,
       });
     }
   }
@@ -3940,39 +4239,217 @@ export class PlanetBlockInteraction {
     for (const furnace of furnaces) {
       const planetId = this.planetIdAt(furnace.position);
 
-      gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, {
-        position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
-        rotation: furnace.rotation,
-        smeltingItem: furnace.smeltingItem,
-        smeltingProgress: furnace.smeltingProgress,
-        inputCount: furnace.inputCount,
-        outputItem: furnace.outputItem,
-        outputCount: furnace.outputCount
-      });
+      gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, electricFurnaceSave(furnace));
     }
   }
 
-  // Update power status for all electric furnaces based on cable connections to running steam engines
-  private updateElectricFurnacePowerStatus(): void {
-    const electricFurnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
+  // ---- The power grid and the industry machines (openspec industry-and-nuclear, design 3-5) ----
 
-    for (const furnace of electricFurnaces) {
-      // Check if this furnace is connected to a running steam engine via cables
-      const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        furnace.tileIndex,
-        (steamTileIndex) => {
-          // Check if steam engine at this tile is running
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          if (!engine) return false;
-          // Get the running state from the UI
-          const state = this.steamEngineUI.getEngineState(steamTileIndex);
-          return state?.isRunning ?? false;
+  /**
+   * Balance every cable network (the one grid: CableNodeManager's networks)
+   * and drive the isPowered flag every machine already reads, then run the
+   * industry machines one step. Solved every POWER_CONFIG.SOLVE_EVERY_S.
+   */
+  private updatePowerGrid(deltaTime: number): void {
+    this.powerSolveTimer += deltaTime;
+    if (this.powerSolveTimer < POWER_CONFIG.SOLVE_EVERY_S) return;
+    const dt = this.powerSolveTimer;
+    this.powerSolveTimer = 0;
+
+    const machines = this.machineManager.getAll();
+    const oil = new Map<PlacedMachine, boolean>();
+    for (const m of machines) if (m.kind === 'pumpJack') oil.set(m, this.oilBelow(m));
+    const demandW = (k: keyof typeof POWER_CONFIG.DEMAND_W) => POWER_CONFIG.DEMAND_W[k] ?? 0;
+
+    const grid = new Map<number, GridResult>();
+    let anyOnBattery = false;
+    const cablePos = new Map(this.cableNodeManager.getPlacedCables().map(c => [c.id, c.position]));
+    for (const net of this.cableNodeManager.getNetworks()) {
+      const near = cablePos.get(net.cables[0]);  // which planet this network is on
+      const gens: GridGenerator[] = [];
+      const cons: GridConsumer[] = [];
+      const bats: GridBattery[] = [];
+      const members: number[] = [];
+      for (const t of net.connectedSteamEngines) {
+        members.push(t);
+        if (this.steamEngineManager.getSteamEngineAtTile(t)?.isRunning) gens.push({ id: `steam${t}`, watts: POWER_CONFIG.SUPPLY_W.steamEngine ?? 0 });
+      }
+      for (const t of net.connectedElectricFurnaces) {
+        members.push(t);
+        if (this.electricFurnaceManager.getElectricFurnaceAtTile(t)?.smeltingItem != null) cons.push({ id: `efurnace${t}`, watts: demandW('electricFurnace') });
+      }
+      for (const t of net.connectedElectronicsWorkbenches) members.push(t);
+      for (const t of net.connectedComputers) {
+        members.push(t);
+        cons.push({ id: `computer${t}`, watts: demandW('computer') });
+      }
+      for (const t of net.connectedPrinters3D) {
+        members.push(t);
+        if (this.printer3DManager.getPrinter3DAtTile(t)?.currentJob) cons.push({ id: `printer${t}`, watts: demandW('printer3D') });
+      }
+      for (const n of net.nodes) {
+        const t = n.tileIndex;
+        members.push(t);
+        if (n.kind === 'hydroGenerator') {
+          if (this.hydroGeneratorManager.getHydroGeneratorAtTile(t)?.isActive) gens.push({ id: `hydro${t}`, watts: POWER_CONFIG.SUPPLY_W.hydroGenerator ?? 0 });
+          continue;
         }
-      );
-
-      // Update furnace power status
-      this.electricFurnaceManager.setFurnacePowered(furnace.tileIndex, isPowered);
+        const m = this.machineAt(t, near);
+        if (!m) continue;
+        if (m.kind === 'battery') {
+          const spec = POWER_CONFIG.BATTERIES[m.itemType];
+          bats.push({ id: `battery${t}`, chargeWh: m.chargeWh, capacityWh: spec.capacityWh, maxRateW: spec.maxRateW });
+        }
+        const supply = machineSupplyW(m);
+        if (supply > 0) gens.push({ id: `machine${t}`, watts: supply, nuclear: m.kind === 'reactor' });
+        if (wantsPower(m, oil.get(m) ?? false)) cons.push({ id: `machine${t}`, watts: demandW(m.kind) });
+      }
+      const result = solveNetwork(gens, cons, bats, dt);
+      if (result.onBattery) anyOnBattery = true;
+      for (const t of members) grid.set(t, result);
+      for (const b of bats) {
+        const m = this.machineAt(Number(b.id.slice('battery'.length)), near);
+        if (m) m.chargeWh = result.batteryCharge.get(b.id) ?? m.chargeWh;
+      }
     }
+    this.gridByTile = grid;
+    // A network that just went over to its batteries (a mission counts it)
+    if (anyOnBattery && !this.wasOnBattery) emitGameEvent('onBattery');
+    this.wasOnBattery = anyOnBattery;
+
+    // The isPowered flags the older machines already read
+    for (const f of this.electricFurnaceManager.getPlacedElectricFurnaces()) this.electricFurnaceManager.setFurnacePowered(f.tileIndex, this.nodePowered(f.tileIndex));
+    for (const c of this.computerManager.getAllComputers()) this.computerManager.setComputerPowered(c, this.nodePowered(c.tileIndex));
+    for (const p of this.printer3DManager.getAllPrinters()) this.printer3DManager.setPrinterPowered(p, this.nodePowered(p.tileIndex));
+
+    // The industry machines' own step
+    this.machineSaveTimer += dt;
+    const saveAll = this.machineSaveTimer >= MACHINE_CONFIG.SAVE_EVERY_S;
+    if (saveAll) this.machineSaveTimer = 0;
+    for (const m of machines) {
+      m.powered = this.nodePowered(m.tileIndex);
+      const fx = tickMachine(m, dt, { oilBelow: oil.get(m) ?? false, reactorPower: (grid.get(m.tileIndex)?.nuclearW ?? 0) > 0 });
+      if (fx.pumpedCell) this.drainOilBelow(m);
+      if (fx.event === 'fabricated') {
+        for (const o of fx.made ?? []) emitGameEvent('crafted', o.itemType, o.quantity);
+      } else if (fx.event) {
+        emitGameEvent(fx.event, fx.made?.[0]?.itemType, fx.made?.[0]?.quantity ?? 1);
+      }
+      if (fx.event || (saveAll && this.machineBusy(m))) this.saveMachine(m);
+    }
+    this.machineUI.refresh();
+  }
+
+  /** Is this machine doing something whose state should be saved now and then? */
+  private machineBusy(m: PlacedMachine): boolean {
+    return m.progressS > 0 || m.kind === 'battery' || m.kind === 'reactor';
+  }
+
+  /**
+   * Is the node on this tile powered: its network's last solve kept its
+   * machines running, and there is something there to run them on.
+   */
+  private nodePowered(tileIndex: number): boolean {
+    const r = this.gridByTile.get(tileIndex);
+    return !!r && r.powered && (r.supplyW > 0 || r.storedWh > 0);
+  }
+
+  /** The machine on a tile (on the planet `near` is on, when given). */
+  private machineAt(tileIndex: number, near?: THREE.Vector3): PlacedMachine | undefined {
+    if (!near) return this.machineManager.getAtTile(tileIndex);
+    const id = this.planetIdAt(near);
+    return this.machineManager.getAll().find(m => m.tileIndex === tileIndex && this.planetIdAt(m.position) === id);
+  }
+
+  private planetOf(position: THREE.Vector3): Planet | undefined {
+    const id = this.planetIdAt(position);
+    return this.planets.find(p => this.getPlanetId(p) === id);
+  }
+
+  /** The topmost oil sand cell straight below a machine, or -1. */
+  private oilDepthBelow(m: PlacedMachine): number {
+    const planet = this.planetOf(m.position);
+    if (!planet) return -1;
+    for (let d = m.depth - 1; d >= 0; d--) {
+      if (planet.getBlock(m.tileIndex, d) === HexBlockType.OIL_SAND) return d;
+    }
+    return -1;
+  }
+
+  private oilBelow(m: PlacedMachine): boolean {
+    return this.oilDepthBelow(m) >= 0;
+  }
+
+  /** One pumped unit: the top oil sand cell below turns to stone (a persisted edit). */
+  private drainOilBelow(m: PlacedMachine): void {
+    const planet = this.planetOf(m.position);
+    const d = this.oilDepthBelow(m);
+    if (!planet || d < 0) return;
+    planet.setBlock(m.tileIndex, d, HexBlockType.STONE);
+    gameStorage.saveTileChange(this.getPlanetId(planet), m.tileIndex, d, HexBlockType.STONE);
+  }
+
+  private saveMachine(m: PlacedMachine): void {
+    gameStorage.saveMachine(this.planetIdAt(m.position), machineRecord(m));
+  }
+
+  /** Place a pump jack, refinery, centrifuge, reactor, fabricator or battery. */
+  private placeMachine(planet: Planet, tileIndex: number, depth: number, itemType: ItemType): void {
+    const planetId = this.getPlanetId(planet);
+    const kind = MACHINE_KIND_OF[itemType]!;
+    if (this.machineManager.getAll().some(m => m.tileIndex === tileIndex && this.planetIdAt(m.position) === planetId)) return;
+    // A reactor goes only on an airless body (the Moon, moons, asteroids, barren worlds)
+    if (kind === 'reactor' && getBodyConfig(planetId)?.hasAtmosphere !== false) {
+      showToast('Reactors can only be built off-world', { duration: 3000 });
+      return;
+    }
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+    // depth is the air cell: the machine sits on the solid block below it
+    const groundTop = tile.center.clone().normalize().multiplyScalar(planet.depthToRadius(depth) - planet.getBlockHeight()).add(planet.center);
+    if (!this.inventory.useSelectedItem()) return;
+    const state = newMachineState(itemType, tileIndex, depth, MachineManager.centreAbove(groundTop, planet.center), 0);
+    const placed = this.machineManager.add(state, planet.center);
+    this.updateHotbarUI();
+    this.saveInventory();
+    this.saveMachine(placed);
+    if (kind === 'reactor') emitGameEvent('reactorBuilt', itemType, 1);
+    this.cableNodeManager.updateCablesNearTile(tileIndex);
+    this.cableNodeManager.rebuildAllConnections();
+  }
+
+  private handleMachineMining(deltaTime: number, machine: PlacedMachine): void {
+    if (this.miningMachineTarget === null || this.miningMachineTarget.machine !== machine) {
+      this.resetMining();
+      this.miningMachineTarget = { machine };
+      this.miningProgress = 0;
+    }
+    this.miningProgress += deltaTime / ITEM_DATA[machine.itemType].mineTime;
+    this.updateMiningUI(this.miningProgress);
+    this.playMiningSound(this.player.position);
+    if (this.miningProgress >= 1) {
+      this.breakMachine(machine);
+      this.resetMining();
+    }
+  }
+
+  /** Take a machine up: it and everything in it go back to the player (overflow to a pile). */
+  private breakMachine(machine: PlacedMachine): void {
+    const items = [{ itemType: machine.itemType, quantity: 1 }, ...machine.inputs, ...machine.outputs]
+      .filter(s => s.itemType !== ItemType.NONE && s.quantity > 0);
+    const overflow: { itemType: ItemType; quantity: number }[] = [];
+    for (const it of items) {
+      const left = this.inventory.addItem(it.itemType, it.quantity);
+      if (left > 0) overflow.push({ itemType: it.itemType, quantity: left });
+    }
+    this.updateHotbarUI();
+    this.saveInventory();
+    gameStorage.removeMachine(this.planetIdAt(machine.position), machine.tileIndex);
+    if (overflow.length > 0) this.createGarbagePileWithItems(machine.position.clone(), machine.tileIndex, overflow);
+    if (this.machineUI.getMachine() === machine) this.machineUI.close();
+    this.machineManager.remove(machine);
+    this.cableNodeManager.updateCablesNearTile(machine.tileIndex);
+    this.cableNodeManager.rebuildAllConnections();
   }
 
   // Save all storage chest and garbage pile states to local storage
@@ -4150,7 +4627,22 @@ export class PlanetBlockInteraction {
       case 'workbench': { const o = at(this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()); if (o) this.electronicsWorkbenchManager.removeElectronicsWorkbench(o); found = o; break; }
       case 'computer': { const o = at(this.computerManager.getAllComputers()); if (o) this.computerManager.removeComputer(o); found = o; break; }
       case 'printer3D': { const o = at(this.printer3DManager.getAllPrinters()); if (o) this.printer3DManager.removePrinter3D(o); found = o; break; }
+      case 'machine': {
+        const o = at(this.machineManager.getAll());
+        if (o) { if (this.machineUI.getMachine() === o) this.machineUI.close(); this.machineManager.remove(o); }
+        found = o;
+        break;
+      }
       case 'chest': { const o = at(this.storageChestManager.getPlacedChests()); if (o) this.storageChestManager.removeChest(o); found = o; break; }
+      case 'cooker': {
+        const o = at(this.cookerManager.getPlaced());
+        if (o) {
+          if (this.storageUI.getCurrentStorage() === o) this.storageUI.close();
+          this.cookerManager.remove(o);
+        }
+        found = o;
+        break;
+      }
       case 'garbagePile': { const o = at(this.garbagePileManager.getPlacedPiles()); if (o) this.garbagePileManager.removePile(o); found = o; break; }
       case 'steamEngine': { const o = at(this.steamEngineManager.getPlacedSteamEngines()); if (o) this.steamEngineManager.removeSteamEngine(o); found = o; break; }
       case 'hydroGenerator': { const o = at(this.hydroGeneratorManager.getPlacedHydroGenerators()); if (o) this.hydroGeneratorManager.removeHydroGenerator(o); found = o; break; }
@@ -4180,6 +4672,11 @@ export class PlanetBlockInteraction {
     if (!planet) return Promise.resolve();
     let pending: Promise<unknown> | void = undefined;
     switch (kind) {
+      case 'machine': {
+        const rec = saved as SavedMachine & { planetId: string };
+        this.machineManager.add(machineFromRecord(rec), planet.center);
+        break;
+      }
       case 'torch': {
         const savedTorch = saved as SavedTorch & { planetId: string };
         const worldPosition = new THREE.Vector3(
@@ -4223,6 +4720,14 @@ export class PlanetBlockInteraction {
           quantity: s.quantity
         }));
         pending = this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+        break;
+      }
+      case 'cooker': {
+        const savedCooker = saved as SavedCooker & { planetId: string };
+        const centre = new THREE.Vector3(savedCooker.position.x, savedCooker.position.y, savedCooker.position.z);
+        const slots = savedCooker.slots.map(sl => ({ itemType: sl.itemType as ItemType, quantity: sl.quantity }));
+        pending = this.cookerManager.place(savedCooker.kind, centre, planet.center, savedCooker.tileIndex,
+          savedCooker.rotation, slots, centre, savedCooker.progress ?? 0);
         break;
       }
       case 'garbagePile': {
@@ -4306,6 +4811,8 @@ export class PlanetBlockInteraction {
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
             placedFurnace.inputCount = savedFurnace.inputCount;
+            placedFurnace.additiveItem = savedFurnace.additiveItem ?? null;
+            placedFurnace.additiveCount = savedFurnace.additiveCount ?? 0;
             placedFurnace.outputItem = savedFurnace.outputItem;
             placedFurnace.outputCount = savedFurnace.outputCount;
           }
@@ -4412,6 +4919,7 @@ export class PlanetBlockInteraction {
           // The rocket's tanks and cargo hold (absent in older saves: full, empty)
           if (!pad) return Promise.resolve();
           pad.fuel = savedPad.fuel ?? null;
+          pad.engineMode = typeof savedPad.engineMode === 'number' ? savedPad.engineMode as ItemType : null;
           savedPad.cargo?.forEach((slot, i) => {
             if (i < pad.cargo.length && ITEM_DATA[slot.itemType as ItemType]) {
               pad.cargo[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };
@@ -4596,13 +5104,7 @@ export class PlanetBlockInteraction {
           tileIndex: workbench.tileIndex,
           position: { x: workbench.position.x, y: workbench.position.y, z: workbench.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              workbench.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(workbench.tileIndex);
             return isPowered ? 'Powered' : 'No Power';
           },
           openUI: () => {
@@ -4623,13 +5125,7 @@ export class PlanetBlockInteraction {
           tileIndex: computer.tileIndex,
           position: { x: computer.position.x, y: computer.position.y, z: computer.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              computer.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(computer.tileIndex);
             return isPowered ? 'Powered' : 'No Power';
           },
           openUI: () => {
@@ -4649,13 +5145,7 @@ export class PlanetBlockInteraction {
           tileIndex: printer.tileIndex,
           position: { x: printer.position.x, y: printer.position.y, z: printer.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              printer.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(printer.tileIndex);
             if (!isPowered) return 'No Power';
             if (printer.currentJob) {
               const progress = Math.round(printer.currentJob.progress * 100);
@@ -4668,6 +5158,19 @@ export class PlanetBlockInteraction {
           }
         }));
       }
+    });
+
+    // Register the industry machines and batteries
+    TechBlockRegistry.registerManager({
+      type: 'Machine',
+      getBlocks: (): TechBlockInfo[] => this.machineManager.getAll().map((m: PlacedMachine) => ({
+        type: ITEM_DATA[m.itemType]?.name ?? 'Machine',
+        id: `machine-${m.tileIndex}`,
+        tileIndex: m.tileIndex,
+        position: { x: m.position.x, y: m.position.y, z: m.position.z },
+        getStatus: () => m.status || (this.nodePowered(m.tileIndex) ? 'Powered' : 'No Power'),
+        openUI: () => this.machineUI.openFor(m),
+      })),
     });
 
     // Register Cables

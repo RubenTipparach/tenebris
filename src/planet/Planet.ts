@@ -1,7 +1,8 @@
+import { Deposit, SHORE_CLAY } from '../config/ResourceConfig';
 import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
-import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
+import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType, isClearSolid } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
@@ -43,6 +44,8 @@ export interface PlanetConfig {
   volcanoes?: number;   // volcano cones with a crater
   iceCover?: boolean;   // frozen crust: frost over glacier ice
   metalRich?: boolean;  // meteoric iron at the surface, extra ore below
+  extraOres?: Deposit[];  // deposits beyond the common ores (ResourceConfig)
+  shoreClay?: boolean;    // clay patches on the shores (ResourceConfig SHORE_CLAY)
   spawnLatLon?: { latitude: number; longitude: number };  // the first volcano stands just beyond it
 }
 
@@ -60,6 +63,7 @@ interface GeometryData {
   uvs: number[];
   colors: number[];  // Vertex colors for position-based lighting
   skyLight: number[]; // Sky light level (0-1) based on depth from surface
+  blockLight?: number[]; // Light from emitting blocks (0-1)
   torchLight: number[]; // Torch light level (0-1.5) baked per vertex
   indices: number[];
   vertexOffset: number;
@@ -222,6 +226,10 @@ export class Planet {
   // Block edits (from a save) for columns that have not been generated yet.
   // Applied as each column arrives from the terrain worker.
   private pendingBlockEdits: Map<number, Map<number, HexBlockType>> = new Map();
+  // Every block edit ever made to this planet (tile -> depth -> block), so
+  // terrain released to save memory (releaseDetailedTerrain) regenerates
+  // with them. Small: one entry per edited block.
+  private editLog: Map<number, Map<number, HexBlockType>> = new Map();
 
   // LOD transition tracking - detects when player crosses lodSwitchAltitude
   private wasAboveLODThreshold: boolean = true;
@@ -262,6 +270,8 @@ export class Planet {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
     this.config = config;
+    this.attachRoot.name = 'planetAttachRoot';
+    scene.add(this.attachRoot);
 
     // Debug: log LOD config values
     console.log(`[Planet ${config.name}] Config LOD values: intermediate=${config.intermediateLODAltitude}, high=${config.highLODAltitude}, distant=${config.distantLODAltitude}`);
@@ -454,6 +464,103 @@ export class Planet {
     return this.detailedTerrainPromise;
   }
 
+  /**
+   * Give back the memory a visited planet holds - its block columns and
+   * detailed meshes - and drop back to how a far planet starts (its chunked
+   * LOD and distant spheres stay, so it still looks right from afar).
+   * Coming back regenerates the terrain and re-applies every edit (editLog),
+   * as the first visit did. Not while a build is in flight (returns false;
+   * the caller tries again later).
+   */
+  public releaseDetailedTerrain(): boolean {
+    if (!this.detailedTerrainEnabled || this.detailedTerrainInitializing) return false;
+    if (this.isWorkerBuildActive || this.isChunkWorkerBuildActive || this.isLODWorkerBuildActive || this.isIntermediateLODWorkerActive) return false;
+
+    const disposeTree = (root: THREE.Object3D) => root.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.geometry) child.geometry.dispose();
+    });
+    // Detailed chunk meshes
+    for (const [chunkIndex, group] of this.chunkDetailMeshes) {
+      const water = this.chunkDetailWaterMeshes.get(chunkIndex);
+      if (water && this.waterMeshCallback) this.waterMeshCallback(water, false);
+      group.parent?.remove(group);
+      disposeTree(group);
+    }
+    this.chunkDetailMeshes.clear();
+    this.chunkDetailWaterMeshes.clear();
+    // The flat batched mesh (before chunk meshes took over) and its water
+    if (this.currentWaterMesh && this.waterMeshCallback) this.waterMeshCallback(this.currentWaterMesh, false);
+    this.currentWaterMesh = null;
+    if (this.batchedMeshGroup) {
+      for (const child of [...this.batchedMeshGroup.children]) {
+        this.batchedMeshGroup.remove(child);
+        disposeTree(child);
+      }
+    }
+    if (this.boundaryWallsGroup) {
+      for (const child of [...this.boundaryWallsGroup.children]) {
+        this.boundaryWallsGroup.remove(child);
+        disposeTree(child);
+      }
+    }
+    if (this.intermediateLODMesh) {
+      this.intermediateLODMesh.parent?.remove(this.intermediateLODMesh);
+      disposeTree(this.intermediateLODMesh);
+      this.intermediateLODMesh = null;
+      this.isIntermediateLODBuilt = false;
+    }
+    for (const { mesh } of this.pendingMeshUploads) mesh.geometry.dispose();
+    this.pendingMeshUploads = [];
+    for (const mesh of this.pendingMeshDisposals) mesh.geometry.dispose();
+    this.pendingMeshDisposals = [];
+
+    // The block data - the bulk of it
+    this.columns.clear();
+    this.tilesWithDetailedGeometry.clear();
+    this.chunkDetailedTileCount.clear();
+    this.cachedNearbyTiles = new Set();
+    this.bufferCenterTiles = new Set();
+    this.pendingTilesToAdd = [];
+    this.pendingTilesToRemove = [];
+    this.dirtyChunks.clear();
+    this.pendingChunkWorkerTiles.clear();
+    this.pendingWorkerTiles.clear();
+    this.chunksBeingRebuilt = [];
+    this.pendingLODChunkData = [];
+    this.pendingLODChunkQueue = [];
+
+    // Edits come back with the terrain
+    this.pendingBlockEdits = new Map([...this.editLog].map(([t, m]) => [t, new Map(m)]));
+
+    // Back to a far planet's state: terrain on the next approach
+    this.detailedTerrainEnabled = false;
+    this.detailedTerrainPromise = null;
+    this.terrainGenerationPromise = null;
+    this.hasTransitionedToChunkMeshes = false;
+    this.isIncrementalRebuildActive = false;
+    this.needsRebatch = true;
+    this.cachedRenderDistance = -1;
+    this.currentPlayerTileIndex = -1;
+    console.log(`[Planet] ${this.config.name || 'Unknown'}: detailed terrain released`);
+    return true;
+  }
+
+  /**
+   * Far enough that only the distant LOD is drawn, well past where detail
+   * comes back (that is at distant level < 0), so a planet released here
+   * isn't regenerated by small moves at the edge.
+   */
+  public isFarForRelease(viewer: THREE.Vector3): boolean {
+    return this.getDistantLODLevel(viewer.distanceTo(this.center)) >= 1;
+  }
+
+  // While held, coming near doesn't load the terrain (a teleport is moving
+  // the player elsewhere; the planet they are leaving must not reload)
+  private autoDetailHeld = false;
+  public setAutoDetailHeld(held: boolean): void {
+    this.autoDetailHeld = held;
+  }
+
   // Generate this planet's terrain data (once). Safe to call repeatedly.
   public ensureTerrainGenerated(): Promise<void> {
     if (!this.terrainGenerationPromise) {
@@ -513,33 +620,7 @@ export class Planet {
       }));
 
       // Prepare config for worker
-      const config = {
-        // The planet's own blocks for the generic ones (SolarSystemConfig)
-        blockRemap: this.config.blockRemap,
-        // Climate biomes: always on a planet whose config has them (Sequoia,
-        // the living alien worlds); on Earth still the Debug-tab mockup
-        biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
-        city: this.config.city,
-        cityTileAngle: this.cityTileAngle(),
-        ...this.getShapeParams(),
-        hasWater: this.config.hasWater !== false && !this.config.texturePath,
-        isSingleTexturePlanet: !!this.config.texturePath,
-        polarThreshold: PlayerConfig.POLAR_THRESHOLD,
-        iceCover: this.config.iceCover ?? false,
-        metalRich: this.config.metalRich ?? false,
-        polarIceCap: PlayerConfig.POLAR_ICE_CAP,
-        polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
-        polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
-        // Ore configs
-        oreConfigs: this.ORE_CONFIGS.map(ore => ({
-          type: ore.type as number,
-          minDepth: ore.minDepth,
-          maxDepth: ore.maxDepth,
-          veinChance: ore.veinChance,
-          veinSize: ore.veinSize,
-          spreadFactor: ore.spreadFactor
-        }))
-      };
+      const config = this.terrainWorkerConfig();
 
       // Tiles are stored at their own index
       const tileMap = { get: (index: number) => this.polyhedron.tiles[index] };
@@ -612,6 +693,99 @@ export class Planet {
         config
       });
     });
+  }
+
+  // The terrain generator's settings for this planet (one copy: the full
+  // generation and the map's top-blocks-only run both use it)
+  private terrainWorkerConfig() {
+  return {
+      // The planet's own blocks for the generic ones (SolarSystemConfig)
+      blockRemap: this.config.blockRemap,
+      // Climate biomes: always on a planet whose config has them (Sequoia,
+      // the living alien worlds); on Earth still the Debug-tab mockup
+      biomes: !!this.config.biomes || (!this.config.texturePath && this.config.hasWater !== false && biomeMockupOn()),
+      city: this.config.city,
+      cityTileAngle: this.cityTileAngle(),
+      ...this.getShapeParams(),
+      hasWater: this.config.hasWater !== false && !this.config.texturePath,
+      isSingleTexturePlanet: !!this.config.texturePath,
+      polarThreshold: PlayerConfig.POLAR_THRESHOLD,
+      iceCover: this.config.iceCover ?? false,
+      metalRich: this.config.metalRich ?? false,
+      shoreClay: this.config.shoreClay ? SHORE_CLAY : undefined,
+      polarIceCap: PlayerConfig.POLAR_ICE_CAP,
+      polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
+      polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
+      // Ore configs
+      oreConfigs: [...this.ORE_CONFIGS, ...(this.config.extraOres ?? [])].map(ore => ({
+        type: ore.type as number,
+        minDepth: ore.minDepth,
+        maxDepth: ore.maxDepth,
+        veinChance: ore.veinChance,
+        veinSize: ore.veinSize,
+        spreadFactor: ore.spreadFactor
+      }))
+    };
+  }
+
+  /**
+   * The topmost non-air block of every tile, by tile index (0 = none): from
+   * the loaded columns, else from the terrain generator (top blocks only)
+   * with every edit applied - so a planet never visited, or released, maps
+   * exactly as it would generate. For the world map.
+   */
+  public async getTopBlocks(): Promise<Uint16Array> {
+    await this.initialize();
+    const tiles = this.polyhedron.tiles;
+    const out = new Uint16Array(tiles.length);
+    if (this.columns.size >= tiles.length) {
+      for (let i = 0; i < tiles.length; i++) out[i] = this.topBlockOf(i);
+      return out;
+    }
+    const worker = new Worker(new URL('../workers/terrainGenerationWorker.ts', import.meta.url), { type: 'module' });
+    const edits: Array<[number, number, number]> = [];
+    for (const [t, m] of this.editLog) for (const [d, b] of m) edits.push([t, d, b]);
+    return new Promise((resolve) => {
+      worker.onmessage = (e) => {
+        if (e.data?.type !== 'topBlocks') return;
+        worker.terminate();
+        resolve(e.data.top as Uint16Array);
+      };
+      worker.onerror = () => { worker.terminate(); resolve(out); };
+      worker.postMessage({
+        type: 'generateTopBlocks',
+        tiles: tiles.map(tile => ({ index: tile.index, center: { x: tile.center.x, y: tile.center.y, z: tile.center.z }, neighbors: tile.neighbors })),
+        config: this.terrainWorkerConfig(),
+        edits,
+      });
+    });
+  }
+
+  /** The topmost non-air block of a loaded tile (AIR when not loaded). */
+  public topBlockOf(tileIndex: number): HexBlockType {
+    const column = this.columns.get(tileIndex);
+    if (!column) return HexBlockType.AIR;
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
+      if (column.blocks[d] !== HexBlockType.AIR) return column.blocks[d];
+    }
+    return HexBlockType.AIR;
+  }
+
+  /** Whether this tile's blocks are loaded (its top block can be read now). */
+  public isTileLoaded(tileIndex: number): boolean {
+    return this.columns.has(tileIndex);
+  }
+
+  // Told the tile of every block edit (the map redraws it)
+  private editListeners = new Set<(tileIndex: number) => void>();
+  public onBlockEdit(listener: (tileIndex: number) => void): () => void {
+    this.editListeners.add(listener);
+    return () => this.editListeners.delete(listener);
+  }
+
+  /** The material a face key draws with on this planet (the map's colours). */
+  public getFaceMaterial(materialKey: string): THREE.Material {
+    return this.meshBuilder.getMaterial(materialKey);
   }
 
   private createBatchedMeshGroup(): void {
@@ -2740,7 +2914,7 @@ export class Planet {
         torchLight = chunk.snowTorchLight;
         indices = chunk.snowIndices;
         vertexOffset = chunk.snowVertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         // Ice/Glass uses ice buffer (transparent)
         positions = chunk.icePositions;
         normals = chunk.iceNormals;
@@ -2806,7 +2980,7 @@ export class Planet {
         chunk.woodVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
         chunk.snowVertexOffset = vertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         chunk.iceVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
         chunk.moonRockVertexOffset = vertexOffset;
@@ -3966,6 +4140,32 @@ export class Planet {
     return waterChangedCount;
   }
 
+  // ---- live orbits (openspec navigation-and-orbits, orbital-motion) ----
+  //
+  // Where this body was configured: the frame everything placed on it is
+  // authored in (blocks, machines, trees, rockets - world coordinates with
+  // the body here). While the body is the reference frame it sits exactly
+  // there; when another body is the reference it moves on its orbit, and
+  // attachRoot carries what is on it by the same offset.
+  public readonly configuredCenter = new THREE.Vector3();
+  public readonly attachRoot = new THREE.Group();
+
+  /** Where the body is configured (call once, at creation). */
+  public setConfiguredCenter(c: THREE.Vector3): void {
+    this.configuredCenter.copy(c);
+    this.center.copy(c);
+    this.attachRoot.position.set(0, 0, 0);
+    this.updateBoundingSpheres();
+  }
+
+  /** Move the body (its orbit): every mesh, bound and shader centre follows. */
+  public setCenter(c: THREE.Vector3): void {
+    if (this.center.equals(c)) return;
+    this.center.copy(c);
+    this.attachRoot.position.copy(c).sub(this.configuredCenter);
+    this.updateBoundingSpheres();
+  }
+
   public updateBoundingSpheres(): void {
     for (const column of this.columns.values()) {
       column.boundingSphere.center.copy(column.tile.center).add(this.center);
@@ -3985,6 +4185,14 @@ export class Planet {
     this.meshBuilder.setPlanetCenter(this.center);
     // Update distant LOD mesh positions
     this.updateDistantLODPositions();
+    if (this.intermediateLODMesh) this.intermediateLODMesh.position.copy(this.center);
+    // Any other material that lights by the planet's centre (chunked LOD)
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.planetCenter) m.uniforms.planetCenter.value.copy(this.center);
+      });
+    }
   }
 
   // Update LOD chunk bounding spheres when planet center moves
@@ -4093,7 +4301,7 @@ export class Planet {
     // Within distant-LOD range of a planet that has no terrain yet: load it
     // now (a far planet holds only its distant LOD), and keep showing the
     // distant LOD until the rest is ready
-    if (distantLODLevel < 0 && !this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
+    if (distantLODLevel < 0 && !this.detailedTerrainEnabled && !this.detailedTerrainInitializing && !this.autoDetailHeld) {
       this.enableDetailedTerrain();
     }
     if (!this.fullyInitialized) {
@@ -4258,7 +4466,7 @@ export class Planet {
 
     // Enable detailed terrain when player approaches a non-spawn planet
     // This happens once when crossing the LOD switch altitude threshold
-    if (!this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
+    if (!this.detailedTerrainEnabled && !this.detailedTerrainInitializing && !this.autoDetailHeld) {
       this.enableDetailedTerrain();
     }
 
@@ -4720,6 +4928,12 @@ export class Planet {
       material.uniforms.sunDirection.value.copy(dir);
       material.uniformsNeedUpdate = true; // Force Three.js to upload new uniform values to GPU
     }
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.sunDirection) m.uniforms.sunDirection.value.copy(dir);
+      });
+    }
   }
 
   // Set torch data for vertex baking (called before geometry rebuild)
@@ -4931,6 +5145,10 @@ export class Planet {
     if (data.skyLight.length > 0) {
       geometry.setAttribute('skyLight', new THREE.Float32BufferAttribute(data.skyLight, 1));
     }
+    // Light from emitting blocks (shared/voxelLight), when the chunk has any
+    if (data.blockLight && data.blockLight.length > 0) {
+      geometry.setAttribute('blockLight', new THREE.Float32BufferAttribute(data.blockLight, 1));
+    }
     // Add torch light attribute from worker (or default to zeros)
     if (data.torchLight && data.torchLight.length > 0) {
       geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(data.torchLight, 1));
@@ -5104,6 +5322,13 @@ export class Planet {
   }
 
   public setBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
+    if (depth >= 0 && tileIndex >= 0) {
+      let logged = this.editLog.get(tileIndex);
+      if (!logged) { logged = new Map(); this.editLog.set(tileIndex, logged); }
+      logged.set(depth, blockType);
+      // after the block is set (the listener reads it back)
+      for (const listener of this.editListeners) queueMicrotask(() => listener(tileIndex));
+    }
     const column = this.columns.get(tileIndex);
     if (!column) {
       // Terrain for this tile isn't generated yet (e.g. a saved edit on a

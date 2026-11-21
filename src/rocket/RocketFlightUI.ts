@@ -1,5 +1,7 @@
 import { RocketController } from './RocketController';
 import { RocketState, STATE_INFO } from './RocketState';
+import { engineModeLabel } from './RocketPerformance';
+import { ROCKET_INPUTS } from '../config/RocketConfig';
 
 /**
  * Flight HUD for rocket control
@@ -25,6 +27,7 @@ export class RocketFlightUI {
   private healthPercentEl: HTMLElement | null = null;
   private stateEl: HTMLElement | null = null;
   private thrustIndicatorEl: HTMLElement | null = null;
+  private engineModeEl: HTMLElement | null = null;
   private landingStatusEl: HTMLElement | null = null;
 
   // Buttons
@@ -55,6 +58,7 @@ export class RocketFlightUI {
       <div class="flight-ui-header">
         <div class="flight-state" id="flight-state">DOCKED</div>
         <div class="thrust-indicator" id="thrust-indicator">THRUST OFF</div>
+        <div class="engine-mode" id="engine-mode" hidden></div>
       </div>
 
       <div class="flight-ui-main">
@@ -148,6 +152,7 @@ export class RocketFlightUI {
     // Get element references
     this.stateEl = document.getElementById('flight-state');
     this.thrustIndicatorEl = document.getElementById('thrust-indicator');
+    this.engineModeEl = document.getElementById('engine-mode');
     this.altitudeEl = document.getElementById('flight-altitude');
     this.velocityEl = document.getElementById('flight-velocity');
     this.verticalVelEl = document.getElementById('flight-vertical');
@@ -249,6 +254,11 @@ export class RocketFlightUI {
         text-transform: uppercase;
       }
 
+      .engine-mode {
+        font-size: 12px;
+        color: #8fd3ff;
+        letter-spacing: 1px;
+      }
       .thrust-indicator {
         font-size: 12px;
         padding: 4px 10px;
@@ -601,6 +611,15 @@ export class RocketFlightUI {
       const isThrusting = rocket.isThrustOn() && rocket.getThrottle() > 0;
       this.thrustIndicatorEl.textContent = isThrusting ? 'THRUST ON' : 'THRUST OFF';
       this.thrustIndicatorEl.classList.toggle('active', isThrusting);
+    }
+
+    // Engine mode (design 6b): only shown when there is a choice
+    if (this.engineModeEl) {
+      const modes = rocket.getEngineModes();
+      this.engineModeEl.hidden = modes.length < 2;
+      if (modes.length > 1) {
+        this.engineModeEl.textContent = `[${ROCKET_INPUTS.ENGINE_MODE.replace('Key', '')}] ${engineModeLabel(rocket.getEngineMode()).toUpperCase()}`;
+      }
     }
 
     // Update altitude

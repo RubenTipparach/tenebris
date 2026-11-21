@@ -1,5 +1,7 @@
 import { getLandableBodies } from '../config/SolarSystemConfig';
 import { netSync } from '../net/NetSync';
+import type { SavedMachine } from '../power/MachineLogic';
+import { localGameTime } from '../world/Orbits';
 
 // Types for saved game data
 
@@ -40,6 +42,16 @@ export interface SavedStorageChest {
   position: { x: number; y: number; z: number };
   rotation: number;
   slots: SavedInventorySlot[];
+}
+
+// Cooking station data (campfire, kiln, oven: src/planet/Cookers.ts)
+export interface SavedCooker {
+  tileIndex: number;
+  kind: 'campfire' | 'kiln' | 'oven';
+  position: { x: number; y: number; z: number };  // the station's centre
+  rotation: number;
+  slots: SavedInventorySlot[];
+  progress: number;
 }
 
 // Garbage pile data
@@ -89,6 +101,9 @@ export interface SavedElectricFurnace {
   smeltingItem: number | null;
   smeltingProgress: number;
   inputCount: number;
+  // An alloy's second input (absent in saves from before alloys)
+  additiveItem?: number | null;
+  additiveCount?: number;
   outputItem: number | null;
   outputCount: number;
 }
@@ -158,6 +173,7 @@ export interface SavedLaunchPad {
   rocketParts?: SavedRocketPart[];  // New: saved rocket parts stack
   fuel?: number;                    // fuel units in the rocket's tanks (absent = full)
   cargo?: { itemType: number; quantity: number }[];  // the rocket's cargo hold
+  engineMode?: number | null;       // which engines fire (design 6b); absent/null = all
 }
 
 // Music state for persistence
@@ -175,6 +191,7 @@ export interface PlayerSaveData {
   velocity: { x: number; y: number; z: number };
   inventory: SavedInventorySlot[];
   music?: MusicSaveData;  // Music player state
+  gameTimeS?: number;     // the world's game clock (live orbits), seconds
   // Future: techStatus, techInventory, etc.
 }
 
@@ -190,6 +207,7 @@ export interface PlanetSaveData {
   computers: SavedComputer[];
   printers3D: SavedPrinter3D[];
   storageChests: SavedStorageChest[];
+  cookers?: SavedCooker[];
   garbagePiles: SavedGarbagePile[];
   steamEngines: SavedSteamEngine[];
   hydroGenerators: SavedHydroGenerator[];
@@ -197,6 +215,7 @@ export interface PlanetSaveData {
   cables: SavedCable[];
   removedTrees: SavedRemovedTree[];
   launchPads: SavedLaunchPad[];
+  machines?: SavedMachine[];        // the industry machines and batteries
 }
 
 // Legacy combined format (for migration)
@@ -247,6 +266,9 @@ const PLANET_IDS = getLandableBodies().map(body => body.id);
 const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}${planetId}`;
 const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
+const MUSIC_KEY = 'tenebris_music';
+// Mission progress lives in the world's own slot (each world has its own)
+const missionsKey = (): string => `tenebris_${worldPrefix}missions`;
 
 // Every placed-object save is also published to the multiplayer world as a
 // record (NetSync), so the one save path is the one sync path. Offline, and
@@ -267,12 +289,14 @@ const RECORD_KINDS: Record<string, { field: keyof PlanetRecordLists; key: (o: Re
   computer: { field: 'computers', key: tileKey },
   printer3D: { field: 'printers3D', key: tileKey },
   chest: { field: 'storageChests', key: tileKey },
+  cooker: { field: 'cookers', key: tileKey },
   garbagePile: { field: 'garbagePiles', key: tileKey },
   steamEngine: { field: 'steamEngines', key: tileKey },
   hydroGenerator: { field: 'hydroGenerators', key: tileKey },
   copperPipe: { field: 'copperPipes', key: depthKey },
   cable: { field: 'cables', key: depthKey },
   launchPad: { field: 'launchPads', key: (o) => String(o.centerTileIndex) },
+  machine: { field: 'machines', key: tileKey },
 };
 type PlanetRecordLists = Omit<PlanetSaveData, 'version' | 'timestamp' | 'tileChanges' | 'removedTrees'>;
 /** A torch's record key: its position (several torches can share a tile). */
@@ -296,6 +320,7 @@ export class GameStorage {
     computers: SavedComputer[];
     printers3D: SavedPrinter3D[];
     storageChests: SavedStorageChest[];
+    cookers: SavedCooker[];
     garbagePiles: SavedGarbagePile[];
     steamEngines: SavedSteamEngine[];
     copperPipes: SavedCopperPipe[];
@@ -303,6 +328,7 @@ export class GameStorage {
     hydroGenerators: SavedHydroGenerator[];
     removedTrees: SavedRemovedTree[];
     launchPads: SavedLaunchPad[];
+    machines: SavedMachine[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -311,7 +337,7 @@ export class GameStorage {
   constructor() {
     // Initialize planet data for every planet
     for (const planetId of PLANET_IDS) {
-      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], cookers: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [], machines: [] });
     }
   }
 
@@ -590,6 +616,33 @@ export class GameStorage {
     return allLaunchPads;
   }
 
+  // The industry machines and batteries (src/planet/Machines.ts): one record
+  // kind for all of them, keyed by tile like the other machines
+  public saveMachine(planetId: string, data: SavedMachine): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.machines = planet.machines.filter(m => m.tileIndex !== data.tileIndex);
+    planet.machines.push(data);
+    this.persistPlanetToStorage(planetId);
+    publish('machine', planetId, data.tileIndex, data);
+  }
+
+  public removeMachine(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.machines = planet.machines.filter(m => m.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+    publish('machine', planetId, tileIndex, null);
+  }
+
+  public getMachines(): Array<SavedMachine & { planetId: string }> {
+    const all: Array<SavedMachine & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const m of planet.machines) all.push({ ...m, planetId });
+    }
+    return all;
+  }
+
   // Save storage chest placement
   public saveStorageChest(planetId: string, tileIndex: number, chestData: Omit<SavedStorageChest, 'tileIndex'>): void {
     const planet = this.planetData.get(planetId);
@@ -620,6 +673,32 @@ export class GameStorage {
       }
     }
     return allChests;
+  }
+
+  // Save a cooking station (placement, slots and progress)
+  public saveCooker(planetId: string, tileIndex: number, data: Omit<SavedCooker, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.cookers = planet.cookers.filter(c => c.tileIndex !== tileIndex);
+    planet.cookers.push({ tileIndex, ...data });
+    this.persistPlanetToStorage(planetId);
+    publish('cooker', planetId, tileIndex, { tileIndex, ...data });
+  }
+
+  public removeCooker(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.cookers = planet.cookers.filter(c => c.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+    publish('cooker', planetId, tileIndex, null);
+  }
+
+  public getCookers(): Array<SavedCooker & { planetId: string }> {
+    const all: Array<SavedCooker & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const c of planet.cookers) all.push({ ...c, planetId });
+    }
+    return all;
   }
 
   // Save garbage pile placement
@@ -941,6 +1020,7 @@ export class GameStorage {
       planet.computers = data.computers || [];
       planet.printers3D = data.printers3D || [];
       planet.storageChests = data.storageChests || [];
+      planet.cookers = data.cookers || [];
       planet.garbagePiles = data.garbagePiles || [];
       planet.steamEngines = data.steamEngines || [];
       planet.hydroGenerators = data.hydroGenerators || [];
@@ -948,6 +1028,7 @@ export class GameStorage {
       planet.cables = data.cables || [];
       planet.removedTrees = data.removedTrees || [];
       planet.launchPads = data.launchPads || [];
+      planet.machines = data.machines || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -1075,6 +1156,7 @@ export class GameStorage {
       planet.electricFurnaces = [];
       planet.electronicsWorkbenches = [];
       planet.storageChests = [];
+      planet.cookers = [];
       planet.garbagePiles = [];
       planet.steamEngines = [];
       planet.hydroGenerators = [];
@@ -1082,6 +1164,7 @@ export class GameStorage {
       planet.cables = [];
       planet.removedTrees = [];
       planet.launchPads = [];
+      planet.machines = [];
     }
 
     // Clear all storage keys
@@ -1102,7 +1185,9 @@ export class GameStorage {
         orientation: this.playerData?.orientation || { x: 0, y: 0, z: 0, w: 1 },
         velocity: this.playerData?.velocity || { x: 0, y: 0, z: 0 },
         inventory: this.inventory,
-        music: this.playerData?.music
+        music: this.playerData?.music,
+        // the single-player clock, live (orbits are a function of it)
+        gameTimeS: localGameTime(),
       };
 
       localStorage.setItem(playerStorageKey(), JSON.stringify(data));
@@ -1111,28 +1196,87 @@ export class GameStorage {
     }
   }
 
-  // Get music state from save data
+  // The well-fed state (src/player/Cooking.ts): its own key per world slot
+  public getWellFed<T>(): T | null {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}wellfed`);
+      return raw ? JSON.parse(raw) as T : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveWellFed(state: object | null): void {
+    try {
+      if (state) localStorage.setItem(`tenebris_${worldPrefix}wellfed`, JSON.stringify(state));
+      else localStorage.removeItem(`tenebris_${worldPrefix}wellfed`);
+    } catch {
+      // storage blocked: kept for this session only
+    }
+  }
+
+  // Mission progress (src/player/MissionTracker), saved the moment it changes
+  public getMissionState<T>(): T | null {
+    try {
+      const raw = localStorage.getItem(missionsKey());
+      return raw ? JSON.parse(raw) as T : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveMissionState(state: object): void {
+    try {
+      localStorage.setItem(missionsKey(), JSON.stringify(state));
+    } catch {
+      // storage blocked: progress lasts this session only
+    }
+  }
+
+  // The player's waypoints in this world (navigation-and-orbits): their own
+  // key per world slot, written the moment they change
+  public getWaypoints(): unknown {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}waypoints`);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  public saveWaypoints(list: unknown): void {
+    try {
+      localStorage.setItem(`tenebris_${worldPrefix}waypoints`, JSON.stringify(list));
+    } catch {
+      // storage blocked: kept for this session only
+    }
+  }
+
+  // Music on/off is a setting of this device, not of a world or a save:
+  // it lives under its own key, so the player-pose autosave (which rewrites
+  // the player save) and switching worlds can't reset it
+  /** The saved game clock (seconds of game time; 0 for an older save). */
+  public getGameTime(): number {
+    return this.playerData?.gameTimeS ?? 0;
+  }
+
   public getMusicState(): MusicSaveData | null {
+    try {
+      const raw = localStorage.getItem(MUSIC_KEY);
+      if (raw) return JSON.parse(raw) as MusicSaveData;
+    } catch {
+      // blocked / corrupt: fall back below
+    }
+    // older saves kept it in the player save
     return this.playerData?.music || null;
   }
 
-  // Save music state
   public saveMusicState(music: MusicSaveData): void {
-    if (!this.playerData) {
-      // Create minimal player data if none exists
-      this.playerData = {
-        version: SAVE_VERSION,
-        timestamp: Date.now(),
-        position: { x: 0, y: 0, z: 0 },
-        orientation: { x: 0, y: 0, z: 0, w: 1 },
-        velocity: { x: 0, y: 0, z: 0 },
-        inventory: [],
-        music
-      };
-    } else {
-      this.playerData.music = music;
+    try {
+      localStorage.setItem(MUSIC_KEY, JSON.stringify(music));
+    } catch {
+      // storage blocked: the setting lasts this session only
     }
-    this.persistPlayerToStorage();
   }
 
   // Persist planet data to localStorage
@@ -1152,13 +1296,15 @@ export class GameStorage {
         computers: planet.computers,
         printers3D: planet.printers3D,
         storageChests: planet.storageChests,
+        cookers: planet.cookers,
         garbagePiles: planet.garbagePiles,
         steamEngines: planet.steamEngines,
         hydroGenerators: planet.hydroGenerators,
         copperPipes: planet.copperPipes,
         cables: planet.cables,
         removedTrees: planet.removedTrees,
-        launchPads: planet.launchPads
+        launchPads: planet.launchPads,
+        machines: planet.machines
       };
 
       const key = planetStorageKey(planetId);

@@ -1,28 +1,15 @@
+import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { ItemType } from '../player/Inventory';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 
 // Electric smelting recipes: ore -> ingot (requires power, no fuel)
-export interface ElectricSmeltingRecipe {
-  input: ItemType;
-  output: ItemType;
-  outputQuantity: number;
-}
-
-export const ELECTRIC_SMELTING_RECIPES: ElectricSmeltingRecipe[] = [
-  // Advanced ores that require electric furnace
-  { input: ItemType.ORE_LITHIUM, output: ItemType.INGOT_LITHIUM, outputQuantity: 2 },
-  { input: ItemType.ORE_COBALT, output: ItemType.INGOT_COBALT, outputQuantity: 2 },
-  // Can also smelt all other ores (5x faster than regular furnace, no fuel needed, double yield)
-  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 2 },
-  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 2 },
-  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 2 },
-  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 2 },
-  { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 2 },
-];
+export { ELECTRIC_SMELTING_RECIPES } from '../config/SmeltingRecipes';
+export type { ElectricSmeltingRecipe } from '../config/SmeltingRecipes';
+import { electricRecipeFor, electricBatchReady } from '../config/SmeltingRecipes';
+import { recipeOpen } from '../player/RecipeGate';
 
 export interface PlacedElectricFurnace {
   mesh: THREE.Mesh;
@@ -33,6 +20,9 @@ export interface PlacedElectricFurnace {
   smeltingItem: number | null;
   smeltingProgress: number;
   inputCount: number;
+  // An alloy's second input (coal for steel)
+  additiveItem: number | null;
+  additiveCount: number;
   outputItem: number | null;
   outputCount: number;
 }
@@ -246,6 +236,8 @@ export class ElectricFurnaceManager {
       smeltingItem: null,
       smeltingProgress: 0,
       inputCount: 0,
+      additiveItem: null,
+      additiveCount: 0,
       outputItem: null,
       outputCount: 0,
     };
@@ -299,6 +291,8 @@ export class ElectricFurnaceManager {
       smeltingItem: null,
       smeltingProgress: 0,
       inputCount: 0,
+      additiveItem: null,
+      additiveCount: 0,
       outputItem: null,
       outputCount: 0,
     };
@@ -374,30 +368,25 @@ export class ElectricFurnaceManager {
     let anySmeltCompleted = false;
 
     for (const furnace of this.furnaces) {
-      // Only smelt if powered (connected to running steam engine)
-      if (furnace.isPowered && furnace.smeltingItem !== null) {
-        const smeltRate = 1 / this.SMELT_TIME;
-        furnace.smeltingProgress += deltaTime * smeltRate;
+      // Only smelt if powered (connected to running steam engine), and only
+      // while the load covers a whole batch (an alloy waits for its additive)
+      const recipe = electricRecipeFor(furnace.smeltingItem, furnace.additiveItem);
+      if (!furnace.isPowered || !recipe || !electricBatchReady(recipe, furnace.inputCount, furnace.additiveCount)) continue;
+      if (!recipeOpen(recipe.output)) continue;  // locked by a mission (src/player/RecipeGate)
+      if (furnace.outputItem !== null && furnace.outputItem !== recipe.output) continue;
 
-        if (furnace.smeltingProgress >= 1) {
-          const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === furnace.smeltingItem);
-          if (recipe) {
-            if (furnace.outputItem === null || furnace.outputItem === recipe.output) {
-              furnace.outputItem = recipe.output;
-              furnace.outputCount += recipe.outputQuantity;
-            }
-            furnace.inputCount--;
-            anySmeltCompleted = true;
-          }
+      furnace.smeltingProgress += deltaTime / this.SMELT_TIME;
+      if (furnace.smeltingProgress < 1) continue;
 
-          if (furnace.inputCount > 0) {
-            furnace.smeltingProgress = 0;
-          } else {
-            furnace.smeltingItem = null;
-            furnace.smeltingProgress = 0;
-          }
-        }
-      }
+      furnace.outputItem = recipe.output;
+      furnace.outputCount += recipe.outputQuantity;
+      emitGameEvent('smelted', recipe.output, recipe.outputQuantity);
+      furnace.inputCount -= recipe.inputQuantity ?? 1;
+      if (recipe.with) furnace.additiveCount -= recipe.with.quantity;
+      if (furnace.inputCount <= 0) { furnace.inputCount = 0; furnace.smeltingItem = null; }
+      if (furnace.additiveCount <= 0) { furnace.additiveCount = 0; furnace.additiveItem = null; }
+      furnace.smeltingProgress = 0;
+      anySmeltCompleted = true;
     }
 
     if (anySmeltCompleted && this.onSmeltCompleteCallback) {
@@ -412,6 +401,8 @@ export class ElectricFurnaceManager {
     smeltingItem: number | null;
     smeltingProgress: number;
     inputCount: number;
+    additiveItem: number | null;
+    additiveCount: number;
     outputItem: number | null;
     outputCount: number;
   }> {
@@ -422,6 +413,8 @@ export class ElectricFurnaceManager {
       smeltingItem: f.smeltingItem,
       smeltingProgress: f.smeltingProgress,
       inputCount: f.inputCount,
+      additiveItem: f.additiveItem,
+      additiveCount: f.additiveCount,
       outputItem: f.outputItem,
       outputCount: f.outputCount,
     }));

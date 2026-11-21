@@ -4,6 +4,7 @@ import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TilesetConfig, EARTH_TILESET, MOON_TILESET, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { getAssetPath } from '../utils/assetPath';
+import { LIGHTING_CONFIG } from '../config/LightingConfig';
 import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
@@ -32,12 +33,17 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
   ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
   ['moonOreTitanium', 'moon/ore_titanium'],
+  // Industry resources (scripts/gen-biome-textures.py)
+  ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
+  // Building materials (scripts/gen-biome-textures.py)
+  ['brickBlock', 'building/brick_block'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)
   ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
   ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],
   ['cityGlass', 'city/glass'], ['cityRoof', 'city/roof'], ['cityParapet', 'city/parapet'],
   ['cityNeon', 'city/neon'], ['cityDeck', 'city/deck'], ['cityMetal', 'city/metal'],
   ['cityPark', 'city/park'], ['cityParkSide', 'city/park_side'], ['cityFoundation', 'city/foundation'],
+  ['cityLamp', 'city/lamp'], ['cityLampTop', 'city/lamp_top'],
   // The living alien worlds' grounds: top, and side (the planet's rock under a lip)
   ['cinderEmbermoss', 'alien/cinder_embermoss'], ['cinderEmbermossSide', 'alien/cinder_embermoss_side'], ['cinderAsh', 'alien/cinder_ash'], ['cinderAshSide', 'alien/cinder_ash_side'],
   ['cinderSulfur', 'alien/cinder_sulfur'], ['cinderSulfurSide', 'alien/cinder_sulfur_side'],
@@ -65,6 +71,43 @@ const BIOME_TEXTURES: [string, string][] = [
   ['blueIce', 'bodies/blue_ice'],
   ['ironNickel', 'bodies/iron_nickel'],
 ];
+
+// See-through building blocks: drawn with the glass shader (texture alpha
+// cut-out, specular), like GLASS - their texture's clear texels are open
+const CLEAR_TEXTURES: [string, string][] = [
+  ['steelGlass', 'building/steel_glass'], ['steelGirder', 'building/steel_girder'],
+];
+
+// Blocks that give off light at night: their emissive masks (the lit
+// windows, neon, studs and lamp lenses, baked by gen-city-textures.py)
+const GLOW_TEXTURES: Record<string, string> = {
+  cityFacade: 'city/facade_glow', cityParapet: 'city/parapet_glow', cityNeon: 'city/neon_glow',
+  cityRoad: 'city/road_glow', cityPlaza: 'city/plaza_glow', cityGlass: 'city/glass_glow',
+  cityLamp: 'city/lamp_glow', cityLampTop: 'city/lamp_top_glow',
+};
+
+// No glow: one black texel, for every material without a mask
+let noGlow: THREE.DataTexture | null = null;
+function noGlowTexture(): THREE.Texture {
+  if (!noGlow) {
+    noGlow = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+    noGlow.needsUpdate = true;
+  }
+  return noGlow;
+}
+
+/** The terrain shader's night-light uniforms (LightingConfig); `glow` is the face's emissive mask. */
+function nightLightUniforms(glow?: THREE.Texture): Record<string, THREE.IUniform> {
+  const c = LIGHTING_CONFIG;
+  return {
+    glowTexture: { value: glow ?? noGlowTexture() },
+    glowNight: { value: glow ? c.GLOW_NIGHT : 0 },
+    glowDay: { value: glow ? c.GLOW_DAY : 0 },
+    blockLightNight: { value: c.BLOCK_LIGHT_NIGHT },
+    blockLightDay: { value: c.BLOCK_LIGHT_DAY },
+    blockLightTint: { value: new THREE.Vector3(...c.BLOCK_LIGHT_TINT) },
+  };
+}
 
 // Materials that light themselves (molten rock): drawn unlit, so they glow
 // on the night side and underground
@@ -165,7 +208,7 @@ export class HexBlockMeshBuilder {
       for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
     }
     if (singleTexturePath) wanted.add(singleTexturePath);
-    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/${file}.png`);
+    for (const [, file] of [...BIOME_TEXTURES, ...CLEAR_TEXTURES]) wanted.add(`/textures/${file}.png`);
     await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
@@ -262,9 +305,10 @@ export class HexBlockMeshBuilder {
     const terrainUnderwaterFogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
 
     // Create terrain shader materials for different face types
-    const createTerrainMaterial = (texture: THREE.Texture): THREE.ShaderMaterial => {
+    const createTerrainMaterial = (texture: THREE.Texture, glow?: THREE.Texture): THREE.ShaderMaterial => {
       const mat = new THREE.ShaderMaterial({
         uniforms: {
+          ...nightLightUniforms(glow),
           terrainTexture: { value: texture },
           sunDirection: { value: this.sunDirection.clone() },
           planetCenter: { value: this.planetCenter.clone() },
@@ -341,7 +385,8 @@ export class HexBlockMeshBuilder {
     // Biome surfaces (scripts/gen-biome-textures.py)
     for (const [key, file] of BIOME_TEXTURES) {
       const tex = await loadFixed(`/textures/${file}.png`);
-      this.materials.set(key, SELF_LIT.has(key) ? selfLitMaterial(tex) : createTerrainMaterial(tex));
+      const glow = GLOW_TEXTURES[key] ? await loadFixed(`/textures/${GLOW_TEXTURES[key]}.png`) : undefined;
+      this.materials.set(key, SELF_LIT.has(key) ? selfLitMaterial(tex) : createTerrainMaterial(tex, glow));
     }
     const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
     const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);
@@ -374,10 +419,11 @@ export class HexBlockMeshBuilder {
     this.terrainMaterials.push(iceMaterial);
     this.materials.set('ice', iceMaterial);
 
-    // Glass material - uses texture alpha for transparency with specular shininess
-    const glassMaterial = new THREE.ShaderMaterial({
+    // Glass material - uses texture alpha for transparency with specular shininess.
+    // One factory for every see-through block (glass, steel glass, the girder)
+    const createGlassMaterial = (texture: THREE.Texture): THREE.ShaderMaterial => new THREE.ShaderMaterial({
       uniforms: {
-        terrainTexture: { value: fixedGlass },
+        terrainTexture: { value: texture },
         sunDirection: { value: this.sunDirection.clone() },
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
@@ -398,8 +444,14 @@ export class HexBlockMeshBuilder {
       depthWrite: true,
       side: THREE.DoubleSide
     });
+    const glassMaterial = createGlassMaterial(fixedGlass);
     this.terrainMaterials.push(glassMaterial);
     this.materials.set('glass', glassMaterial);
+    for (const [key, file] of CLEAR_TEXTURES) {
+      const mat = createGlassMaterial(await loadFixed(`/textures/${file}.png`));
+      this.terrainMaterials.push(mat);
+      this.materials.set(key, mat);
+    }
 
     // Sea wall material - unlit, no fog so it stays exact color
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
@@ -473,6 +525,7 @@ export class HexBlockMeshBuilder {
       lodTexture.needsUpdate = true;
       const mat = new THREE.ShaderMaterial({
         uniforms: {
+          ...nightLightUniforms(),
           terrainTexture: { value: lodTexture },
           sunDirection: { value: this.sunDirection.clone() },
           planetCenter: { value: this.planetCenter.clone() },

@@ -3,6 +3,8 @@ import { PlacedStorageChest, CHEST_SLOTS } from '../planet/StorageChest';
 import { PlacedGarbagePile, GARBAGE_PILE_SLOTS } from '../planet/GarbagePile';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
+import { COOKERS, CookerKind } from '../config/CookingConfig';
+import { recipeLockedLabel } from './RecipeGate';
 
 // A rocket's cargo hold: the launch pad's slot array (any size)
 export interface RocketCargoHold { slots: InventorySlot[]; }
@@ -13,7 +15,7 @@ type StorageContainer = PlacedStorageChest | PlacedGarbagePile | RocketCargoHold
 export class StorageUI {
   private inventory: Inventory;
   private currentStorage: StorageContainer | null = null;
-  private storageType: 'chest' | 'garbage' | 'cargo' | null = null;
+  private storageType: 'chest' | 'garbage' | 'cargo' | 'cooker' | null = null;
   private storageSectionElement: HTMLElement | null = null;
   private storageGridElement: HTMLElement | null = null;
   private isOpen: boolean = false;
@@ -41,6 +43,7 @@ export class StorageUI {
     this.storageSectionElement.innerHTML = `
       <h3 id="storage-title">Storage</h3>
       <div class="storage-grid" id="storage-grid"></div>
+      <div class="cooker-recipes" id="cooker-recipes"></div>
       <div class="storage-hint">
         <p>Drag items or Shift+Click to transfer</p>
         <p>Right-click for half stack</p>
@@ -166,6 +169,44 @@ export class StorageUI {
       .storage-hint p {
         margin: 2px 0;
       }
+
+      .cooker-recipes {
+        flex-direction: column;
+        gap: 4px;
+        margin: 6px 0;
+      }
+      .cooker-recipe {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: #ddd;
+      }
+      .cooker-recipe > span {
+        white-space: nowrap;
+      }
+      .cooker-recipe > .cooker-recipe-name {
+        white-space: normal;
+        flex: 1;
+      }
+      .cooker-recipe.locked {
+        opacity: 0.45;
+        color: #999;
+      }
+      .cooker-recipe-icon {
+        width: 24px;
+        height: 24px;
+        background: rgba(0, 0, 0, 0.4);
+        border: 1px solid #555;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .cooker-recipe-icon img {
+        width: 20px;
+        height: 20px;
+        image-rendering: pixelated;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -175,7 +216,7 @@ export class StorageUI {
     this.storageGridElement.innerHTML = '';
 
     const slotCount = this.storageType === 'garbage' ? GARBAGE_PILE_SLOTS
-      : this.storageType === 'cargo' ? (this.currentStorage?.slots.length ?? 0) : CHEST_SLOTS;
+      : this.storageType === 'cargo' || this.storageType === 'cooker' ? (this.currentStorage?.slots.length ?? 0) : CHEST_SLOTS;
     // A cargo hold is as big as the rocket's parts make it
     const columns = Math.max(1, Math.min(9, slotCount));
     this.storageGridElement.style.gridTemplateColumns = `repeat(${columns}, 40px)`;
@@ -496,6 +537,55 @@ export class StorageUI {
     this.openStorage(title);
   }
 
+  /**
+   * A cooking station's slots (src/planet/Cookers.ts): its ingredients,
+   * then what it made, then what it gives back - beside the hotbar + bag.
+   */
+  public openCooker(station: RocketCargoHold, kind: CookerKind): void {
+    this.currentStorage = station;
+    this.storageType = 'cooker';
+    this.openStorage(COOKERS[kind].title);
+    this.renderCookerRecipes(kind);
+  }
+
+  /**
+   * What a station cooks, as icon rows (inputs -> dish); a recipe a mission
+   * has not unlocked yet is dimmed and names that mission.
+   */
+  private renderCookerRecipes(kind: CookerKind | null): void {
+    const box = document.getElementById('cooker-recipes');
+    if (!box) return;
+    box.innerHTML = '';
+    box.style.display = kind ? 'flex' : 'none';
+    if (!kind) return;
+    const icon = (item: ItemType, tip: string): HTMLElement => {
+      const cell = document.createElement('div');
+      cell.className = 'cooker-recipe-icon';
+      cell.title = tip;
+      const img = document.createElement('img');
+      img.src = getAssetPath(ITEM_DATA[item]?.texture ?? '');
+      img.draggable = false;
+      cell.appendChild(img);
+      return cell;
+    };
+    for (const r of COOKERS[kind].recipes) {
+      const row = document.createElement('div');
+      row.className = 'cooker-recipe';
+      const locked = recipeLockedLabel(r.output);
+      if (locked) row.classList.add('locked');
+      for (const ing of r.inputs) row.appendChild(ing === 'fish' ? icon(ItemType.FISH_MINNOW, 'Any fish') : icon(ing, ITEM_DATA[ing]?.name ?? ''));
+      const arrow = document.createElement('span');
+      arrow.textContent = '->';
+      row.appendChild(arrow);
+      row.appendChild(icon(r.output, ITEM_DATA[r.output]?.name ?? ''));
+      const name = document.createElement('span');
+      name.className = 'cooker-recipe-name';
+      name.textContent = locked ? `${ITEM_DATA[r.output]?.name ?? ''} - ${locked}` : (ITEM_DATA[r.output]?.name ?? '');
+      row.appendChild(name);
+      box.appendChild(row);
+    }
+  }
+
   public openGarbagePile(pile: PlacedGarbagePile): void {
     this.currentStorage = pile;
     this.storageType = 'garbage';
@@ -509,8 +599,9 @@ export class StorageUI {
     if (titleEl) titleEl.textContent = title;
 
     this.storageSectionElement.classList.toggle('garbage', this.storageType === 'garbage');
-    this.storageSectionElement.classList.toggle('cargo', this.storageType === 'cargo');
+    this.storageSectionElement.classList.toggle('cargo', this.storageType === 'cargo' || this.storageType === 'cooker');
     this.createStorageSlots();
+    if (this.storageType !== 'cooker') this.renderCookerRecipes(null);
     this.storageSectionElement.style.display = 'flex';
     this.isOpen = true;
     this.updateUI();
@@ -537,11 +628,16 @@ export class StorageUI {
     return this.isOpen;
   }
 
+  /** Redraw the open panel (a machine changed its own slots, e.g. a dish cooked). */
+  public refresh(): void {
+    if (this.isOpen) this.updateUI();
+  }
+
   public getCurrentStorage(): StorageContainer | null {
     return this.currentStorage;
   }
 
-  public getStorageType(): 'chest' | 'garbage' | 'cargo' | null {
+  public getStorageType(): 'chest' | 'garbage' | 'cargo' | 'cooker' | null {
     return this.storageType;
   }
 

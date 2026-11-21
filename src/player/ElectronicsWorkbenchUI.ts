@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+import { recipeLockedBy, recipeLockedLabel, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
@@ -121,6 +123,143 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
       { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.PRINTER_3D, quantity: 1 },
+  },
+  // --- Industry and nuclear (openspec industry-and-nuclear, design 3-5) ---
+  // Fuel rod: - E - / - Ti - / - E -  (2 enriched uranium + 1 titanium ingot)
+  {
+    name: 'Fuel Rod',
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.FUEL_ROD, quantity: 1 },
+  },
+  // Lead-acid battery: Fe S Fe / S Cu S / Fe S Fe  (iron and Cinder's sulfur)
+  {
+    name: 'Lead-Acid Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_LEAD_ACID, quantity: 1 },
+  },
+  // Lithium-ion battery: Li Co Li / Cu Cu Cu / Li Co Li
+  {
+    name: 'Lithium-Ion Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_LITHIUM, quantity: 1 },
+  },
+  // Solid-state battery: Ti P Ti / P Ti P / Ti P Ti
+  {
+    name: 'Solid-State Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_SOLID_STATE, quantity: 1 },
+  },
+  // Pump jack: Fe Fe Fe / - Fe - / Cu PSU Cu
+  {
+    name: 'Pump Jack',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.PUMP_JACK, quantity: 1 },
+  },
+  // Refinery: Al Al Al / Cu Fe Cu / Al PSU Al
+  {
+    name: 'Refinery',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.REFINERY, quantity: 1 },
+  },
+  // Centrifuge: Ti Ti Ti / Ti CPU Ti / Al PSU Al
+  {
+    name: 'Centrifuge',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CENTRIFUGE, quantity: 1 },
+  },
+  // Reactor: Ti Ti Ti / Ti MB Ti / Ti PSU Ti
+  {
+    name: 'Fission Reactor',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.REACTOR, quantity: 1 },
+  },
+  // Nuclear fabricator: Ti P Ti / CPU MB CPU / Ti PSU Ti
+  {
+    name: 'Nuclear Fabricator',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 3 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 4 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.NUCLEAR_FABRICATOR, quantity: 1 },
   },
 ];
 
@@ -584,12 +723,15 @@ export class ElectronicsWorkbenchUI {
 
     // Give output
     this.inventory.addItem(recipe.output.itemType, recipe.output.quantity);
+    emitGameEvent('crafted', recipe.output.itemType, recipe.output.quantity);
 
     this.updateUI();
     this.notifyChanges();
   }
 
   private canCraftRecipe(recipe: ElectronicsRecipe): boolean {
+    // Locked until its mission is done (src/player/RecipeGate)
+    if (!recipeOpen(recipe.output.itemType)) return false;
     // Debug mode: bypass ingredient requirements
     if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       return true;
@@ -693,6 +835,7 @@ export class ElectronicsWorkbenchUI {
 
     // Give output (addItem returns remaining items that couldn't be added)
     this.inventory.addItem(matchedRecipe.output.itemType, matchedRecipe.output.quantity);
+    emitGameEvent('crafted', matchedRecipe.output.itemType, matchedRecipe.output.quantity);
 
     this.updateUI();
     this.notifyChanges();
@@ -700,6 +843,7 @@ export class ElectronicsWorkbenchUI {
 
   private findMatchingRecipe(): ElectronicsRecipe | null {
     for (const recipe of ELECTRONICS_RECIPES) {
+      if (!recipeOpen(recipe.output.itemType)) continue;  // locked by a mission
       let matches = true;
 
       // Check all required inputs are present
@@ -817,6 +961,17 @@ export class ElectronicsWorkbenchUI {
   private updateUI(): void {
     if (!this.currentWorkbench) return;
 
+    // Recipes a mission has not unlocked yet read as locked, with that mission
+    if (this.recipeDropdown) {
+      ELECTRONICS_RECIPES.forEach((r, i) => {
+        const opt = this.recipeDropdown!.querySelector<HTMLOptionElement>(`option[value="${i}"]`);
+        const by = recipeLockedBy(r.output.itemType);
+        if (!opt) return;
+        opt.textContent = by ? `${r.name} - Unlocked by: ${by}` : r.name;
+        opt.style.color = by ? '#777' : '';
+      });
+    }
+
     // Update power status
     if (this.powerStatusElement) {
       if (this.isPowered) {
@@ -927,6 +1082,9 @@ export class ElectronicsWorkbenchUI {
     if (this.craftButton) {
       const canCraft = this.isPowered && selectedRecipe && this.canCraftRecipe(selectedRecipe);
       this.craftButton.disabled = !canCraft;
+      // A locked recipe's button names the mission that unlocks it
+      const locked = selectedRecipe ? recipeLockedLabel(selectedRecipe.output.itemType) : null;
+      this.craftButton.textContent = locked ?? 'Craft';
     }
   }
 }

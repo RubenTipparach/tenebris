@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { planetObjectScene } from '../world/PlanetFrames';
 import { RocketController, PlanetGravitySource, RocketInputState } from './RocketController';
 import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
@@ -83,7 +84,7 @@ export class RocketFlightManager {
     this.flightUI = new RocketFlightUI();
 
     // Create landed rocket manager and UI
-    this.landedRocketManager = new LandedRocketManager(scene);
+    this.landedRocketManager = new LandedRocketManager(planetObjectScene(scene));
     this.landedRocketUI = new LandedRocketUI();
 
     // Set up landed rocket UI callbacks
@@ -151,6 +152,11 @@ export class RocketFlightManager {
     this.landedRocketManager.setPlanets(this.planets);
   }
 
+  /** A body moved on its orbit: gravity and landings use its live centre. */
+  public setPlanetCenter(name: string, center: THREE.Vector3): void {
+    for (const p of this.planets) if (p.name === name) p.center.copy(center);
+  }
+
   /**
    * Set callback for when a rocket's fuel or cargo changed (save its pad)
    */
@@ -161,7 +167,10 @@ export class RocketFlightManager {
   /** Write the active rocket's fuel back to its pad and save */
   private recordActiveRocket(): void {
     if (!this.rocketController) return;
-    if (this.activePad) this.activePad.fuel = this.rocketController.getFuelUnits();
+    if (this.activePad) {
+      this.activePad.fuel = this.rocketController.getFuelUnits();
+      this.activePad.engineMode = this.rocketController.getEngineMode();
+    }
     this.onRocketChangedCallback?.(this.activePad);
   }
 
@@ -265,7 +274,8 @@ export class RocketFlightManager {
       surfaceNormal,
       this.planets,
       launchPad.fuel,
-      launchPad.cargo
+      launchPad.cargo,
+      launchPad.engineMode ?? null
     );
     this.activePad = launchPad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -338,7 +348,7 @@ export class RocketFlightManager {
         this.rocketController.getFuelPercent(),
         this.rocketController.getCargo(),
         this.activePad
-      );
+      ).engineMode = this.rocketController.getEngineMode();
 
       // Don't dispose - the rocket stays in the world
       // But we need to clean up the controller's resources that aren't part of the visual
@@ -385,7 +395,8 @@ export class RocketFlightManager {
       landedRocket.groundNormal,
       landedRocket.fuelPercent,
       this.planets,
-      landedRocket.cargo
+      landedRocket.cargo,
+      landedRocket.engineMode ?? null
     );
     this.activePad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -507,6 +518,11 @@ export class RocketFlightManager {
       // Handle edge-triggered inputs
       if (e.code === ROCKET_INPUTS.THRUST_TOGGLE) {
         this.inputState.thrustToggle = true;
+      }
+
+      // Cycle which engines fire (design 6b)
+      if (e.code === ROCKET_INPUTS.ENGINE_MODE) {
+        this.rocketController?.cycleEngineMode();
       }
 
       // Handle exit key - call exitFlightMode directly

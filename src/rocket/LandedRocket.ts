@@ -35,6 +35,9 @@ export interface LandedRocket {
   cargo: InventorySlot[] | null;
   pad: PlacedLaunchPad | null;
 
+  // Which engines fire when it flies again (design 6b; undefined = all)
+  engineMode?: import('./RocketPerformance').EngineMode;
+
   // Its address in a multiplayer world (the 'landedRocket' record key):
   // the same on every client that sees it
   netKey: string;

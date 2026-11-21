@@ -11,6 +11,13 @@ Writes, under public/textures/:
   rocket_parts/cargo_bay(.png, _face.png)        UV layout, so the same .obj
                                                  models) redrawn in their own
                                                  colours, shade by shade
+  industry and nuclear items: icons/ (brick, clay pot, oil and lava buckets,
+  kerosene, plastic, enriched uranium, fuel rod, cooked fish, fish stew),
+  technology/ machine art and faces (kiln, oven, pump jack, refinery,
+  centrifuge, reactor, nuclear fabricator, campfire, batteries), and the
+  tier 3-4 rocket parts
+  building materials: icons/steel_ingot.png, icons/cement.png (the blocks'
+  icons are their own textures, public/textures/building/)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -38,14 +45,13 @@ def write_png(path, pixels):
         f.write(png)
 
 
-def rocket_fuel():
+def rocket_fuel(body=(255, 0, 77, 255), shade=(126, 37, 83, 255), drop=(41, 173, 255, 255)):
     # PICO-8 palette, matching the game's other pixel art
     clear = (0, 0, 0, 0)
     dark = (29, 43, 83, 255)      # outline
-    red = (255, 0, 77, 255)       # body
-    shade = (126, 37, 83, 255)    # body shadow
+    red = body                    # body
     white = (255, 241, 232, 255)  # band / cap
-    blue = (41, 173, 255, 255)    # "H2O" drop on the band
+    blue = drop                   # the drop on the band
     grey = (95, 87, 79, 255)      # cap
     px = [[clear] * 16 for _ in range(16)]
     # cap and nozzle
@@ -150,7 +156,8 @@ def recolour(px, ramp):
     return out
 
 
-def bucket(full):
+def bucket(full, fill=("blue", "navy", "white")):
+    """Empty pail, or full of a liquid drawn as (surface, edge, glint)"""
     clear = (0, 0, 0, 0)
     c = {k: v + (255,) for k, v in P8.items()}
     px = [[clear] * 16 for _ in range(16)]
@@ -170,10 +177,11 @@ def bucket(full):
     for x in range(4, 12):
         px[9][x] = c["dgrey"] if px[9][x] != clear else clear
     if full:
+        top, edge, glint = fill
         for x in range(4, 12):
-            px[6][x] = c["blue"]
-            px[7][x] = c["navy"] if x in (4, 11) else c["blue"]
-        px[6][6] = px[6][7] = c["white"]   # a glint on the water
+            px[6][x] = c[top]
+            px[7][x] = c[edge] if x in (4, 11) else c[top]
+        px[6][6] = px[6][7] = c[glint]     # a glint on the liquid
     else:
         for x in range(4, 12):
             px[6][x] = c["dgrey"]          # the dark inside
@@ -193,6 +201,163 @@ def cargo_face():
         for x in range(4, 12):
             edge = x in (4, 11) or y in (4, 11)
             px[y][x] = c["dgrey"] if edge else (c["brown"] if (x + y) % 4 else c["orange"])
+    return px
+
+
+def _canvas():
+    return [[(0, 0, 0, 0)] * 16 for _ in range(16)], {k: v + (255,) for k, v in P8.items()}
+
+
+def brick():
+    """A fired brick, lit from the top left"""
+    px, c = _canvas()
+    for y in range(5, 12):
+        for x in range(1, 15):
+            edge = x in (1, 14) or y in (5, 11)
+            top = y == 6 and 1 < x < 14
+            px[y][x] = c["navy"] if edge else c["peach"] if top else c["plum"] if y == 10 or x == 13 else c["brown"]
+    for x in (4, 9):
+        px[8][x] = c["plum"]          # frog marks
+    return px
+
+
+def clay_pot():
+    """A fired clay pot"""
+    px, c = _canvas()
+    rows = {3: (5, 10), 4: (6, 9), 5: (5, 10), 6: (4, 11), 7: (3, 12), 8: (3, 12), 9: (3, 12),
+            10: (3, 12), 11: (4, 11), 12: (4, 11), 13: (5, 10)}
+    for y, (x0, x1) in rows.items():
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y in (3, 13)
+            px[y][x] = c["navy"] if edge else c["peach"] if x < x0 + 2 else c["plum"] if x > x1 - 2 else c["brown"]
+    for x in range(4, 12):
+        if px[9][x] == c["brown"]:
+            px[9][x] = c["orange"]    # a painted band
+    return px
+
+
+def plastic():
+    """A stack of plastic sheets"""
+    px, c = _canvas()
+    for i, (hi, mid, lo) in enumerate([("white", "pink", "plum"), ("white", "blue", "navy"), ("white", "lgrey", "indigo")]):
+        y0 = 4 + i * 3
+        for y in range(y0, y0 + 3):
+            for x in range(2 + i, 14 - (2 - i)):
+                edge = y == y0 + 2 or x in (2 + i, 13 - (2 - i))
+                px[y][x] = c[lo] if edge else c[hi] if y == y0 else c[mid]
+    return px
+
+
+def fuel_rod():
+    """A zirconium fuel rod: a long tube, green pellets at the window"""
+    px, c = _canvas()
+    for y in range(1, 15):
+        for x in range(6, 10):
+            edge = x in (6, 9) or y in (1, 14)
+            px[y][x] = c["navy"] if edge else c["white"] if x == 7 else c["lgrey"]
+    for y in range(5, 11):
+        px[y][7] = c["lime"] if y % 2 else c["green"]
+        px[y][8] = c["green"]
+    return px
+
+
+def bowl(soup, chunk):
+    """A wooden bowl of stew"""
+    px, c = _canvas()
+    for y in range(7, 14):
+        inset = max(0, y - 10)
+        x0, x1 = 2 + inset, 13 - inset
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y == 13
+            px[y][x] = c["navy"] if edge else c["peach"] if x < x0 + 2 else c["brown"]
+    for x in range(3, 13):
+        px[7][x] = c[soup]
+        px[6][x] = c[soup] if 4 <= x <= 11 else px[6][x]
+    for x in (5, 8, 10):
+        px[6][x] = c[chunk]
+    px[3][6] = px[4][7] = px[2][9] = px[3][10] = c["lgrey"]   # steam
+    return px
+
+
+def campfire():
+    """Crossed logs under a flame"""
+    px, c = _canvas()
+    for i in range(12):
+        for d in (0, 1):
+            y = 14 - i // 3 + d
+            if 0 <= y < 16:
+                px[y][2 + i] = c["brown"] if d == 0 else c["plum"]
+                px[y][13 - i] = c["brown"] if d == 0 else c["plum"]
+    flame = {3: (7, 8), 4: (7, 8), 5: (6, 9), 6: (6, 9), 7: (5, 10), 8: (5, 10), 9: (5, 10), 10: (6, 9)}
+    for y, (x0, x1) in flame.items():
+        for x in range(x0, x1 + 1):
+            core = x0 < x < x1 and y > 5
+            px[y][x] = c["yellow"] if core and y > 7 else c["orange"] if core else c["red"]
+    return px
+
+
+def battery(cap, band, mark):
+    """A cell battery: terminal cap, coloured band, tier mark"""
+    px, c = _canvas()
+    for x in (6, 7, 8, 9):
+        px[1][x] = c["dgrey"]
+        px[2][x] = c["lgrey"]
+    for y in range(3, 15):
+        for x in range(3, 13):
+            edge = x in (3, 12) or y in (3, 14)
+            px[y][x] = c["navy"] if edge else c["white"] if x == 4 else c[cap] if y < 6 else c[band] if y < 12 else c["dgrey"]
+    for y, x in mark:
+        px[y][x] = c["white"]
+    return px
+
+
+def trefoil(px, colour="yellow"):
+    """Stamp a small radiation mark in the top-right corner of a face"""
+    c = {k: v + (255,) for k, v in P8.items()}
+    for y in range(0, 5):
+        for x in range(11, 16):
+            px[y][x] = c["black"]
+    for y, x in [(1, 13), (2, 12), (2, 13), (2, 14), (3, 12), (3, 14), (2, 13)]:
+        px[y][x] = c[colour]
+    return px
+
+
+def leaves():
+    """A sprig of leaves (the LEAVES item had no icon on disk)"""
+    px, c = _canvas()
+    stem = [(13, 2), (12, 3), (11, 4), (10, 5), (9, 6), (8, 7), (7, 8), (6, 9), (5, 10), (4, 11), (3, 12), (2, 13)]
+    for x, y in stem:
+        px[y][x] = c["brown"]
+    for cx, cy in [(10, 2), (12, 6), (6, 5), (9, 9), (3, 8), (6, 12)]:
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                if abs(dx) + abs(dy) <= 1 or (dx, dy) == (-1, -1):
+                    x, y = cx + dx, cy + dy
+                    if 0 <= x < 16 and 0 <= y < 16:
+                        px[y][x] = c["lime"] if dx + dy < 0 else c["green"] if dx + dy > 0 else c["green"]
+        px[cy][cx] = c["lime"]
+        if 0 <= cy + 1 < 16 and cx + 1 < 16:
+            px[cy + 1][cx + 1] = c["navy"]
+    return px
+
+
+
+def cement():
+    """A sack of cement: grey paper sack, tied top, a stencilled band"""
+    px, c = _canvas()
+    rows = {2: (6, 9), 3: (5, 10), 4: (4, 11)}
+    for y in range(5, 14):
+        rows[y] = (3, 12)
+    for y, (x0, x1) in rows.items():
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y == 13
+            lit = (x == x0 + 1 or y == 5) and not edge
+            px[y][x] = c["navy"] if edge else c["white"] if lit else c["lgrey"]
+    for x in range(6, 10):
+        px[1][x] = c["dgrey"]          # the tie
+    for x in range(4, 12):
+        px[9][x] = c["dgrey"]          # the band
+        px[10][x] = c["indigo"]
     return px
 
 
@@ -223,3 +388,55 @@ if __name__ == "__main__":
     write("rocket_parts/vacuum_engine_face.png", recolour(read_png(os.path.join(parts, "medium_engine_face.png")), vac))
     write("rocket_parts/large_fuel_tank_face.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank_face.png")), big))
     write("rocket_parts/cargo_bay_face.png", cargo_face())
+
+    # ---- Industry and nuclear (openspec industry-and-nuclear) ------------
+    write("icons/leaves.png", leaves())
+    write("icons/brick.png", brick())
+    write("icons/clay_pot.png", clay_pot())
+    write("icons/crude_oil_bucket.png", bucket(True, ("black", "navy", "indigo")))
+    write("icons/lava_bucket.png", bucket(True, ("orange", "red", "yellow")))
+    c8 = {k: v + (255,) for k, v in P8.items()}
+    write("icons/kerosene.png", rocket_fuel(c8["yellow"], c8["orange"], c8["brown"]))
+    write("icons/plastic.png", plastic())
+    uran = [P8[k] for k in ("navy", "green", "green", "lime", "lime", "yellow")]
+    write("icons/enriched_uranium.png", recolour(read_png(os.path.join(tex, "minerals/earth/iron.png")), uran))
+    write("icons/fuel_rod.png", fuel_rod())
+    cooked = [P8[k] for k in ("navy", "plum", "brown", "orange", "peach")]
+    write("icons/cooked_fish.png", recolour(read_png(os.path.join(tex, "fish/perch.png")), cooked))
+    write("icons/fish_stew.png", bowl("orange", "peach"))
+    # Machines: the shipped machine art (same layout, so same block UVs)
+    # redrawn in each machine's own colours; the face is its item icon
+    techd = os.path.join(tex, "technology")
+    machines = [
+        ("kiln", "furnace", ("plum", "brown", "orange", "peach"), False),
+        ("oven", "furnace", ("navy", "dgrey", "lgrey", "red", "white"), False),
+        ("pump_jack", "steam_engine", ("black", "dgrey", "yellow", "orange"), False),
+        ("refinery", "electric_furnace", ("navy", "dgrey", "lgrey", "orange", "white"), False),
+        ("centrifuge", "hydro_generator", ("navy", "indigo", "lgrey", "lime", "white"), True),
+        ("reactor", "computer", ("black", "navy", "dgrey", "lgrey", "blue"), True),
+        ("nuclear_fabricator", "electronics_workbench", ("navy", "green", "lime", "lgrey", "white"), True),
+    ]
+    for name, src, keys, nuclear in machines:
+        ramp = [P8[k] for k in keys]
+        write(f"technology/{name}.png", recolour(read_png(os.path.join(techd, src + ".png")), ramp))
+        face = recolour(read_png(os.path.join(techd, src + "_face.png")), ramp)
+        write(f"technology/{name}_face.png", trefoil(face) if nuclear else face)
+    write("technology/campfire_face.png", campfire())
+    # Batteries: one tier mark per tier (I, II, III)
+    write("technology/battery_lead_acid_face.png", battery("dgrey", "red", [(8, 7), (9, 7), (10, 7)]))
+    write("technology/battery_lithium_face.png", battery("lgrey", "blue", [(8, 6), (9, 6), (10, 6), (8, 8), (9, 8), (10, 8)]))
+    write("technology/battery_solid_state_face.png", battery("indigo", "lime", [(8, 5), (9, 5), (10, 5), (8, 7), (9, 7), (10, 7), (8, 9), (9, 9), (10, 9)]))
+    # Tier 3-4 rocket parts, redrawn from the shipped part textures
+    nte = [P8[k] for k in ("black", "navy", "green", "lime", "lgrey", "white")]
+    ion = [P8[k] for k in ("black", "navy", "indigo", "pink", "white")]
+    core = [P8[k] for k in ("navy", "dgrey", "lgrey", "lime", "white")]
+    pack = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
+    for name, src, ramp in [("nuclear_thermal_engine", "medium_engine", nte), ("ion_drive", "medium_engine", ion),
+                            ("reactor_core", "medium_fuel_tank", core), ("battery_pack", "medium_fuel_tank", pack)]:
+        write(f"rocket_parts/{name}.png", recolour(read_png(os.path.join(parts, src + ".png")), ramp))
+        face = recolour(read_png(os.path.join(parts, src + "_face.png")), ramp)
+        write(f"rocket_parts/{name}_face.png", trefoil(face) if name in ("nuclear_thermal_engine", "reactor_core") else face)
+    # ---- Building materials (openspec industry-and-nuclear, decision 9) ---
+    steel = [P8[k] for k in ("black", "navy", "indigo", "lgrey", "white")]
+    write("icons/steel_ingot.png", recolour(read_png(os.path.join(tex, "minerals/earth/iron.png")), steel))
+    write("icons/cement.png", cement())

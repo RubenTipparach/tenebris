@@ -42,6 +42,9 @@ interface TerrainConfig extends ShapeParams {
   polarIceCapDepth?: number;
   // Ore configs
   oreConfigs: OreConfig[];
+  // Clay patches on the shores (ResourceConfig SHORE_CLAY): beach tiles and
+  // shallow beds where low-frequency noise passes the threshold
+  shoreClay?: { scale: number; threshold: number; seedSalt: number; shallowDepth: number };
 }
 
 interface OreConfig {
@@ -346,6 +349,21 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
     }
   }
 
+  // Shore clay: beach tiles and shallow beds in broad noise patches
+  const clayTiles = new Set<number>();
+  if (config.shoreClay && config.hasWater) {
+    const c = config.shoreClay;
+    for (const tile of tiles) {
+      const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
+      const shallowBed = surfaceDepth < SEA_LEVEL_DEPTH && surfaceDepth >= SEA_LEVEL_DEPTH - c.shallowDepth
+        && tile.neighbors.some(n => (heightMap.get(n) ?? SEA_LEVEL_DEPTH) >= SEA_LEVEL_DEPTH);
+      if (!beachTiles.has(tile.index) && !shallowBed) continue;
+      const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
+      const n = fractalSimplex3D(tile.center.x / len, tile.center.y / len, tile.center.z / len, c.scale, 2, 0.4, 2.0, config.seed + c.seedSalt);
+      if (n > c.threshold) clayTiles.add(tile.index);
+    }
+  }
+
   // Third pass: Create blocks based on height map
   for (const tile of tiles) {
     const blocks: number[] = [];
@@ -358,6 +376,7 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
     const isPolar = !config.isSingleTexturePlanet && Math.abs(normalizedY) > config.polarThreshold;
     const isUnderwater = config.hasWater && surfaceDepth < SEA_LEVEL_DEPTH;
     const crust = config.isSingleTexturePlanet ? rockWorldCrust(tile, surfaceDepth, heightMap, config) : null;
+    const isClay = clayTiles.has(tile.index) && !isPolar;
 
     for (let depth = 0; depth < config.maxDepth; depth++) {
       if (depth > surfaceDepth) {
@@ -369,6 +388,8 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
         } else {
           blocks.push(rockWorldBlock(tile, depth, surfaceDepth, crust!, normalizedY, oreVeinCache, config));
         }
+      } else if (isClay && depth > surfaceDepth - 3) {
+        blocks.push(HexBlockType.CLAY);
       } else if (depth === surfaceDepth && biomeTop.has(tile.index)) {
         blocks.push(biomeTop.get(tile.index)!);
       } else if (depth > surfaceDepth - 3 && (biomeTop.get(tile.index) === HexBlockType.SAND || biomeTop.get(tile.index) === HexBlockType.STONE || biomeTop.get(tile.index) === HexBlockType.SNOW)) {
@@ -428,8 +449,26 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
 }
 
 // Worker message handler
-self.onmessage = (e: MessageEvent<GenerateTerrainMessage>) => {
+self.onmessage = (e: MessageEvent<GenerateTerrainMessage & { edits?: Array<[number, number, number]> }>) => {
   const { type, tiles, config } = e.data;
+
+  // The world map's question: only each tile's topmost non-air block, from
+  // the same generator, with the planet's edits applied
+  if ((type as string) === 'generateTopBlocks') {
+    const columns = generateTerrain(tiles, config);
+    for (const [t, d, b] of e.data.edits ?? []) {
+      const col = columns.get(t);
+      if (col && d >= 0 && d < col.length) col[d] = b;
+    }
+    let max = 0;
+    for (const t of tiles) max = Math.max(max, t.index + 1);
+    const top = new Uint16Array(max);
+    for (const [i, col] of columns) {
+      for (let d = col.length - 1; d >= 0; d--) if (col[d] !== 0) { top[i] = col[d]; break; }
+    }
+    (self as unknown as Worker).postMessage({ type: 'topBlocks', top }, [top.buffer]);
+    return;
+  }
 
   if (type === 'generateTerrain') {
     console.log(`[TerrainWorker] Generating terrain for ${tiles.length} tiles...`);

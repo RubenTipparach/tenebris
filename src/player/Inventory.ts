@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+
 // Item types in the game
 export enum ItemType {
   NONE = 0,
@@ -91,6 +93,43 @@ export enum ItemType {
   // Titanium (ilmenite): only in the Moon's rock
   ORE_TITANIUM = 67,
   INGOT_TITANIUM = 68,
+  // Industry and nuclear (openspec industry-and-nuclear). Every item the
+  // change needs is declared here at once, so later work adds behaviour
+  // without touching the enum
+  CLAY = 72,
+  BRICK = 73,
+  CLAY_POT = 74,
+  CRUDE_OIL_BUCKET = 75,
+  LAVA_BUCKET = 76,
+  KEROSENE = 77,
+  PLASTIC = 78,
+  ORE_URANIUM = 79,
+  ENRICHED_URANIUM = 80,
+  FUEL_ROD = 81,
+  COOKED_FISH = 82,
+  FISH_STEW = 83,
+  CAMPFIRE = 84,
+  KILN = 85,
+  OVEN = 86,
+  PUMP_JACK = 87,
+  REFINERY = 88,
+  CENTRIFUGE = 89,
+  REACTOR = 90,
+  NUCLEAR_FABRICATOR = 91,
+  BATTERY_LEAD_ACID = 92,
+  BATTERY_LITHIUM = 93,
+  BATTERY_SOLID_STATE = 94,
+  NUCLEAR_THERMAL_ENGINE = 95,
+  ION_DRIVE = 96,
+  REACTOR_CORE = 97,
+  BATTERY_PACK = 98,
+  // Building materials (industry-and-nuclear task group 8)
+  CEMENT = 99,
+  STEEL_INGOT = 100,
+  BRICK_BLOCK = 101,
+  CONCRETE_BLOCK = 102,
+  STEEL_GIRDER = 103,
+  STEEL_GLASS = 104,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -142,7 +181,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.DIRT]: { name: 'Dirt', stackSize: 64, texture: '/textures/dirt.png', mineTime: 0.5 },
   [ItemType.GRASS]: { name: 'Grass', stackSize: 64, texture: '/textures/grass.png', mineTime: 0.6 },
   [ItemType.WOOD]: { name: 'Wood', stackSize: 64, texture: '/textures/wood.png', mineTime: 1.0 },
-  [ItemType.LEAVES]: { name: 'Leaves', stackSize: 64, texture: '/textures/leaves.png', mineTime: 0.3 },
+  [ItemType.LEAVES]: { name: 'Leaves', stackSize: 64, texture: '/textures/icons/leaves.png', mineTime: 0.3 },
   [ItemType.LOG]: { name: 'Log', stackSize: 64, texture: '/textures/icons/logs.png', mineTime: 1.2 },
   [ItemType.SAND]: { name: 'Sand', stackSize: 64, texture: '/textures/sand.png', mineTime: 0.5 },
   // Mineral ores
@@ -186,7 +225,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.RAM_MODULE]: { name: 'RAM Module', stackSize: 64, texture: '/textures/technology/ram_module.png', mineTime: 0.3 },
   [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/mother_board.png', mineTime: 0.3 },
   // Glass (crafted, uses ice shader for transparency)
-  [ItemType.GLASS]: { name: 'Glass', stackSize: 64, texture: '/textures/glass.png', mineTime: 0.3 },
+  [ItemType.GLASS]: { name: 'Glass', stackSize: 64, texture: '/textures/glass.png', mineTime: 1.2 },
   // Advanced electronics components
   [ItemType.POWER_SUPPLY]: { name: 'Power Supply', stackSize: 64, texture: '/textures/technology/power_supply.png', mineTime: 0.3 },
   [ItemType.PRINT_NOZZLE]: { name: 'Print Nozzle', stackSize: 64, texture: '/textures/technology/print_nozzle.png', mineTime: 0.3 },
@@ -317,6 +356,99 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_REEF]: { name: 'Reef Fish', stackSize: 16, texture: '/textures/fish/reef.png', mineTime: 0.3 },
   [ItemType.FISH_DEEPBACK]: { name: 'Deepback', stackSize: 16, texture: '/textures/fish/deepback.png', mineTime: 0.3 },
   [ItemType.FISH_SERPENT]: { name: 'Sea Serpent', stackSize: 16, texture: '/textures/fish/serpent.png', mineTime: 0.3 },
+  // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
+  // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
+  // the ores' icons are their block textures as the other ores' are)
+  [ItemType.CLAY]: { name: 'Clay', stackSize: 64, texture: '/textures/resources/clay.png', mineTime: 0.6 },
+  [ItemType.ORE_URANIUM]: { name: 'Uranium Ore', stackSize: 64, texture: '/textures/resources/ore_uranium.png', mineTime: 3.5 },
+  [ItemType.BRICK]: { name: 'Brick', stackSize: 64, texture: '/textures/icons/brick.png', mineTime: 0.3 },
+  [ItemType.CLAY_POT]: { name: 'Clay Pot', stackSize: 16, texture: '/textures/icons/clay_pot.png', mineTime: 0.3 },
+  [ItemType.CRUDE_OIL_BUCKET]: { name: 'Crude Oil Bucket', stackSize: 16, texture: '/textures/icons/crude_oil_bucket.png', mineTime: 0.3 },
+  [ItemType.LAVA_BUCKET]: { name: 'Lava Bucket', stackSize: 16, texture: '/textures/icons/lava_bucket.png', mineTime: 0.3 },
+  [ItemType.KEROSENE]: { name: 'Kerosene', stackSize: 64, texture: '/textures/icons/kerosene.png', mineTime: 0.3 },
+  [ItemType.PLASTIC]: { name: 'Plastic', stackSize: 64, texture: '/textures/icons/plastic.png', mineTime: 0.3 },
+  [ItemType.ENRICHED_URANIUM]: { name: 'Enriched Uranium', stackSize: 64, texture: '/textures/icons/enriched_uranium.png', mineTime: 0.3 },
+  [ItemType.FUEL_ROD]: { name: 'Fuel Rod', stackSize: 16, texture: '/textures/icons/fuel_rod.png', mineTime: 0.3 },
+  // Food
+  [ItemType.COOKED_FISH]: { name: 'Cooked Fish', stackSize: 16, texture: '/textures/icons/cooked_fish.png', mineTime: 0.3 },
+  [ItemType.FISH_STEW]: { name: 'Fish Stew', stackSize: 8, texture: '/textures/icons/fish_stew.png', mineTime: 0.3 },
+  // Machines (placed like the furnace and printer; behaviour comes with
+  // their own tasks)
+  [ItemType.CAMPFIRE]: { name: 'Campfire', stackSize: 8, texture: '/textures/technology/campfire_face.png', mineTime: 1.0 },
+  [ItemType.KILN]: { name: 'Kiln', stackSize: 8, texture: '/textures/technology/kiln_face.png', mineTime: 2.0 },
+  [ItemType.OVEN]: { name: 'Oven', stackSize: 8, texture: '/textures/technology/oven_face.png', mineTime: 2.0 },
+  [ItemType.PUMP_JACK]: { name: 'Pump Jack', stackSize: 8, texture: '/textures/technology/pump_jack_face.png', mineTime: 2.5 },
+  [ItemType.REFINERY]: { name: 'Refinery', stackSize: 8, texture: '/textures/technology/refinery_face.png', mineTime: 2.5 },
+  [ItemType.CENTRIFUGE]: { name: 'Centrifuge', stackSize: 8, texture: '/textures/technology/centrifuge_face.png', mineTime: 2.5 },
+  [ItemType.REACTOR]: { name: 'Fission Reactor', stackSize: 4, texture: '/textures/technology/reactor_face.png', mineTime: 4.0 },
+  [ItemType.NUCLEAR_FABRICATOR]: { name: 'Nuclear Fabricator', stackSize: 4, texture: '/textures/technology/nuclear_fabricator_face.png', mineTime: 3.0 },
+  // Batteries (placeable; denser by tier)
+  [ItemType.BATTERY_LEAD_ACID]: { name: 'Lead-Acid Battery', stackSize: 8, texture: '/textures/technology/battery_lead_acid_face.png', mineTime: 2.0 },
+  [ItemType.BATTERY_LITHIUM]: { name: 'Lithium-Ion Battery', stackSize: 8, texture: '/textures/technology/battery_lithium_face.png', mineTime: 2.0 },
+  [ItemType.BATTERY_SOLID_STATE]: { name: 'Solid-State Battery', stackSize: 8, texture: '/textures/technology/battery_solid_state_face.png', mineTime: 2.0 },
+  // Tier 3-4 rocket parts: the shipped models in their own textures
+  // (scripts/gen-item-icons.py); stats come with the rocket-tiers task
+  [ItemType.NUCLEAR_THERMAL_ENGINE]: {
+    name: 'Nuclear Thermal Engine',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/nuclear_thermal_engine_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/nuclear_thermal_engine.png',
+      heightUnits: 1,
+      modelScale: { x: 1.15, y: 1, z: 1.15 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.ION_DRIVE]: {
+    name: 'Ion Drive',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/ion_drive_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/ion_drive.png',
+      heightUnits: 1,
+      modelScale: { x: 0.85, y: 1, z: 0.85 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.REACTOR_CORE]: {
+    name: 'Reactor Core',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/reactor_core_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/reactor_core.png',
+      heightUnits: 1,
+    },
+  },
+  [ItemType.BATTERY_PACK]: {
+    name: 'Battery Pack',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/battery_pack_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/battery_pack.png',
+      heightUnits: 1,
+    },
+  },
+  // Building materials. Mining time rises dirt < clay < brick < glass <
+  // concrete = steel glass = steel girder (the block items' own textures
+  // are their icons).
+  [ItemType.CEMENT]: { name: 'Cement', stackSize: 64, texture: '/textures/icons/cement.png', mineTime: 0.3 },
+  [ItemType.STEEL_INGOT]: { name: 'Steel Ingot', stackSize: 64, texture: '/textures/icons/steel_ingot.png', mineTime: 0.3 },
+  [ItemType.BRICK_BLOCK]: { name: 'Brick Block', stackSize: 64, texture: '/textures/building/brick_block.png', mineTime: 1.0 },
+  [ItemType.CONCRETE_BLOCK]: { name: 'Concrete', stackSize: 64, texture: '/textures/building/concrete.png', mineTime: 2.5 },
+  [ItemType.STEEL_GIRDER]: { name: 'Steel Girder', stackSize: 64, texture: '/textures/building/steel_girder.png', mineTime: 2.5 },
+  [ItemType.STEEL_GLASS]: { name: 'Steel Glass', stackSize: 64, texture: '/textures/building/steel_glass.png', mineTime: 2.5 },
 };
 
 // Inventory slot
@@ -450,9 +582,11 @@ export class Inventory {
   }
 
   // Use item from selected slot (for placing blocks)
+  // Takes one of the held item: every caller is placing it in the world
   public useSelectedItem(): boolean {
     const slot = this.slots[this.selectedSlot];
     if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
+      emitGameEvent('placed', slot.itemType, 1);
       slot.quantity--;
       if (slot.quantity === 0) {
         slot.itemType = ItemType.NONE;

@@ -2,7 +2,8 @@
 // This is needed for GitHub Pages subdirectory deployments and itch.io
 
 // Get the base URL at module load time - Vite will inline this
-const BASE = import.meta.env.BASE_URL;
+// (outside Vite - a node test script - there is no env: the site root)
+const BASE = import.meta.env?.BASE_URL ?? '/';
 
 export function getAssetPath(path: string): string {
   // For itch.io (empty string BASE_URL), return relative paths without leading slash

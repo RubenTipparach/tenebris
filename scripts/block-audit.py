@@ -7,7 +7,7 @@ one that ships:
   - block names and ids: the HexBlockType enum   (src/shared/blockTypes.ts)
   - which material each face uses: BLOCK_FACES   (src/shared/blockTypes.ts)
   - which texture each material loads: the fixed materials and
-    BIOME_TEXTURES in src/planet/HexBlock.ts, resolved through the tilesets
+    BIOME_TEXTURES / CLEAR_TEXTURES in src/planet/HexBlock.ts, resolved through the tilesets
     in src/config/SolarSystemConfig.ts
 A face whose texture can't be resolved shows a red "?" - that is the audit
 failing, not the sheet.
@@ -42,8 +42,11 @@ for key, var, field in re.findall(r"materials\.set\('(\w+)', createTerrainMateri
 for var, field in re.findall(r"const (\w+) = await loadFixed\(e\.(\w+)\);", HEX):
     for key in re.findall(r"materials\.set\('(\w+)', createTerrainMaterial\(%s\)\)" % var, HEX):
         TEX[key] = SETS['e'][field]
-for key, file in re.findall(r"\['(\w+)', '([\w/]+)'\]", re.search(r'BIOME_TEXTURES[^=]*= \[(.*?)\];', HEX, re.S).group(1)):
-    TEX[key] = f'/textures/{file}.png'
+# BIOME_TEXTURES (opaque tiles) and CLEAR_TEXTURES (see-through tiles drawn
+# through the glass material)
+for table in ('BIOME_TEXTURES', 'CLEAR_TEXTURES'):
+    for key, file in re.findall(r"\['(\w+)', '([\w/]+)'\]", re.search(table + r'[^=]*= \[(.*?)\];', HEX, re.S).group(1)):
+        TEX[key] = f'/textures/{file}.png'
 # Earth's own tileset keys (loaded through the planet's tileset on Earth)
 for key, field in [('top', 'grass'), ('side', 'dirt'), ('grassSide', 'dirtGrass'), ('stone', 'stone'),
                    ('wood', 'wood'), ('sand', 'sand'), ('snow', 'snow'), ('dirtSnow', 'dirtSnow'),

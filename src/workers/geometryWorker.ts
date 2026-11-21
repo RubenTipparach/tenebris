@@ -1,6 +1,8 @@
 // Geometry Worker - builds terrain geometry off the main thread
 // Uses plain JavaScript math instead of THREE.js (not available in workers)
 
+import { bakeBlockField, bakeSkyField, blockAt, edgeNeighbors, skyAt, LightColumn, SkyField } from '../shared/voxelLight';
+import { isClearSolid, sideFaceShows } from '../shared/blockTypes';
 import { packFloatAttributes, PackedColumnSet, unpackColumnSet } from './packedTiles';
 import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
@@ -14,7 +16,7 @@ import {
   vec3Normalize,
   vec3Negate
 } from '../shared/vec3';
-import { SKY_LIGHT_FALLOFF, MIN_SKY_LIGHT, buildWaterWallAtDepth } from '../shared/geometry';
+import { buildWaterWallAtDepth } from '../shared/geometry';
 
 // Torch data for vertex lighting calculation
 interface TorchData {
@@ -30,13 +32,14 @@ interface GeometryData {
   uvs: number[];
   colors: number[];
   skyLight: number[];
+  blockLight?: number[];  // light from emitting blocks (shared/voxelLight), night-scaled in the shader
   torchLight: number[];  // Baked torch light level per vertex
   indices: number[];
   vertexOffset: number;
 }
 
 function createEmptyGeometryData(): GeometryData {
-  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
+  return { positions: [], normals: [], uvs: [], colors: [], skyLight: [], blockLight: [], torchLight: [], indices: [], vertexOffset: 0 };
 }
 
 // Tile data passed from main thread
@@ -134,30 +137,31 @@ interface ChunkGeometryResultMessage {
 
 
 // Check if a block type is transparent (air, water, ice, or glass)
-function isTransparentBlock(blockType: HexBlockType): boolean {
-  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
-}
 
 // Check if a column has an exposed side at the given depth
-function hasExposedSide(
+function exposedEdges(
   column: ColumnData,
   depth: number,
-  neighborDataMap: Map<number, NeighborData>
-): boolean {
-  const blockType = column.blocks[depth];
-  if (blockType === HexBlockType.AIR || blockType === HexBlockType.WATER) return false;
+  neighborDataMap: Map<number, NeighborData>,
+  edges: number[]
+): boolean[] {
+  const self = column.blocks[depth];
+  return edges.map(n => sideFaceShows(self, n < 0 ? undefined : neighborDataMap.get(n)?.blocks[depth]));
+}
 
-  for (const neighborIndex of column.tile.neighbors) {
-    const neighborInfo = neighborDataMap.get(neighborIndex);
-    if (!neighborInfo) return true; // No neighbor data = edge of loaded area
-
-    const neighborBlock = neighborInfo.blocks[depth];
-    if (neighborBlock === undefined) return true;
-    if (isTransparentBlock(neighborBlock)) {
-      return true;
-    }
-  }
-  return false;
+// Keep only the side quads (4 vertices each, one per edge) whose edge shows
+function keepSides(geom: { positions: number[]; normals: number[]; uvs: number[]; indices: number[] }, show: boolean[]): typeof geom {
+  const out = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[] };
+  let v = 0;
+  show.forEach((on, i) => {
+    if (!on) return;
+    out.positions.push(...geom.positions.slice(i * 12, i * 12 + 12));
+    out.normals.push(...geom.normals.slice(i * 12, i * 12 + 12));
+    out.uvs.push(...geom.uvs.slice(i * 8, i * 8 + 8));
+    out.indices.push(v, v + 1, v + 2, v, v + 2, v + 3);
+    v += 4;
+  });
+  return out;
 }
 
 // Merge geometry into target data (simplified version without THREE.js)
@@ -169,8 +173,9 @@ function mergeGeometry(
   uvs: number[],
   indices: number[],
   _sunDirection: Vec3,
-  skyLightLevel: number,
-  torches: TorchData[] = []
+  skyLightLevel: number | number[],  // one level, or one per vertex
+  torches: TorchData[] = [],
+  blockLevel: number | number[] = 0
 ): void {
   const vertexCount = positions.length / 3;
   const baseIndex = target.vertexOffset;
@@ -195,9 +200,11 @@ function mergeGeometry(
   // Add sky light - pre-build array
   const skyLightToAdd = new Array(vertexCount);
   for (let i = 0; i < vertexCount; i++) {
-    skyLightToAdd[i] = skyLightLevel;
+    skyLightToAdd[i] = typeof skyLightLevel === 'number' ? skyLightLevel : skyLightLevel[i];
   }
   target.skyLight.push.apply(target.skyLight, skyLightToAdd);
+  const blockOut = (target.blockLight ??= []);
+  for (let i = 0; i < vertexCount; i++) blockOut.push(typeof blockLevel === 'number' ? blockLevel : blockLevel[i]);
 
   // Add torch light - calculate per vertex based on position
   const torchLightToAdd = new Array(vertexCount);
@@ -365,29 +372,54 @@ function bufferFor(out: Record<string, GeometryData>, materialKey: string): Geom
   return data;
 }
 
+// Side faces' light: each quad (4 vertices, edge i) from the cell beside it
+function sideBlock(field: SkyField | null, edges: number[], depth: number): number | number[] {
+  if (!field) return 0;
+  const out: number[] = [];
+  for (const n of edges) {
+    const l = n < 0 ? 0 : blockAt(field, n, depth);
+    out.push(l, l, l, l);
+  }
+  return out;
+}
+
+function sideLights(field: SkyField, edges: number[], depth: number): number[] {
+  const out: number[] = [];
+  for (const n of edges) {
+    const l = n < 0 ? 1 : skyAt(field, n, depth);
+    out.push(l, l, l, l);
+  }
+  return out;
+}
+
+/** The light region for a set of columns: them (spreading) and their neighbour ring. */
+function lightRegion(columns: ColumnData[], neighborDataMap: Map<number, NeighborData>): { field: SkyField; blockField: SkyField | null; edgesOf: (c: ColumnData) => number[] } {
+  const region = new Map<number, LightColumn>();
+  for (const [t, n] of neighborDataMap) region.set(t, { blocks: n.blocks });
+  const byTile = new Map<number, ColumnData>();
+  for (const c of columns) { region.set(c.tileIndex, { blocks: c.blocks, neighbors: c.tile.neighbors }); byTile.set(c.tileIndex, c); }
+  const field = bakeSkyField(region);
+  const blockField = bakeBlockField(region);
+  const verticesOf = (t: number) => byTile.get(t)?.tile.vertices ?? neighborDataMap.get(t)?.vertices;
+  return { field, blockField, edgesOf: (c) => edgeNeighbors(c.tile.vertices, c.tile.neighbors, verticesOf) };
+}
+
 function buildColumnGeometry(
   column: ColumnData,
   neighborDataMap: Map<number, NeighborData>,
   config: WorkerConfig,
-  out: Record<string, GeometryData>
+  out: Record<string, GeometryData>,
+  field: SkyField,
+  edges: number[],
+  blockField: SkyField | null = null
 ): void {
-  // Find surface depth (topmost solid block, searching from top down)
-  // Depth system: 0 = bedrock, maxDepth-1 = sky
-  let surfaceDepth = 0;
-  for (let d = column.blocks.length - 1; d >= 0; d--) {
-    if (column.blocks[d] !== HexBlockType.AIR && column.blocks[d] !== HexBlockType.WATER) {
-      surfaceDepth = d;
-      break;
-    }
-  }
-
   for (let depth = 0; depth < column.blocks.length; depth++) {
     const blockType = column.blocks[depth];
     if (blockType === HexBlockType.AIR) continue;
 
     const isWater = blockType === HexBlockType.WATER;
     const isIce = blockType === HexBlockType.ICE;
-    const isGlass = blockType === HexBlockType.GLASS;
+    const isGlass = isClearSolid(blockType) && !isIce;
     // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
     const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
     const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
@@ -395,16 +427,17 @@ function buildColumnGeometry(
     // For face culling: a face is exposed if adjacent block is AIR, or WATER (for non-water blocks), or ICE/GLASS (for non-ice/glass blocks)
     const hasTopExposed = blockAbove === HexBlockType.AIR ||
       (!isWater && blockAbove === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockAbove === HexBlockType.ICE || blockAbove === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockAbove));
     const hasBottomExposed = blockBelow === HexBlockType.AIR ||
       (!isWater && blockBelow === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockBelow === HexBlockType.ICE || blockBelow === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockBelow));
 
     // Water only renders if air is above; Ice/Glass render like solid blocks
-    if (isWater && blockAbove !== HexBlockType.AIR && blockAbove !== HexBlockType.ICE && blockAbove !== HexBlockType.GLASS) continue;
+    if (isWater && blockAbove !== HexBlockType.AIR && !isClearSolid(blockAbove)) continue;
 
     // Ice needs to check for exposed sides too (treated like a solid block for rendering)
-    const hasSideExposed = !isWater && hasExposedSide(column, depth, neighborDataMap);
+    const sideShow = isWater ? [] : exposedEdges(column, depth, neighborDataMap, edges);
+    const hasSideExposed = sideShow.some(Boolean);
 
     // Skip if no faces are exposed (water handled separately above)
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
@@ -420,17 +453,15 @@ function buildColumnGeometry(
 
     if (innerRadius <= 0) continue;
 
-    // depthFromSurface: positive = below surface (lower depth)
-    const depthFromSurface = surfaceDepth - depth;
 
     // Which material each face of this block uses (shared table)
     const faces = blockFaces(blockType);
 
-    // Calculate sky light (constants imported from shared/geometry)
-    let skyLightLevel = 1.0;
-    if (depthFromSurface > 0) {
-      skyLightLevel = Math.max(MIN_SKY_LIGHT, Math.pow(SKY_LIGHT_FALLOFF, depthFromSurface));
-    }
+    // Voxel sky light (shared/voxelLight): each face is lit by the cell it faces
+    const topLight = skyAt(field, column.tileIndex, depth + 1);
+    const bottomLight = skyAt(field, column.tileIndex, depth - 1);
+    const topBlock = blockAt(blockField, column.tileIndex, depth + 1);
+    const bottomBlock = blockAt(blockField, column.tileIndex, depth - 1);
 
     // Get torches array (default to empty)
     const torches = config.torches || [];
@@ -442,7 +473,7 @@ function buildColumnGeometry(
         if (isWater) {
           mergeGeometry(bufferFor(out, 'water'), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
         } else {
-          mergeGeometry(bufferFor(out, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, skyLightLevel, torches);
+          mergeGeometry(bufferFor(out, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches, topBlock);
         }
       }
     }
@@ -451,8 +482,7 @@ function buildColumnGeometry(
     if (!isWater && hasBottomExposed) {
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
-        const bottomSkyLight = Math.max(MIN_SKY_LIGHT, skyLightLevel * SKY_LIGHT_FALLOFF);
-        mergeGeometry(bufferFor(out, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomSkyLight, torches);
+        mergeGeometry(bufferFor(out, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomLight, torches, bottomBlock);
       }
     }
 
@@ -460,7 +490,9 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
-        mergeGeometry(bufferFor(out, faces.side), sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, skyLightLevel, torches);
+        const shown = keepSides(sidesGeom, sideShow);
+        const shownEdges = edges.filter((_, i) => sideShow[i]);
+        mergeGeometry(bufferFor(out, faces.side), shown.positions, shown.normals, shown.uvs, shown.indices, config.sunDirection, sideLights(field, shownEdges, depth), torches, sideBlock(blockField, shownEdges, depth));
       }
     }
   }
@@ -488,8 +520,9 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
       Object.entries(neighborData as unknown as Record<string, NeighborData>).map(([k, v]) => [parseInt(k), v])
     );
 
+    const light = lightRegion(columns, neighborDataMap);
     for (const column of columns) {
-      buildColumnGeometry(column, neighborDataMap, config, buffers);
+      buildColumnGeometry(column, neighborDataMap, config, buffers, light.field, light.edgesOf(column), light.blockField);
 
       // Generate water walls for water blocks adjacent to air in neighbors
       for (let depth = 0; depth < column.blocks.length; depth++) {
@@ -533,12 +566,13 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
     }
 
     // Build geometry, routing each column to its chunk's buffers
+    const light = lightRegion(columns, neighborDataMap);
     for (const column of columns) {
       const chunkIndex = tileToChunkMap.get(column.tileIndex);
       if (chunkIndex === undefined || !chunkGeometries[chunkIndex]) continue;
 
       const chunk = chunkGeometries[chunkIndex];
-      buildColumnGeometry(column, neighborDataMap, config, chunk);
+      buildColumnGeometry(column, neighborDataMap, config, chunk, light.field, light.edgesOf(column), light.blockField);
 
       // Generate water walls for water blocks
       for (let depth = 0; depth < column.blocks.length; depth++) {

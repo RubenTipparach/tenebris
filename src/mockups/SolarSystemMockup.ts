@@ -123,7 +123,7 @@ const glowShader = {
 interface Body {
   spec: BodySpec;
   guides: THREE.Object3D[];   // name tag (space only)
-  holder: THREE.Group;        // at the giant's fixed position
+  holder: THREE.Group;        // at the giant's position (moves on its orbit)
 }
 
 export class SolarSystemMockup {
@@ -161,6 +161,11 @@ export class SolarSystemMockup {
       for (const g of b.guides) g.visible = showGuides;
       b.holder.rotation.y += dt * SPIN_RATE; // slow spin
     }
+  }
+
+  /** A giant moved on its orbit (world position, far-layer coordinates). */
+  public setBodyPosition(id: string, position: { x: number; y: number; z: number }): void {
+    for (const b of this.bodies) if (b.spec.id === id) b.holder.position.set(position.x, position.y, position.z);
   }
 
   private makeBody(spec: BodySpec, index: number): Body {

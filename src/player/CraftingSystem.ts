@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+import { recipeLockedBy, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
@@ -10,6 +12,8 @@ export interface CraftingRecipe {
   inputs: { itemType: ItemType; quantity: number; slot?: number }[];
   output: { itemType: ItemType; quantity: number };
   name: string;
+  // An item handed back alongside the output (an emptied bucket)
+  returns?: { itemType: ItemType; quantity: number };
 }
 
 // All crafting recipes in the game
@@ -86,6 +90,57 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
       { itemType: ItemType.WOOD, quantity: 1, slot: 8 },
     ],
     output: { itemType: ItemType.STORAGE_CHEST, quantity: 1 },
+  },
+  // Cooking stations (src/config/CookingConfig.ts)
+  // Campfire: sticks crossed over a ring of stones
+  //  .S.
+  //  S.S
+  //  TTT   (S stick, T stone)
+  {
+    name: 'Campfire',
+    inputs: [
+      { itemType: ItemType.STICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.STICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.STICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 7 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CAMPFIRE, quantity: 1 },
+  },
+  // Kiln: a ring of bricks (bricks are fired clay, from the furnace)
+  {
+    name: 'Kiln',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 2 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 6 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 7 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.KILN, quantity: 1 },
+  },
+  // Oven: bricks round an iron plate
+  //  BBB
+  //  BIB
+  //  BBB
+  {
+    name: 'Oven',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 2 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 5 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 6 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 7 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.OVEN, quantity: 1 },
   },
   // Steam Engine (iron frame with copper and aluminum core)
   // III
@@ -250,6 +305,64 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
   },
+  // Building materials
+  // Brick Block: four fired bricks in a square
+  //  BB.
+  //  BB.
+  //  ...
+  {
+    name: 'Brick Block',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 4 },
+    ],
+    output: { itemType: ItemType.BRICK_BLOCK, quantity: 1 },
+  },
+  // Concrete: cement mixed with sand, stone and a bucket of water; the
+  // empty bucket comes back
+  //  .W.
+  //  SCS
+  //  R.R
+  {
+    name: 'Concrete',
+    inputs: [
+      { itemType: ItemType.WATER_BUCKET, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 3 },
+      { itemType: ItemType.CEMENT, quantity: 1, slot: 4 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CONCRETE_BLOCK, quantity: 4 },
+    returns: { itemType: ItemType.BUCKET, quantity: 1 },
+  },
+  // Steel Girder: two steel ingots, top and bottom
+  //  .S.
+  //  ...
+  //  .S.
+  {
+    name: 'Steel Girder',
+    inputs: [
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 1 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.STEEL_GIRDER, quantity: 4 },
+  },
+  // Steel Glass: a steel frame between two panes
+  //  ...
+  //  GSG
+  //  ...
+  {
+    name: 'Steel Glass',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 3 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 4 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 5 },
+    ],
+    output: { itemType: ItemType.STEEL_GLASS, quantity: 2 },
+  },
 ];
 
 export class CraftingSystem {
@@ -309,6 +422,7 @@ export class CraftingSystem {
 
   private setupUI(): void {
     this.menuElement = document.getElementById('inventory-menu');
+    this.setupPanelTabs();
     this.recipeSelectElement = document.getElementById('recipe-select') as HTMLSelectElement;
     this.craftingGridElement = document.getElementById('crafting-grid');
     this.craftingOutputElement = document.getElementById('crafting-output');
@@ -665,6 +779,41 @@ export class CraftingSystem {
     });
   }
 
+  // The E panel's tabs (Inventory / Map / Missions). Other panels register
+  // here and draw into their container (#panel-<name>) when shown.
+  private panels = new Map<string, { show: (el: HTMLElement) => void; hide?: () => void }>();
+  private currentPanel = 'inventory';
+
+  public registerPanel(name: string, panel: { show: (el: HTMLElement) => void; hide?: () => void }): void {
+    this.panels.set(name, panel);
+  }
+
+  /** Open the E panel on a tab ('inventory', 'map', 'missions'). */
+  public openPanel(name: string): void {
+    if (!this.isOpen) this.open();
+    this.showPanel(name);
+  }
+
+  private showPanel(name: string): void {
+    if (!this.menuElement) return;
+    if (this.currentPanel !== name) this.panels.get(this.currentPanel)?.hide?.();
+    this.currentPanel = name;
+    this.menuElement.querySelectorAll<HTMLElement>('.inv-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
+    const body = this.menuElement.querySelector<HTMLElement>('[data-panel-body="inventory"]');
+    if (body) body.style.display = name === 'inventory' ? '' : 'none';
+    this.menuElement.querySelectorAll<HTMLElement>('.inv-panel').forEach(p => { p.hidden = p.id !== `panel-${name}`; });
+    const title = this.menuElement.querySelector('.inventory-title');
+    if (title) title.textContent = name === 'inventory' ? 'Inventory' : name === 'map' ? 'Map' : 'Missions';
+    const el = document.getElementById(`panel-${name}`);
+    if (el && name !== 'inventory') this.panels.get(name)?.show(el);
+  }
+
+  private setupPanelTabs(): void {
+    this.menuElement?.querySelectorAll<HTMLElement>('.inv-tab').forEach(tab => {
+      tab.addEventListener('click', () => this.showPanel(tab.dataset.panel ?? 'inventory'));
+    });
+  }
+
   public open(): void {
     if (this.menuElement) {
       console.log('Inventory opened');
@@ -679,6 +828,10 @@ export class CraftingSystem {
     if (this.menuElement) {
       this.menuElement.classList.remove('active');
       this.isOpen = false;
+
+      // The next open starts on the inventory
+      this.panels.get(this.currentPanel)?.hide?.();
+      if (this.currentPanel !== 'inventory') this.showPanel('inventory');
 
       // Cancel any ongoing drag operation to prevent click events after close
       this.cancelDrag();
@@ -964,8 +1117,11 @@ export class CraftingSystem {
       `;
 
       const name = document.createElement('span');
-      name.textContent = recipe.name;
-      name.style.color = '#fff';
+      // A recipe a mission has not unlocked yet: dimmed, with that mission
+      const lockedBy = recipeLockedBy(recipe.output.itemType);
+      name.textContent = lockedBy ? `${recipe.name} - Unlocked by: ${lockedBy}` : recipe.name;
+      name.style.color = lockedBy ? '#777' : '#fff';
+      if (lockedBy) item.style.opacity = '0.55';
 
       const quantity = document.createElement('span');
       quantity.textContent = `x${recipe.output.quantity}`;
@@ -997,6 +1153,8 @@ export class CraftingSystem {
 
   private openDropdown(): void {
     if (this.dropdownList) {
+      // Rebuilt on open: which recipes are locked changes as missions finish
+      this.populateDropdownList();
       this.dropdownList.style.display = 'block';
       this.isDropdownOpen = true;
     }
@@ -1073,8 +1231,8 @@ export class CraftingSystem {
     }
 
     // Check if player can craft (has enough of all required items, or bypass mode is enabled)
-    let canCraft = true;
-    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+    let canCraft = recipeOpen(this.selectedRecipe.output.itemType);
+    if (canCraft && !PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       for (const [itemType, quantity] of requiredItems) {
         if (!this.inventory.hasItem(itemType, quantity)) {
           canCraft = false;
@@ -1158,6 +1316,8 @@ export class CraftingSystem {
   }
 
   private canCraft(recipe: CraftingRecipe): boolean {
+    // Locked until its mission is done (src/player/RecipeGate)
+    if (!recipeOpen(recipe.output.itemType)) return false;
     // Debug mode: bypass ingredient requirements
     if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       return true;
@@ -1183,6 +1343,9 @@ export class CraftingSystem {
 
     // Add output items
     this.inventory.addItem(this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
+    const returned = this.selectedRecipe.returns;
+    if (returned) this.inventory.addItem(returned.itemType, returned.quantity);
+    emitGameEvent('crafted', this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
 
     // Update UI
     this.updateUI();

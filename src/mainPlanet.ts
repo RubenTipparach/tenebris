@@ -16,11 +16,18 @@ import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
-import { drawFuel, slotStore } from './rocket/RocketPerformance';
+import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
+import { MissionsPanel } from './player/MissionsPanel';
+import { emitGameEvent, onGameEvent } from './engine/GameEvents';
+import { advanceGameTime, framePositionAt, gameTimeS, orbitOf, setLocalGameTime, useNetworkClock } from './world/Orbits';
+import { ORBIT_CONFIG } from './config/OrbitConfig';
+import { PlanetObjectRouter, planetObjectScene, setPlanetObjectRouter } from './world/PlanetFrames';
+import { showTitleScreen, titleWanted } from './net/TitleScreen';
+import { Navigation } from './nav/Navigation';
 import { CharacterCreator } from './net/CharacterCreator';
 import { loadMyLook } from './net/Avatar';
 import { WorldBrowser } from './net/WorldBrowser';
@@ -86,13 +93,13 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+  private navigation: Navigation | null = null;
   private rocketSync: RocketSync | null = null;
 
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
   private groundClutter: GroundClutter | null = null;
   private fauna: Fauna | null = null; // creatures round the player (per-planet rosters)
-  private earthClutter = false; // biome mockup: clutter on Earth too
   private daytimeSkyMockup = false;
 
   // Shared frustum for all planet updates (calculated once per frame)
@@ -103,6 +110,12 @@ class PlanetGame {
   private sunPosition: THREE.Vector3 = new THREE.Vector3();
 
   private teleportInProgress: boolean = false;
+  private releaseTimer = 0;
+  private missions: MissionsPanel | null = null;
+  // Live orbits: the body whose frame the player is in (it never moves)
+  private referenceBody = SOLAR_SYSTEM.startingBody;
+  private atmosphereById = new Map<string, Atmosphere>();
+  private lastSunDir = new Map<string, THREE.Vector3>();
 
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
 
@@ -153,11 +166,20 @@ class PlanetGame {
           volcanoes: bodyConfig.terrain.volcanoes,
           iceCover: bodyConfig.terrain.iceCover,
           metalRich: bodyConfig.terrain.metalRich,
+          extraOres: bodyConfig.terrain.extraOres,
+          shoreClay: bodyConfig.terrain.shoreClay,
           spawnLatLon: bodyConfig.spawn,
         }
       );
       this.planets.set(bodyConfig.id, planet);
     }
+
+    // Things placed on a planet ride it round its orbit: the object
+    // managers add to this router, which hangs each object under its
+    // planet's attach root (openspec navigation-and-orbits 8.1)
+    setPlanetObjectRouter(new PlanetObjectRouter(this.engine.scene, () => [...this.planets.values()].map(p => ({
+      root: p.attachRoot, configuredCenter: p.configuredCenter, radius: p.radius,
+    }))));
 
     for (const problem of bodyClearanceProblems()) console.warn(`[SolarSystem] bodies too close: ${problem}`);
 
@@ -213,6 +235,7 @@ class PlanetGame {
     if (import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')) {
       (window as unknown as { __tenebris: PlanetGame; __THREE: typeof THREE }).__tenebris = this;
       (window as unknown as { __THREE: typeof THREE }).__THREE = THREE;
+      (window as unknown as { __orbits: unknown }).__orbits = { setLocalGameTime, gameTimeS, framePositionAt, orbitOf };
     }
 
     this.init();
@@ -241,7 +264,7 @@ class PlanetGame {
         }
         const planet = this.planets.get(bodyConfig.id);
         if (planet) {
-          planet.center.set(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z);
+          planet.setConfiguredCenter(new THREE.Vector3(bodyConfig.position.x, bodyConfig.position.y, bodyConfig.position.z));
         }
       }
       // Light every planet from the star now, before anything builds its
@@ -267,6 +290,8 @@ class PlanetGame {
       // drop returning players into empty space and through the ground.
       loadingManager.setStatus('Building terrain around spawn...');
       const startPlanet = this.findSavedStartPlanet();
+      // The body the player starts on is the fixed frame (orbits)
+      if (startPlanet) this.referenceBody = startPlanet.planet.getName();
       if (startPlanet && startPlanet.planet !== this.earth) {
         loadingManager.setStatus(`Loading ${startPlanet.planet.getName()}...`);
         await startPlanet.planet.initialize();
@@ -320,11 +345,13 @@ class PlanetGame {
       // Initialize tree manager and scatter trees on Earth
       // Pass sun direction calculated from Earth's position to the sun
       const earthSunDirForTrees = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
-      this.treeManager = new PlanetTreeManager(this.engine.scene, earthSunDirForTrees);
+      this.treeManager = new PlanetTreeManager(planetObjectScene(this.engine.scene), earthSunDirForTrees);
 
       // Load saved game data early so removed trees are available
       // (full load happens later but we need planet data now for tree generation)
       gameStorage.load();
+      // The world's game clock: the bodies' orbits run on it
+      setLocalGameTime(gameStorage.getGameTime());
 
       // Initialize music system with saved state (must be after gameStorage.load())
       const savedMusicState = gameStorage.getMusicState();
@@ -363,6 +390,10 @@ class PlanetGame {
       this.fishing = new FishingSystem(this.engine.scene, this.engine.camera, (item) => {
         const left = this.blockInteraction.getInventory().addItem(item, 1);
         this.blockInteraction.onInventoryChanged();
+        if (left === 0) {
+          emitGameEvent('caught', item);
+          emitGameEvent('caughtOn', this.player.getCurrentPlanet()?.getName() ?? 'earth');
+        }
         return left === 0;
       });
 
@@ -460,9 +491,18 @@ class PlanetGame {
         }
         const what = draw.used.map(u => `${u.count} ${ITEM_DATA[u.itemType].name}`).join(', ');
         showToast(`Refuelled +${Math.round(draw.supplied)} (${what})`, { duration: 3000 });
+        for (const u of draw.used) emitGameEvent('fueled', u.itemType, u.count);
         this.blockInteraction.onInventoryChanged();
         return draw.supplied;
       };
+
+      // A launch names the parts in its stack (missions: launch on a
+      // nuclear engine, fly the ion drive)
+      onGameEvent((type) => {
+        if (type !== 'launched') return;
+        const parts = this.rocketFlightManager?.getRocketController()?.getParts() ?? [];
+        for (const t of new Set(stackItemTypes(parts))) emitGameEvent('launchedWith', t);
+      });
 
       // A rocket's fuel / cargo changed (refuelled, landed, exited): its pad
       // keeps the record - save it now
@@ -566,7 +606,9 @@ class PlanetGame {
       profiler.setFrameSpikeThreshold(PlayerConfig.FRAME_SPIKE_THRESHOLD_MS);
 
       // Load saved game data (tiles, inventory, player position)
+      const existingWorld = !!gameStorage.load();
       this.loadSavedGame();
+      this.setupMissions(existingWorld);
 
       // Setup auto-save for player position (every 5 seconds)
       gameStorage.setPlayerSaveCallback(() => this.player.exportForSave());
@@ -716,6 +758,12 @@ class PlanetGame {
   private update(deltaTime: number): void {
     if (!this.isReady) return;
 
+    // Live orbits: advance the clock, keep the player's body fixed, move
+    // the rest of the system round it
+    profiler.begin('Orbits');
+    this.updateOrbits(deltaTime);
+    profiler.end('Orbits');
+
     // Track elapsed time for shader animations
     this.elapsedTime += deltaTime;
 
@@ -731,23 +779,49 @@ class PlanetGame {
     // Update music system (checks if time to play new song)
     MusicManager.update();
 
+    // Give back the memory of planets left far behind (their terrain data
+    // and detailed meshes - hundreds of MB each); they rebuild on approach
+    this.releaseTimer -= deltaTime;
+    if (this.releaseTimer <= 0 && !this.teleportInProgress) {
+      this.releaseTimer = PlayerConfig.RELEASE_DETAIL_CHECK_S;
+      // where the player is (the camera catches up a frame after a teleport)
+      const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+      const viewer = flying ? flying.getPosition() : this.player.position;
+      for (const planet of this.planets.values()) {
+        if (planet.isDetailedTerrainEnabled() && planet.isFarForRelease(viewer)) planet.releaseDetailedTerrain();
+      }
+    }
+    this.missions?.update(deltaTime);
+    // Maps, compass and waypoints (built once the world is up)
+    if (!this.navigation) {
+      this.navigation = new Navigation({
+        planets: this.planets,
+        player: () => {
+          const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+          const position = flying ? flying.getPosition() : this.player.position;
+          return {
+            planetId: this.player.getCurrentPlanet()?.getName() ?? null,
+            position,
+            forward: this.engine.camera.getWorldDirection(new THREE.Vector3()),
+          };
+        },
+        remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
+      }, this.blockInteraction.getCraftingSystem());
+    }
+    this.navigation.update();
     this.multiplayer?.update(deltaTime);
     this.rocketSync?.update(deltaTime);
-    // Ground clutter (grass tufts, rocks): always on Sequoia, on Earth with
-    // the biome mockup
+    // Ground clutter (pixel grass tufts, rocks) on every world
     if (!this.groundClutter) {
       this.groundClutter = new GroundClutter(this.engine.scene);
       this.groundClutter.setEnabled(true);
     }
     {
-      // On Sequoia, the Moon, every living world (it has flora), and Earth
-      // with the biome mockup
+      // The planet the player is on; rock worlds get stones only
+      // (clutterFor has no plants for their blocks)
       const pos = this.player.position;
       let on: Planet | null = null;
-      // Every world but Earth (there it follows the biome mockup); rock
-      // worlds get stones only (clutterFor has no plants for their blocks)
       for (const planet of this.planets.values()) {
-        if (planet === this.earth && !this.earthClutter) continue;
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
       }
       this.groundClutter.update(deltaTime, pos, on,
@@ -917,6 +991,94 @@ class PlanetGame {
     }
   }
 
+  // ---- live orbits (openspec navigation-and-orbits, orbital-motion) ----
+
+  /** The body whose sphere of influence (gravity reach) holds `pos`, nearest first. */
+  private sphereOfInfluence(pos: THREE.Vector3): string | null {
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (const [id, planet] of this.planets) {
+      const reach = planet.radius * (getBodyConfig(id)?.gravity.falloffRadiusMultiplier ?? 1);
+      const d = pos.distanceTo(planet.center);
+      if (d < reach && d / reach < bestD) { best = id; bestD = d / reach; }
+    }
+    return best;
+  }
+
+  private updateOrbits(dt: number): void {
+    if (!netSync.online()) advanceGameTime(dt);
+    const t = gameTimeS();
+    // In another body's sphere of influence: it becomes the fixed frame
+    const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+    const soi = this.sphereOfInfluence(flying ? flying.getPosition() : this.player.position);
+    if (soi && soi !== this.referenceBody && !this.teleportInProgress) this.setReferenceBody(soi, t);
+    this.applyOrbitPositions(t);
+  }
+
+  /**
+   * Make `id` the fixed frame. It returns to its configured position, so
+   * whatever is in its frame - the player, a rocket flying in - is moved by
+   * the same offset, and a rocket also sheds that body's orbital velocity
+   * (task 8.2: no jump).
+   */
+  private setReferenceBody(id: string, t: number = gameTimeS()): void {
+    if (id === this.referenceBody || !orbitOf(id)) return;
+    const old = this.referenceBody;
+    const was = framePositionAt(id, old, t);
+    const now = framePositionAt(id, id, t);
+    const offset = new THREE.Vector3(now.x - was.x, now.y - was.y, now.z - was.z);
+    // The body's velocity in the old frame (central difference)
+    const h = ORBIT_CONFIG.VELOCITY_DT_S;
+    const a = framePositionAt(id, old, t + h), b = framePositionAt(id, old, t - h);
+    const frameVelocity = new THREE.Vector3((a.x - b.x) / (2 * h), (a.y - b.y) / (2 * h), (a.z - b.z) / (2 * h));
+    this.referenceBody = id;
+    this.player.position.add(offset);
+    this.engine.camera.position.add(offset);
+    const rocket = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+    rocket?.rebase(offset, frameVelocity);
+    this.applyOrbitPositions(t);
+    console.log(`[Orbits] frame: ${old} -> ${id}`);
+  }
+
+  private applyOrbitPositions(t: number): void {
+    const ref = this.referenceBody;
+    const p = { x: 0, y: 0, z: 0 };
+    framePositionAt('sun', ref, t, p);
+    this.sunPosition.set(p.x, p.y, p.z);
+    this.engine.setSunPosition(this.sunPosition);
+    const center = new THREE.Vector3();
+    for (const [id, planet] of this.planets) {
+      framePositionAt(id, ref, t, p);
+      center.set(p.x, p.y, p.z);
+      planet.setCenter(center);
+      this.rocketFlightManager?.setPlanetCenter(id, planet.center);
+      const atmosphere = this.atmosphereById.get(id);
+      atmosphere?.setPosition(planet.center);
+      const trees = planet === this.earth ? this.treeManager : this.floraManagers.get(id);
+      trees?.setPlanetCenter(planet.center);
+      if (planet === this.earth) {
+        this.earthAtmosphere?.setPosition(planet.center);
+        this.earthClouds?.setPosition(planet.center);
+      }
+      // Sunlight from the live relative position (day and night)
+      const dir = calculateSunDirectionForPlanet(planet.center, this.sunPosition);
+      const last = this.lastSunDir.get(id);
+      if (last && last.angleTo(dir) < ORBIT_CONFIG.SUN_DIRECTION_EPSILON) continue;
+      this.lastSunDir.set(id, dir);
+      planet.setSunDirection(dir);
+      atmosphere?.setSunDirection(dir);
+      trees?.setSunDirection(dir);
+      if (planet === this.earth) {
+        this.earthAtmosphere?.setSunDirection(dir);
+        this.earthClouds?.setSunDirection(dir);
+      }
+      if (id === ref) this.blockInteraction?.setSunDirection(dir);
+    }
+    for (const g of GAS_GIANTS) {
+      this.solarSystemMockup?.setBodyPosition(g.id, framePositionAt(g.id, ref, t, p));
+    }
+  }
+
   /**
    * Check if player is looking at and can interact with a landed rocket
    * Returns true if interaction was handled
@@ -954,6 +1116,7 @@ class PlanetGame {
     atmosphere.setPosition(planet.center);
     this.engine.scene.add(atmosphere.getMesh());
     this.atmospheres.push(atmosphere);
+    this.atmosphereById.set(id, atmosphere);
   }
 
   // Scatter a planet's own flora (its config's FloraTable) - called once,
@@ -965,7 +1128,7 @@ class PlanetGame {
     const table = body.flora!;
     const t0 = performance.now();
     const roster = [...new Set(Object.values(table).map(f => f!.species))] as FloraSpecies[];
-    const manager = new FloraTreeManager(this.engine.scene, roster, calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    const manager = new FloraTreeManager(planetObjectScene(this.engine.scene), roster, calculateSunDirectionForPlanet(planet.center, this.sunPosition));
     this.floraManagers.set(id, manager);
     const removed = new Set(gameStorage.getRemovedTrees(id).map(t => t.tileIndex));
     manager.setChunkLookup((tileIndex) => planet.getTileChunkIndex(tileIndex));
@@ -1293,9 +1456,8 @@ class PlanetGame {
       if (!on) this.engine.setStarVisibility(1);
     });
     bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
-    // Terrain and tree biomes are read at load (reload to change them); the
-    // ground clutter follows the toggle live
-    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => { this.earthClutter = on; });
+    // Terrain and tree biomes are read at load (reload to change them)
+    bind('toggle-mock-biomes', 'tenebris_mock_biomes', () => { /* read at load */ });
     // The gas giants are part of the system now, not a toggle
     this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
     this.solarSystemMockup.setEnabled(true);
@@ -1347,10 +1509,16 @@ class PlanetGame {
       this.multiplayer?.setIdentity(name, look);
     });
     document.getElementById('character-btn')?.addEventListener('click', () => creator.open());
+    document.getElementById('menu-character')?.addEventListener('click', () => creator.open());
 
     // Server browser: list worlds, create one, join one (reloads into it)
     const browser = new WorldBrowser();
     document.getElementById('world-browser-btn')?.addEventListener('click', () => browser.open());
+    // The main menu's lobby button: the same server browser
+    document.getElementById('menu-multiplayer')?.addEventListener('click', () => browser.open());
+    const modeLabel = document.getElementById('menu-mode');
+    const here = currentWorld();
+    if (modeLabel) modeLabel.textContent = here ? `Online - ${here.name}` : 'Single player';
     if (this.worldError) showToast(this.worldError, { duration: 5000 });
 
     // In a server world: go online in it
@@ -1366,7 +1534,18 @@ class PlanetGame {
       const o = this.player.exportForSave().orientation;
       return { planet, p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
     }, name, creator.getLook());
+    this.multiplayer.setFrameOffset((planetId) => {
+      const o = orbitOf(planetId);
+      if (!o) return new THREE.Vector3();
+      const p = framePositionAt(planetId, this.referenceBody, gameTimeS());
+      return new THREE.Vector3(p.x - o.configured.x, p.y - o.configured.y, p.z - o.configured.z);
+    });
     this.multiplayer.connect(worldSocketUrl(world.id));
+    // Online, the orbits run on the server's world clock (everyone's sky agrees)
+    useNetworkClock(() => {
+      const ms = netSync.worldTimeMs();
+      return ms === null ? null : (ms / 1000) * ORBIT_CONFIG.TIME_SCALE;
+    });
   }
 
   /** The id of the planet whose surface is nearest `p` */
@@ -1418,10 +1597,28 @@ class PlanetGame {
     // check used to skip preparation and land the player on nothing.
     if (this.teleportInProgress) return;
     this.teleportInProgress = true;
+    // Leaving by teleport: give back the planets being left BEFORE the
+    // destination generates, so two planets' terrain are never held at once
+    // (leaving by flying away is the distance check in update). The player
+    // is held still meanwhile - the ground under them is one of them.
+    const wasEnabled = this.player.getEnabled();
+    this.player.setEnabled(false);
     try {
+      // The destination becomes the fixed frame (orbits): it sits at its
+      // configured position, where its terrain and spawn are worked out
+      this.setReferenceBody(planetName);
+      for (const other of this.planets.values()) {
+        if (other === planet) continue;
+        other.setAutoDetailHeld(true);
+        other.releaseDetailedTerrain();
+      }
       await this.preparePlanetForTeleport(planet, planetName);
+    } catch (e) {
+      this.player.setEnabled(wasEnabled);
+      throw e;
     } finally {
       this.teleportInProgress = false;
+      for (const other of this.planets.values()) other.setAutoDetailHeld(false);
     }
 
     const surfaceOffset = 1; // 1m above surface
@@ -1446,8 +1643,44 @@ class PlanetGame {
 
     this.player.position.copy(playerPos);
     this.player.velocity.set(0, 0, 0);
+    this.player.setEnabled(wasEnabled);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
+  }
+
+  // Missions: the Missions tab of the E panel, counted from play
+  private setupMissions(existingWorld: boolean): void {
+    const inventory = this.blockInteraction.getInventory();
+    const machineLists: Partial<Record<number, () => unknown[]>> = {
+      [ItemType.FURNACE]: () => gameStorage.getFurnaces(),
+      [ItemType.ELECTRIC_FURNACE]: () => gameStorage.getElectricFurnaces(),
+      [ItemType.ELECTRONICS_WORKBENCH]: () => gameStorage.getElectronicsWorkbenches(),
+      [ItemType.COMPUTER]: () => gameStorage.getComputers(),
+      [ItemType.PRINTER_3D]: () => gameStorage.getPrinters3D(),
+      [ItemType.STORAGE_CHEST]: () => gameStorage.getStorageChests(),
+      [ItemType.STEAM_ENGINE]: () => gameStorage.getSteamEngines(),
+      [ItemType.HYDRO_GENERATOR]: () => gameStorage.getHydroGenerators(),
+      [ItemType.TORCH]: () => gameStorage.getTorches(),
+      [ItemType.CABLE]: () => gameStorage.getCables(),
+      [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
+    };
+    // The industry machines and batteries share one record list
+    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR,
+      ItemType.BATTERY_LEAD_ACID, ItemType.BATTERY_LITHIUM, ItemType.BATTERY_SOLID_STATE]) {
+      machineLists[item] = () => gameStorage.getMachines().filter(m => m.itemType === item);
+    }
+    const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
+    this.missions = new MissionsPanel(inventory, existingWorld, () => ({
+      held: (item) => inventory.getItemCount(item as ItemType),
+      placedMachines: (item) => machineLists[item]?.().length ?? 0,
+      padComplete: pads().some(p => p.isComplete),
+      rocketAssembled: pads().some(p => p.rocketParts.length >= 3),
+    }));
+    const missions = this.missions;
+    this.blockInteraction.getCraftingSystem().registerPanel('missions', {
+      show: (el) => missions.show(el),
+      hide: () => missions.hide(),
+    });
   }
 
   private loadSavedGame(): void {
@@ -1485,7 +1718,10 @@ class PlanetGame {
 
 // Start game when DOM is ready
 // The world (seed + save slot) is settled before anything is built
+// A session starts on the title screen (single player / multiplayer /
+// character); nothing is built until a world is picked
 document.addEventListener('DOMContentLoaded', async () => {
+  if (titleWanted()) await showTitleScreen();
   const { error } = await prepareWorld();
   new PlanetGame(error);
 });

@@ -1378,6 +1378,10 @@ class TreeBatcher {
     this.material.uniforms.planetCenter.value.copy(center);
   }
 
+  public setSunDirection(dir: THREE.Vector3): void {
+    this.material.uniforms.sunDirection.value.copy(dir).normalize();
+  }
+
   // Trees without a tile go in chunk -1, which is always shown
   private chunkFor(tree: THREE.Group): number {
     const tileIndex = tree.userData.tileIndex;
@@ -1808,6 +1812,16 @@ export class PlanetTreeManager {
   }
 
   // Show or hide every tree (orbit view)
+  /** Live orbits: sunlight and the planet's centre as it moves. */
+  public setSunDirection(dir: THREE.Vector3): void {
+    this.sunDirection.copy(dir).normalize();
+    this.batcher.setSunDirection(dir);
+  }
+
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.batcher.setPlanetCenter(center);
+  }
+
   public setAllVisible(visible: boolean): void {
     this.batcher.showAll(visible);
   }
@@ -2142,6 +2156,16 @@ export class FloraTreeManager {
   }
 
   // Show or hide every tree (orbit view)
+  /** Live orbits: sunlight and the planet's centre as it moves. */
+  public setSunDirection(dir: THREE.Vector3): void {
+    this.sunDirection.copy(dir).normalize();
+    this.batcher.setSunDirection(dir);
+  }
+
+  public setPlanetCenter(center: THREE.Vector3): void {
+    this.batcher.setPlanetCenter(center);
+  }
+
   public setAllVisible(visible: boolean): void {
     this.batcher.showAll(visible);
   }

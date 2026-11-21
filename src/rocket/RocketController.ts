@@ -1,3 +1,5 @@
+import { emitGameEvent } from '../engine/GameEvents';
+import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
@@ -5,7 +7,7 @@ import { RocketCamera } from './RocketCamera';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor } from './RocketPerformance';
+import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode } from './RocketPerformance';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -158,8 +160,10 @@ export class RocketController {
     surfaceNormal: THREE.Vector3,
     planets: PlanetGravitySource[],
     fuelUnits: number | null = null,
-    cargo: InventorySlot[] | null = null
+    cargo: InventorySlot[] | null = null,
+    engineMode: EngineMode = null
   ): void {
+    this.engineMode = engineMode;
     this.parts = [...parts];
     this.planets = planets;
     this.cargo = cargo;
@@ -485,7 +489,9 @@ export class RocketController {
    * hold carries) - summed in RocketPerformance, the one source of the numbers
    */
   private calculateMassProperties(): void {
-    const stats = computeRocketStats(stackItemTypes(this.parts), cargoMass(this.cargo));
+    const types = stackItemTypes(this.parts);
+    this.engineMode = validEngineMode(types, this.engineMode);
+    const stats = computeRocketStats(types, cargoMass(this.cargo), this.engineMode);
     this.totalDryMass = stats.dryMass;
     this.totalWetMass = stats.wetMass;
     this.totalFuelCapacity = stats.fuelCapacity;
@@ -495,6 +501,28 @@ export class RocketController {
 
     // Start with full fuel
     this.currentFuel = this.totalFuelCapacity;
+  }
+
+  // Which engines fire (design 6b): null = all of them
+  private engineMode: EngineMode = null;
+
+  public getEngineMode(): EngineMode {
+    return this.engineMode;
+  }
+
+  /** The modes this rocket can fly in (just All for one engine type) */
+  public getEngineModes(): EngineMode[] {
+    return engineModes(stackItemTypes(this.parts));
+  }
+
+  /** Switch to the next engine mode (fuel kept); false if there is only one */
+  public cycleEngineMode(): boolean {
+    const types = stackItemTypes(this.parts);
+    if (engineModes(types).length < 2) return false;
+    this.engineMode = nextEngineMode(types, this.engineMode);
+    this.refreshCargoMass();
+    this.onChanged?.();
+    return true;
   }
 
   /** Re-weigh the rocket after its cargo changed (fuel level kept) */
@@ -896,6 +924,7 @@ export class RocketController {
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
             this.hasLaunched = true;
+            emitGameEvent('launched');
           }
         }
         break;
@@ -946,6 +975,7 @@ export class RocketController {
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
             this.hasLaunched = true;
+            emitGameEvent('launched');
           }
         }
         break;
@@ -1000,6 +1030,11 @@ export class RocketController {
 
       this.stateMachine.transitionTo(RocketState.LANDED);
       console.log(`Landed safely at ${impactVelocity.toFixed(1)} m/s`);
+      if (this.closestPlanet) {
+        // the gravity source is named by its display name; missions use body ids
+        const name = this.closestPlanet.name;
+        emitGameEvent('landed', SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase());
+      }
     } else {
       // Too fast - crash!
       console.log(`Crash! Impact too fast: ${impactVelocity.toFixed(1)} m/s`);
@@ -1217,6 +1252,19 @@ export class RocketController {
     return this.position.clone();
   }
 
+  /**
+   * The reference frame changed under the rocket (it entered another body's
+   * sphere of influence): move it by the frames' offset and take the new
+   * frame's velocity off its own, at a tick boundary, so nothing jumps
+   * (openspec navigation-and-orbits 8.2). Orientation is unchanged - the
+   * frames differ by a translation only.
+   */
+  public rebase(offset: THREE.Vector3, frameVelocity: THREE.Vector3): void {
+    this.position.add(offset);
+    this.velocity.sub(frameVelocity);
+    this.pivot.position.copy(this.position);
+  }
+
   public getVelocity(): THREE.Vector3 {
     return this.velocity.clone();
   }
@@ -1409,8 +1457,10 @@ export class RocketController {
     groundNormal: THREE.Vector3,
     fuelPercent: number,
     planets: PlanetGravitySource[],
-    cargo: InventorySlot[] | null = null
+    cargo: InventorySlot[] | null = null,
+    engineMode: EngineMode = null
   ): void {
+    this.engineMode = engineMode;
     // Reuse the existing pivot and parts
     this.pivot = pivot;
     this.parts = parts;

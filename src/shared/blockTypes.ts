@@ -112,7 +112,21 @@ export enum HexBlockType {
   SULFUR = 76,
   // The Moon's titanium (ilmenite) - found on no other body. Numbered past
   // the crust family; drops Titanium Ore
-  MOON_ORE_TITANIUM = 90
+  MOON_ORE_TITANIUM = 90,
+  // The city's street lamps (cityGen puts them along the roads); they give
+  // off light (shared/voxelLight EMISSION)
+  CITY_LAMP = 91,
+  // Industry resources (openspec industry-and-nuclear): Earth's shore clay,
+  // deep oil sand (pumped, or scooped with a bucket) and uranium ore (the
+  // Moon, Cinder, metal asteroids)
+  CLAY = 92,
+  OIL_SAND = 93,
+  ORE_URANIUM = 94,
+  // Building materials (openspec industry-and-nuclear, decision 9)
+  BRICK_BLOCK = 95,
+  CONCRETE_BLOCK = 96,
+  STEEL_GIRDER = 97,     // an open steel truss: cut-out, drawn with the glass shader
+  STEEL_GLASS = 98,      // steel-framed glass: see-through like GLASS
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -141,6 +155,7 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.CITY_GLASS]: HexBlockType.STONE,
   [HexBlockType.CITY_ROOF]: HexBlockType.STONE,
   [HexBlockType.CITY_NEON]: HexBlockType.STONE,
+  [HexBlockType.CITY_LAMP]: HexBlockType.STONE,
   [HexBlockType.CITY_METAL]: HexBlockType.STONE,
   [HexBlockType.CITY_FOUNDATION]: HexBlockType.STONE,
   // Alien biome grounds: each planet's three grounds behave like GRASS,
@@ -181,6 +196,13 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.MOON_ORE_TITANIUM]: HexBlockType.MOON_ROCK,
   [HexBlockType.FROST]: HexBlockType.SNOW,
   [HexBlockType.BLUE_ICE]: HexBlockType.SNOW,
+  [HexBlockType.CLAY]: HexBlockType.SAND,
+  [HexBlockType.OIL_SAND]: HexBlockType.STONE,
+  [HexBlockType.ORE_URANIUM]: HexBlockType.STONE,
+  [HexBlockType.BRICK_BLOCK]: HexBlockType.STONE,
+  [HexBlockType.CONCRETE_BLOCK]: HexBlockType.STONE,
+  [HexBlockType.STEEL_GIRDER]: HexBlockType.STONE,
+  [HexBlockType.STEEL_GLASS]: HexBlockType.GLASS,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -204,6 +226,13 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.ORE_LITHIUM]: sameFaces('oreLithium'),
   [HexBlockType.ORE_ALUMINUM]: sameFaces('oreAluminum'),
   [HexBlockType.ORE_COBALT]: sameFaces('oreCobalt'),
+  [HexBlockType.CLAY]: sameFaces('clay'),
+  [HexBlockType.OIL_SAND]: sameFaces('oilSand'),
+  [HexBlockType.ORE_URANIUM]: sameFaces('oreUranium'),
+  [HexBlockType.BRICK_BLOCK]: sameFaces('brickBlock'),
+  [HexBlockType.CONCRETE_BLOCK]: sameFaces('concrete'),
+  [HexBlockType.STEEL_GIRDER]: sameFaces('steelGirder'),
+  [HexBlockType.STEEL_GLASS]: sameFaces('steelGlass'),
   [HexBlockType.SNOW]: { top: 'snow', side: 'snowSide', bottom: 'dirtSnow' },
   [HexBlockType.DIRT_SNOW]: sameFaces('dirtSnow'),
   [HexBlockType.ICE]: sameFaces('ice'),
@@ -229,6 +258,7 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.CITY_GLASS]: { top: 'citySlab', side: 'cityGlass', bottom: 'citySlab' },
   [HexBlockType.CITY_ROOF]: { top: 'cityRoof', side: 'cityParapet', bottom: 'citySlab' },
   [HexBlockType.CITY_NEON]: { top: 'cityDeck', side: 'cityNeon', bottom: 'cityDeck' },
+  [HexBlockType.CITY_LAMP]: { top: 'cityLampTop', side: 'cityLamp', bottom: 'cityDeck' },
   [HexBlockType.CITY_METAL]: { top: 'cityDeck', side: 'cityMetal', bottom: 'cityDeck' },
   [HexBlockType.CITY_PARK]: { top: 'cityPark', side: 'cityParkSide', bottom: 'cityFoundation' },
   [HexBlockType.CITY_FOUNDATION]: sameFaces('cityFoundation'),
@@ -274,10 +304,34 @@ export function blockFaces(blockType: HexBlockType | number): BlockFaces {
 }
 
 // Draw order for transparent materials (opaque ones default to 0)
-export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2, glass: 3 };
+export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2, glass: 3, steelGlass: 3, steelGirder: 3 };
 
 // Key of a material's buffer in mesher output: 'top' -> 'topData'
 export const bufferKey = (materialKey: string): string => `${materialKey}Data`;
+
+/**
+ * Does a side face of `self` show against `other` (the block across that
+ * face, undefined when unknown)? Against air always, water unless self is
+ * water. Ice and glass show only against air / water - a face touching any
+ * other block is dropped, or two coplanar faces z-fight through the
+ * translucency. A solid block shows through ice or glass beside it.
+ */
+export function sideFaceShows(self: number, other: number | undefined): boolean {
+  if (other === undefined || other === HexBlockType.AIR) return true;
+  if (other === HexBlockType.WATER) return self !== HexBlockType.WATER;
+  if (isClearSolid(self) || self === HexBlockType.WATER) return false;
+  return isClearSolid(other);
+}
+
+/**
+ * Solid blocks you can see through: ice, glass, steel-framed glass and the
+ * open steel girder. The one list every mesher, the light flood and face
+ * culling ask, so a new see-through block is added here and nowhere else.
+ */
+export function isClearSolid(blockType: HexBlockType | number): boolean {
+  return blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS
+    || blockType === HexBlockType.STEEL_GLASS || blockType === HexBlockType.STEEL_GIRDER;
+}
 
 export function isSolid(blockType: HexBlockType | number): boolean {
   return blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER;
@@ -288,9 +342,9 @@ export function isLiquid(blockType: HexBlockType | number): boolean {
 }
 
 export function isTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
+  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || isClearSolid(blockType);
 }
 
 export function isSemiTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
+  return isClearSolid(blockType);
 }

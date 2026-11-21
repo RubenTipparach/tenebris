@@ -49,6 +49,17 @@ And the jungle moons' blocks (public/textures/alien/<moon>_<block>.png):
            (banded violet-grey rock)
   The ground tops' sides are the moon's own soil under a lip.
 
+And the industry resource blocks (public/textures/resources/*.png, all faces):
+  clay         Earth's shore clay: grey-brown slabs with drying cracks
+  oil_sand     dark tar-soaked sand with glossy tar beads
+  ore_uranium  dark rock with green uraninite nodules
+
+And the building blocks (public/textures/building/*.png, all faces):
+  brick_block   running-bond brick with mortar joints
+  concrete      cast grey with a formwork seam and tie-holes
+  steel_girder  an open steel truss (alpha-cut gaps, drawn with the glass shader)
+  steel_glass   clear panes in a steel frame with a cross mullion
+
 Deterministic. Run from the repo root:  python3 scripts/gen-biome-textures.py
 """
 import os
@@ -77,6 +88,7 @@ def rgb(h):
 
 
 PALETTE = {rgb(h) for h in SWEAFT_64}
+SWEAFT_RGB0 = rgb(SWEAFT_64[0])  # stands in for a transparent pixel when checking
 
 # Ramps, dark to light, every tone from Sweaft-64
 RAMPS = {
@@ -650,6 +662,184 @@ def jungle_moons():
         print('wrote', moon)
 
 
+# ---- Industry resources (openspec industry-and-nuclear) ---------------------
+
+RES = {
+    'clay': R('#41322c', '#725244', '#a09f91', '#92a3b2', '#bfcad7'),
+    'tarsand': R('#010000', '#161612', '#2c2c25', '#41322c', '#725244'),
+    'tar': R('#010000', '#011c34', '#1f3b52'),
+    'urock': R('#161612', '#2c2c25', '#434137', '#a09f91'),
+    'uraninite': R('#010000', '#003227', '#05582d', '#559642', '#9bb675', '#c1f1d8'),
+}
+
+
+def res_clay(rng):
+    """Earth's shore clay: smooth grey-brown slabs, drying cracks, a few wet smears"""
+    t = Tile(RES['clay'], 2)
+    plates(t, rng, RES['clay'][1:4], 8, RES['clay'][0])
+    cushions(t, rng, RES['clay'], 4, [3], ((3, 1), (4, 1), (2, 1)))
+    specks(t, rng, RES['clay'][4], 3)
+    return t.px
+
+
+def res_oil_sand(rng):
+    """Oil sand: dark sand grains soaked in tar, glossy tar beads with a cold sheen"""
+    t = Tile(RES['tarsand'], 2)
+    t.ground(rng, RES['tarsand'], [1, 2, 3], [3, 4, 2])
+    specks(t, rng, RES['tarsand'][4], 10)
+    cushions(t, rng, RES['tar'], 7, [0], ((2, 2), (3, 2), (2, 3)))
+    for _ in range(5):                                      # sheen on a bead's top left
+        x, y = rng.randrange(N), rng.randrange(N)
+        if t.px[y][x] == RES['tar'][1]:
+            t.put(x, y, RES['tar'][2])
+    return t.px
+
+
+def res_ore_uranium(rng):
+    """Uranium ore: dark rock with uraninite nodules rimmed in yellow-green"""
+    t = Tile(RES['urock'], 1)
+    t.ground(rng, RES['urock'], [0, 1, 2], [2, 4, 2])
+    cushions(t, rng, RES['urock'], 6, [2], ((3, 2), (2, 3), (3, 3)))
+    cushions(t, rng, RES['uraninite'], 6, [2, 3], ((2, 2), (3, 2), (2, 3), (3, 3)))
+    specks(t, rng, RES['uraninite'][5], 3)
+    return t.px
+
+
+def resources():
+    out = os.path.join(ROOT, 'resources')
+    os.makedirs(out, exist_ok=True)
+    rrng = random.Random(9191)                             # own rng: the tiles above don't change
+    for name, draw in [('clay', res_clay), ('oil_sand', res_oil_sand), ('ore_uranium', res_ore_uranium)]:
+        px = draw(rrng)
+        check(px)
+        write_png(os.path.join(out, f'{name}.png'), px)
+        print('wrote resource', name)
+
+
+# ---- Building materials (openspec industry-and-nuclear, decision 9) ---------
+
+BLD = {
+    'brick': R('#4a051e', '#841c1d', '#a8633e', '#c56d25'),
+    'mortar': R('#69608b', '#a09f91', '#bfcad7'),
+    'concrete': R('#3e586e', '#5d778d', '#92a3b2', '#bfcad7'),
+    'steel': R('#011c34', '#1f3b52', '#3e586e', '#5d778d', '#92a3b2'),
+    'pane': R('#1096c3', '#74effe', '#d2f8ff'),
+}
+
+
+def write_png_rgba(path, px):
+    """RGBA: a None pixel is fully transparent (alpha 0); every other alpha 255."""
+    raw = b''.join(b'\x00' + bytes(v for p in row for v in ((0, 0, 0, 0) if p is None else (*p, 255))) for row in px)
+    def chunk(t, dd):
+        return struct.pack('>I', len(dd)) + t + dd + struct.pack('>I', zlib.crc32(t + dd) & 0xffffffff)
+    with open(path, 'wb') as f:
+        f.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', N, N, 8, 6, 0, 0, 0))
+                + chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
+
+
+def check_rgba(px):
+    check([[p if p is not None else SWEAFT_RGB0 for p in row] for row in px])
+
+
+def bld_brick(rng):
+    """Brick wall: running bond, 4 courses of 4 px; each brick one tone, lit
+    on its top-left edge, shaded bottom-right; mortar joints between"""
+    b, m = BLD['brick'], BLD['mortar']
+    px = [[m[1]] * N for _ in range(N)]
+    for course in range(4):
+        y0 = course * 4
+        off = 0 if course % 2 == 0 else 4
+        for k in range(2):
+            x0 = (off + k * 8) % N
+            body = rng.choice([1, 1, 2])
+            for dy in range(3):              # 3 px tall, 1 px mortar below
+                for dx in range(7):          # 7 px long, 1 px mortar after
+                    x, y = (x0 + dx) % N, y0 + dy
+                    c = b[body]
+                    if dy == 0 or dx == 0:
+                        c = b[min(body + 1, len(b) - 1)]
+                    elif dy == 2 or dx == 6:
+                        c = b[body - 1]
+                    px[y][x] = c
+            # a chip or two of grit
+            if rng.random() < 0.6:
+                px[y0 + 1][(x0 + rng.randrange(1, 6)) % N] = b[0]
+        for x in range(N):                   # mortar shade under each course
+            if px[y0 + 3][x] == m[1] and rng.random() < 0.3:
+                px[y0 + 3][x] = m[0]
+    return px
+
+
+def bld_concrete(rng):
+    """Concrete: cast grey, formwork seam across the middle, tie-holes, aggregate specks"""
+    c = BLD['concrete']
+    t = Tile(c, 2)
+    t.ground(rng, c, [1, 2, 3], [2, 6, 2])
+    for x in range(N):                       # formwork seam, lit edge above
+        t.put(x, 8, c[0])
+        t.put(x, 7, c[3])
+    for (x, y) in ((3, 3), (12, 3), (3, 12), (12, 12)):   # tie holes
+        t.put(x, y, c[0])
+        t.put(x - 1, y - 1, c[3])
+    specks(t, rng, c[0], 6)
+    return t.px
+
+
+def bld_girder(rng):
+    """Steel girder: an open truss - flanges top and bottom, posts at the
+    edges and a diagonal web, lit top-left; the gaps are open (alpha 0)"""
+    s = BLD['steel']
+    px = [[None] * N for _ in range(N)]
+    def put(x, y, c):
+        px[y % N][x % N] = c
+    for x in range(N):                       # flanges: lit top row, body, shade
+        put(x, 0, s[4]); put(x, 1, s[3]); put(x, 2, s[1])
+        put(x, 13, s[3]); put(x, 14, s[2]); put(x, 15, s[0])
+    for y in range(3, 13):                   # edge posts
+        put(0, y, s[3]); put(1, y, s[2])
+        put(14, y, s[2]); put(15, y, s[1])
+    for i in range(10):                      # diagonal web, two px wide
+        put(2 + i + (i // 2), 3 + i, s[3])
+        put(3 + i + (i // 2), 3 + i, s[1])
+    for (x, y) in ((2, 1), (13, 1), (2, 14), (13, 14)):   # rivets
+        put(x, y, s[4])
+    return px
+
+
+def bld_steel_glass(rng):
+    """Steel-framed glass: a steel frame round the edge and a cross mullion,
+    the panes clear (alpha 0) with a few bright glints like the plain glass"""
+    s, g = BLD['steel'], BLD['pane']
+    px = [[None] * N for _ in range(N)]
+    for i in range(N):
+        px[0][i] = s[4]; px[1][i] = s[2]
+        px[N - 1][i] = s[0]; px[N - 2][i] = s[1]
+        px[i][0] = s[3]; px[i][1] = s[2]
+        px[i][N - 1] = s[1]; px[i][N - 2] = s[1]
+        px[7][i] = s[3]; px[8][i] = s[1]           # transom
+        px[i][7] = s[3]; px[i][8] = s[1]           # mullion
+    for (x0, y0) in ((2, 2), (9, 2), (2, 9), (9, 9)):  # a diagonal glint per pane
+        for k in range(3):
+            px[y0 + k][x0 + 2 - k] = g[2] if k == 1 else g[1]
+    return px
+
+
+def building():
+    out = os.path.join(ROOT, 'building')
+    os.makedirs(out, exist_ok=True)
+    brng = random.Random(6363)                             # own rng: the tiles above don't change
+    for name, draw, alpha in [('brick_block', bld_brick, False), ('concrete', bld_concrete, False),
+                              ('steel_girder', bld_girder, True), ('steel_glass', bld_steel_glass, True)]:
+        px = draw(brng)
+        if alpha:
+            check_rgba(px)
+            write_png_rgba(os.path.join(out, f'{name}.png'), px)
+        else:
+            check(px)
+            write_png(os.path.join(out, f'{name}.png'), px)
+        print('wrote building', name)
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     rng = random.Random(4242)
@@ -675,6 +865,8 @@ def main():
         print('wrote moon ore', name)
     alien_grounds()
     jungle_moons()
+    resources()
+    building()
 
 
 if __name__ == '__main__':

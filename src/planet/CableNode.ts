@@ -8,6 +8,7 @@ import { PlacedElectricFurnace } from './ElectricFurnace';
 import { PlacedElectronicsWorkbench } from './ElectronicsWorkbench';
 import { PlacedComputer } from './Computer';
 import { PlacedPrinter3D } from './Printer3D';
+import type { PowerNodeKind } from '../config/PowerConfig';
 
 // Cable connection types
 export type CableConnectionTarget =
@@ -16,7 +17,10 @@ export type CableConnectionTarget =
   | { type: 'electric-furnace'; tileIndex: number }
   | { type: 'electronics-workbench'; tileIndex: number }
   | { type: 'computer'; tileIndex: number }
-  | { type: 'printer-3d'; tileIndex: number };
+  | { type: 'printer-3d'; tileIndex: number }
+  // Any other node on the power grid (the industry machines, batteries,
+  // the hydro generator): one generic entry, so a new kind needs no new case
+  | { type: 'node'; kind: PowerNodeKind; tileIndex: number };
 
 export interface PlacedCable {
   id: string;
@@ -39,6 +43,7 @@ export interface CableNetwork {
   connectedElectronicsWorkbenches: number[]; // Tile indices
   connectedComputers: number[]; // Tile indices
   connectedPrinters3D: number[]; // Tile indices
+  nodes: { kind: PowerNodeKind; tileIndex: number }[]; // generic grid nodes
 }
 
 export class CableNodeManager {
@@ -62,7 +67,8 @@ export class CableNodeManager {
   private getElectronicsWorkbenchAtTile: ((tileIndex: number) => PlacedElectronicsWorkbench | undefined) | null = null;
   private getComputerAtTile: ((tileIndex: number) => PlacedComputer | undefined) | null = null;
   private getPrinter3DAtTile: ((tileIndex: number) => PlacedPrinter3D | undefined) | null = null;
-  private getNeighborTiles: ((tileIndex: number) => number[]) | null = null;
+  private getNeighborTiles: ((tileIndex: number, near?: THREE.Vector3) => number[]) | null = null;
+  private getPowerNodeAtTile: ((tileIndex: number, near?: THREE.Vector3) => { kind: PowerNodeKind; position: THREE.Vector3 } | undefined) | null = null;
 
   constructor(scene: THREE.Scene, planetCenter?: THREE.Vector3, sunDirection?: THREE.Vector3) {
     this.scene = scene;
@@ -78,7 +84,7 @@ export class CableNodeManager {
     getElectronicsWorkbenchAtTile: (tileIndex: number) => PlacedElectronicsWorkbench | undefined,
     getComputerAtTile: (tileIndex: number) => PlacedComputer | undefined,
     getPrinter3DAtTile: (tileIndex: number) => PlacedPrinter3D | undefined,
-    getNeighborTiles: (tileIndex: number) => number[]
+    getNeighborTiles: (tileIndex: number, near?: THREE.Vector3) => number[]
   ): void {
     this.getSteamEngineAtTile = getSteamEngineAtTile;
     this.getElectricFurnaceAtTile = getElectricFurnaceAtTile;
@@ -86,6 +92,16 @@ export class CableNodeManager {
     this.getComputerAtTile = getComputerAtTile;
     this.getPrinter3DAtTile = getPrinter3DAtTile;
     this.getNeighborTiles = getNeighborTiles;
+  }
+
+  /** The generic grid nodes on a tile (industry machines, batteries, hydro). */
+  public setPowerNodeLookup(lookup: (tileIndex: number, near?: THREE.Vector3) => { kind: PowerNodeKind; position: THREE.Vector3 } | undefined): void {
+    this.getPowerNodeAtTile = lookup;
+  }
+
+  /** Every cable network (the grid solver balances each one). */
+  public getNetworks(): CableNetwork[] {
+    return [...this.networks.values()];
   }
 
   public setSunDirection(direction: THREE.Vector3): void {
@@ -338,6 +354,13 @@ export class CableNodeManager {
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
+      } else if (conn.type === 'node') {
+        const node = this.getPowerNodeAtTile?.(conn.tileIndex, cable.position);
+        if (node) {
+          const connector = this.createConnectorMesh(cable.position, node.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
       }
     }
 
@@ -407,6 +430,13 @@ export class CableNodeManager {
           this.scene.add(connector);
           cable.connectorMeshes.push(connector);
         }
+      } else if (conn.type === 'node') {
+        const node = this.getPowerNodeAtTile?.(conn.tileIndex, cable.position);
+        if (node) {
+          const connector = this.createConnectorMesh(cable.position, node.position);
+          this.scene.add(connector);
+          cable.connectorMeshes.push(connector);
+        }
       }
     }
   }
@@ -417,7 +447,8 @@ export class CableNodeManager {
 
     if (!this.getNeighborTiles) return;
 
-    const neighborTiles = this.getNeighborTiles(cable.tileIndex);
+    // (by position too: tile indices repeat from planet to planet)
+    const neighborTiles = this.getNeighborTiles(cable.tileIndex, cable.position);
 
     // Check each neighbor tile for cables or machines
     for (const neighborTile of neighborTiles) {
@@ -498,6 +529,9 @@ export class CableNodeManager {
           cable.connections.push({ type: 'printer-3d', tileIndex: neighborTile });
         }
       }
+
+      const node = this.getPowerNodeAtTile?.(neighborTile, cable.position);
+      if (node) cable.connections.push({ type: 'node', kind: node.kind, tileIndex: neighborTile });
     }
 
     // Also check the same tile for machines
@@ -535,6 +569,9 @@ export class CableNodeManager {
         cable.connections.push({ type: 'printer-3d', tileIndex: cable.tileIndex });
       }
     }
+
+    const node = this.getPowerNodeAtTile?.(cable.tileIndex, cable.position);
+    if (node) cable.connections.push({ type: 'node', kind: node.kind, tileIndex: cable.tileIndex });
   }
 
   // Rebuild all cable networks using flood fill
@@ -553,6 +590,7 @@ export class CableNodeManager {
         connectedElectronicsWorkbenches: [],
         connectedComputers: [],
         connectedPrinters3D: [],
+        nodes: [],
       };
 
       // Flood fill to find all connected cables
@@ -592,6 +630,10 @@ export class CableNodeManager {
           } else if (conn.type === 'printer-3d') {
             if (!network.connectedPrinters3D.includes(conn.tileIndex)) {
               network.connectedPrinters3D.push(conn.tileIndex);
+            }
+          } else if (conn.type === 'node') {
+            if (!network.nodes.some(n => n.tileIndex === conn.tileIndex)) {
+              network.nodes.push({ kind: conn.kind, tileIndex: conn.tileIndex });
             }
           }
         }

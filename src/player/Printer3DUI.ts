@@ -1,4 +1,5 @@
 import { PlacedPrinter3D } from '../planet/Printer3D';
+import { recipeLockedBy, recipeOpen } from './RecipeGate';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
@@ -956,14 +957,17 @@ export class Printer3DUI {
       const canCraft = this.canCraftRecipe(recipe);
 
       const recipeEl = document.createElement('div');
-      recipeEl.className = `recipe-item${!canCraft ? ' disabled' : ''}`;
+      // A recipe a mission has not unlocked yet: dimmed, with that mission
+      const lockedBy = recipeLockedBy(recipe.output);
+      recipeEl.className = `recipe-item${!canCraft ? ' disabled' : ''}${lockedBy ? ' locked' : ''}`;
+      if (lockedBy) recipeEl.style.opacity = '0.45';
 
       // Output section
       const outputData = ITEM_DATA[recipe.output];
       const outputHtml = `
         <div class="recipe-output">
           <img src="${getAssetPath(outputData?.texture || '')}" alt="${outputData?.name || 'Unknown'}">
-          <span class="recipe-output-name">${recipe.name}</span>
+          <span class="recipe-output-name">${recipe.name}${lockedBy ? ` - Unlocked by: ${lockedBy}` : ''}</span>
           <span class="recipe-output-qty">x${recipe.outputQuantity}</span>
         </div>
       `;
@@ -1213,6 +1217,8 @@ export class Printer3DUI {
   }
 
   private canCraftRecipe(recipe: PrinterRecipe): boolean {
+    // Locked until its mission is done (src/player/RecipeGate)
+    if (!recipeOpen(recipe.output)) return false;
     // Debug mode: bypass ingredient requirements
     if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       return true;
@@ -1246,6 +1252,9 @@ export class Printer3DUI {
     // Get required items
     const requiredItems = this.getRequiredItems(recipe);
     console.log('[Printer3DUI] Required items:', Array.from(requiredItems.entries()));
+
+    // Locked until its mission is done
+    if (!recipeOpen(recipe.output)) return;
 
     // Check if we have all items (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {

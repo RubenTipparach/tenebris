@@ -2,6 +2,7 @@
 // Centralized definitions for all celestial bodies (sun, planets, moons, asteroids)
 // Makes it easy to add new bodies by defining their properties here
 
+import { DEPOSITS, Deposit } from './ResourceConfig';
 import * as THREE from 'three';
 import type { CityConfig } from '../shared/cityGen';
 import { HexBlockType } from '../shared/blockTypes';
@@ -128,6 +129,10 @@ export interface TerrainConfig {
   iceCover?: boolean;
   /** Rock worlds: meteoric iron at the surface, extra ore veins */
   metalRich?: boolean;
+  /** Deposits this body holds beyond the common ores (ResourceConfig DEPOSITS) */
+  extraOres?: Deposit[];
+  /** Clay patches on its shores (ResourceConfig SHORE_CLAY) */
+  shoreClay?: boolean;
 }
 
 /**
@@ -230,8 +235,13 @@ function singleTextureTileset(texture: string): TilesetConfig {
   };
 }
 
-/** Where the star sits (the 'sun' body below uses it too). */
-const SUN_POSITION = { x: 1000, y: 0, z: 4000 };
+/**
+ * Where the star sits (the 'sun' body below uses it too): in among the
+ * planets, so they lie all round it (the largest empty arc is about 72 deg)
+ * rather than all off to one side. Moving it changes no distance between
+ * planets, so rocket trips cost the same.
+ */
+const SUN_POSITION = { x: 2300, y: 0, z: 700 };
 
 /**
  * Spawn lat/lon on a body's sunlit side: the sub-solar point, swung
@@ -277,6 +287,7 @@ interface RockWorld {
   volcanoes?: number;         // volcano cones with molten craters
   iceCover?: boolean;         // a frozen crust over glacier ice
   metalRich?: boolean;        // meteoric iron at the surface, extra ore
+  extraOres?: Deposit[];      // deposits beyond the common ores
 }
 
 // Small bodies need a shallower column (sea level = air above the datum,
@@ -373,6 +384,7 @@ function rockWorld(w: RockWorld): CelestialBodyConfig {
       volcanoes: w.volcanoes,
       iceCover: w.iceCover,
       metalRich: w.metalRich,
+      extraOres: w.extraOres,
     },
     tileset,
     flora: life?.flora,
@@ -443,6 +455,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
       waterColor: w.water,
       waterDeepColor: w.waterDeep,
       biomes: true,
+      extraOres: [DEPOSITS.OIL],   // the jungle moons hold oil
       blockRemap: {
         [HexBlockType.GRASS]: jungle,
         [HexBlockType.DRY_GRASS]: jungle,
@@ -479,6 +492,8 @@ const asteroid = (kind: AsteroidKind, w: Omit<RockWorld, 'type' | 'texture' | 'h
   rockWorld({
     ...w, type: CelestialBodyType.ASTEROID, texture: `/textures/planets/asteroid_${kind}.png`,
     heightVariation: 1.0, gravity: 0.12, metalRich: kind === 'metal', iceCover: kind === 'ice',
+    // metal asteroids hold uranium
+    extraOres: kind === 'metal' ? [DEPOSITS.URANIUM] : undefined,
   });
 
 /**
@@ -694,6 +709,9 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         falloffRadiusMultiplier: 1.8,
       },
       terrain: {
+        // Clay on its shores, oil deep down
+        shoreClay: true,
+        extraOres: [DEPOSITS.OIL],
         hasWater: true,
         seaLevel: 12,
       },
@@ -735,6 +753,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         falloffRadiusMultiplier: 2.4, // 120 units at radius 50
       },
       terrain: {
+        extraOres: [DEPOSITS.URANIUM],   // uranium under the Moon's titanium
         hasWater: false,
         // The Moon's minerals in its own rock: iron, aluminium, cobalt,
         // lithium - and titanium (ilmenite) where Earth would have coal,
@@ -886,6 +905,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
           setbackKeep: 0.72,
           crownFloors: 14,
           storefrontChance: 0.5,
+          lampEvery: 5,
           lodPalette: {
             road: ['#3e586e', 1.0],
             sidewalk: ['#92a3b2', 0.5],
@@ -926,7 +946,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // minutes, clear of the sun (1000, 0, 4000) and of each other's gravity
     // (every pair sits further apart than their two falloff radii; the boot
     // log warns when they don't - bodyClearanceProblems below).
-    rockWorld({ id: 'cinder', name: 'Cinder', radius: 130, position: { x: -1600, y: 150, z: 900 },
+    rockWorld({ id: 'cinder', name: 'Cinder', extraOres: [DEPOSITS.URANIUM], radius: 130, position: { x: -1600, y: 150, z: 900 },
       heightVariation: 0.6, gravity: 0.6, colour: '#5a3a30', seed: 101, volcanoes: 6,
       life: {
         grounds: [['embermoss', HexBlockType.CINDER_EMBERMOSS], ['ash', HexBlockType.CINDER_ASH], ['sulfur', HexBlockType.CINDER_SULFUR]],

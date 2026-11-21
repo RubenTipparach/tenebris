@@ -128,7 +128,7 @@ export function unpackBlocks(packed: PackedBlocks): Map<number, Uint8Array> {
 // torch light) in a worker result with Float32Arrays and collect their buffers
 // for transfer. Index arrays stay plain arrays: BufferGeometry.setIndex() only
 // accepts number[] or a BufferAttribute.
-const FLOAT_ATTRIBUTE_KEY = /(positions|normals|uvs|colors|skylight|torchlight)$/i;
+const FLOAT_ATTRIBUTE_KEY = /(positions|normals|uvs|colors|skylight|blocklight|torchlight)$/i;
 
 export function packFloatAttributes(value: unknown, transfers: Transferable[]): void {
   if (Array.isArray(value)) {
