@@ -1,3 +1,4 @@
+import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
@@ -1202,7 +1203,10 @@ export class LaunchPadUI {
     if (this.statusElement) {
       const statusText = this.statusElement.querySelector('.status-text');
       if (statusText) {
-        statusText.textContent = `Tower Height: ${segmentCount}/${this.MAX_HEIGHT}`;
+        const pad = this.currentLaunchPad;
+        statusText.textContent = pad.isComplete
+          ? `Tower Height: ${segmentCount}/${this.MAX_HEIGHT}`
+          : `Pad: ${pad.hexes.size} block${pad.hexes.size === 1 ? '' : 's'} - needs ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} (a middle hex with a full ring) for a tower and rocket`;
       }
     }
 

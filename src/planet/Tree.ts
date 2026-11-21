@@ -1658,6 +1658,11 @@ export class PlanetTreeManager {
   }
 
   // Remove a tree
+  /** Fell every tree on a tile (another player chopped it). */
+  public removeTreesAtTile(tileIndex: number): void {
+    for (const tree of [...(this.treesByTile.get(tileIndex) ?? [])]) this.removeTree(tree);
+  }
+
   public removeTree(tree: THREE.Group): void {
     const index = this.trees.indexOf(tree);
     if (index >= 0) {

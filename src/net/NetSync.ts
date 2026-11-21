@@ -22,6 +22,8 @@
 
 export type RecordHandler = (planet: string, key: string, data: any | null) => void;
 export type LiveHandler = (fromId: number, data: any) => void;
+/** This client's own copy of every record of a kind (its local save). */
+export type LocalRecords = () => Array<{ planet: string; key: string; data: object }>;
 
 interface Transport {
   sendRecord(kind: string, planet: string, key: string, data: object | null): void;
@@ -29,6 +31,39 @@ interface Transport {
 }
 
 const recordHandlers = new Map<string, RecordHandler>();
+const localLists = new Map<string, LocalRecords>();
+// What was last sent / received per record address, so re-saving an
+// unchanged object (the periodic machine saves) sends nothing
+const lastState = new Map<string, string>();
+// Addresses the server is known to hold, remembered per world in
+// localStorage: on joining, a local object the server no longer has was
+// removed by someone else (if it's in here) or made offline (if not - it's
+// uploaded)
+let known = new Set<string>();
+let knownKey: string | null = null;
+const address = (kind: string, planet: string, key: string) => `${kind}|${planet}|${key}`;
+
+function loadKnown(worldId: string): void {
+  knownKey = `tenebris_w_${worldId.replace(/[^a-z0-9]/gi, '')}_synced`;
+  try {
+    known = new Set(JSON.parse(localStorage.getItem(knownKey) ?? '[]'));
+  } catch {
+    known = new Set();
+  }
+}
+let knownSaveTimer: number | null = null;
+function saveKnown(): void {
+  if (!knownKey || knownSaveTimer !== null) return;
+  // batched: a join can touch thousands of records
+  knownSaveTimer = window.setTimeout(() => {
+    knownSaveTimer = null;
+    try {
+      localStorage.setItem(knownKey!, JSON.stringify([...known]));
+    } catch {
+      // storage full or blocked: the next join just re-uploads
+    }
+  }, 500);
+}
 const liveHandlers = new Map<string, LiveHandler>();
 let transport: Transport | null = null;
 let remoteDepth = 0;
@@ -51,6 +86,13 @@ export const netSync = {
   /** Publish an object's latest state (null = removed). No-op offline or while applying a remote record. */
   record(kind: string, planet: string, key: string | number, data: object | null): void {
     if (!transport || remoteDepth > 0) return;
+    const addr = address(kind, planet, String(key));
+    const json = JSON.stringify(data);
+    if (lastState.get(addr) === json) return;
+    lastState.set(addr, json);
+    if (data) known.add(addr);
+    else known.delete(addr);
+    saveKnown();
     transport.sendRecord(kind, planet, String(key), data);
   },
 
@@ -59,8 +101,13 @@ export const netSync = {
     transport?.sendLive(ch, data);
   },
 
-  onRecord(kind: string, handler: RecordHandler): void {
+  /**
+   * Apply other players' records of a kind. `local` lists this client's own
+   * copies, so joining can reconcile them with the server's.
+   */
+  onRecord(kind: string, handler: RecordHandler, local?: LocalRecords): void {
     recordHandlers.set(kind, handler);
+    if (local) localLists.set(kind, local);
   },
 
   onLive(ch: string, handler: LiveHandler): void {
@@ -101,10 +148,12 @@ export const netSync = {
 
 // ---- used by Multiplayer only ------------------------------------------
 
-export function attachTransport(t: Transport | null, id = 0, serverNow?: number, epoch?: number): void {
+export function attachTransport(t: Transport | null, id = 0, serverNow?: number, epoch?: number, worldId?: string): void {
   transport = t;
   myId = id;
+  lastState.clear();
   if (!t) peers.clear();
+  if (t && worldId) loadKnown(worldId);
   if (serverNow !== undefined) clockOffsetMs = serverNow - Date.now();
   worldEpochMs = epoch ?? null;
 }
@@ -114,7 +163,31 @@ export function setPeer(id: number, planet: string | null): void {
   else peers.set(id, planet);
 }
 
+/**
+ * Joining: reconcile this client's objects with the server's, then apply the
+ * server's. A local object the server lacks is removed when the server had
+ * it before (someone took it away meanwhile), else uploaded (made offline).
+ */
+export function applySnapshot(records: Array<[string, string, string, any]>): void {
+  const onServer = new Set(records.map(([k, p, key]) => address(k, p, key)));
+  for (const [kind, list] of localLists) {
+    for (const { planet, key, data } of list()) {
+      const addr = address(kind, planet, key);
+      if (onServer.has(addr)) continue;
+      if (known.has(addr)) dispatchRecord(kind, planet, key, null);
+      else netSync.record(kind, planet, key, data);
+    }
+  }
+  for (const [kind, planet, key, data] of records) dispatchRecord(kind, planet, key, data);
+  known = new Set([...onServer, ...[...known].filter(a => lastState.has(a))]);
+  saveKnown();
+}
+
 export function dispatchRecord(kind: string, planet: string, key: string, data: any | null): void {
+  const addr = address(kind, planet, key);
+  lastState.set(addr, JSON.stringify(data));
+  if (data) known.add(addr);
+  else known.delete(addr);
   const h = recordHandlers.get(kind);
   if (!h) return;
   remoteDepth++;

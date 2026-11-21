@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { getAssetPath } from '../utils/assetPath';
-import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { ItemType, ITEM_DATA, RocketPartType, InventorySlot } from '../player/Inventory';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
@@ -22,18 +21,20 @@ export interface PlacedRocketPart {
   heightIndex: number;  // Which slot in the rocket stack (0 = bottom)
 }
 
-// Launch pad shape requirements:
-// The 10-hex stadium shape:
-//  P P      <- 2 hexes (top row)
-// P R P     <- 3 hexes (rocket row - R = rocket parts position)
-// P L P     <- 3 hexes (tower row - L = launch tower complex position)
-//  P P      <- 2 hexes (bottom row)
-// Total: 10 hexes
+// A launch pad is a group of Launch Pad Blocks, one hex each, all level.
+// It only takes a rocket once seven of them form a middle hex with the full
+// ring of six around it (ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER): the rocket
+// stands in the middle and the tower on another pad hex, never the middle.
+//
+//   P P
+//  P R P     R = rocket (the middle), P = pad blocks; the tower (T) goes on
+//   T P      any pad hex but R
 
-// One of the six hexes around the rocket tile that make the pad a
-// platform: built from the pad's top down to innerRadius (the ground there,
-// so the platform never hovers over a dip).
+// One pad hex: built from the pad's top down to innerRadius (the ground
+// there, so the pad never hovers over a dip).
 export interface PlatformTile {
+  index: number;
+  neighbors: number[];
   center: THREE.Vector3;
   vertices: THREE.Vector3[];
   innerRadius: number;
@@ -41,21 +42,22 @@ export interface PlatformTile {
 
 // Launch Pad placement data
 export interface PlacedLaunchPad {
-  mesh: THREE.Group;  // Group containing base + segments
-  position: THREE.Vector3;  // Center of the launch pad (rocket tile position)
+  mesh: THREE.Group;  // Group containing the pad hexes + tower + rocket
+  // Where the rocket stands: the middle hex's top once the pad is complete,
+  // else the first block's top
+  position: THREE.Vector3;
   planetCenter: THREE.Vector3;  // Center of the planet this pad sits on
-  // Tile tracking for 10-hex pattern
-  allTileIndices: number[];  // All 10 tile indices in the pattern
-  allTileCenters: THREE.Vector3[];  // World positions of all 10 hex centers
-  placedTiles: Set<number>;  // Which tiles have launch pad blocks placed (subset of allTileIndices)
-  rocketTileIndex: number;  // The center tile where rocket parts sit (R position)
-  towerTileIndex: number;  // The center tile where launch tower complex sits (L position)
-  towerTileCenter: THREE.Vector3;  // World position of tower tile center
-  isComplete: boolean;  // True when all 10 tiles have blocks placed
-  // Legacy fields for backwards compatibility
-  centerTileIndex: number;  // For backwards compat - same as rocketTileIndex
-  surroundingTileIndices: number[];  // For backwards compat
-  surroundingTileCenters: THREE.Vector3[];  // For backwards compat
+  outerRadius: number;  // the pad's top, from the planet centre (all hexes level)
+  hexes: Map<number, { tile: PlatformTile; mesh: THREE.Mesh }>;  // every pad block, by tile
+  placedTiles: Set<number>;  // the tiles of `hexes`
+  rocketTileIndex: number;  // The middle hex (rocket), -1 until 7 blocks form one
+  towerTileIndex: number;  // The tower's hex, -1 until a tower is started
+  towerTileCenter: THREE.Vector3;  // World position of the tower hex's top
+  isComplete: boolean;  // True once a middle hex with its full ring exists
+  // The pad's save key: its first block (the middle, for pads placed whole
+  // in older saves)
+  centerTileIndex: number;
+  surroundingTileIndices: number[];  // the middle's ring ([] until complete)
   rotation: number;
   // Tower segments (right column in UI, max 8)
   segmentCount: number;
@@ -71,17 +73,10 @@ export interface PlacedLaunchPad {
   cargo: InventorySlot[];
   // Fuel units in the rocket's tanks; null = full (pads from older saves)
   fuel: number | null;
+  blockHeight?: number;  // the planet's block height (the pad is BASE_HEIGHT of it)
   // Legacy support - computed from rocketParts
   hasRocketEngine: boolean;
   rocketEngineMesh: THREE.Group | null;
-}
-
-// Validation result for launch pad placement
-export interface LaunchPadPlacementResult {
-  canPlace: boolean;
-  reason?: string;
-  centerTile?: HexTile;
-  surroundingTiles?: HexTile[];
 }
 
 export class LaunchPadManager {
@@ -494,15 +489,6 @@ export class LaunchPadManager {
    * Matches terrain generation rules exactly (same as HexBlock.createSeparateGeometries)
    * Uses innerRadius/outerRadius to position vertices on sphere surface
    */
-  // The platform hexes around the rocket tile, level with its top
-  private addPlatform(group: THREE.Group, tiles: PlatformTile[] | undefined, outerRadius: number | undefined, planetCenter: THREE.Vector3): void {
-    if (!tiles || outerRadius === undefined || !this.baseMaterial) return;
-    for (const tile of tiles) {
-      const inner = Math.min(tile.innerRadius, outerRadius - 0.05);
-      group.add(new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, outerRadius, planetCenter), this.baseMaterial));
-    }
-  }
-
   private createHexGeometryFromTile(
     tile: { center: THREE.Vector3; vertices: THREE.Vector3[] },
     innerRadius: number,
@@ -645,121 +631,34 @@ export class LaunchPadManager {
   }
 
   /**
-   * Validate if a launch pad can be placed at the given tile
-   * Rules:
-   * 1. Must be placed at center of 7-hex cluster (1 center + 6 surrounding)
-   * 2. The center tile must have exactly 6 neighbors (not a pentagon)
-   * 3. No adjacent launch pads allowed
-   * 4. Cannot stack launch pads
+   * Start a pad with its first block. `first` is that hex, `outerRadius`
+   * the pad's top. More blocks join with addHex.
    */
-  public validatePlacement(
-    centerTile: HexTile,
-    allTiles: HexTile[],
-    _existingLaunchPads: PlacedLaunchPad[]
-  ): LaunchPadPlacementResult {
-    // Rule 1 & 2: Must be a hexagon (6 neighbors) to have a proper 7-hex cluster
-    if (centerTile.isPentagon || centerTile.neighbors.length !== 6) {
-      return {
-        canPlace: false,
-        reason: 'Launch pad must be placed on a hexagonal tile with 6 neighbors'
-      };
-    }
-
-    // Get all surrounding tiles
-    const surroundingTiles: HexTile[] = [];
-    for (const neighborIdx of centerTile.neighbors) {
-      if (neighborIdx >= 0 && neighborIdx < allTiles.length) {
-        surroundingTiles.push(allTiles[neighborIdx]);
-      }
-    }
-
-    if (surroundingTiles.length !== 6) {
-      return {
-        canPlace: false,
-        reason: 'Launch pad requires 6 surrounding tiles'
-      };
-    }
-
-    return {
-      canPlace: true,
-      centerTile,
-      surroundingTiles
-    };
-  }
-
-  /**
-   * Place a launch pad at the validated location
-   * Creates geometry in world space like terrain blocks
-   */
-  public async placeLaunchPad(
-    worldPosition: THREE.Vector3,
-    planetCenter: THREE.Vector3,
-    centerTileIndex: number,
-    surroundingTileIndices: number[],
-    surroundingTileCenters: THREE.Vector3[],
-    tileVertices?: THREE.Vector3[],
-    tileCenter?: THREE.Vector3,
-    innerRadius?: number,
-    outerRadius?: number,
-    platformTiles?: PlatformTile[]
-  ): Promise<PlacedLaunchPad | null> {
-    if (!this.baseMaterial) {
-      await this.initGeometryAndMaterials();
-    }
-
+  public async createPad(planetCenter: THREE.Vector3, first: PlatformTile, outerRadius: number): Promise<PlacedLaunchPad | null> {
+    if (!this.baseMaterial) await this.initGeometryAndMaterials();
     if (!this.baseMaterial) {
       console.error('Failed to initialize launch pad materials');
       return null;
     }
-
-    // Create the launch pad group (at origin since geometry is in world space)
     const group = new THREE.Group();
     group.userData.isLaunchPad = true;
-    group.userData.centerTileIndex = centerTileIndex;
-
-    // Create base geometry from tile data in world space (like terrain blocks)
-    let baseGeometry: THREE.BufferGeometry;
-    if (tileVertices && tileVertices.length === 6 && tileCenter && innerRadius !== undefined && outerRadius !== undefined) {
-      // Create geometry in world space matching terrain generation
-      const tile = { center: tileCenter, vertices: tileVertices };
-      baseGeometry = this.createHexGeometryFromTile(tile, innerRadius, outerRadius, planetCenter);
-    } else {
-      // Fallback to regular hexagon (shouldn't happen in normal use)
-      console.warn('Using fallback launch pad geometry - tile data not provided');
-      baseGeometry = this.baseGeometry!;
-    }
-
-    // Create base mesh - geometry is already in world space, no transform needed
-    const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
-    group.add(baseMesh);
-    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
-
-    // Add to scene
+    group.userData.centerTileIndex = first.index;
     this.scene.add(group);
 
-    // Create the placed launch pad data
-    // For now, use the center tile as rocket position and first surrounding as tower
-    // TODO: Proper 10-hex pattern detection will be implemented
-    const towerCenter = surroundingTileCenters.length > 0
-      ? surroundingTileCenters[0].clone()
-      : worldPosition.clone();
-
-    const placedPad: PlacedLaunchPad = {
+    const top = this.hexTop(first.center, planetCenter, outerRadius);
+    const pad: PlacedLaunchPad = {
       mesh: group,
-      position: worldPosition.clone(),
+      position: top,
       planetCenter: planetCenter.clone(),
-      // New 10-hex pattern fields
-      allTileIndices: [centerTileIndex, ...surroundingTileIndices],
-      allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
-      placedTiles: new Set([centerTileIndex]),  // Start with just the center tile placed
-      rocketTileIndex: centerTileIndex,
-      towerTileIndex: surroundingTileIndices[0] ?? centerTileIndex,
-      towerTileCenter: towerCenter,
-      isComplete: false,  // Not complete until all 10 tiles placed
-      // Legacy fields
-      centerTileIndex,
-      surroundingTileIndices: [...surroundingTileIndices],
-      surroundingTileCenters: surroundingTileCenters.map(c => c.clone()),
+      outerRadius,
+      hexes: new Map(),
+      placedTiles: new Set(),
+      rocketTileIndex: -1,
+      towerTileIndex: -1,
+      towerTileCenter: top.clone(),
+      isComplete: false,
+      centerTileIndex: first.index,
+      surroundingTileIndices: [],
       rotation: 0,
       segmentCount: 0,
       segmentMeshes: [],
@@ -771,121 +670,175 @@ export class LaunchPadManager {
       hasRocketEngine: false,
       rocketEngineMesh: null,
     };
-
-    this.launchPads.push(placedPad);
+    this.launchPads.push(pad);
     this.launchPadMeshes.push(group);
+    this.addHex(pad, first);
+    return pad;
+  }
 
-    return placedPad;
+  /** Lay one more block on a pad. Returns false if that hex is already pad. */
+  public addHex(pad: PlacedLaunchPad, tile: PlatformTile): boolean {
+    if (pad.hexes.has(tile.index) || !this.baseMaterial) return false;
+    const inner = Math.min(tile.innerRadius, pad.outerRadius - this.BASE_HEIGHT * this.blockHeightOf(pad));
+    const mesh = new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, pad.outerRadius, pad.planetCenter), this.baseMaterial);
+    mesh.userData.padTileIndex = tile.index;
+    pad.mesh.add(mesh);
+    pad.hexes.set(tile.index, { tile, mesh });
+    pad.placedTiles.add(tile.index);
+    this.updateLayout(pad);
+    return true;
   }
 
   /**
-   * Restore a launch pad from saved data (used when loading game)
-   * Creates geometry in world space like placeLaunchPad
+   * A block that touches two pads joins them: `other`'s blocks move onto
+   * `target` (at target's level) and `other` goes. Only a pad with nothing
+   * built on it can be absorbed.
    */
-  public async restoreLaunchPad(
-    worldPosition: THREE.Vector3,
-    planetCenter: THREE.Vector3,
-    centerTileIndex: number,
-    surroundingTileIndices: number[],
-    surroundingTileCenters: THREE.Vector3[],
-    rotation: number,
-    segmentCount: number,
-    rocketBlocks: number,
-    tileVertices?: THREE.Vector3[],
-    tileCenter?: THREE.Vector3,
-    innerRadius?: number,
-    outerRadius?: number,
-    savedRocketParts?: { itemType: ItemType; heightIndex: number }[],
-    platformTiles?: PlatformTile[]
-  ): Promise<PlacedLaunchPad | null> {
-    if (!this.baseMaterial) {
-      await this.initGeometryAndMaterials();
+  public mergeInto(target: PlacedLaunchPad, other: PlacedLaunchPad): boolean {
+    if (other === target || other.rocketParts.length > 0 || other.segmentCount > 0) return false;
+    const tiles = [...other.hexes.values()].map(h => h.tile);
+    this.removeLaunchPad(other);
+    for (const t of tiles) this.addHex(target, t);
+    return true;
+  }
+
+  /**
+   * Why a pad block can't be taken up, or null if it can: the rocket's
+   * middle and its ring, and the tower's hex, stay while they're in use.
+   */
+  public hexRemovalBlocker(pad: PlacedLaunchPad, tileIndex: number): string | null {
+    const inUse = pad.rocketParts.length > 0 || pad.segmentCount > 0;
+    if (inUse && (tileIndex === pad.rocketTileIndex || pad.surroundingTileIndices.includes(tileIndex))) {
+      return 'Take the rocket and tower down before breaking up the pad under them';
     }
+    if (pad.segmentCount > 0 && tileIndex === pad.towerTileIndex) return 'Take the tower down first';
+    return null;
+  }
 
-    if (!this.baseMaterial) {
-      console.error('Failed to initialize launch pad materials');
-      return null;
+  /** Take one block up. Removes the pad when it was the last. */
+  public removeHex(pad: PlacedLaunchPad, tileIndex: number): boolean {
+    const hex = pad.hexes.get(tileIndex);
+    if (!hex) return false;
+    pad.mesh.remove(hex.mesh);
+    hex.mesh.geometry.dispose();
+    pad.hexes.delete(tileIndex);
+    pad.placedTiles.delete(tileIndex);
+    if (pad.hexes.size === 0) {
+      this.removeLaunchPad(pad);
+      return true;
     }
+    if (pad.towerTileIndex === tileIndex) pad.towerTileIndex = -1;
+    this.updateLayout(pad);
+    return true;
+  }
 
-    // Create the launch pad group (at origin since geometry is in world space)
-    const group = new THREE.Group();
-    group.userData.isLaunchPad = true;
-    group.userData.centerTileIndex = centerTileIndex;
+  /**
+   * The pad a tile belongs to, or the pads it touches (a new block next to
+   * them joins one).
+   */
+  public padsTouching(tile: { index: number; neighbors: number[] }): PlacedLaunchPad[] {
+    return this.launchPads.filter(p => p.hexes.has(tile.index) || tile.neighbors.some(n => p.hexes.has(n)));
+  }
 
-    // Create base geometry from tile data in world space (like terrain blocks)
-    let baseGeometry: THREE.BufferGeometry;
-    if (tileVertices && tileVertices.length === 6 && tileCenter && innerRadius !== undefined && outerRadius !== undefined) {
-      // Create geometry in world space matching terrain generation
-      const tile = { center: tileCenter, vertices: tileVertices };
-      baseGeometry = this.createHexGeometryFromTile(tile, innerRadius, outerRadius, planetCenter);
-    } else {
-      // Fallback to regular hexagon (shouldn't happen in normal use)
-      console.warn('Using fallback launch pad geometry - tile data not provided');
-      baseGeometry = this.baseGeometry!;
-    }
+  /** Does the pad have the 7 blocks (a middle and its ring) a rocket needs? */
+  public canHoldRocket(pad: PlacedLaunchPad): boolean {
+    return pad.isComplete;
+  }
 
-    // Create base mesh - geometry is already in world space, no transform needed
-    const baseMesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
-    group.add(baseMesh);
-    this.addPlatform(group, platformTiles, outerRadius, planetCenter);
-
-    // Add to scene
-    this.scene.add(group);
-
-    // Create the placed launch pad data
-    const towerCenter = surroundingTileCenters.length > 0
-      ? surroundingTileCenters[0].clone()
-      : worldPosition.clone();
-
-    const placedPad: PlacedLaunchPad = {
-      mesh: group,
-      position: worldPosition.clone(),
-      planetCenter: planetCenter.clone(),
-      // New 10-hex pattern fields
-      allTileIndices: [centerTileIndex, ...surroundingTileIndices],
-      allTileCenters: [worldPosition.clone(), ...surroundingTileCenters.map(c => c.clone())],
-      placedTiles: new Set([centerTileIndex, ...surroundingTileIndices]),  // Assume all placed when restoring
-      rocketTileIndex: centerTileIndex,
-      towerTileIndex: surroundingTileIndices[0] ?? centerTileIndex,
-      towerTileCenter: towerCenter,
-      isComplete: true,  // Assume complete when restoring
-      // Legacy fields
-      centerTileIndex,
-      surroundingTileIndices: [...surroundingTileIndices],
-      surroundingTileCenters: surroundingTileCenters.map(c => c.clone()),
-      rotation,
-      segmentCount: 0,
-      segmentMeshes: [],
-      rocketBlocks: 0,
-      rocketMeshes: [],
-      rocketParts: [],
-      cargo: [],
-      fuel: null,
-      hasRocketEngine: false,
-      rocketEngineMesh: null,
+  /**
+   * Find the rocket's middle: keep the current one while its ring is whole,
+   * else the first hex whose six neighbours are all pad. The tower stays on
+   * its hex; a new tower goes on the ring.
+   */
+  private updateLayout(pad: PlacedLaunchPad): void {
+    const isMiddle = (i: number): boolean => {
+      const hex = pad.hexes.get(i);
+      return !!hex && hex.tile.neighbors.length === 6 && hex.tile.neighbors.every(n => pad.hexes.has(n));
     };
-
-    this.launchPads.push(placedPad);
-    this.launchPadMeshes.push(group);
-
-    // Add saved segments
-    for (let i = 0; i < segmentCount; i++) {
-      this.addSegment(placedPad);
-    }
-
-    // Add saved rocket blocks
-    placedPad.rocketBlocks = rocketBlocks;
-
-    // Restore saved rocket parts
-    if (savedRocketParts && savedRocketParts.length > 0) {
-      // Sort by heightIndex to ensure correct stacking order
-      const sortedParts = [...savedRocketParts].sort((a, b) => a.heightIndex - b.heightIndex);
-      for (const part of sortedParts) {
-        await this.addRocketPart(placedPad, part.itemType);
+    let middle = isMiddle(pad.rocketTileIndex) ? pad.rocketTileIndex : -1;
+    if (middle < 0) {
+      for (const i of pad.hexes.keys()) {
+        if (i !== pad.towerTileIndex && isMiddle(i)) { middle = i; break; }
       }
     }
+    pad.rocketTileIndex = middle;
+    pad.isComplete = middle >= 0 && pad.hexes.size >= ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER;
+    const anchor = pad.hexes.get(middle) ?? pad.hexes.get(pad.centerTileIndex) ?? pad.hexes.values().next().value!;
+    pad.position = this.hexTop(anchor.tile.center, pad.planetCenter, pad.outerRadius);
+    pad.surroundingTileIndices = middle >= 0 ? [...pad.hexes.get(middle)!.tile.neighbors] : [];
+    if (pad.towerTileIndex >= 0) {
+      pad.towerTileCenter = this.hexTop(pad.hexes.get(pad.towerTileIndex)!.tile.center, pad.planetCenter, pad.outerRadius);
+    }
+  }
 
-    return placedPad;
+  /**
+   * Where a new tower goes: `tileIndex` when given (placed by hand), else the
+   * first ring hex. Null with the reason when it can't.
+   */
+  public towerSiteProblem(pad: PlacedLaunchPad, tileIndex?: number): string | null {
+    if (!pad.isComplete) return `A launch pad needs ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks first: a middle hex with a full ring of 6 around it`;
+    if (tileIndex === undefined) return null;
+    if (!pad.hexes.has(tileIndex)) return 'The tower has to stand on the pad';
+    if (tileIndex === pad.rocketTileIndex) return 'The tower can\'t go in the middle - that is where the rocket stands';
+    if (pad.towerTileIndex >= 0 && pad.towerTileIndex !== tileIndex) return `Only one tower per ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} pad blocks`;
+    return null;
+  }
+
+  private hexTop(center: THREE.Vector3, planetCenter: THREE.Vector3, outerRadius: number): THREE.Vector3 {
+    return center.clone().normalize().multiplyScalar(outerRadius).add(planetCenter);
+  }
+
+  // Block height of the planet the pad sits on: the pad is BASE_HEIGHT of it
+  private blockHeightOf(pad: PlacedLaunchPad): number {
+    return pad.blockHeight ?? 1;
+  }
+
+  /**
+   * Restore a pad from a save: every block, then its tower and rocket.
+   */
+  public async restorePad(
+    planetCenter: THREE.Vector3,
+    tiles: PlatformTile[],
+    outerRadius: number,
+    blockHeight: number,
+    anchorTileIndex: number,
+    towerTileIndex: number,
+    segmentCount: number,
+    rocketBlocks: number,
+    savedRocketParts?: { itemType: ItemType; heightIndex: number }[],
+  ): Promise<PlacedLaunchPad | null> {
+    const first = tiles.find(t => t.index === anchorTileIndex) ?? tiles[0];
+    if (!first) return null;
+    const pad = await this.createPad(planetCenter, first, outerRadius);
+    if (!pad) return null;
+    pad.blockHeight = blockHeight;
+    pad.centerTileIndex = anchorTileIndex;
+    for (const t of tiles) this.addHex(pad, t);
+    pad.fuel = null;
+    if (segmentCount > 0) {
+      this.startTower(pad, towerTileIndex >= 0 && pad.hexes.has(towerTileIndex) && towerTileIndex !== pad.rocketTileIndex ? towerTileIndex : undefined);
+      for (let i = 0; i < segmentCount; i++) this.addSegment(pad);
+    }
+    pad.rocketBlocks = rocketBlocks;
+    if (savedRocketParts && savedRocketParts.length > 0) {
+      const sortedParts = [...savedRocketParts].sort((a, b) => a.heightIndex - b.heightIndex);
+      for (const part of sortedParts) await this.addRocketPart(pad, part.itemType);
+    }
+    return pad;
+  }
+
+  /**
+   * Fix where the tower stands (before its first segment): the given pad hex,
+   * or the first ring hex. False when the pad can't take a tower there.
+   */
+  public startTower(pad: PlacedLaunchPad, tileIndex?: number): boolean {
+    if (this.towerSiteProblem(pad, tileIndex)) return false;
+    if (pad.towerTileIndex >= 0) return true;
+    const site = tileIndex ?? pad.surroundingTileIndices.find(n => pad.hexes.has(n));
+    if (site === undefined) return false;
+    pad.towerTileIndex = site;
+    this.updateLayout(pad);
+    return true;
   }
 
   /**
@@ -893,6 +846,10 @@ export class LaunchPadManager {
    */
   public addSegment(launchPad: PlacedLaunchPad): boolean {
     if (launchPad.segmentCount >= this.MAX_SEGMENTS) {
+      return false;
+    }
+    // A tower needs a complete pad (7 blocks) and stands off the middle
+    if (!this.startTower(launchPad)) {
       return false;
     }
 
@@ -948,6 +905,8 @@ export class LaunchPadManager {
       launchPad.mesh.remove(segmentMesh);
       segmentMesh.geometry.dispose();
       launchPad.segmentCount--;
+      // The tower is gone: the next one can stand on another hex
+      if (launchPad.segmentCount === 0) launchPad.towerTileIndex = -1;
       return true;
     }
 
@@ -1056,8 +1015,8 @@ export class LaunchPadManager {
       return false;
     }
 
-    // Need at least 1 segment to place parts
-    if (launchPad.segmentCount < 1) {
+    // Need a complete pad (7 blocks) and at least 1 tower segment
+    if (!launchPad.isComplete || launchPad.segmentCount < 1) {
       return false;
     }
 
@@ -1309,64 +1268,7 @@ export class LaunchPadManager {
    * Get launch pad at a specific tile index
    */
   public getLaunchPadAtTile(tileIndex: number): PlacedLaunchPad | null {
-    for (const pad of this.launchPads) {
-      if (pad.centerTileIndex === tileIndex) {
-        return pad;
-      }
-      if (pad.surroundingTileIndices.includes(tileIndex)) {
-        return pad;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Mark a tile as having a launch pad block placed on it
-   * This updates the placedTiles set and checks for completion
-   * @returns true if this completes the launch pad
-   */
-  public markTileAsPlaced(launchPad: PlacedLaunchPad, tileIndex: number): boolean {
-    // Check if this tile is part of the launch pad's pattern
-    if (!launchPad.allTileIndices.includes(tileIndex)) {
-      return false;
-    }
-
-    // Mark the tile as placed
-    launchPad.placedTiles.add(tileIndex);
-
-    // Check for completion (all tiles in pattern have blocks)
-    const wasComplete = launchPad.isComplete;
-    launchPad.isComplete = launchPad.placedTiles.size >= launchPad.allTileIndices.length;
-
-    // Return true if this action completed the launch pad
-    return !wasComplete && launchPad.isComplete;
-  }
-
-  /**
-   * Remove a tile from the placed tiles set
-   * @returns true if this made the launch pad incomplete
-   */
-  public markTileAsRemoved(launchPad: PlacedLaunchPad, tileIndex: number): boolean {
-    const wasComplete = launchPad.isComplete;
-    launchPad.placedTiles.delete(tileIndex);
-    launchPad.isComplete = launchPad.placedTiles.size >= launchPad.allTileIndices.length;
-
-    // Return true if this action made the launch pad incomplete
-    return wasComplete && !launchPad.isComplete;
-  }
-
-  /**
-   * Get the count of tiles that still need launch pad blocks
-   */
-  public getRemainingTileCount(launchPad: PlacedLaunchPad): number {
-    return launchPad.allTileIndices.length - launchPad.placedTiles.size;
-  }
-
-  /**
-   * Get the indices of tiles that still need launch pad blocks
-   */
-  public getMissingTileIndices(launchPad: PlacedLaunchPad): number[] {
-    return launchPad.allTileIndices.filter(idx => !launchPad.placedTiles.has(idx));
+    return this.launchPads.find(pad => pad.hexes.has(tileIndex)) ?? null;
   }
 
   /**
@@ -1438,8 +1340,8 @@ export class LaunchPadManager {
       // Clamp total light
       totalLight = Math.min(1.5, totalLight);
 
-      // Update base mesh material (first child in group)
-      const baseMesh = launchPad.mesh.children[0] as THREE.Mesh;
+      // Update the pad hexes (they share one material)
+      const baseMesh = launchPad.hexes.values().next().value?.mesh;
       if (baseMesh) {
         const material = baseMesh.material as THREE.ShaderMaterial;
         if (material.uniforms && material.uniforms.torchLight) {

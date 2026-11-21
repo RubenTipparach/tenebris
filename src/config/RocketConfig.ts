@@ -35,6 +35,14 @@ export const ROCKET_CONFIG = {
   // A rocket assembled on a NEW launch pad starts with empty tanks (pads from
   // older saves, and the starter rocket, keep launching full)
   NEW_PAD_FUEL: 0,
+  // Launch pads are built one Launch Pad Block (one hex) at a time. A rocket
+  // and its tower need at least PAD_BLOCKS_PER_TOWER blocks laid as a middle
+  // hex with the full ring around it; the rocket stands in the middle and
+  // its tower on any other pad hex - never the middle, and one tower per pad.
+  PAD_BLOCKS_PER_TOWER: 7,
+  // A block joins a pad when it touches it, at most this many blocks above
+  // or below the pad's level (the ground is levelled / filled under it)
+  PAD_MAX_STEP: 1,
   // "Start with a rocket": a full rocket, this much Rocket Fuel in its cargo
   // hold (a full refuel for the trip home) and empty buckets for the player
   STARTER_KIT: {

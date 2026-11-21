@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
-import { attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
+import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
 /**
  * Online play against server-js/ (deployed to the 'tenebris-c' Fly app).
@@ -120,13 +120,11 @@ export class Multiplayer {
         attachTransport({
           sendRecord: (kind, planet, key, data) => this.sendJson({ t: 'rec', kind, planet, key, data }),
           sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
-        }, m.id, m.now, m.world?.created);
+        }, m.id, m.now, m.world?.created, m.world?.id);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
           this.planets.get(planet)?.setBlock(tile, depth, block);
         }
-        for (const [kind, planet, key, data] of (m.records ?? []) as Array<[string, string, string, any]>) {
-          dispatchRecord(kind, planet, key, data);
-        }
+        applySnapshot((m.records ?? []) as Array<[string, string, string, any]>);
         for (const p of m.players) this.upsert(p.id, p.name, p.planet, p.p, p.q);
         console.log(`[MP] joined as ${this.myId}: ${m.edits.length} edits, ${m.records?.length ?? 0} objects, ${m.players.length} other player(s)`);
         break;
