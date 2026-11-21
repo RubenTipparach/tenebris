@@ -109,7 +109,10 @@ export enum HexBlockType {
   FROST = 73,
   BLUE_ICE = 74,
   IRON_NICKEL = 75,
-  SULFUR = 76
+  SULFUR = 76,
+  // The Moon's titanium (ilmenite) - found on no other body. Numbered past
+  // the crust family; drops Titanium Ore
+  MOON_ORE_TITANIUM = 90
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -175,6 +178,7 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.LAVA_ROCK]: HexBlockType.MOON_ROCK,
   [HexBlockType.SULFUR]: HexBlockType.MOON_ROCK,
   [HexBlockType.IRON_NICKEL]: HexBlockType.MOON_ROCK,
+  [HexBlockType.MOON_ORE_TITANIUM]: HexBlockType.MOON_ROCK,
   [HexBlockType.FROST]: HexBlockType.SNOW,
   [HexBlockType.BLUE_ICE]: HexBlockType.SNOW,
 };
@@ -217,6 +221,7 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.MOON_ORE_ALUMINUM]: sameFaces('moonOreAluminum'),
   [HexBlockType.MOON_ORE_COBALT]: sameFaces('moonOreCobalt'),
   [HexBlockType.MOON_ORE_LITHIUM]: sameFaces('moonOreLithium'),
+  [HexBlockType.MOON_ORE_TITANIUM]: sameFaces('moonOreTitanium'),
   [HexBlockType.CITY_ROAD]: { top: 'cityRoad', side: 'cityFoundation', bottom: 'cityFoundation' },
   [HexBlockType.CITY_SIDEWALK]: { top: 'citySidewalk', side: 'cityCurb', bottom: 'cityFoundation' },
   [HexBlockType.CITY_PLAZA]: { top: 'cityPlaza', side: 'cityCurb', bottom: 'cityFoundation' },

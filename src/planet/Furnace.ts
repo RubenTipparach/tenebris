@@ -17,6 +17,7 @@ export const SMELTING_RECIPES: SmeltingRecipe[] = [
   { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 1 },
   { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
   { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
+  { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 1 },  // the Moon's
   // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
 ];
 

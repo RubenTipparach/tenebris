@@ -31,6 +31,7 @@ const BIOME_TEXTURES: [string, string][] = [
   ['seqDuff', 'biomes/seq_duff'], ['seqDuffSide', 'biomes/seq_duff_side'],
   ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
   ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
+  ['moonOreTitanium', 'moon/ore_titanium'],
   // The ecumenopolis (scripts/gen-city-textures.py)
   ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
   ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],

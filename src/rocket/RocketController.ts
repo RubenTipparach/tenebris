@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { ROCKET_CONFIG, GRAVITY_WELL } from '../config/RocketConfig';
+import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
 import { RocketCamera } from './RocketCamera';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
-import { ITEM_DATA, RocketPartType } from '../player/Inventory';
+import { InventorySlot } from '../player/Inventory';
+import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor } from './RocketPerformance';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -133,6 +134,10 @@ export class RocketController {
   // Used to determine if rocket should persist when exiting
   private hasLaunched: boolean = false;
 
+  // The cargo hold: the launch pad's slots, shared by reference, so it
+  // travels with the rocket and saves with the pad
+  private cargo: InventorySlot[] | null = null;
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.pivot = new THREE.Group();
@@ -151,10 +156,13 @@ export class RocketController {
     parts: RocketPart[],
     launchPosition: THREE.Vector3,
     surfaceNormal: THREE.Vector3,
-    planets: PlanetGravitySource[]
+    planets: PlanetGravitySource[],
+    fuelUnits: number | null = null,
+    cargo: InventorySlot[] | null = null
   ): void {
     this.parts = [...parts];
     this.planets = planets;
+    this.cargo = cargo;
 
     // Calculate rocket stack center (for future offset calculations)
     this.calculateStackCenter();
@@ -174,6 +182,8 @@ export class RocketController {
 
     // Calculate mass and propulsion properties
     this.calculateMassProperties();
+    // A pad's tanks hold what was fuelled into them (null = full: older saves)
+    if (fuelUnits !== null) this.currentFuel = Math.max(0, Math.min(this.totalFuelCapacity, fuelUnits));
 
     // Set up pivot group
     this.pivot.position.copy(this.position);
@@ -471,49 +481,27 @@ export class RocketController {
   }
 
   /**
-   * Calculate mass and propulsion properties from parts
+   * Calculate mass and propulsion properties from parts (and what the cargo
+   * hold carries) - summed in RocketPerformance, the one source of the numbers
    */
   private calculateMassProperties(): void {
-    this.totalWetMass = 0;
-    this.totalDryMass = 0;
-    this.totalFuelCapacity = 0;
-    this.totalThrust = 0;
-    this.totalFuelConsumption = 0;
-    this.exhaustVelocity = 0;
-
-    for (const part of this.parts) {
-      const itemData = ITEM_DATA[part.itemType];
-      const partData = itemData.rocketPart;
-      if (!partData) continue;
-
-      switch (partData.partType) {
-        case RocketPartType.ENGINE:
-          this.totalThrust += ROCKET_CONFIG.MEDIUM_ENGINE.thrust;
-          this.totalFuelConsumption += ROCKET_CONFIG.MEDIUM_ENGINE.fuelConsumption;
-          this.totalDryMass += ROCKET_CONFIG.MEDIUM_ENGINE.mass;
-          this.totalWetMass += ROCKET_CONFIG.MEDIUM_ENGINE.mass;
-          // Use highest Isp for delta-V calculation
-          this.exhaustVelocity = Math.max(
-            this.exhaustVelocity,
-            ROCKET_CONFIG.MEDIUM_ENGINE.specificImpulse * ROCKET_CONFIG.PHYSICS.gravityConstant
-          );
-          break;
-
-        case RocketPartType.FUEL_TANK:
-          this.totalFuelCapacity += ROCKET_CONFIG.MEDIUM_FUEL_TANK.fuelCapacity;
-          this.totalDryMass += ROCKET_CONFIG.MEDIUM_FUEL_TANK.dryMass;
-          this.totalWetMass += ROCKET_CONFIG.MEDIUM_FUEL_TANK.wetMass;
-          break;
-
-        case RocketPartType.CAPSULE:
-          this.totalDryMass += ROCKET_CONFIG.COMMAND_MODULE.mass;
-          this.totalWetMass += ROCKET_CONFIG.COMMAND_MODULE.mass;
-          break;
-      }
-    }
+    const stats = computeRocketStats(stackItemTypes(this.parts), cargoMass(this.cargo));
+    this.totalDryMass = stats.dryMass;
+    this.totalWetMass = stats.wetMass;
+    this.totalFuelCapacity = stats.fuelCapacity;
+    this.totalThrust = stats.thrust;
+    this.totalFuelConsumption = stats.fuelFlow;
+    this.exhaustVelocity = stats.exhaustVelocity;
 
     // Start with full fuel
     this.currentFuel = this.totalFuelCapacity;
+  }
+
+  /** Re-weigh the rocket after its cargo changed (fuel level kept) */
+  public refreshCargoMass(): void {
+    const fuel = this.currentFuel;
+    this.calculateMassProperties();
+    this.currentFuel = Math.min(fuel, this.totalFuelCapacity);
   }
 
   /**
@@ -578,21 +566,8 @@ export class RocketController {
 
     // Calculate gravity well status
     if (closest) {
-      const normalizedDist = closestDist / closest.radius;
-
-      if (normalizedDist <= GRAVITY_WELL.FULL_RADIUS_MULT) {
-        this.isInGravityWell = true;
-        this.gravityMultiplier = 1.0;
-      } else if (normalizedDist >= GRAVITY_WELL.FALLOFF_RADIUS_MULT) {
-        this.isInGravityWell = false;
-        this.gravityMultiplier = 0.0;
-      } else {
-        // Transition zone
-        const t = (normalizedDist - GRAVITY_WELL.FULL_RADIUS_MULT) /
-                  (GRAVITY_WELL.FALLOFF_RADIUS_MULT - GRAVITY_WELL.FULL_RADIUS_MULT);
-        this.gravityMultiplier = 1.0 - t;
-        this.isInGravityWell = this.gravityMultiplier > 0.1;  // Small threshold
-      }
+      this.gravityMultiplier = gravityWellMultiplier(closestDist, closest.radius);
+      this.isInGravityWell = this.gravityMultiplier > 0.1;  // Small threshold
     } else {
       this.isInGravityWell = false;
       this.gravityMultiplier = 0;
@@ -846,7 +821,7 @@ export class RocketController {
     }
 
     // === ANGULAR DAMPING ===
-    this.angularVelocity.multiplyScalar(ROCKET_CONFIG.PHYSICS.angularDamping);
+    this.angularVelocity.multiplyScalar(dampingFactor(ROCKET_CONFIG.PHYSICS.angularDamping, deltaTime));
 
     // === ORIENTATION UPDATE ===
     if (this.angularVelocity.lengthSq() > 0.0001) {
@@ -859,7 +834,7 @@ export class RocketController {
 
     // === LINEAR DAMPING ===
     // Apply linear damping everywhere (prevents infinite drift)
-    this.velocity.multiplyScalar(ROCKET_CONFIG.PHYSICS.linearDamping);
+    this.velocity.multiplyScalar(dampingFactor(ROCKET_CONFIG.PHYSICS.linearDamping, deltaTime));
 
     // === POSITION UPDATE ===
     this.position.addScaledVector(this.velocity, deltaTime);
@@ -1191,11 +1166,15 @@ export class RocketController {
   }
 
   /**
-   * Where refuelling draws fuel from: given the units wanted, it takes what
-   * it can (Rocket Fuel items from the player's inventory) and returns the
-   * units actually supplied. Unset = free refuel (tests / no inventory).
+   * Where refuelling draws fuel from: given the units wanted and the rocket's
+   * cargo hold, it burns what it can (ROCKET_CONFIG.FUEL_SOURCES, from the
+   * cargo hold and the player's inventory) and returns the units supplied.
+   * Unset = free refuel (tests / no inventory).
    */
-  public static fuelSource: ((unitsWanted: number) => number) | null = null;
+  public static fuelSource: ((unitsWanted: number, cargo: InventorySlot[] | null) => number) | null = null;
+
+  /** Called after refuelling or cargo use changed the rocket (to save it) */
+  public onChanged: (() => void) | null = null;
 
   /**
    * Refuel the rocket from the fuel source
@@ -1203,9 +1182,21 @@ export class RocketController {
   public refuel(): void {
     const wanted = this.totalFuelCapacity - this.currentFuel;
     if (wanted <= 0) return;
-    const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted) : wanted;
+    const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted, this.cargo) : wanted;
+    if (supplied <= 0) return;
     this.currentFuel = Math.min(this.totalFuelCapacity, this.currentFuel + supplied);
+    this.refreshCargoMass();
     console.log(`Rocket refuelled: +${supplied.toFixed(0)} (${((this.currentFuel / this.totalFuelCapacity) * 100).toFixed(0)}%)`);
+    this.onChanged?.();
+  }
+
+  /** The cargo hold (shared with the launch pad the rocket belongs to) */
+  public getCargo(): InventorySlot[] | null {
+    return this.cargo;
+  }
+
+  public getFuelUnits(): number {
+    return this.currentFuel;
   }
 
   // === GETTERS ===
@@ -1412,12 +1403,14 @@ export class RocketController {
     orientation: THREE.Quaternion,
     groundNormal: THREE.Vector3,
     fuelPercent: number,
-    planets: PlanetGravitySource[]
+    planets: PlanetGravitySource[],
+    cargo: InventorySlot[] | null = null
   ): void {
     // Reuse the existing pivot and parts
     this.pivot = pivot;
     this.parts = parts;
     this.planets = planets;
+    this.cargo = cargo;
 
     // Calculate rocket stack center
     this.calculateStackCenter();

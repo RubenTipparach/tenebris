@@ -16,7 +16,8 @@ import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
-import { ItemType } from './player/Inventory';
+import { drawFuel, slotStore } from './rocket/RocketPerformance';
+import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { WorldBrowser } from './net/WorldBrowser';
@@ -441,20 +442,31 @@ class PlanetGame {
         if (container) container.requestPointerLock();
       });
 
-      // Refuelling burns Rocket Fuel items from the inventory (crafted from
-      // ice or snow; see CraftingSystem), FUEL_PER_ITEM units each
-      RocketController.fuelSource = (wanted) => {
+      // Refuelling burns fuel items - Rocket Fuel, Water Buckets (the empty
+      // bucket comes back), Ice - from the rocket's cargo hold first, then
+      // the hotbar + bag (ROCKET_CONFIG.FUEL_SOURCES, RocketPerformance.drawFuel)
+      RocketController.fuelSource = (wanted, cargo) => {
         const inventory = this.blockInteraction.getInventory();
-        const per = ROCKET_CONFIG.FUEL_PER_ITEM;
-        const take = Math.min(Math.ceil(wanted / per), inventory.getItemCount(ItemType.ROCKET_FUEL));
-        if (take <= 0) {
-          showToast('No Rocket Fuel - craft it from ice or snow', { duration: 3000 });
+        const stores = cargo ? [slotStore(cargo), inventory] : [inventory];
+        const draw = drawFuel(wanted, stores);
+        if (draw.supplied <= 0) {
+          showToast('No fuel - carry Rocket Fuel, Water Buckets or Ice', { duration: 3000 });
           return 0;
         }
-        inventory.removeItem(ItemType.ROCKET_FUEL, take);
+        const what = draw.used.map(u => `${u.count} ${ITEM_DATA[u.itemType].name}`).join(', ');
+        showToast(`Refuelled +${Math.round(draw.supplied)} (${what})`, { duration: 3000 });
         this.blockInteraction.onInventoryChanged();
-        return Math.min(wanted, take * per);
+        return draw.supplied;
       };
+
+      // A rocket's fuel / cargo changed (refuelled, landed, exited): its pad
+      // keeps the record - save it now
+      this.rocketFlightManager.setOnRocketChangedCallback(() => {
+        this.blockInteraction.saveLaunchPadStates();
+      });
+      this.rocketFlightManager.setOnOpenCargoCallback((cargo) => {
+        this.blockInteraction.openRocketCargo(cargo);
+      });
 
       // Crash (or manual abandon): respawn on the planet nearest the rocket
       this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
@@ -1412,8 +1424,9 @@ class PlanetGame {
       console.log('No saved game found, starting fresh');
       if (startWithRocket()) {
         this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
-        // Enough for a refuel on the way back
-        this.blockInteraction.getInventory().addItem(ItemType.ROCKET_FUEL, 4);
+        // The rocket carries fuel for the way back in its hold; a bucket
+        // lets the player top up from any water
+        this.blockInteraction.getInventory().addItem(ItemType.BUCKET, ROCKET_CONFIG.STARTER_KIT.buckets);
         this.blockInteraction.onInventoryChanged();
       }
       return;

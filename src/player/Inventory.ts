@@ -81,6 +81,16 @@ export enum ItemType {
   FISH_REEF = 59,
   FISH_DEEPBACK = 60,
   FISH_SERPENT = 61,
+  // Rocket tech tier 2 (needs the Moon's titanium) and the cargo hold
+  VACUUM_ENGINE = 62,
+  LARGE_FUEL_TANK = 63,
+  CARGO_BAY = 64,
+  // Buckets: an empty one fills at any water, a full one refuels a rocket
+  BUCKET = 65,
+  WATER_BUCKET = 66,
+  // Titanium (ilmenite): only in the Moon's rock
+  ORE_TITANIUM = 67,
+  INGOT_TITANIUM = 68,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -92,6 +102,7 @@ export enum RocketPartType {
   ENGINE = 'engine',
   FUEL_TANK = 'fuel_tank',
   CAPSULE = 'capsule',
+  CARGO = 'cargo',      // a cargo bay: hold slots, no thrust or fuel
   // Add more types as needed
 }
 
@@ -108,6 +119,7 @@ export interface RocketPartData {
   texturePath: string;   // Path to texture for the model
   heightUnits: number;   // How many segment heights this part takes
   modelYOffset?: number; // Per-part vertical offset to correct model origin differences (default: 0)
+  modelScale?: { x: number; y: number; z: number }; // Stretch the shared model (a two-unit tank is twice as tall)
   // Optional: engine-specific requirements
   engineRequirements?: EngineRequirements;
 }
@@ -240,6 +252,54 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       modelYOffset: 0, // the unit height change to one no longer requires this offset (for now lol)
     },
   },
+  // Tier 2 rocket parts: the existing models in their own textures
+  // (scripts/gen-rocket-parts.py); stats in ROCKET_CONFIG.PARTS
+  [ItemType.VACUUM_ENGINE]: {
+    name: 'Vacuum Engine',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/vacuum_engine_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/vacuum_engine.png',
+      heightUnits: 1,
+      modelScale: { x: 1.25, y: 1, z: 1.25 },   // a wider bell
+      engineRequirements: {
+        minFuelTanks: 1,
+        requiresCommandModule: true,
+      },
+    },
+  },
+  [ItemType.LARGE_FUEL_TANK]: {
+    name: 'Large Fuel Tank',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/large_fuel_tank_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/large_fuel_tank.png',
+      heightUnits: 2,
+      modelScale: { x: 1, y: 2, z: 1 },
+    },
+  },
+  [ItemType.CARGO_BAY]: {
+    name: 'Cargo Bay',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/cargo_bay_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/cargo_bay.png',
+      heightUnits: 1,
+    },
+  },
+  [ItemType.BUCKET]: { name: 'Bucket', stackSize: 16, texture: '/textures/icons/bucket.png', mineTime: 0.3 },
+  [ItemType.WATER_BUCKET]: { name: 'Water Bucket', stackSize: 16, texture: '/textures/icons/water_bucket.png', mineTime: 0.3 },
+  [ItemType.ORE_TITANIUM]: { name: 'Titanium Ore', stackSize: 64, texture: '/textures/moon/ore_titanium.png', mineTime: 2.5 },
+  [ItemType.INGOT_TITANIUM]: { name: 'Titanium Ingot', stackSize: 64, texture: '/textures/icons/ingot_titanium.png', mineTime: 0.3 },
   // Moon terrain (same mining time as stone)
   [ItemType.MOON_ROCK]: { name: 'Moon Rock', stackSize: 64, texture: '/textures/moon.png', mineTime: 1.5 },
   // Sequoia terrain

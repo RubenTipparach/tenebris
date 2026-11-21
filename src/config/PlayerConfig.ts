@@ -123,6 +123,12 @@ export const PlayerConfig = {
 
   // Polar/Snow biome
   POLAR_THRESHOLD: 0.9,              // How far polar regions extend (0-1, 0.75 = ~41° from poles, lower = more snow)
+  // Airless rock worlds (the Moon, the barren planets and moons): polar ice
+  // caps of frost over blue glacier ice, mined for Ice (rocket fuel)
+  POLAR_ICE_CAP: 0.86,               // |normalised y| past this is ice cap (0.86 = ~31 deg from the pole)
+  POLAR_ICE_CAP_EDGE_NOISE: 0.04,    // how ragged the cap's edge is (in the same units)
+  POLAR_ICE_CAP_DEPTH: 4,            // layers of blue ice under the frost
+  BUCKET_RAY_STEP: 0.25,             // how finely an empty bucket's ray looks for water
 
   // Earth spawn point (lat/lon in degrees)
   EARTH_SPAWN_LAT: 52.5,             // Latitude for Earth spawn (positive = North)

@@ -237,6 +237,9 @@ MOON_ORES = {
     'aluminum': [rgb(h) for h in ('#92a3b2', '#bfcad7', '#fffefe')],            # bright anorthosite
     'cobalt': [rgb(h) for h in ('#191954', '#15578a', '#1096c3', '#74effe')],
     'lithium': [rgb(h) for h in ('#4f1d83', '#7d2dbd', '#9e3ba2', '#c34988')],
+    # ilmenite: black titanium-iron oxide with a steel-violet metallic sheen
+    # (last, so the shared rng leaves the ores above unchanged)
+    'titanium': [rgb(h) for h in ('#161612', '#2b1f35', '#3e3551', '#69608b', '#bfcad7')],
 }
 
 

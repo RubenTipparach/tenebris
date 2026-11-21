@@ -527,6 +527,9 @@ export class Planet {
         polarThreshold: PlayerConfig.POLAR_THRESHOLD,
         iceCover: this.config.iceCover ?? false,
         metalRich: this.config.metalRich ?? false,
+        polarIceCap: PlayerConfig.POLAR_ICE_CAP,
+        polarIceCapEdgeNoise: PlayerConfig.POLAR_ICE_CAP_EDGE_NOISE,
+        polarIceCapDepth: PlayerConfig.POLAR_ICE_CAP_DEPTH,
         // Ore configs
         oreConfigs: this.ORE_CONFIGS.map(ore => ({
           type: ore.type as number,

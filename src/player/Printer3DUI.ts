@@ -123,6 +123,66 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 50,
   },
+  // Cargo Bay (tier 1): 8 iron round a storage chest - 8 more cargo slots
+  // Layout: I I I / I Chest I / I I I
+  {
+    name: 'Cargo Bay',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.STORAGE_CHEST, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.CARGO_BAY,
+    outputQuantity: 1,
+    printTime: 40,
+  },
+  // TIER 2 - needs the Moon: Titanium only comes from the Moon's ilmenite
+  // (MOON_ORE_TITANIUM, smelted at a furnace). Everything else here is
+  // found on the Moon too (its iron, aluminium, cobalt and lithium veins).
+  // Vacuum Engine: 8x Titanium + 2x Cobalt + 2x Lithium + 2x Aluminum
+  // Layout: Ti2 Ti2 Ti2 / Co Li2 Co / Ti Al2 Ti
+  {
+    name: 'Vacuum Engine',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 2, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 2, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 2, slot: 2 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 2, slot: 4 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.VACUUM_ENGINE,
+    outputQuantity: 1,
+    printTime: 75,
+  },
+  // Large Fuel Tank: 4x Titanium + 8x Aluminum + 1x Cobalt
+  // Layout: Ti Al2 Ti / Al2 Co Al2 / Ti Al2 Ti
+  {
+    name: 'Large Fuel Tank',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 3 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 2, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.LARGE_FUEL_TANK,
+    outputQuantity: 1,
+    printTime: 60,
+  },
 ];
 
 export class Printer3DUI {

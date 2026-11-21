@@ -193,6 +193,10 @@ export const EARTH_TILESET: TilesetConfig = {
   mineralsPath: '/textures/minerals/earth',
 };
 
+// The ice caps' frost (blocks FROST / BLUE_ICE, scripts/gen-body-textures.py)
+const POLAR_CAP_TOP = '/textures/bodies/frost.png';
+const POLAR_CAP_SIDE = '/textures/bodies/frost_side.png';
+
 /**
  * Moon tileset - uses moon.png for most surfaces
  */
@@ -204,8 +208,10 @@ export const MOON_TILESET: TilesetConfig = {
   dirtGrass: '/textures/moon.png',
   sand: '/textures/moon.png',
   wood: '/textures/moon.png',
-  snow: '/textures/moon.png',
-  dirtSnow: '/textures/moon.png',
+  // The distant LOD draws a polar ice cap's frost (FROST behaves like SNOW
+  // there) in the snow texture: the frost block's own art
+  snow: POLAR_CAP_TOP,
+  dirtSnow: POLAR_CAP_SIDE,
   ice: '/textures/moon.png',
   water: '/textures/water.png',
   glass: '/textures/glass.png',
@@ -220,7 +226,7 @@ function singleTextureTileset(texture: string): TilesetConfig {
   return {
     ...MOON_TILESET,
     stone: texture, dirt: texture, grass: texture, dirtGrass: texture, sand: texture,
-    wood: texture, snow: texture, dirtSnow: texture, ice: texture,
+    wood: texture, ice: texture,   // snow / dirtSnow: the ice caps' frost, as the Moon's
   };
 }
 
@@ -731,13 +737,15 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       terrain: {
         hasWater: false,
         // The Moon's minerals in its own rock: iron, aluminium, cobalt,
-        // lithium. No coal, copper or gold there - those veins stay rock
+        // lithium - and titanium (ilmenite) where Earth would have coal,
+        // the Moon's own metal for tier-2 rocket parts. No copper or gold
+        // there - those veins stay rock
         blockRemap: {
           [HexBlockType.ORE_IRON]: HexBlockType.MOON_ORE_IRON,
           [HexBlockType.ORE_ALUMINUM]: HexBlockType.MOON_ORE_ALUMINUM,
           [HexBlockType.ORE_COBALT]: HexBlockType.MOON_ORE_COBALT,
           [HexBlockType.ORE_LITHIUM]: HexBlockType.MOON_ORE_LITHIUM,
-          [HexBlockType.ORE_COAL]: HexBlockType.MOON_ROCK,
+          [HexBlockType.ORE_COAL]: HexBlockType.MOON_ORE_TITANIUM,
           [HexBlockType.ORE_COPPER]: HexBlockType.MOON_ROCK,
           [HexBlockType.ORE_GOLD]: HexBlockType.MOON_ROCK,
         },
