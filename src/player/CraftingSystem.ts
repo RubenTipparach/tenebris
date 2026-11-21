@@ -1023,7 +1023,7 @@ export class CraftingSystem {
     if (this.suitSlotElement) {
       const worn = this.suit?.worn() ?? false;
       this.updateSlotElement(this.suitSlotElement, { itemType: worn ? ItemType.SPACE_SUIT : ItemType.NONE, quantity: worn ? 1 : 0 });
-      this.suitSlotElement.title = worn ? 'Suit - click to take it off' : 'Suit - use a space suit to put it on';
+      this.suitSlotElement.title = worn ? 'Suit - click to take it off' : 'Suit - right click a space suit in hand to put it on';
     }
 
     // Update storage slots

@@ -1673,6 +1673,8 @@ class PlanetGame {
   /** Where the player is, for the exposure rule; null while it can't be judged. */
   private airExposure(): ExposureInput | null {
     if (this.teleportInProgress) return null;
+    // The pause menu holds the clock: nobody suffocates behind it
+    if (document.getElementById('instructions')?.style.display === 'block') return null;
     const rocket = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
     // A crash has its own screen and respawn
     if (rocket?.getState() === RocketState.CRASHED) return null;

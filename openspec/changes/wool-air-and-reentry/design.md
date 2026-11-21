@@ -101,15 +101,20 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
   - otherwise the player holds their breath for `BREATH_S` = 10 s, then
     dies.
 - **Dying:** a death screen, then respawn at the world's spawn on Earth with
-  the inventory kept. Air and death have no other penalty in this change,
+  the inventory kept. A pilot who dies in a cabin with no power is taken out
+  first by the exit path, forced past the usual "can't exit in flight" check,
+  so the ship is parked where it is (a landed rocket) and never vanishes. The
+  pause menu holds the air clock. Air and death have no other penalty in this change,
   which keeps the game calm.
 - **HUD:** an AIR chip (a bar for breath or tank seconds) shows while
   exposed or while the suit draws air.
 - **The suit:**
-  - one equipment slot in the inventory panel takes the space suit; using
-    the suit in hand puts it on, and clicking the slot takes it off;
+  - one equipment slot in the inventory panel takes the space suit; right
+    clicking the suit in hand puts it on (like eating a dish), and clicking
+    the slot takes it off (hotbar first);
   - the worn state is saved per world;
-  - it shows on the avatar as a suit and helmet, so other players see it.
+  - it shows on the avatar as a suit, helmet and air pack, so other players
+    see it: `suit: 'on'` rides the synced avatar look (the hello message).
 - **Gas collector:**
   - a machine, built like the pump jack;
   - it draws `DEMAND_W.gasCollector`;

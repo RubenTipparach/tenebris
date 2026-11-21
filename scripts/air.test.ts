@@ -3,6 +3,8 @@
 import { AIR } from '../src/config/SurvivalConfig';
 import { getBodyConfig } from '../src/config/SolarSystemConfig';
 import { newAirState, tickAir, isExposed, airGauge, ExposureInput } from '../src/player/Survival';
+import { Avatar, SUIT_ON, defaultLook, sanitizeLook } from '../src/net/Avatar';
+import * as THREE from 'three';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 const DT = 0.1;
@@ -93,4 +95,18 @@ function run(s: ReturnType<typeof newAirState>, seconds: number, inp: { exposed:
   ok(!isExposed({ inRocket: true, rocketPowered: true, inGravityWell: false, bodyBreathable: false }), 'a powered rocket cabin in open space: safe');
   ok(isExposed(at('earth', { inRocket: true, rocketPowered: false })), 'an unpowered rocket cabin, even over Earth: exposed');
   for (const id of ['earth', 'sequoia', 'verdance', 'mirewood']) ok(getBodyConfig(id)?.breathable === true, `${id} is breathable`);
+}
+
+// ---- the suit on the avatar (task 5.2): it rides the synced look
+{
+  (globalThis as { fetch?: unknown }).fetch = () => new Promise(() => { /* no animations in a test */ });
+  const look = { ...defaultLook(3), style: 'none', shirt: '#1d2b53', pants: '#000000', hair: '#000000' };
+  ok(sanitizeLook({ ...look, suit: SUIT_ON }).suit === SUIT_ON, 'a look from the network keeps suit: on');
+  ok(sanitizeLook({ ...look, suit: 'yes' }).suit === undefined && sanitizeLook(look).suit === undefined, '...and drops anything else');
+  const meshes = (a: Avatar) => { const out: THREE.Mesh[] = []; a.group.traverse(o => { if ((o as THREE.Mesh).isMesh) out.push(o as THREE.Mesh); }); return out; };
+  const plain = meshes(new Avatar(look));
+  const suited = meshes(new Avatar({ ...look, suit: SUIT_ON }));
+  const white = (m: THREE.Mesh) => ((m.material as THREE.MeshLambertMaterial).color.getHexString() === 'fff1e8');
+  ok(suited.length === plain.length + 3, 'a suited avatar adds a helmet, a visor and an air pack');
+  ok(suited.filter(white).length >= 5 && plain.filter(white).length === 0, 'its body is the white suit');
 }

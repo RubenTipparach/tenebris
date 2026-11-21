@@ -23,6 +23,9 @@
 
 ## 5. Air and suits
 
-- [ ] 5.1 Exposure, breath, oxygen tanks, death and respawn, AIR chip. Verify: tests of the air state machine; headless on the Moon.
-- [ ] 5.2 Suit slot, worn state saved, avatar suit. Verify: headless.
-- [ ] 5.3 Gas collector machine. Verify: power test; headless bottling.
+- [x] 5.1 Exposure, breath, oxygen tanks, death and respawn, AIR chip. Verify: tests of the air state machine; headless on the Moon.
+  - Verified: scripts/air.test.ts (breath, tanks, recovery, exposure table); headless Moon run: AIR chip counts down, "You ran out of air", respawn on Earth; the pause menu holds the clock.
+- [x] 5.2 Suit slot, worn state saved, avatar suit. Verify: headless.
+  - Verified: headless right-click wear, suit slot shown and clicked off (hotbar first), worn state back after a reload; avatar suit mesh tested in scripts/air.test.ts (not seen in MP).
+- [x] 5.3 Gas collector machine. Verify: power test; headless bottling.
+  - Verified: scripts/power.test.ts; headless: placed on Earth, refused on the Moon ("No air to collect here"), fills on (forced) grid power.
