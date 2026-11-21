@@ -37,6 +37,13 @@
 - [x] 7.1 Mission data (`src/config/Missions.ts`) and an event bus fed from Inventory, crafting, block interaction, launch pad and flight. Verify: tests of counting and of only counting after a mission opens.
 - [x] 7.2 Missions panel (current first, objectives with counts, done ticked) and a toast on completion; progress saved. Verify: headless chop a tree, see "Logs 4 / 4" and the toast; reload keeps progress.
 
+## 9. The mission tree (missions, revised: Pale Blue Dot's tree)
+
+- [ ] 9.1 Tree data in `src/config/Missions.ts` (one parent each, hidden `after` gates, `unlocks`, branch, icon) per design decision 8; ids from the first version kept. Verify: test that every mission but the first has exactly one existing parent, there are no cycles, and every unlock names a real recipe output.
+- [ ] 9.2 Unlocking: one `recipeOpen(output)` asked by the crafting grid, the electronics workbench and the 3D printer; locked recipes dimmed with the mission's title and refused; old worlds keep what they crafted, carry or placed. Verify: tests of locked/open/legacy; headless the printer shows the engine locked in a new world.
+- [ ] 9.3 New events `smelted` and `reached` (waypoint within 8 m that was set 200 m+ away). Verify: tests.
+- [ ] 9.4 Tree panel: cards laid out from the tree, branch plaques, parent lines, Done/Now/Open/Locked, pan, designed zoom levels and Fit, side panel with objectives, help, unlocks, needs, opens next. Verify: headless screenshots fitted, zoomed, and with a card's side panel open.
+
 ## 8. Stage B and C (orbital-motion, later)
 
 - [x] 8.1 Planet-bound objects parented to a per-planet root in planet-local space (saves unchanged). Verify: a torch on the Moon stays on it as the Moon moves while the player is on Earth.

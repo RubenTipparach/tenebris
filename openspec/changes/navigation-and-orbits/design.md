@@ -162,31 +162,65 @@ existing HUD pattern, as the hotbar does.
 A waypoint is stored by tile index on its body. It moves with its body
 because the body's frame moves, so there is no world position to update.
 
-### 8. Missions are data counted from events
+### 8. Missions are a tree that unlocks the tech (Pale Blue Dot's model)
 
-- **Missions:** `src/config/Missions.ts`, a list of
-  `{ id, title, help, objectives: [{ event, item?, count }] }`.
-- **Events:** a small event bus fed from the places the game already counts
-  things:
-  - `Inventory.addItem` gives `gained`;
-  - crafting gives `crafted`;
-  - `PlanetBlockInteraction` gives `placed`, `mined` and `machinePlaced`;
-  - launch pads give `padComplete`;
-  - the flight manager gives `launched` and `landed:<body>`.
-- **The first chain:**
-  1. Logs ×4.
-  2. A crafting bench, or the first tool recipe the game has.
-  3. Stone ×8.
-  4. Iron ore ×3.
-  5. Smelt iron ×3.
-  6. Place a 3D printer.
-  7. Print 7 launch pad blocks.
-  8. Lay the 7-block pad.
-  9. Print a rocket engine, a fuel tank and a command module.
-  10. Assemble the rocket.
-  11. Launch.
-  12. Land on the Moon.
-- **Progress:** saved in `GameStorage`; a toast when a mission completes.
+The owner, 2026-11-21: "See how mission tree is set up on pale blue dot".
+Pale Blue Dot's `starter-missions` ("Missions are a tree that unlocks the
+tech", and "One parent per mission") is the model:
+- a trunk opens branches that can be played in any order;
+- each mission unlocks recipes;
+- exactly one parent per mission, and an extra need is a hidden `after`
+  gate with no line drawn;
+- cards laid out left to right with branch plaques;
+- a side panel for the selected card;
+- zoom in designed whole-pixel steps, so card frames never tear.
+
+The first version of this change, a straight line of 14 missions, is
+replaced. Its ids are kept where the step still exists, because saves name
+them.
+
+**Data:** `src/config/Missions.ts`, one entry per mission:
+`{ id, branch, icon, title, help, parent, after?, objectives, unlocks }`.
+`unlocks` lists recipe output item types.
+
+**The tree,** with real recipe and item names:
+
+| branch | missions (parent -> child) | unlocks |
+| --- | --- | --- |
+| 0. Trunk | Chop a tree (logs 4) -> Make planks (planks, sticks) -> Dig stone (stone 8) -> Build a furnace (place Furnace) | planks: Furnace, Torch, Storage Chest |
+| 1. Mining and smelting | Find ore (iron 3, coal 2) -> Smelt iron (iron ingot 3) -> Smelt copper (copper ingot 2) -> Make glass | Smelt iron: Bucket. Smelt copper: Cable, Copper Pipe |
+| 2. Light and storage | Light the night (place 4 torches) -> Store things (place a Storage Chest) | |
+| 3. Power | Steam power (place a Steam Engine) -> Wire it up (place 4 Cables) -> Electric furnace (place one); and Water power (place a Hydro Generator) | Steam Engine: Hydro Generator, Electric Furnace |
+| 4. Electronics | Electronics workbench (place one) -> Chips (CPU Chip, RAM Module) -> Computer (craft and place) -> 3D printer (craft and place) | workbench: CPU, RAM, Motherboard, Power Supply. Chips: Computer, Print Nozzle, 3D Printer |
+| 5. Rocketry (after the 3D printer) | Pad blocks (print 7) -> Lay the pad -> Launch tower (3 segments) -> Rocket parts (engine, tank, command module) -> Assemble -> Launch -> Land on the Moon | Pad blocks: Launch Pad Block, Launch Pad Segment. Tower: Rocket Engine, Medium Fuel Tank, Command Module. Launch: Cargo Bay |
+| 6. The Moon and beyond (after landing on the Moon) | Moon metal (titanium ore 3) -> Titanium (smelt 3) -> Vacuum engine (print it and a Large Fuel Tank) -> Ice fuel (make rocket fuel from ice) -> Another world (land on Sequoia) -> Explorer (land on 3 more worlds) | Moon metal: Vacuum Engine, Large Fuel Tank. Ice fuel: the ice and snow fuel recipes |
+| 7. Getting about (after the trunk) | Read the map (reach a waypoint set 200 m away) -> Go fishing (Fishing Rod, catch 3 fish) | Read the map: Fishing Rod |
+
+**Unlocking:**
+- **One function** answers whether a recipe is open:
+  `MissionTracker.recipeOpen(output)`. The crafting grid, the electronics
+  workbench and the 3D printer all ask it.
+- **Locked recipes** show dimmed with the mission's title, and the craft
+  button refuses.
+- **Old worlds:** the skip rule from the first version is kept. On first
+  open, a world counts as done every mission it already satisfies. Any
+  recipe whose output the world has crafted, carries or has placed is also
+  open (Pale Blue Dot T.3).
+
+**Panel:** DOM cards in a pannable stage, laid out from the tree.
+- **Layout:** the column is the depth from the trunk and the row is the
+  branch; side chains hang below their branch.
+- **Lines:** SVG elbows from parent to child.
+- **States:** Done, Now, Open and Locked, with a legend.
+- **Branch plaques:** one per branch row.
+- **Zoom:** five designed levels, from overview to full card. Each level
+  sets the card size and the type size in whole pixels, never a CSS scale.
+  Fit chooses the largest level that shows the whole tree.
+- **Side panel:** the clicked card's objectives with progress bars, its
+  help, what it unlocks, what it needs, and what it opens next.
+
+**Events** are as in the first version (`src/engine/GameEvents.ts`). Two
+are added: `smelted` and `reached` (a waypoint, from the waypoint list).
 
 ## Risks / Trade-offs
 
