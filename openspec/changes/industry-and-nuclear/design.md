@@ -211,6 +211,52 @@ append-only):
     power → Reactor core and ion drive → Fly the ion drive.
 - **Coverage:** the coverage test covers every new recipe.
 
+### 9. Building materials
+
+The owner, 2026-11-21: "Add things like alternate construction materials for
+structure like concrete blocks, bricks (and clay) steel supported glass".
+
+**Blocks**
+
+Every block gets its own texture (block-textures skill) and its own icon:
+- **Clay:** the `CLAY` item places the existing `CLAY` block.
+- **Brick:** `BRICK_BLOCK`.
+- **Concrete:** `CONCRETE_BLOCK`.
+- **Steel girder:** `STEEL_GIRDER`, an open lattice that renders like the
+  other cut-out blocks.
+- **Steel-framed glass:** `STEEL_GLASS`. It is transparent like `GLASS`, in
+  the same render path and face rules, so `sideFaceShows` treats it as
+  glass.
+
+**Items**
+- `CEMENT`
+- `STEEL_INGOT`
+
+**Recipes**
+- 4 `BRICK` make 1 `BRICK_BLOCK` (crafting).
+- The kiln fires `CLAY` and `STONE` into `CEMENT`.
+- `CEMENT`, 2 `SAND`, 2 `STONE` and a `WATER_BUCKET` make 4 `CONCRETE_BLOCK`
+  and give the bucket back (crafting).
+- The electric furnace alloys 2 `INGOT_IRON` and 1 `COAL` into a
+  `STEEL_INGOT`. This is its first two-input recipe, a row in the smelting
+  table.
+- 2 `STEEL_INGOT` make 4 `STEEL_GIRDER`.
+- `STEEL_INGOT` and 2 `GLASS` make 2 `STEEL_GLASS`.
+
+**Strength** is mining time only; there is no structural simulation. The
+mining times rise in this order:
+- dirt;
+- clay;
+- brick;
+- glass;
+- concrete, steel glass and steel girder.
+
+**Missions:** a Construction branch.
+- It hangs off Light and storage.
+- It runs: Clay block → Brick wall (place 8 brick blocks) → Cement →
+  Concrete (place 8) → Steel (needs the electric furnace: a hidden gate on
+  Power) → Girders → Steel-framed glass (place 4).
+
 ### 8. Build order
 
 These are the dependencies that let parallel work not collide:

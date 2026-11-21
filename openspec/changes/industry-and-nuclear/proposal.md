@@ -70,6 +70,7 @@ the late game has nothing to build toward.
   tiers.
 - `nuclear`: enrichment, fuel rods, the off-world reactor and the nuclear
   fabricator.
+- `building-materials`: brick, clay, concrete, steel girder and steel-framed glass blocks and their recipe chains.
 - `rocket-tiers`: the nuclear thermal engine, the ion drive, the reactor
   core and battery pack parts, and how they change a rocket's performance.
 
