@@ -222,6 +222,23 @@ let worldPrefix = '';
 export function setSaveWorld(worldId: string | null): void {
   worldPrefix = worldId ? `w_${worldId.replace(/[^a-z0-9]/gi, '')}_` : '';
 }
+/**
+ * Forget this server world's local copy (its save slot and what it last
+ * synced) - the server reset it, so the next load starts from the server.
+ */
+export function clearWorldSave(): void {
+  if (!worldPrefix) return;
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(`tenebris_${worldPrefix}`)) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+  } catch {
+    // storage blocked: nothing kept to clear
+  }
+}
 const STORAGE_KEY_PLAYER_BASE = 'player';
 // Each planet's edits live under tenebris_<planetId> (tenebris_earth,
 // tenebris_moon, tenebris_sequoia, ...). Sequoia used to share the moon's

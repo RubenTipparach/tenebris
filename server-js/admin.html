@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tenebris Admin</title>
+<style>
+  :root { --ink: #0b0e14; --panel: #121826; --line: rgba(255,255,255,0.12); --bone: #f2f0e9; --dim: #8a97a8; --cyan: #3ee0ff; --red: #ff004d; --green: #7be08a; --amber: #ffa300; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  #worlds { display: grid; gap: 14px; }
+  body { margin: 0; background: var(--ink); color: var(--bone); font: 14px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 18px; letter-spacing: 2px; }
+  h1 span { color: var(--cyan); }
+  main { padding: 16px 20px; max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; }
+  .stats { display: flex; gap: 18px; color: var(--dim); flex-wrap: wrap; }
+  .stats b { color: var(--bone); font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .wname { font-size: 17px; }
+  .meta { color: var(--dim); font-size: 12px; }
+  input { background: rgba(0,0,0,0.35); color: var(--bone); border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; font: inherit; min-width: 0; }
+  button { background: #2a3550; color: var(--bone); border: 1px solid var(--line); border-radius: 5px; padding: 6px 11px; font: inherit; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--cyan); }
+  button.danger { color: #ffb3c7; }
+  button.armed { background: var(--red); color: #fff; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 4px 2px 10px; display: inline-flex; gap: 6px; align-items: center; font-size: 12px; }
+  .chip button { padding: 1px 7px; font-size: 11px; border-radius: 999px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 400; font-size: 12px; }
+  .online { color: var(--green); }
+  .empty { color: var(--dim); }
+  #msg { min-height: 20px; color: var(--amber); }
+  #login { max-width: 420px; margin: 60px auto; }
+  .label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TENEBRIS <span>ADMIN</span></h1>
+  <div class="stats" id="stats"></div>
+  <button id="logout" hidden>Sign out</button>
+</header>
+<main>
+  <div id="msg" role="status"></div>
+  <form id="login" class="card" hidden>
+    <div class="label">Admin token</div>
+    <div class="row"><input id="token" type="password" class="grow" autocomplete="current-password" placeholder="ADMIN_TOKEN"><button>Sign in</button></div>
+    <div class="meta">The token is the server's ADMIN_TOKEN secret. It stays in this browser.</div>
+  </form>
+  <div id="worlds"></div>
+</main>
+<script>
+const KEY = 'tenebris_admin_token';
+const $ = (s) => document.querySelector(s);
+let token = '';
+try { token = localStorage.getItem(KEY) || ''; } catch {}
+let timer = null;
+
+const say = (t) => { $('#msg').textContent = t; };
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'on') for (const [ev, f] of Object.entries(v)) e.addEventListener(ev, f);
+    else if (k === 'class') e.className = v;
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+}
+const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`; };
+const dur = (s) => s < 3600 ? `${Math.round(s / 60)}m` : `${(s / 3600).toFixed(1)}h`;
+
+async function api(path, body) {
+  const r = await fetch('/admin/api/' + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 || r.status === 503 || r.status === 429) { signOut(data.error); throw new Error(data.error); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// Destructive buttons arm on the first click and act on the second
+function confirmButton(label, armedLabel, act) {
+  const b = el('button', { class: 'danger' }, label);
+  let armedAt = 0;
+  b.addEventListener('click', async () => {
+    if (Date.now() - armedAt > 4000) {
+      armedAt = Date.now();
+      b.textContent = armedLabel;
+      b.classList.add('armed');
+      setTimeout(() => { if (Date.now() - armedAt >= 4000) { b.textContent = label; b.classList.remove('armed'); } }, 4100);
+      return;
+    }
+    armedAt = 0;
+    b.disabled = true;
+    try { await act(); } catch (e) { say(e.message); }
+    refresh();
+  });
+  return b;
+}
+
+function signOut(why) {
+  token = '';
+  try { localStorage.removeItem(KEY); } catch {}
+  if (timer) clearInterval(timer);
+  $('#login').hidden = false;
+  $('#logout').hidden = true;
+  $('#worlds').replaceChildren();
+  $('#stats').replaceChildren();
+  if (why) say(why);
+}
+
+function render(s) {
+  $('#stats').replaceChildren(
+    el('span', {}, 'players ', el('b', {}, `${s.players}/${s.maxPlayers}`)),
+    el('span', {}, 'worlds ', el('b', {}, String(s.worlds.length))),
+    el('span', {}, 'up ', el('b', {}, dur(s.uptimeS))),
+    el('span', {}, 'memory ', el('b', {}, `${s.rssMb} MB`)),
+  );
+  // keep whatever is being typed: skip a redraw while an input has focus
+  if (document.activeElement && document.activeElement.closest('#worlds input')) return;
+  const sorted = [...s.worlds].sort((a, b) => (b.players.length - a.players.length) || (a.id === 'main' ? -1 : b.id === 'main' ? 1 : b.created - a.created));
+  $('#worlds').replaceChildren(...sorted.map((w) => {
+    const name = el('input', { class: 'grow wname', value: w.name, maxlength: '32', 'aria-label': 'World name' });
+    const rename = el('button', { on: { click: async () => { try { await api(`worlds/${w.id}/rename`, { name: name.value }); say(`Renamed to ${name.value}`); } catch (e) { say(e.message); } name.blur(); refresh(); } } }, 'Rename');
+    const notice = el('input', { class: 'grow', maxlength: '200', placeholder: 'Message to everyone in this world', 'aria-label': 'Message' });
+    const send = el('button', { on: { click: async () => { if (!notice.value.trim()) return; try { await api(`worlds/${w.id}/notice`, { text: notice.value }); say('Message sent'); notice.value = ''; } catch (e) { say(e.message); } notice.blur(); } } }, 'Send');
+    const players = w.players.length
+      ? el('table', {}, el('tr', {}, el('th', {}, 'player'), el('th', {}, 'planet'), el('th', {}, 'online for'), el('th', {}, '')),
+          ...w.players.map((p) => el('tr', {}, el('td', { class: 'online' }, p.name), el('td', {}, p.planet), el('td', {}, ago(p.since)),
+            el('td', {}, confirmButton('Kick', 'Kick?', () => api(`players/${p.id}/kick`, { reason: 'Kicked by an operator' }))))))
+      : el('div', { class: 'empty' }, 'Nobody online');
+    const kinds = Object.entries(w.kinds).sort((a, b) => b[1] - a[1]);
+    return el('section', { class: 'card' },
+      el('div', { class: 'row' }, name, rename),
+      el('div', { class: 'meta' }, `id ${w.id} - seed ${w.seed}${w.created ? ` - created ${new Date(w.created).toLocaleString()}` : ''} - ${w.edits} block edits - ${w.records} objects`),
+      players,
+      kinds.length ? el('div', {}, el('div', { class: 'label' }, 'Objects (clear removes every one of that kind)'),
+        el('div', { class: 'chips' }, ...kinds.map(([k, n]) => el('span', { class: 'chip' }, `${k} ${n}`,
+          confirmButton('clear', 'sure?', () => api(`worlds/${w.id}/clear-kind`, { kind: k }).then((r) => say(`Removed ${r.removed} ${k}`))))))) : '',
+      el('div', { class: 'row' }, notice, send),
+      el('div', { class: 'row' },
+        confirmButton('Reset world', 'Click again: wipe every edit', () => api(`worlds/${w.id}/reset`, {}).then(() => say(`${w.name} reset`))),
+        w.id === 'main' ? '' : confirmButton('Delete world', 'Click again: delete for good', () => api(`worlds/${w.id}/delete`, {}).then(() => say(`${w.name} deleted`)))),
+    );
+  }));
+}
+
+async function refresh() {
+  if (!token) return;
+  try { render(await api('status')); } catch (e) { if (token) say(e.message); }
+}
+
+function start() {
+  $('#login').hidden = true;
+  $('#logout').hidden = false;
+  refresh();
+  if (timer) clearInterval(timer);
+  timer = setInterval(refresh, 5000);
+}
+
+$('#login').addEventListener('submit', (e) => {
+  e.preventDefault();
+  token = $('#token').value.trim();
+  if (!token) return;
+  try { localStorage.setItem(KEY, token); } catch {}
+  say('');
+  start();
+});
+$('#logout').addEventListener('click', () => signOut('Signed out'));
+if (token) start(); else signOut();
+</script>
+</body>
+</html>

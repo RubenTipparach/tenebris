@@ -504,7 +504,8 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   the zip with butler to `ruben-tipparach/tenebris:html5` (needs
   `BUTLER_API_KEY`), and the `server` job runs `fly deploy` in `server-js/`
   (needs `FLY_API_TOKEN`) only after the itch push succeeds, so the server
-  always matches the itch build.
+  always matches the itch build. Pick **server only** in the Run workflow
+  box to redeploy just the server (a server fix) without an itch push.
 
 `static.yml` ("JS client - build + check") builds and verifies the client
 on every push to `main`; on branches it only runs by hand (Run workflow).
@@ -949,8 +950,12 @@ After each commit, always show these links to the user:
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
 - JS multiplayer server: https://tenebris-c.fly.dev/
 
-The `/admin` operator portal and the hex structure editor were served by
-the Rust server (`tenebris-server`); while the JS server is deployed on
-`tenebris-c` they are offline (deploy `tenebris-rs/fly.toml` to bring
-them back). The editor exports `*.template.json`
-into `tenebris-rs/assets/templates/`.
+The JS server has its own operator portal at
+https://tenebris-c.fly.dev/admin (`server-js/admin.js` + `admin.html`):
+worlds (rename / reset / delete), who is online (kick), object counts per
+kind (clear a kind), and a message to everyone in a world. It needs the
+`ADMIN_TOKEN` Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris-c`);
+without it the API stays off. The Rust server's hex structure editor (which
+exports `*.template.json` into `tenebris-rs/assets/templates/`) is offline
+while the JS server holds `tenebris-c` (deploy `tenebris-rs/fly.toml` to
+bring it back).

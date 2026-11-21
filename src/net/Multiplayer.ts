@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
+import { clearWorldSave } from '../engine/GameStorage';
 import { Avatar, Look, sanitizeLook } from './Avatar';
 import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
@@ -19,6 +20,11 @@ import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer }
  */
 
 export const DEFAULT_SERVER = 'wss://tenebris-c.fly.dev/';
+// Close codes the server uses (server-js/server.js)
+const CLOSE_KICKED = 4001;
+const CLOSE_DELETED = 4004;
+const CLOSE_RESET = 4010;
+const RESET_RELOAD_DELAY_MS = 1500;
 const POSE_INTERVAL_S = 0.1;
 const SMOOTHING = 12;          // remote avatar follow rate (1/s)
 
@@ -78,9 +84,18 @@ export class Multiplayer {
       this.ws = null;
       attachTransport(null);
       this.clearRemotes();
-      if (ev.code === 4004) {
+      if (ev.code === CLOSE_DELETED) {
         this.wanted = false;
         showToast('That world no longer exists on the server', { duration: 4000 });
+      } else if (ev.code === CLOSE_KICKED) {
+        this.wanted = false;
+        showToast(`Disconnected: ${ev.reason || 'kicked by an operator'}`, { duration: 6000 });
+      } else if (ev.code === CLOSE_RESET) {
+        // The world went back to fresh terrain: this copy of it is stale
+        this.wanted = false;
+        showToast('This world was reset - reloading', { duration: 3000 });
+        clearWorldSave();
+        window.setTimeout(() => window.location.reload(), RESET_RELOAD_DELAY_MS);
       }
       if (this.wanted) {
         showToast('Multiplayer connection lost - retrying', { duration: 2500 });
@@ -151,6 +166,9 @@ export class Multiplayer {
         if (isNew) showToast(`${m.name} joined`, { duration: 2000 });
         break;
       }
+      case 'notice':
+        showToast(`Server: ${String(m.text ?? '').slice(0, 200)}`, { duration: 8000 });
+        break;
       case 'leave': {
         const r = this.remotes.get(m.id);
         if (r) {

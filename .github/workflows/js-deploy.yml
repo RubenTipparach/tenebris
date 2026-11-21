@@ -3,8 +3,14 @@
 # - On every push to main: only heavyphoton.com/tenebris/ updates.
 # - itch.io + the multiplayer server are a MANUAL release, together: run
 #   this workflow by hand (Actions > this workflow > Run workflow, branch
-#   main). The Fly server deploys only after the itch.io push succeeds, so
-#   the server players connect to always matches the itch build.
+#   main). Pick what to ship:
+#     itch + server  (default) the Fly server deploys only after the
+#                    itch.io push succeeds, so the server players connect
+#                    to always matches the itch build
+#     server only    just the multiplayer server (a server fix, or its
+#                    first deploy) - no itch.io push
+#   The server's admin portal (https://tenebris-c.fly.dev/admin) needs an
+#   ADMIN_TOKEN Fly secret: fly secrets set ADMIN_TOKEN=... -a tenebris-c
 #
 # - itch.io: builds tenebris-itch.zip and pushes it with butler to
 #   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
@@ -24,6 +30,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      ship:
+        description: What to release
+        type: choice
+        default: itch + server
+        options:
+          - itch + server
+          - server only
 
 permissions:
   contents: read
@@ -35,8 +49,8 @@ concurrency:
 jobs:
   itch:
     name: itch.io - butler push ruben-tipparach/tenebris:html5
-    # manual releases only
-    if: github.event_name == 'workflow_dispatch'
+    # manual releases only, unless just the server was asked for
+    if: github.event_name == 'workflow_dispatch' && inputs.ship != 'server only'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,8 +108,12 @@ jobs:
 
   server:
     name: Fly.io - deploy server-js to tenebris-c
-    # ships with the itch.io release, after it succeeds
+    # ships with the itch.io release, after it succeeds - or alone when
+    # 'server only' was picked
     needs: itch
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      (needs.itch.result == 'success' || (inputs.ship == 'server only' && needs.itch.result == 'skipped'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

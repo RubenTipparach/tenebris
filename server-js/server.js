@@ -37,11 +37,17 @@
 //     { t: 'pose', id, planet, p, q }
 //     { t: 'edit', id, planet, tile, depth, block }
 //     { t: 'rec', id, kind, planet, key, data }   { t: 'live', id, ch, data }
+//     { t: 'notice', text }   an operator message (admin portal)
+//   close codes: 4004 no such world (deleted), 4001 kicked by an operator,
+//   4010 the world was reset (the client drops its local copy and reloads)
+//
+// Operator portal: /admin (admin.js), enabled by the ADMIN_TOKEN secret.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import { handleAdmin } from './admin.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || '/data';
@@ -174,6 +180,93 @@ function allow(pl, kind, max) {
   return ++win.count <= max;
 }
 
+// ---- operator actions (admin portal) --------------------------------------
+const CLOSE_KICKED = 4001;
+const CLOSE_DELETED = 4004;
+const CLOSE_RESET = 4010;
+
+function closeWorldPlayers(w, code, reason) {
+  for (const pid of [...w.players]) players.get(pid)?.ws.close(code, reason);
+}
+
+function renameWorld(w, name) {
+  const clean = cleanName(name);
+  if (!clean) return false;
+  w.name = clean;
+  saveIndex();
+  return true;
+}
+
+// Delete a world and its files ('main' stays: it is the default world)
+function deleteWorld(w) {
+  if (w.id === MAIN_WORLD.id) return false;
+  closeWorldPlayers(w, CLOSE_DELETED, 'world deleted');
+  worlds.delete(w.id);
+  for (const f of [w.log, w.recLog]) fs.rmSync(f, { force: true });
+  saveIndex();
+  return true;
+}
+
+// Back to fresh terrain: every edit and object gone, same name and seed
+function resetWorld(w) {
+  closeWorldPlayers(w, CLOSE_RESET, 'world reset');
+  w.edits.clear();
+  w.records.clear();
+  for (const f of [w.log, w.recLog]) fs.writeFileSync(f, '');
+  return true;
+}
+
+// Remove every object record of one kind (e.g. a torch-spam cleanup);
+// players online see them go at once
+function clearRecordKind(w, kind) {
+  let n = 0;
+  for (const r of [...w.records.values()]) {
+    if (r[0] !== kind) continue;
+    const gone = [r[0], r[1], r[2], null];
+    recordObject(w, gone);
+    broadcast(w, { t: 'rec', id: 0, kind: r[0], planet: r[1], key: r[2], data: null });
+    n++;
+  }
+  return n;
+}
+
+function kickPlayer(id, reason) {
+  const pl = players.get(id);
+  if (!pl) return false;
+  pl.ws.close(CLOSE_KICKED, String(reason || 'kicked').slice(0, 100));
+  return true;
+}
+
+function noticeWorld(w, text) {
+  const clean = String(text ?? '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, 200);
+  if (!clean) return false;
+  broadcast(w, { t: 'notice', text: clean });
+  return true;
+}
+
+const startedAt = Date.now();
+function serverStatus() {
+  const mem = process.memoryUsage();
+  return {
+    uptimeS: Math.round((Date.now() - startedAt) / 1000),
+    rssMb: Math.round(mem.rss / 1048576),
+    heapMb: Math.round(mem.heapUsed / 1048576),
+    players: players.size,
+    maxPlayers: MAX_PLAYERS,
+    worlds: [...worlds.values()].map(w => {
+      const kinds = {};
+      for (const r of w.records.values()) kinds[r[0]] = (kinds[r[0]] ?? 0) + 1;
+      return {
+        id: w.id, name: w.name, seed: w.seed, created: w.created,
+        edits: w.edits.size, records: w.records.size, kinds,
+        players: [...w.players].map(pid => players.get(pid)).filter(Boolean)
+          .map(p => ({ id: p.id, name: p.name, planet: p.planet, since: p.joinedAt })),
+      };
+    }),
+  };
+}
+
+
 // ---- players --------------------------------------------------------------
 let nextId = 1;
 const players = new Map(); // id -> { ws, world, name, planet, p, q, rate }
@@ -204,7 +297,8 @@ function cleanLook(v) {
 
 function onMessage(id, raw) {
   const pl = players.get(id);
-  if (!pl) return;
+  // nothing from a connection being closed (kicked, world reset / deleted)
+  if (!pl || pl.ws.readyState !== pl.ws.OPEN) return;
   const w = pl.world;
   let m;
   try { m = JSON.parse(raw); } catch { return; }
@@ -252,8 +346,11 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+const admin = { worlds, players, serverStatus, renameWorld, deleteWorld, resetWorld, clearRecordKind, kickPlayer, noticeWorld };
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) return handleAdmin(req, res, url, admin);
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
@@ -297,11 +394,11 @@ wss.on('connection', (ws, req) => {
   const worldId = new URL(req.url ?? '/', 'http://x').searchParams.get('world') || MAIN_WORLD.id;
   const w = worlds.get(worldId);
   if (!w) {
-    ws.close(4004, 'no such world');
+    ws.close(CLOSE_DELETED, 'no such world');
     return;
   }
   const id = nextId++;
-  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {} });
+  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {}, id, joinedAt: Date.now() });
   send(ws, {
     t: 'welcome',
     id,

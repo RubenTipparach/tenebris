@@ -3,7 +3,7 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
-COPY server.js ./
+COPY server.js admin.js admin.html ./
 ENV PORT=8080 DATA_DIR=/data
 EXPOSE 8080
 CMD ["node", "server.js"]
