@@ -7,6 +7,8 @@ uniform float waterLevel; // Radius of water surface from planet center
 attribute float skyLight;
 // Torch light attribute - pre-calculated on CPU based on nearby torches
 attribute float torchLight;
+// Light from emitting blocks (lamps, neon, lit windows), flooded on the CPU
+attribute float blockLight;
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
@@ -14,6 +16,7 @@ varying vec2 vUv;
 varying float vSunBrightness;
 varying float vSkyLight; // Pre-calculated sky light (0-1)
 varying float vTorchLight; // Pre-calculated torch light (0-1)
+varying float vBlockLight; // Block light (0-1)
 varying float vWaterDepth; // How far below water surface (0 if above water)
 varying float vDistanceFromCamera;
 
@@ -21,6 +24,7 @@ void main() {
   vUv = uv;
   vSkyLight = skyLight;
   vTorchLight = torchLight;
+  vBlockLight = blockLight;
 
   // Transform to world space
   vec4 worldPos = modelMatrix * vec4(position, 1.0);

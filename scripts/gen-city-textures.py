@@ -30,6 +30,14 @@ Textures:
   park        lawn with hedges and flowers
   park_side   park lawn lip over the concrete planter
   foundation  undercity: dark panels, rivets, a copper pipe
+  lamp        street lamp block, side: a steel housing, a warm lantern band
+  lamp_top    street lamp block, top: the lantern's lens in a steel ring
+
+Night lights: every block that gives off light also gets `<name>_glow.png`,
+its emissive mask - the same pixels as the block where it glows (lit
+windows, neon tubes, guide studs, lamp lenses) and palette black elsewhere.
+The terrain shader adds it at night (src/config/LightingConfig.ts); the
+voxel light flood (src/shared/voxelLight.ts) lights what is near.
 
 Deterministic. Run from the repo root:  python3 scripts/gen-city-textures.py
 """
@@ -264,6 +272,65 @@ def foundation(rng):
     return t.px
 
 
+def lamp(rng):
+    t = Tile(R['steel'], 1)
+    for y in range(N):
+        for x in range(N):
+            t.put(x, y, R['steel'][1])
+    for x in range(N):                                   # housing seams, lit on top
+        t.put(x, 0, R['steel'][3]); t.put(x, 1, R['steel'][2])
+        t.put(x, 14, R['steel'][0]); t.put(x, 15, R['under'][1])
+    for y in range(3, 9):                                # the lantern band
+        for x in range(1, N - 1):
+            t.put(x, y, R['lit'][1])
+    for x in range(1, N - 1):
+        t.put(x, 3, R['lit'][2]); t.put(x, 8, R['lit'][0])
+    for x in (4, 8, 12):                                 # its grille bars
+        for y in range(3, 9):
+            t.put(x, y, R['steel'][0])
+    for x in range(2, N - 2, 4):                         # bolts on the base
+        t.put(x, 11, R['steel'][3]); t.put(x, 12, R['steel'][0])
+    return t.px
+
+
+def lamp_top(rng):
+    t = Tile(R['steel'], 2)
+    for y in range(N):
+        for x in range(N):
+            t.put(x, y, R['steel'][2])
+    lens = [(x, y) for y in range(N) for x in range(N) if (x - 7.5) ** 2 + (y - 7.5) ** 2 <= 22]
+    for x, y in lens:
+        t.put(x, y, R['lit'][1])
+    for x, y in lens:                                    # lit top left, deeper bottom right
+        if (x - 6) ** 2 + (y - 6) ** 2 <= 5:
+            t.put(x, y, R['lit'][2])
+        elif (x - 9) ** 2 + (y - 9) ** 2 <= 4:
+            t.put(x, y, R['lit'][0])
+    for i in range(N):                                   # steel rim
+        t.put(i, 0, R['steel'][3]); t.put(0, i, R['steel'][3])
+        t.put(i, N - 1, R['steel'][0]); t.put(N - 1, i, R['steel'][0])
+    return t.px
+
+
+# Which pixels glow, per block: by colour, so the mask follows the art
+GLOW = {
+    'facade': R['lit'],
+    'parapet': R['lit'],
+    'neon': R['magenta'] + R['cyan'],
+    'road': R['cyan'],
+    'plaza': R['magenta'],
+    'glass': [R['cyan'][2]],                             # the lit floor line
+    'lamp': R['lit'],
+    'lamp_top': R['lit'],
+}
+DARK = rgb('#010000')
+
+
+def glow_mask(px, tones):
+    keep = set(tones)
+    return [[p if p in keep else DARK for p in row] for row in px]
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     rng = random.Random(3535)
@@ -283,6 +350,10 @@ def main():
     out['metal'] = metal(rng)
     out['park'] = park(rng)
     out['park_side'], _ = side(rng, out['park'], out['curb'], lip=3)
+    out['lamp'] = lamp(rng)
+    out['lamp_top'] = lamp_top(rng)
+    for name, tones in GLOW.items():
+        out[f'{name}_glow'] = glow_mask(out[name], tones)
     for name, px in out.items():
         check(px)
         write_png(os.path.join(OUT, f'{name}.png'), px)

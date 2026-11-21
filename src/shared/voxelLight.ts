@@ -18,6 +18,11 @@
  * darkening by depth below the column's own top, which turned every tall
  * tower's base black.
  *
+ * Block light is the second channel: blocks that give off light (EMISSION -
+ * street lamps, neon, lit windows) seed it into the cells round them and
+ * it floods by the same rules. A face takes it from the cell it faces,
+ * like the sky; the terrain shader shows it at night (LightingConfig).
+ *
  * Shared by every terrain mesher (the geometry worker and the main-thread
  * rebuild), so a chunk built either way is lit the same.
  */
@@ -32,6 +37,18 @@ export const VOXEL_LIGHT = {
   // Cost of a step to a neighbouring column (one hex is ~3 layers wide)
   STEP_ACROSS: 3,
 } as const;
+
+/**
+ * Light a block gives off (levels, out of MAX): the brightest it seeds the
+ * cells next to it. A lamp lights a street; a wall of lit windows a little
+ * of the pavement; neon in between.
+ */
+export const EMISSION: Partial<Record<number, number>> = {
+  [HexBlockType.CITY_LAMP]: 14,
+  [HexBlockType.CITY_NEON]: 10,
+  [HexBlockType.CITY_GLASS]: 5,
+  [HexBlockType.CITY_FACADE]: 5,
+};
 
 /** Blocks light passes through. */
 export function passesLight(block: number): boolean {
@@ -54,20 +71,58 @@ export type SkyField = Map<number, Uint8Array>;
  * pass it further out.
  */
 export function bakeSkyField(region: Map<number, LightColumn>): SkyField {
+  const { MAX } = VOXEL_LIGHT;
+  return flood(region, (tile, col, seed) => {
+    // straight down from the sky until something stops it
+    for (let d = col.blocks.length - 1; d >= 0 && passesLight(col.blocks[d]); d--) seed(tile, d, MAX);
+  });
+}
+
+/**
+ * The block-light channel: every emitting block lights the open cells next
+ * to it (above, below, and in the neighbouring columns), then it floods.
+ * Null when the region has no emitters (most of the world), so the
+ * meshers skip it.
+ */
+export function bakeBlockField(region: Map<number, LightColumn>): SkyField | null {
+  const { STEP_DOWN, STEP_ACROSS } = VOXEL_LIGHT;
+  let any = false;
+  for (const col of region.values()) {
+    for (let d = 0; d < col.blocks.length && !any; d++) if (EMISSION[col.blocks[d]]) any = true;
+    if (any) break;
+  }
+  if (!any) return null;
+  return flood(region, (tile, col, seed) => {
+    for (let d = 0; d < col.blocks.length; d++) {
+      const e = EMISSION[col.blocks[d]];
+      if (!e) continue;
+      for (const nd of [d - 1, d + 1]) {
+        if (nd >= 0 && nd < col.blocks.length && passesLight(col.blocks[nd])) seed(tile, nd, e - STEP_DOWN);
+      }
+      if (!col.neighbors) continue;
+      for (const nt of col.neighbors) {
+        const nc = region.get(nt);
+        if (nc && d < nc.blocks.length && passesLight(nc.blocks[d])) seed(nt, d, e - STEP_ACROSS);
+      }
+    }
+  });
+}
+
+type Seeder = (tile: number, col: LightColumn, seed: (tile: number, depth: number, level: number) => void) => void;
+
+/** Bucketed flood fill from the seeds: light only falls, so brightest first. */
+function flood(region: Map<number, LightColumn>, seedAll: Seeder): SkyField {
   const { MAX, STEP_DOWN, STEP_ACROSS } = VOXEL_LIGHT;
   const field: SkyField = new Map();
-  // Bucketed flood: light only falls, so process from brightest down
   const buckets: number[][] = Array.from({ length: MAX + 1 }, () => []);
-  for (const [tile, col] of region) {
-    const n = col.blocks.length;
-    const levels = new Uint8Array(n);
-    field.set(tile, levels);
-    // Seed straight down from the sky until something stops it
-    for (let d = n - 1; d >= 0 && passesLight(col.blocks[d]); d--) {
-      levels[d] = MAX;
-      buckets[MAX].push(tile, d);
-    }
-  }
+  for (const [tile, col] of region) field.set(tile, new Uint8Array(col.blocks.length));
+  const seed = (tile: number, d: number, level: number) => {
+    const levels = field.get(tile);
+    if (!levels || level <= levels[d]) return;
+    levels[d] = level;
+    buckets[level].push(tile, d);
+  };
+  for (const [tile, col] of region) seedAll(tile, col, seed);
   for (let level = MAX; level > 0; level--) {
     const queue = buckets[level];
     for (let q = 0; q < queue.length; q += 2) {
@@ -93,6 +148,14 @@ export function bakeSkyField(region: Map<number, LightColumn>): SkyField {
     }
   }
   return field;
+}
+
+/** Block light a face gets (0..1) from the cell it faces; 0 with no field. */
+export function blockAt(field: SkyField | null, tile: number, depth: number): number {
+  if (!field) return 0;
+  const levels = field.get(tile);
+  if (!levels || depth < 0 || depth >= levels.length) return 0;
+  return levels[depth] / VOXEL_LIGHT.MAX;
 }
 
 /**

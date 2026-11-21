@@ -891,6 +891,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
           setbackKeep: 0.72,
           crownFloors: 14,
           storefrontChance: 0.5,
+          lampEvery: 5,
           lodPalette: {
             road: ['#3e586e', 1.0],
             sidewalk: ['#92a3b2', 0.5],

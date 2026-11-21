@@ -60,6 +60,7 @@ interface GeometryData {
   uvs: number[];
   colors: number[];  // Vertex colors for position-based lighting
   skyLight: number[]; // Sky light level (0-1) based on depth from surface
+  blockLight?: number[]; // Light from emitting blocks (0-1)
   torchLight: number[]; // Torch light level (0-1.5) baked per vertex
   indices: number[];
   vertexOffset: number;
@@ -4930,6 +4931,10 @@ export class Planet {
     // Add sky light attribute for depth-based lighting
     if (data.skyLight.length > 0) {
       geometry.setAttribute('skyLight', new THREE.Float32BufferAttribute(data.skyLight, 1));
+    }
+    // Light from emitting blocks (shared/voxelLight), when the chunk has any
+    if (data.blockLight && data.blockLight.length > 0) {
+      geometry.setAttribute('blockLight', new THREE.Float32BufferAttribute(data.blockLight, 1));
     }
     // Add torch light attribute from worker (or default to zeros)
     if (data.torchLight && data.torchLight.length > 0) {
