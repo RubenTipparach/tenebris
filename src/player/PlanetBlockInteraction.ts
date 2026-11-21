@@ -564,6 +564,8 @@ export class PlanetBlockInteraction {
     });
     // The pad's rocket: refuel from the cargo hold + inventory (the same fuel
     // source as on board), open its cargo hold, its TWR on this body
+    // The launch engine mode is part of the pad's record
+    this.launchPadUI.setOnEngineModeCallback(() => this.saveLaunchPadStates());
     this.launchPadUI.setOnRefuelCallback((pad) => {
       const capacity = computeRocketStats(pad.rocketParts.map(p => p.itemType)).fuelCapacity;
       const have = pad.fuel ?? capacity;
@@ -3955,6 +3957,7 @@ export class PlanetBlockInteraction {
         })),
         fuel: pad.fuel ?? undefined,
         cargo: pad.cargo.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
+        engineMode: pad.engineMode ?? null,
       });
     }
   }
@@ -4456,6 +4459,7 @@ export class PlanetBlockInteraction {
           // The rocket's tanks and cargo hold (absent in older saves: full, empty)
           if (!pad) return Promise.resolve();
           pad.fuel = savedPad.fuel ?? null;
+          pad.engineMode = typeof savedPad.engineMode === 'number' ? savedPad.engineMode as ItemType : null;
           savedPad.cargo?.forEach((slot, i) => {
             if (i < pad.cargo.length && ITEM_DATA[slot.itemType as ItemType]) {
               pad.cargo[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };

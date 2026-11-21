@@ -167,7 +167,10 @@ export class RocketFlightManager {
   /** Write the active rocket's fuel back to its pad and save */
   private recordActiveRocket(): void {
     if (!this.rocketController) return;
-    if (this.activePad) this.activePad.fuel = this.rocketController.getFuelUnits();
+    if (this.activePad) {
+      this.activePad.fuel = this.rocketController.getFuelUnits();
+      this.activePad.engineMode = this.rocketController.getEngineMode();
+    }
     this.onRocketChangedCallback?.(this.activePad);
   }
 
@@ -271,7 +274,8 @@ export class RocketFlightManager {
       surfaceNormal,
       this.planets,
       launchPad.fuel,
-      launchPad.cargo
+      launchPad.cargo,
+      launchPad.engineMode ?? null
     );
     this.activePad = launchPad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -344,7 +348,7 @@ export class RocketFlightManager {
         this.rocketController.getFuelPercent(),
         this.rocketController.getCargo(),
         this.activePad
-      );
+      ).engineMode = this.rocketController.getEngineMode();
 
       // Don't dispose - the rocket stays in the world
       // But we need to clean up the controller's resources that aren't part of the visual
@@ -391,7 +395,8 @@ export class RocketFlightManager {
       landedRocket.groundNormal,
       landedRocket.fuelPercent,
       this.planets,
-      landedRocket.cargo
+      landedRocket.cargo,
+      landedRocket.engineMode ?? null
     );
     this.activePad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -513,6 +518,11 @@ export class RocketFlightManager {
       // Handle edge-triggered inputs
       if (e.code === ROCKET_INPUTS.THRUST_TOGGLE) {
         this.inputState.thrustToggle = true;
+      }
+
+      // Cycle which engines fire (design 6b)
+      if (e.code === ROCKET_INPUTS.ENGINE_MODE) {
+        this.rocketController?.cycleEngineMode();
       }
 
       // Handle exit key - call exitFlightMode directly

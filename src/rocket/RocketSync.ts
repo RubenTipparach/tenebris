@@ -234,7 +234,7 @@ export class RocketSync {
   // ---- landed ---------------------------------------------------------
 
   private landedState(rocket: LandedRocket): string {
-    return JSON.stringify([r3(rocket.fuelPercent), (rocket.cargo ?? []).map(s => [s.itemType, s.quantity])]);
+    return JSON.stringify([r3(rocket.fuelPercent), (rocket.cargo ?? []).map(s => [s.itemType, s.quantity]), rocket.engineMode ?? null]);
   }
 
   private publishLanded(rocket: LandedRocket): void {
@@ -248,6 +248,7 @@ export class RocketSync {
       parts: partsToWire(rocket.parts),
       fuel: r3(rocket.fuelPercent),
       cargo: rocket.cargo ? rocket.cargo.map(s => [s.itemType, s.quantity]) : null,
+      mode: rocket.engineMode ?? null,
     });
   }
 
@@ -270,6 +271,7 @@ export class RocketSync {
       // Same rocket, new fuel / cargo: update in place (the hold may be a
       // pad's shared array, so fill it rather than replace it)
       existing.fuelPercent = fuel;
+      existing.engineMode = typeof data.mode === 'number' ? data.mode : null;
       if (existing.cargo && cargo) {
         for (let i = 0; i < existing.cargo.length; i++) {
           existing.cargo[i] = cargo[i] ?? { itemType: ItemType.NONE, quantity: 0 };
@@ -293,6 +295,7 @@ export class RocketSync {
           pivot, parts, pivot.position, pivot.quaternion,
           new THREE.Vector3().fromArray(data.n), fuel, cargo, null, key,
         );
+        rocket.engineMode = typeof data.mode === 'number' ? data.mode : null;
         this.landedSig.set(key, this.landedState(rocket));
       } finally {
         this.applying.delete(key);

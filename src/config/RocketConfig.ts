@@ -192,6 +192,7 @@ export const ROCKET_INPUTS = {
   // Throttle
   THROTTLE_UP: 'KeyX',            // X - increase throttle
   THROTTLE_DOWN: 'KeyZ',          // Z - decrease throttle
+  ENGINE_MODE: 'KeyG',            // G - cycle engine mode: All, then each engine type (design 6b)
   THRUST_TOGGLE: 'Space',         // Space - toggle thrust on/off
 
   // Actions

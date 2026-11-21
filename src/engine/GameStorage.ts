@@ -159,6 +159,7 @@ export interface SavedLaunchPad {
   rocketParts?: SavedRocketPart[];  // New: saved rocket parts stack
   fuel?: number;                    // fuel units in the rocket's tanks (absent = full)
   cargo?: { itemType: number; quantity: number }[];  // the rocket's cargo hold
+  engineMode?: number | null;       // which engines fire (design 6b); absent/null = all
 }
 
 // Music state for persistence

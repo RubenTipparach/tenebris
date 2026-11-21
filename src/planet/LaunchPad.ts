@@ -73,6 +73,7 @@ export interface PlacedLaunchPad {
   cargo: InventorySlot[];
   // Fuel units in the rocket's tanks; null = full (pads from older saves)
   fuel: number | null;
+  engineMode?: ItemType | null;  // which engines fire (design 6b); null/undefined = all
   blockHeight?: number;  // the planet's block height (the pad is BASE_HEIGHT of it)
   // Legacy support - computed from rocketParts
   hasRocketEngine: boolean;

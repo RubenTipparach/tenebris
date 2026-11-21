@@ -3,7 +3,7 @@ import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
-import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR } from '../rocket/RocketPerformance';
+import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR, engineModes, engineModeLabel, validEngineMode } from '../rocket/RocketPerformance';
 
 // Rocket validation result
 export interface RocketValidationResult {
@@ -986,6 +986,28 @@ export class LaunchPadUI {
         text-align: center;
       }
 
+      .launchpad-stats .stat-modes {
+        grid-column: 1 / 3;
+        margin-top: 4px;
+        border-top: 1px solid #333;
+        padding-top: 4px;
+      }
+      .launchpad-stats .stat-modes-title { color: #888; margin-bottom: 2px; }
+      .launchpad-stats .stat-mode {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        column-gap: 8px;
+        padding: 2px 4px;
+        margin-top: 2px;
+        border-radius: 3px;
+        cursor: pointer;
+      }
+      .launchpad-stats .stat-mode:hover { background: #2a2a2a; }
+      .launchpad-stats .stat-mode.active { background: #1f3a2a; outline: 1px solid #4CAF50; }
+      .launchpad-stats .stat-mode span { grid-column: 1 / 3; }
+      .launchpad-stats .stat-mode b { color: #3EE0FF; white-space: nowrap; }
+      .launchpad-stats .stat-mode b.warn { color: #FF004D; }
+
       .launchpad-btn.small {
         padding: 6px 14px;
         font-size: 12px;
@@ -1171,12 +1193,19 @@ export class LaunchPadUI {
     this.updateUI();
   }
 
+  // Told when the player picks the engine mode the rocket launches in
+  private onEngineModeCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  public setOnEngineModeCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onEngineModeCallback = callback;
+  }
+
   /** The rocket's fuel, delta-v, TWR here and cargo space */
   private updateStats(): void {
     if (!this.statsElement || !this.currentLaunchPad) return;
     const pad = this.currentLaunchPad;
     const types = pad.rocketParts.map(p => p.itemType);
-    const stats = computeRocketStats(types, cargoMass(pad.cargo));
+    const mode = validEngineMode(types, pad.engineMode ?? null);
+    const stats = computeRocketStats(types, cargoMass(pad.cargo), mode);
     const hasRocket = types.length > 0;
     if (this.refuelBtn) this.refuelBtn.disabled = !hasRocket || stats.fuelCapacity <= 0;
     if (this.cargoBtn) this.cargoBtn.disabled = stats.cargoSlots <= 0;
@@ -1197,7 +1226,35 @@ export class LaunchPadUI {
       <div class="stat"><span>Tier</span><b>${stats.tier}</b></div>
       ${twr < 1 && stats.thrust > 0 ? '<div class="stat-note">Too heavy to lift off here</div>' : ''}
       ${stats.problems.map(p => `<div class="stat-note">${p}</div>`).join('')}
+      ${this.modeRows(types, pad, fuel, gravity, mode)}
     `;
+    // Picking a row sets the mode the rocket launches in
+    this.statsElement.querySelectorAll<HTMLElement>('[data-engine-mode]').forEach(row => {
+      row.addEventListener('click', () => {
+        const v = row.dataset.engineMode!;
+        pad.engineMode = v === 'all' ? null : Number(v) as ItemType;
+        this.onEngineModeCallback?.(pad);
+        this.updateStats();
+      });
+    });
+  }
+
+  /**
+   * One row per engine mode (design 6b) when the stack has more than one
+   * engine type: its delta-v and TWR here, so a player sees which engine
+   * lifts and which cruises. The highlighted row is the launch mode.
+   */
+  private modeRows(types: ItemType[], pad: PlacedLaunchPad, fuel: number, gravity: number, current: ItemType | null): string {
+    const modes = engineModes(types);
+    if (modes.length < 2) return '';
+    const rows = modes.map(m => {
+      const s = computeRocketStats(types, cargoMass(pad.cargo), m);
+      const twr = surfaceTWR(s, gravity, fuel);
+      const key = m == null ? 'all' : String(m);
+      return `<div class="stat-mode${m === current ? ' active' : ''}" data-engine-mode="${key}" title="Launch in this mode">
+        <span>${engineModeLabel(m)}</span><b>${Math.round(deltaVWith(s, fuel))} m/s</b><b class="${twr < 1 ? 'warn' : ''}">TWR ${Number.isFinite(twr) ? twr.toFixed(2) : '-'}</b></div>`;
+    }).join('');
+    return `<div class="stat-modes"><div class="stat-modes-title">Engine modes (G in flight)</div>${rows}</div>`;
   }
 
   private updateUI(): void {
