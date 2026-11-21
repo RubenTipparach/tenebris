@@ -23,6 +23,8 @@ import { WorldBrowser } from './net/WorldBrowser';
 import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
+import { Fauna } from './planet/Fauna';
+import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
@@ -80,6 +82,7 @@ class PlanetGame {
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
   private groundClutter: GroundClutter | null = null;
+  private fauna: Fauna | null = null; // creatures round the player (per-planet rosters)
   private earthClutter = false; // biome mockup: clutter on Earth too
   private daytimeSkyMockup = false;
 
@@ -709,6 +712,23 @@ class PlanetGame {
       }
       this.groundClutter.update(deltaTime, pos, on,
         calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition), nativeRock);
+    }
+    // Fauna: on whichever planet the player stands on; the roster table
+    // decides who lives there (a planet with no roster spawns nothing)
+    if (!this.fauna) {
+      validateFaunaRosters(this.planets.keys());
+      this.fauna = new Fauna(this.engine.scene);
+    }
+    {
+      const pos = this.player.position;
+      let on: Planet | null = null;
+      for (const planet of this.planets.values()) {
+        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
+      }
+      profiler.begin('Fauna');
+      this.fauna.update(deltaTime, pos, on,
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+      profiler.end('Fauna');
     }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
