@@ -26,7 +26,7 @@
  * Shared by every terrain mesher (the geometry worker and the main-thread
  * rebuild), so a chunk built either way is lit the same.
  */
-import { HexBlockType } from './blockTypes';
+import { HexBlockType, isClearSolid } from './blockTypes';
 import { MIN_SKY_LIGHT } from './geometry';
 
 export const VOXEL_LIGHT = {
@@ -52,8 +52,7 @@ export const EMISSION: Partial<Record<number, number>> = {
 
 /** Blocks light passes through. */
 export function passesLight(block: number): boolean {
-  return block === HexBlockType.AIR || block === HexBlockType.WATER
-    || block === HexBlockType.ICE || block === HexBlockType.GLASS;
+  return block === HexBlockType.AIR || block === HexBlockType.WATER || isClearSolid(block);
 }
 
 /** One column of the region: its blocks, and (if it can spread light sideways) its neighbours. */

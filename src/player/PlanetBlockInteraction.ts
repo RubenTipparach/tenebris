@@ -142,6 +142,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
     case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
     case HexBlockType.OIL_SAND: return ItemType.NONE;
+    // Building materials come back as themselves
+    case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
+    case HexBlockType.CONCRETE_BLOCK: return ItemType.CONCRETE_BLOCK;
+    case HexBlockType.STEEL_GIRDER: return ItemType.STEEL_GIRDER;
+    case HexBlockType.STEEL_GLASS: return ItemType.STEEL_GLASS;
     default: return ItemType.NONE;
   }
 }
@@ -178,8 +183,27 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.SULFUR: return HexBlockType.SULFUR;
     case ItemType.CLAY: return HexBlockType.CLAY;
     case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
+    case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
+    case ItemType.CONCRETE_BLOCK: return HexBlockType.CONCRETE_BLOCK;
+    case ItemType.STEEL_GIRDER: return HexBlockType.STEEL_GIRDER;
+    case ItemType.STEEL_GLASS: return HexBlockType.STEEL_GLASS;
     default: return HexBlockType.AIR;
   }
+}
+
+// An electric furnace's save record: the one shape both save points write
+function electricFurnaceSave(f: PlacedElectricFurnace): Omit<SavedElectricFurnace, 'tileIndex'> {
+  return {
+    position: { x: f.position.x, y: f.position.y, z: f.position.z },
+    rotation: f.rotation,
+    smeltingItem: f.smeltingItem,
+    smeltingProgress: f.smeltingProgress,
+    inputCount: f.inputCount,
+    additiveItem: f.additiveItem,
+    additiveCount: f.additiveCount,
+    outputItem: f.outputItem,
+    outputCount: f.outputCount,
+  };
 }
 
 // Every kind of saved world object, in load order (machines before the
@@ -2734,6 +2758,9 @@ export class PlanetBlockInteraction {
     if (furnace.smeltingItem !== null && furnace.inputCount > 0) {
       droppedItems.push({ itemType: furnace.smeltingItem, quantity: furnace.inputCount });
     }
+    if (furnace.additiveItem !== null && furnace.additiveCount > 0) {
+      droppedItems.push({ itemType: furnace.additiveItem, quantity: furnace.additiveCount });
+    }
     if (furnace.outputItem !== null && furnace.outputCount > 0) {
       droppedItems.push({ itemType: furnace.outputItem, quantity: furnace.outputCount });
     }
@@ -3572,15 +3599,7 @@ export class PlanetBlockInteraction {
       // Save electric furnace placement to game storage
       if (placedFurnace) {
         const planetId = this.getPlanetId(planet);
-        gameStorage.saveElectricFurnace(planetId, tileIndex, {
-          position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
-          rotation: placedFurnace.rotation,
-          smeltingItem: placedFurnace.smeltingItem,
-          smeltingProgress: placedFurnace.smeltingProgress,
-          inputCount: placedFurnace.inputCount,
-          outputItem: placedFurnace.outputItem,
-          outputCount: placedFurnace.outputCount
-        });
+        gameStorage.saveElectricFurnace(planetId, tileIndex, electricFurnaceSave(placedFurnace));
 
         // Rebuild cable connections so nearby cables can connect to this furnace
         this.cableNodeManager.rebuildAllConnections();
@@ -4167,15 +4186,7 @@ export class PlanetBlockInteraction {
     for (const furnace of furnaces) {
       const planetId = this.planetIdAt(furnace.position);
 
-      gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, {
-        position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
-        rotation: furnace.rotation,
-        smeltingItem: furnace.smeltingItem,
-        smeltingProgress: furnace.smeltingProgress,
-        inputCount: furnace.inputCount,
-        outputItem: furnace.outputItem,
-        outputCount: furnace.outputCount
-      });
+      gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, electricFurnaceSave(furnace));
     }
   }
 
@@ -4550,6 +4561,8 @@ export class PlanetBlockInteraction {
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
             placedFurnace.inputCount = savedFurnace.inputCount;
+            placedFurnace.additiveItem = savedFurnace.additiveItem ?? null;
+            placedFurnace.additiveCount = savedFurnace.additiveCount ?? 0;
             placedFurnace.outputItem = savedFurnace.outputItem;
             placedFurnace.outputCount = savedFurnace.outputCount;
           }

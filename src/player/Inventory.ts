@@ -123,6 +123,13 @@ export enum ItemType {
   ION_DRIVE = 96,
   REACTOR_CORE = 97,
   BATTERY_PACK = 98,
+  // Building materials (industry-and-nuclear task group 8)
+  CEMENT = 99,
+  STEEL_INGOT = 100,
+  BRICK_BLOCK = 101,
+  CONCRETE_BLOCK = 102,
+  STEEL_GIRDER = 103,
+  STEEL_GLASS = 104,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -218,7 +225,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.RAM_MODULE]: { name: 'RAM Module', stackSize: 64, texture: '/textures/technology/ram_module.png', mineTime: 0.3 },
   [ItemType.MOTHERBOARD]: { name: 'Motherboard', stackSize: 64, texture: '/textures/technology/mother_board.png', mineTime: 0.3 },
   // Glass (crafted, uses ice shader for transparency)
-  [ItemType.GLASS]: { name: 'Glass', stackSize: 64, texture: '/textures/glass.png', mineTime: 0.3 },
+  [ItemType.GLASS]: { name: 'Glass', stackSize: 64, texture: '/textures/glass.png', mineTime: 1.2 },
   // Advanced electronics components
   [ItemType.POWER_SUPPLY]: { name: 'Power Supply', stackSize: 64, texture: '/textures/technology/power_supply.png', mineTime: 0.3 },
   [ItemType.PRINT_NOZZLE]: { name: 'Print Nozzle', stackSize: 64, texture: '/textures/technology/print_nozzle.png', mineTime: 0.3 },
@@ -433,6 +440,15 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       heightUnits: 1,
     },
   },
+  // Building materials. Mining time rises dirt < clay < brick < glass <
+  // concrete = steel glass = steel girder (the block items' own textures
+  // are their icons).
+  [ItemType.CEMENT]: { name: 'Cement', stackSize: 64, texture: '/textures/icons/cement.png', mineTime: 0.3 },
+  [ItemType.STEEL_INGOT]: { name: 'Steel Ingot', stackSize: 64, texture: '/textures/icons/steel_ingot.png', mineTime: 0.3 },
+  [ItemType.BRICK_BLOCK]: { name: 'Brick Block', stackSize: 64, texture: '/textures/building/brick_block.png', mineTime: 1.0 },
+  [ItemType.CONCRETE_BLOCK]: { name: 'Concrete', stackSize: 64, texture: '/textures/building/concrete.png', mineTime: 2.5 },
+  [ItemType.STEEL_GIRDER]: { name: 'Steel Girder', stackSize: 64, texture: '/textures/building/steel_girder.png', mineTime: 2.5 },
+  [ItemType.STEEL_GLASS]: { name: 'Steel Glass', stackSize: 64, texture: '/textures/building/steel_glass.png', mineTime: 2.5 },
 };
 
 // Inventory slot

@@ -122,6 +122,11 @@ export enum HexBlockType {
   CLAY = 92,
   OIL_SAND = 93,
   ORE_URANIUM = 94,
+  // Building materials (openspec industry-and-nuclear, decision 9)
+  BRICK_BLOCK = 95,
+  CONCRETE_BLOCK = 96,
+  STEEL_GIRDER = 97,     // an open steel truss: cut-out, drawn with the glass shader
+  STEEL_GLASS = 98,      // steel-framed glass: see-through like GLASS
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -194,6 +199,10 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.CLAY]: HexBlockType.SAND,
   [HexBlockType.OIL_SAND]: HexBlockType.STONE,
   [HexBlockType.ORE_URANIUM]: HexBlockType.STONE,
+  [HexBlockType.BRICK_BLOCK]: HexBlockType.STONE,
+  [HexBlockType.CONCRETE_BLOCK]: HexBlockType.STONE,
+  [HexBlockType.STEEL_GIRDER]: HexBlockType.STONE,
+  [HexBlockType.STEEL_GLASS]: HexBlockType.GLASS,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -220,6 +229,10 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.CLAY]: sameFaces('clay'),
   [HexBlockType.OIL_SAND]: sameFaces('oilSand'),
   [HexBlockType.ORE_URANIUM]: sameFaces('oreUranium'),
+  [HexBlockType.BRICK_BLOCK]: sameFaces('brickBlock'),
+  [HexBlockType.CONCRETE_BLOCK]: sameFaces('concrete'),
+  [HexBlockType.STEEL_GIRDER]: sameFaces('steelGirder'),
+  [HexBlockType.STEEL_GLASS]: sameFaces('steelGlass'),
   [HexBlockType.SNOW]: { top: 'snow', side: 'snowSide', bottom: 'dirtSnow' },
   [HexBlockType.DIRT_SNOW]: sameFaces('dirtSnow'),
   [HexBlockType.ICE]: sameFaces('ice'),
@@ -291,7 +304,7 @@ export function blockFaces(blockType: HexBlockType | number): BlockFaces {
 }
 
 // Draw order for transparent materials (opaque ones default to 0)
-export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2, glass: 3 };
+export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2, glass: 3, steelGlass: 3, steelGirder: 3 };
 
 // Key of a material's buffer in mesher output: 'top' -> 'topData'
 export const bufferKey = (materialKey: string): string => `${materialKey}Data`;
@@ -306,8 +319,18 @@ export const bufferKey = (materialKey: string): string => `${materialKey}Data`;
 export function sideFaceShows(self: number, other: number | undefined): boolean {
   if (other === undefined || other === HexBlockType.AIR) return true;
   if (other === HexBlockType.WATER) return self !== HexBlockType.WATER;
-  if (self === HexBlockType.ICE || self === HexBlockType.GLASS || self === HexBlockType.WATER) return false;
-  return other === HexBlockType.ICE || other === HexBlockType.GLASS;
+  if (isClearSolid(self) || self === HexBlockType.WATER) return false;
+  return isClearSolid(other);
+}
+
+/**
+ * Solid blocks you can see through: ice, glass, steel-framed glass and the
+ * open steel girder. The one list every mesher, the light flood and face
+ * culling ask, so a new see-through block is added here and nowhere else.
+ */
+export function isClearSolid(blockType: HexBlockType | number): boolean {
+  return blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS
+    || blockType === HexBlockType.STEEL_GLASS || blockType === HexBlockType.STEEL_GIRDER;
 }
 
 export function isSolid(blockType: HexBlockType | number): boolean {
@@ -319,9 +342,9 @@ export function isLiquid(blockType: HexBlockType | number): boolean {
 }
 
 export function isTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
+  return blockType === HexBlockType.AIR || blockType === HexBlockType.WATER || isClearSolid(blockType);
 }
 
 export function isSemiTransparent(blockType: HexBlockType | number): boolean {
-  return blockType === HexBlockType.ICE || blockType === HexBlockType.GLASS;
+  return isClearSolid(blockType);
 }

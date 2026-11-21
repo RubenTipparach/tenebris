@@ -37,8 +37,8 @@
 
 ## 8. Building materials
 
-- [ ] 8.1 Blocks BRICK_BLOCK, CONCRETE_BLOCK, STEEL_GIRDER, STEEL_GLASS (+ CLAY placeable) and items CEMENT, STEEL_INGOT: drawn textures (block-textures skill), icons, BLOCK_FACES, mining times rising with strength; STEEL_GLASS transparent through the GLASS path (incl. sideFaceShows). Verify: block audit sheet; headless a wall of each with the glass see-through.
-- [ ] 8.2 Recipes: brick block, kiln cement, concrete (bucket back), electric-furnace steel alloy (two-input smelt row), girders, steel glass. Verify: tests of each recipe; headless make concrete.
+- [x] 8.1 Blocks BRICK_BLOCK, CONCRETE_BLOCK, STEEL_GIRDER, STEEL_GLASS (+ CLAY placeable) and items CEMENT, STEEL_INGOT: drawn textures (block-textures skill), icons, BLOCK_FACES, mining times rising with strength; STEEL_GLASS transparent through the GLASS path (incl. sideFaceShows). Verify: block audit sheet; headless a wall of each with the glass see-through.
+- [x] 8.2 Recipes: brick block, kiln cement, concrete (bucket back), electric-furnace steel alloy (two-input smelt row), girders, steel glass. Verify: tests of each recipe; headless make concrete.
 
 ## 7. Missions
 

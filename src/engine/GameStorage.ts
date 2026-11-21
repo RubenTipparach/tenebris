@@ -100,6 +100,9 @@ export interface SavedElectricFurnace {
   smeltingItem: number | null;
   smeltingProgress: number;
   inputCount: number;
+  // An alloy's second input (absent in saves from before alloys)
+  additiveItem?: number | null;
+  additiveCount?: number;
   outputItem: number | null;
   outputCount: number;
 }

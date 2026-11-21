@@ -12,6 +12,8 @@ export interface CraftingRecipe {
   inputs: { itemType: ItemType; quantity: number; slot?: number }[];
   output: { itemType: ItemType; quantity: number };
   name: string;
+  // An item handed back alongside the output (an emptied bucket)
+  returns?: { itemType: ItemType; quantity: number };
 }
 
 // All crafting recipes in the game
@@ -302,6 +304,64 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
       { itemType: ItemType.SEQ_SNOW, quantity: 1, slot: 5 },
     ],
     output: { itemType: ItemType.ROCKET_FUEL, quantity: 1 },
+  },
+  // Building materials
+  // Brick Block: four fired bricks in a square
+  //  BB.
+  //  BB.
+  //  ...
+  {
+    name: 'Brick Block',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 3 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 4 },
+    ],
+    output: { itemType: ItemType.BRICK_BLOCK, quantity: 1 },
+  },
+  // Concrete: cement mixed with sand, stone and a bucket of water; the
+  // empty bucket comes back
+  //  .W.
+  //  SCS
+  //  R.R
+  {
+    name: 'Concrete',
+    inputs: [
+      { itemType: ItemType.WATER_BUCKET, quantity: 1, slot: 1 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 3 },
+      { itemType: ItemType.CEMENT, quantity: 1, slot: 4 },
+      { itemType: ItemType.SAND, quantity: 1, slot: 5 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 6 },
+      { itemType: ItemType.STONE, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CONCRETE_BLOCK, quantity: 4 },
+    returns: { itemType: ItemType.BUCKET, quantity: 1 },
+  },
+  // Steel Girder: two steel ingots, top and bottom
+  //  .S.
+  //  ...
+  //  .S.
+  {
+    name: 'Steel Girder',
+    inputs: [
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 1 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.STEEL_GIRDER, quantity: 4 },
+  },
+  // Steel Glass: a steel frame between two panes
+  //  ...
+  //  GSG
+  //  ...
+  {
+    name: 'Steel Glass',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 3 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 1, slot: 4 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 5 },
+    ],
+    output: { itemType: ItemType.STEEL_GLASS, quantity: 2 },
   },
 ];
 
@@ -1281,6 +1341,8 @@ export class CraftingSystem {
 
     // Add output items
     this.inventory.addItem(this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
+    const returned = this.selectedRecipe.returns;
+    if (returned) this.inventory.addItem(returned.itemType, returned.quantity);
     emitGameEvent('crafted', this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
 
     // Update UI
