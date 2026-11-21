@@ -247,6 +247,7 @@ const PLANET_IDS = getLandableBodies().map(body => body.id);
 const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}${planetId}`;
 const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
+const MUSIC_KEY = 'tenebris_music';
 
 // Every placed-object save is also published to the multiplayer world as a
 // record (NetSync), so the one save path is the one sync path. Offline, and
@@ -1111,28 +1112,26 @@ export class GameStorage {
     }
   }
 
-  // Get music state from save data
+  // Music on/off is a setting of this device, not of a world or a save:
+  // it lives under its own key, so the player-pose autosave (which rewrites
+  // the player save) and switching worlds can't reset it
   public getMusicState(): MusicSaveData | null {
+    try {
+      const raw = localStorage.getItem(MUSIC_KEY);
+      if (raw) return JSON.parse(raw) as MusicSaveData;
+    } catch {
+      // blocked / corrupt: fall back below
+    }
+    // older saves kept it in the player save
     return this.playerData?.music || null;
   }
 
-  // Save music state
   public saveMusicState(music: MusicSaveData): void {
-    if (!this.playerData) {
-      // Create minimal player data if none exists
-      this.playerData = {
-        version: SAVE_VERSION,
-        timestamp: Date.now(),
-        position: { x: 0, y: 0, z: 0 },
-        orientation: { x: 0, y: 0, z: 0, w: 1 },
-        velocity: { x: 0, y: 0, z: 0 },
-        inventory: [],
-        music
-      };
-    } else {
-      this.playerData.music = music;
+    try {
+      localStorage.setItem(MUSIC_KEY, JSON.stringify(music));
+    } catch {
+      // storage blocked: the setting lasts this session only
     }
-    this.persistPlayerToStorage();
   }
 
   // Persist planet data to localStorage
