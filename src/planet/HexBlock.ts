@@ -35,6 +35,8 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreTitanium', 'moon/ore_titanium'],
   // Industry resources (scripts/gen-biome-textures.py)
   ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
+  // Building materials (scripts/gen-biome-textures.py)
+  ['brickBlock', 'building/brick_block'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)
   ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
   ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],
@@ -68,6 +70,12 @@ const BIOME_TEXTURES: [string, string][] = [
   ['frost', 'bodies/frost'], ['frostSide', 'bodies/frost_side'],
   ['blueIce', 'bodies/blue_ice'],
   ['ironNickel', 'bodies/iron_nickel'],
+];
+
+// See-through building blocks: drawn with the glass shader (texture alpha
+// cut-out, specular), like GLASS - their texture's clear texels are open
+const CLEAR_TEXTURES: [string, string][] = [
+  ['steelGlass', 'building/steel_glass'], ['steelGirder', 'building/steel_girder'],
 ];
 
 // Blocks that give off light at night: their emissive masks (the lit
@@ -200,7 +208,7 @@ export class HexBlockMeshBuilder {
       for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
     }
     if (singleTexturePath) wanted.add(singleTexturePath);
-    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/${file}.png`);
+    for (const [, file] of [...BIOME_TEXTURES, ...CLEAR_TEXTURES]) wanted.add(`/textures/${file}.png`);
     await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
@@ -411,10 +419,11 @@ export class HexBlockMeshBuilder {
     this.terrainMaterials.push(iceMaterial);
     this.materials.set('ice', iceMaterial);
 
-    // Glass material - uses texture alpha for transparency with specular shininess
-    const glassMaterial = new THREE.ShaderMaterial({
+    // Glass material - uses texture alpha for transparency with specular shininess.
+    // One factory for every see-through block (glass, steel glass, the girder)
+    const createGlassMaterial = (texture: THREE.Texture): THREE.ShaderMaterial => new THREE.ShaderMaterial({
       uniforms: {
-        terrainTexture: { value: fixedGlass },
+        terrainTexture: { value: texture },
         sunDirection: { value: this.sunDirection.clone() },
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
@@ -435,8 +444,14 @@ export class HexBlockMeshBuilder {
       depthWrite: true,
       side: THREE.DoubleSide
     });
+    const glassMaterial = createGlassMaterial(fixedGlass);
     this.terrainMaterials.push(glassMaterial);
     this.materials.set('glass', glassMaterial);
+    for (const [key, file] of CLEAR_TEXTURES) {
+      const mat = createGlassMaterial(await loadFixed(`/textures/${file}.png`));
+      this.terrainMaterials.push(mat);
+      this.materials.set(key, mat);
+    }
 
     // Sea wall material - unlit, no fog so it stays exact color
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);

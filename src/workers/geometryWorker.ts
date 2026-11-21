@@ -2,7 +2,7 @@
 // Uses plain JavaScript math instead of THREE.js (not available in workers)
 
 import { bakeBlockField, bakeSkyField, blockAt, edgeNeighbors, skyAt, LightColumn, SkyField } from '../shared/voxelLight';
-import { sideFaceShows } from '../shared/blockTypes';
+import { isClearSolid, sideFaceShows } from '../shared/blockTypes';
 import { packFloatAttributes, PackedColumnSet, unpackColumnSet } from './packedTiles';
 import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
@@ -419,7 +419,7 @@ function buildColumnGeometry(
 
     const isWater = blockType === HexBlockType.WATER;
     const isIce = blockType === HexBlockType.ICE;
-    const isGlass = blockType === HexBlockType.GLASS;
+    const isGlass = isClearSolid(blockType) && !isIce;
     // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
     const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
     const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
@@ -427,13 +427,13 @@ function buildColumnGeometry(
     // For face culling: a face is exposed if adjacent block is AIR, or WATER (for non-water blocks), or ICE/GLASS (for non-ice/glass blocks)
     const hasTopExposed = blockAbove === HexBlockType.AIR ||
       (!isWater && blockAbove === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockAbove === HexBlockType.ICE || blockAbove === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockAbove));
     const hasBottomExposed = blockBelow === HexBlockType.AIR ||
       (!isWater && blockBelow === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockBelow === HexBlockType.ICE || blockBelow === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockBelow));
 
     // Water only renders if air is above; Ice/Glass render like solid blocks
-    if (isWater && blockAbove !== HexBlockType.AIR && blockAbove !== HexBlockType.ICE && blockAbove !== HexBlockType.GLASS) continue;
+    if (isWater && blockAbove !== HexBlockType.AIR && !isClearSolid(blockAbove)) continue;
 
     // Ice needs to check for exposed sides too (treated like a solid block for rendering)
     const sideShow = isWater ? [] : exposedEdges(column, depth, neighborDataMap, edges);

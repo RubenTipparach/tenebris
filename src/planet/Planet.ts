@@ -2,7 +2,7 @@ import { Deposit, SHORE_CLAY } from '../config/ResourceConfig';
 import * as THREE from 'three';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
-import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
+import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType, isClearSolid } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
@@ -2914,7 +2914,7 @@ export class Planet {
         torchLight = chunk.snowTorchLight;
         indices = chunk.snowIndices;
         vertexOffset = chunk.snowVertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         // Ice/Glass uses ice buffer (transparent)
         positions = chunk.icePositions;
         normals = chunk.iceNormals;
@@ -2980,7 +2980,7 @@ export class Planet {
         chunk.woodVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.SNOW || surfaceBlockType === HexBlockType.DIRT_SNOW) {
         chunk.snowVertexOffset = vertexOffset;
-      } else if (surfaceBlockType === HexBlockType.ICE || surfaceBlockType === HexBlockType.GLASS) {
+      } else if (isClearSolid(surfaceBlockType)) {
         chunk.iceVertexOffset = vertexOffset;
       } else if (surfaceBlockType === HexBlockType.MOON_ROCK) {
         chunk.moonRockVertexOffset = vertexOffset;

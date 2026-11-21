@@ -1,5 +1,6 @@
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlacedElectricFurnace, ELECTRIC_SMELTING_RECIPES } from '../planet/ElectricFurnace';
+import { isElectricAdditive } from '../config/SmeltingRecipes';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 
@@ -17,12 +18,14 @@ export class ElectricFurnaceUI {
 
   // UI Elements
   private inputSlotElement: HTMLElement | null = null;
+  private additiveSlotElement: HTMLElement | null = null;
   private outputSlotElement: HTMLElement | null = null;
   private progressBarElement: HTMLElement | null = null;
   private powerStatusElement: HTMLElement | null = null;
 
   // Slot type identifiers
   private readonly SLOT_INPUT = 'electric-furnace-input';
+  private readonly SLOT_ADDITIVE = 'electric-furnace-additive';
   private readonly SLOT_OUTPUT = 'electric-furnace-output';
 
   constructor(inventory: Inventory) {
@@ -55,6 +58,11 @@ export class ElectricFurnaceUI {
             <img style="display:none;">
             <span class="slot-count"></span>
           </div>
+          <div class="slot-label">Additive</div>
+          <div class="electric-furnace-slot" id="electric-furnace-additive-slot">
+            <img style="display:none;">
+            <span class="slot-count"></span>
+          </div>
         </div>
 
         <div class="electric-furnace-progress-section">
@@ -79,6 +87,7 @@ export class ElectricFurnaceUI {
         <p>No fuel needed - uses power from Steam Engine</p>
         <p>Connect via cables to power</p>
         <p>Can smelt Lithium and Cobalt ore</p>
+        <p>Steel: 2 iron ingots in, coal as the additive</p>
       </div>
     `;
 
@@ -93,6 +102,7 @@ export class ElectricFurnaceUI {
     }
 
     this.inputSlotElement = document.getElementById('electric-furnace-input-slot');
+    this.additiveSlotElement = document.getElementById('electric-furnace-additive-slot');
     this.outputSlotElement = document.getElementById('electric-furnace-output-slot');
     this.progressBarElement = document.getElementById('electric-furnace-progress-bar');
     this.powerStatusElement = document.getElementById('electric-furnace-power-status');
@@ -272,15 +282,76 @@ export class ElectricFurnaceUI {
   }
 
   private setupSlotInteractions(): void {
-    if (this.inputSlotElement) {
-      this.inputSlotElement.dataset.furnaceSlot = this.SLOT_INPUT;
-      this.setupFurnaceSlot(this.inputSlotElement, this.SLOT_INPUT);
+    const slots: [HTMLElement | null, string][] = [
+      [this.inputSlotElement, this.SLOT_INPUT],
+      [this.additiveSlotElement, this.SLOT_ADDITIVE],
+      [this.outputSlotElement, this.SLOT_OUTPUT],
+    ];
+    for (const [element, slotType] of slots) {
+      if (!element) continue;
+      element.dataset.furnaceSlot = slotType;
+      this.setupFurnaceSlot(element, slotType);
     }
+  }
 
-    if (this.outputSlotElement) {
-      this.outputSlotElement.dataset.furnaceSlot = this.SLOT_OUTPUT;
-      this.setupFurnaceSlot(this.outputSlotElement, this.SLOT_OUTPUT);
+  // One furnace slot's contents: input (the ore / ingots), additive (an
+  // alloy's second input) or output. Every slot handler reads and writes
+  // through these two, so the three slots share one path.
+  private getStock(slotType: string): { item: ItemType | null; count: number } {
+    const f = this.currentFurnace!;
+    if (slotType === this.SLOT_INPUT) return { item: f.smeltingItem as ItemType | null, count: f.inputCount };
+    if (slotType === this.SLOT_ADDITIVE) return { item: f.additiveItem as ItemType | null, count: f.additiveCount };
+    return { item: f.outputItem as ItemType | null, count: f.outputCount };
+  }
+
+  private setStock(slotType: string, item: ItemType | null, count: number): void {
+    const f = this.currentFurnace!;
+    const kept = count > 0 ? item : null;
+    if (slotType === this.SLOT_INPUT) {
+      if (kept !== f.smeltingItem) f.smeltingProgress = 0;
+      f.smeltingItem = kept;
+      f.inputCount = Math.max(0, count);
+    } else if (slotType === this.SLOT_ADDITIVE) {
+      f.additiveItem = kept;
+      f.additiveCount = Math.max(0, count);
+    } else {
+      f.outputItem = kept;
+      f.outputCount = Math.max(0, count);
     }
+  }
+
+  // Whether an item may be loaded into a slot (the output only empties)
+  private accepts(slotType: string, itemType: ItemType): boolean {
+    if (slotType === this.SLOT_ADDITIVE) return isElectricAdditive(itemType);
+    if (slotType !== this.SLOT_INPUT) return false;
+    // Only smeltable items whose product won't clash with the output slot
+    const outputItem = this.currentFurnace!.outputItem;
+    return ELECTRIC_SMELTING_RECIPES.some(r => r.input === itemType && (outputItem === null || outputItem === r.output));
+  }
+
+  // Load a stack into an input slot; true when it went in
+  private load(slotType: string, itemType: ItemType, quantity: number): boolean {
+    if (!this.currentFurnace || quantity <= 0 || !this.accepts(slotType, itemType)) return false;
+    const stock = this.getStock(slotType);
+    if (stock.item !== null && stock.item !== itemType) return false;
+    this.setStock(slotType, itemType, stock.count + quantity);
+    this.inventory.removeItem(itemType, quantity);
+    this.updateUI();
+    this.notifyChanges();
+    return true;
+  }
+
+  // Hand up to `quantity` of a slot back to the inventory
+  private takeBack(slotType: string, quantity: number): void {
+    if (!this.currentFurnace) return;
+    const stock = this.getStock(slotType);
+    if (stock.item === null || stock.count <= 0) return;
+    const wanted = Math.min(quantity, stock.count);
+    const taken = wanted - this.inventory.addItem(stock.item, wanted);
+    if (taken <= 0) return;
+    this.setStock(slotType, stock.item, stock.count - taken);
+    this.updateUI();
+    this.notifyChanges();
   }
 
   private setupFurnaceSlot(element: HTMLElement, slotType: string): void {
@@ -332,25 +403,8 @@ export class ElectricFurnaceUI {
       return;
     }
 
-    let hasItem = false;
-    let itemType: ItemType | null = null;
-    let quantity = 0;
-
-    if (slotType === this.SLOT_OUTPUT) {
-      hasItem = this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0;
-      if (hasItem) {
-        itemType = this.currentFurnace.outputItem as ItemType;
-        quantity = this.currentFurnace.outputCount;
-      }
-    } else if (slotType === this.SLOT_INPUT) {
-      hasItem = this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0;
-      if (hasItem) {
-        itemType = this.currentFurnace.smeltingItem as ItemType;
-        quantity = this.currentFurnace.inputCount;
-      }
-    }
-
-    if (!hasItem || itemType === null) {
+    const { item: itemType, count: quantity } = this.getStock(slotType);
+    if (itemType === null || quantity <= 0) {
       e.preventDefault();
       return;
     }
@@ -394,140 +448,44 @@ export class ElectricFurnaceUI {
 
     const sourceSlotIndex = parseInt(sourceData);
     if (!isNaN(sourceSlotIndex) && sourceSlotIndex >= 0) {
-      this.handleDropFromInventory(sourceSlotIndex, targetSlotType, e.shiftKey);
-      return;
-    }
-
-    if (sourceData.startsWith('electric-furnace:')) {
-      return;
+      this.handleDropFromInventory(sourceSlotIndex, targetSlotType);
     }
   }
 
-  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string, _transferAll: boolean = false): void {
-    if (!this.currentFurnace) return;
-
+  private handleDropFromInventory(sourceSlotIndex: number, targetSlotType: string): void {
     const slotData = this.inventory.getSlot(sourceSlotIndex);
     if (!slotData || slotData.itemType === ItemType.NONE) return;
-
     // Always transfer entire stack on drag-and-drop
-    const quantity = slotData.quantity;
-
-    if (targetSlotType === this.SLOT_INPUT) {
-      // Only accept smeltable ores (electric furnace recipes)
-      const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === slotData.itemType);
-      if (recipe) {
-        // Check if output slot has a different item type (would cause conflict)
-        if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {
-          return; // Can't smelt - output slot has different item type
-        }
-        if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === slotData.itemType) {
-          if (this.currentFurnace.smeltingItem === null) {
-            this.currentFurnace.smeltingItem = slotData.itemType;
-            this.currentFurnace.smeltingProgress = 0;
-          }
-          this.currentFurnace.inputCount += quantity;
-          this.inventory.removeItem(slotData.itemType, quantity);
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    }
+    this.load(targetSlotType, slotData.itemType, slotData.quantity);
   }
 
+  // Click: an input slot takes the selected stack, the output empties
   private handleSlotClick(slotType: string): void {
     if (!this.currentFurnace) return;
-
-    if (slotType === this.SLOT_INPUT) {
-      this.handleInputSlotClick();
-    } else if (slotType === this.SLOT_OUTPUT) {
-      this.handleOutputSlotClick();
+    if (slotType === this.SLOT_OUTPUT) {
+      this.takeBack(slotType, this.currentFurnace.outputCount);
+    } else {
+      const selected = this.inventory.getSelectedItem();
+      this.load(slotType, selected.itemType, selected.quantity);
     }
   }
 
+  // Right click: half the output, or one item back from an input slot
   private handleRightClick(slotType: string): void {
     if (!this.currentFurnace) return;
-
-    if (slotType === this.SLOT_OUTPUT) {
-      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
-        const itemType = this.currentFurnace.outputItem as ItemType;
-        const halfCount = Math.ceil(this.currentFurnace.outputCount / 2);
-        const remaining = this.inventory.addItem(itemType, halfCount);
-        const actuallyTaken = halfCount - remaining;
-
-        if (actuallyTaken > 0) {
-          this.currentFurnace.outputCount -= actuallyTaken;
-          if (this.currentFurnace.outputCount === 0) {
-            this.currentFurnace.outputItem = null;
-          }
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    } else if (slotType === this.SLOT_INPUT) {
-      if (this.currentFurnace.smeltingItem !== null) {
-        const itemType = this.currentFurnace.smeltingItem as ItemType;
-        const remaining = this.inventory.addItem(itemType, 1);
-        if (remaining === 0) {
-          this.currentFurnace.inputCount--;
-          if (this.currentFurnace.inputCount === 0) {
-            this.currentFurnace.smeltingItem = null;
-            this.currentFurnace.smeltingProgress = 0;
-          }
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    }
+    const { count } = this.getStock(slotType);
+    this.takeBack(slotType, slotType === this.SLOT_OUTPUT ? Math.ceil(count / 2) : 1);
   }
 
+  // Shift click: empty the slot, or (an empty input slot) load the selection
   private handleShiftClick(slotType: string): void {
     if (!this.currentFurnace) return;
-
-    if (slotType === this.SLOT_OUTPUT) {
-      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
-        const itemType = this.currentFurnace.outputItem as ItemType;
-        const remaining = this.inventory.addItem(itemType, this.currentFurnace.outputCount);
-
-        if (remaining < this.currentFurnace.outputCount) {
-          this.currentFurnace.outputCount = remaining;
-          if (remaining === 0) {
-            this.currentFurnace.outputItem = null;
-          }
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    } else if (slotType === this.SLOT_INPUT) {
-      if (this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0) {
-        const itemType = this.currentFurnace.smeltingItem as ItemType;
-        const remaining = this.inventory.addItem(itemType, this.currentFurnace.inputCount);
-        const returned = this.currentFurnace.inputCount - remaining;
-        if (returned > 0) {
-          this.currentFurnace.inputCount -= returned;
-          if (this.currentFurnace.inputCount === 0) {
-            this.currentFurnace.smeltingItem = null;
-            this.currentFurnace.smeltingProgress = 0;
-          }
-          this.updateUI();
-          this.notifyChanges();
-        }
-      } else {
-        const selectedItem = this.inventory.getSelectedItem();
-        const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
-        if (recipe && selectedItem.quantity > 0) {
-          if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
-            const toTransfer = selectedItem.quantity;
-            if (this.currentFurnace.smeltingItem === null) {
-              this.currentFurnace.smeltingItem = selectedItem.itemType;
-              this.currentFurnace.smeltingProgress = 0;
-            }
-            this.currentFurnace.inputCount += toTransfer;
-            this.inventory.removeItem(selectedItem.itemType, toTransfer);
-            this.updateUI();
-            this.notifyChanges();
-          }
-        }
-      }
+    const { item, count } = this.getStock(slotType);
+    if (item !== null && count > 0) {
+      this.takeBack(slotType, count);
+    } else if (slotType !== this.SLOT_OUTPUT) {
+      const selected = this.inventory.getSelectedItem();
+      this.load(slotType, selected.itemType, selected.quantity);
     }
   }
 
@@ -537,102 +495,25 @@ export class ElectricFurnaceUI {
     if (this.onUpdateInventoryCallback) this.onUpdateInventoryCallback();
   }
 
-  private handleInputSlotClick(): void {
-    if (!this.currentFurnace) return;
-
-    const selectedItem = this.inventory.getSelectedItem();
-    const recipe = ELECTRIC_SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
-    if (recipe && selectedItem.quantity > 0) {
-      // Check if output slot has a different item type (would cause conflict)
-      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {
-        return; // Can't smelt - output slot has different item type
-      }
-      if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
-        if (this.currentFurnace.smeltingItem === null) {
-          this.currentFurnace.smeltingItem = selectedItem.itemType;
-          this.currentFurnace.smeltingProgress = 0;
-        }
-        // Transfer entire stack
-        const toTransfer = selectedItem.quantity;
-        this.currentFurnace.inputCount += toTransfer;
-        this.inventory.removeItem(selectedItem.itemType, toTransfer);
-        this.updateUI();
-        this.notifyChanges();
-      }
-    }
-  }
-
-  private handleOutputSlotClick(): void {
-    if (!this.currentFurnace) return;
-
-    if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
-      const itemType = this.currentFurnace.outputItem as ItemType;
-      const remaining = this.inventory.addItem(itemType, this.currentFurnace.outputCount);
-
-      if (remaining < this.currentFurnace.outputCount) {
-        this.currentFurnace.outputCount = remaining;
-        if (remaining === 0) {
-          this.currentFurnace.outputItem = null;
-        }
-        this.updateUI();
-        this.notifyChanges();
-      }
-    }
-  }
-
   public handleDropToInventory(targetSlotIndex: number, sourceSlotType: string): boolean {
     if (!this.currentFurnace) return false;
 
-    if (sourceSlotType === this.SLOT_OUTPUT) {
-      if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
-        const itemType = this.currentFurnace.outputItem as ItemType;
-        const targetSlot = this.inventory.getSlot(targetSlotIndex);
+    const { item: itemType, count } = this.getStock(sourceSlotType);
+    if (itemType === null || count <= 0) return false;
 
-        if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
-          const maxStack = 64;
-          const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
-          const spaceAvailable = maxStack - currentCount;
-          const toTransfer = Math.min(this.currentFurnace.outputCount, spaceAvailable);
+    const targetSlot = this.inventory.getSlot(targetSlotIndex);
+    if (!targetSlot || (targetSlot.itemType !== ItemType.NONE && targetSlot.itemType !== itemType)) return false;
 
-          if (toTransfer > 0) {
-            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
-            this.currentFurnace.outputCount -= toTransfer;
-            if (this.currentFurnace.outputCount === 0) {
-              this.currentFurnace.outputItem = null;
-            }
-            this.updateUI();
-            this.notifyChanges();
-            return true;
-          }
-        }
-      }
-    } else if (sourceSlotType === this.SLOT_INPUT) {
-      if (this.currentFurnace.smeltingItem !== null && this.currentFurnace.inputCount > 0) {
-        const itemType = this.currentFurnace.smeltingItem as ItemType;
-        const targetSlot = this.inventory.getSlot(targetSlotIndex);
+    const maxStack = ITEM_DATA[itemType]?.stackSize ?? 64;
+    const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
+    const toTransfer = Math.min(count, maxStack - currentCount);
+    if (toTransfer <= 0) return false;
 
-        if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
-          const maxStack = 64;
-          const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
-          const spaceAvailable = maxStack - currentCount;
-          const toTransfer = Math.min(this.currentFurnace.inputCount, spaceAvailable);
-
-          if (toTransfer > 0) {
-            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
-            this.currentFurnace.inputCount -= toTransfer;
-            if (this.currentFurnace.inputCount === 0) {
-              this.currentFurnace.smeltingItem = null;
-              this.currentFurnace.smeltingProgress = 0;
-            }
-            this.updateUI();
-            this.notifyChanges();
-            return true;
-          }
-        }
-      }
-    }
-
-    return false;
+    this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
+    this.setStock(sourceSlotType, itemType, count - toTransfer);
+    this.updateUI();
+    this.notifyChanges();
+    return true;
   }
 
   private setupKeyboardHandler(): void {
@@ -722,45 +603,30 @@ export class ElectricFurnaceUI {
       }
     }
 
-    // Update input slot
-    if (this.inputSlotElement) {
-      const img = this.inputSlotElement.querySelector('img') as HTMLImageElement;
-      const count = this.inputSlotElement.querySelector('.slot-count') as HTMLElement;
-
-      if (furnace.smeltingItem !== null && furnace.inputCount > 0) {
-        const itemData = ITEM_DATA[furnace.smeltingItem as ItemType];
-        if (itemData) {
-          img.src = getAssetPath(itemData.texture);
-          img.style.display = 'block';
-        }
-        count.textContent = furnace.inputCount > 1 ? furnace.inputCount.toString() : '';
-      } else {
-        img.style.display = 'none';
-        count.textContent = '';
-      }
-    }
+    // Slots
+    this.renderSlot(this.inputSlotElement, this.SLOT_INPUT);
+    this.renderSlot(this.additiveSlotElement, this.SLOT_ADDITIVE);
+    this.renderSlot(this.outputSlotElement, this.SLOT_OUTPUT);
 
     // Update progress bar
     if (this.progressBarElement) {
       this.progressBarElement.style.width = `${furnace.smeltingProgress * 100}%`;
     }
+  }
 
-    // Update output slot
-    if (this.outputSlotElement) {
-      const img = this.outputSlotElement.querySelector('img') as HTMLImageElement;
-      const countEl = this.outputSlotElement.querySelector('.slot-count') as HTMLElement;
-
-      if (furnace.outputItem !== null && furnace.outputCount > 0) {
-        const itemData = ITEM_DATA[furnace.outputItem as ItemType];
-        if (itemData) {
-          img.src = getAssetPath(itemData.texture);
-          img.style.display = 'block';
-        }
-        countEl.textContent = furnace.outputCount > 1 ? furnace.outputCount.toString() : '';
-      } else {
-        img.style.display = 'none';
-        countEl.textContent = '';
-      }
+  private renderSlot(element: HTMLElement | null, slotType: string): void {
+    if (!element) return;
+    const img = element.querySelector('img') as HTMLImageElement;
+    const count = element.querySelector('.slot-count') as HTMLElement;
+    const stock = this.getStock(slotType);
+    const itemData = stock.item !== null && stock.count > 0 ? ITEM_DATA[stock.item] : undefined;
+    if (itemData) {
+      img.src = getAssetPath(itemData.texture);
+      img.style.display = 'block';
+      count.textContent = stock.count > 1 ? stock.count.toString() : '';
+    } else {
+      img.style.display = 'none';
+      count.textContent = '';
     }
   }
 }

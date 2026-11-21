@@ -2,7 +2,7 @@
 // This runs synchronously on the CPU for fast visual feedback
 
 import { bakeBlockField, bakeSkyField, blockAt, edgeNeighbors, skyAt, LightColumn, SkyField } from '../shared/voxelLight';
-import { sideFaceShows } from '../shared/blockTypes';
+import { isClearSolid, sideFaceShows } from '../shared/blockTypes';
 import * as THREE from 'three';
 import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
@@ -437,19 +437,19 @@ function buildColumnGeometry(
 
     const isWater = blockType === HexBlockType.WATER;
     const isIce = blockType === HexBlockType.ICE;
-    const isGlass = blockType === HexBlockType.GLASS;
+    const isGlass = isClearSolid(blockType) && !isIce;
 
     const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
     const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
 
     const hasTopExposed = blockAbove === HexBlockType.AIR ||
       (!isWater && blockAbove === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockAbove === HexBlockType.ICE || blockAbove === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockAbove));
     const hasBottomExposed = blockBelow === HexBlockType.AIR ||
       (!isWater && blockBelow === HexBlockType.WATER) ||
-      (!isIce && !isGlass && (blockBelow === HexBlockType.ICE || blockBelow === HexBlockType.GLASS));
+      (!isIce && !isGlass && isClearSolid(blockBelow));
 
-    if (isWater && blockAbove !== HexBlockType.AIR && blockAbove !== HexBlockType.ICE && blockAbove !== HexBlockType.GLASS) continue;
+    if (isWater && blockAbove !== HexBlockType.AIR && !isClearSolid(blockAbove)) continue;
 
     const sideShow = isWater ? [] : exposedEdges(column, depth, neighborDataMap, edges);
     const hasSideExposed = sideShow.some(Boolean);

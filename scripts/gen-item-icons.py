@@ -16,6 +16,8 @@ Writes, under public/textures/:
   technology/ machine art and faces (kiln, oven, pump jack, refinery,
   centrifuge, reactor, nuclear fabricator, campfire, batteries), and the
   tier 3-4 rocket parts
+  building materials: icons/steel_ingot.png, icons/cement.png (the blocks'
+  icons are their own textures, public/textures/building/)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -339,6 +341,26 @@ def leaves():
     return px
 
 
+
+def cement():
+    """A sack of cement: grey paper sack, tied top, a stencilled band"""
+    px, c = _canvas()
+    rows = {2: (6, 9), 3: (5, 10), 4: (4, 11)}
+    for y in range(5, 14):
+        rows[y] = (3, 12)
+    for y, (x0, x1) in rows.items():
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y == 13
+            lit = (x == x0 + 1 or y == 5) and not edge
+            px[y][x] = c["navy"] if edge else c["white"] if lit else c["lgrey"]
+    for x in range(6, 10):
+        px[1][x] = c["dgrey"]          # the tie
+    for x in range(4, 12):
+        px[9][x] = c["dgrey"]          # the band
+        px[10][x] = c["indigo"]
+    return px
+
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -414,3 +436,7 @@ if __name__ == "__main__":
         write(f"rocket_parts/{name}.png", recolour(read_png(os.path.join(parts, src + ".png")), ramp))
         face = recolour(read_png(os.path.join(parts, src + "_face.png")), ramp)
         write(f"rocket_parts/{name}_face.png", trefoil(face) if name in ("nuclear_thermal_engine", "reactor_core") else face)
+    # ---- Building materials (openspec industry-and-nuclear, decision 9) ---
+    steel = [P8[k] for k in ("black", "navy", "indigo", "lgrey", "white")]
+    write("icons/steel_ingot.png", recolour(read_png(os.path.join(tex, "minerals/earth/iron.png")), steel))
+    write("icons/cement.png", cement())
