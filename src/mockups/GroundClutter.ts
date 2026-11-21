@@ -4,6 +4,7 @@ import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { SEQUOIA_TILESET } from '../config/SolarSystemConfig';
+import { forEachSurfaceTile, tileHash } from '../planet/SurfaceTiles';
 
 /**
  * Ground clutter around the player (Sequoia; Earth with the biome mockup), after Pale Blue Dot's
@@ -98,86 +99,65 @@ export class GroundClutter {
     this.lastPlanet = planet;
     this.lastCenter.copy(player);
     this.sinceBuild = 0;
-    const start = planet.getTileAtPoint(player);
     let nTufts = 0, nRocks = 0;
-    if (start) {
-      const maxDepth = planet.getMaxDepth();
-      const seen = new Set<number>([start.index]);
-      let frontier = [start.index];
-      const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const yaw = new THREE.Quaternion();
-      const Y = new THREE.Vector3(0, 1, 0);
-      const pos = new THREE.Vector3();
-      const scale = new THREE.Vector3();
-      const col = new THREE.Color();
-      while (frontier.length) {
-        const next: number[] = [];
-        for (const ti of frontier) {
-          const tile = planet.getTileByIndex(ti);
-          if (!tile) continue;
-          const dir = tile.center.clone().normalize();
-          let top = -1, block: number = HexBlockType.AIR;
-          for (let d = maxDepth - 1; d >= 0; d--) {
-            const b = planet.getBlock(ti, d);
-            if (b !== HexBlockType.AIR) { top = d; block = b; break; }
-          }
-          const ground = top >= 0 ? planet.depthToRadius(top) : 0;
-          const tileWorld = planet.center.clone().addScaledVector(dir, ground);
-          if (tileWorld.distanceTo(player) > RADIUS) continue;
-          for (const n of tile.neighbors) if (!seen.has(n)) { seen.add(n); next.push(n); }
-          if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) continue;
-
-          const plan = clutterFor(block);
-          if (!plan) continue;
-          let seed = hash(ti);
-          const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
-          q.setFromUnitVectors(Y, dir);
-          const place = () => {
-            // random point inside the hex: towards a corner, scaled down
-            const v = tile.vertices[Math.floor(rnd() * tile.vertices.length)];
-            const t = Math.sqrt(rnd()) * 0.82;
-            const p = tile.center.clone().lerp(v, t).normalize();
-            pos.copy(planet.center).addScaledVector(p, ground);
-            yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
-            return q.clone().multiply(yaw);
-          };
-          const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
-          for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
-            const rot = place();
-            const s = 0.7 + rnd() * 0.6;
-            scale.set(s, s * (0.8 + rnd() * 0.5), s);
-            m.compose(pos, rot, scale);
-            this.tufts.setMatrixAt(nTufts, m);
-            const r = rnd();
-            const tone = plan.straw ? STRAW
-              : block === HexBlockType.SEQ_GRASS ? this.seqGrass
-              : block === HexBlockType.SEQ_SCRUB ? this.seqScrub
-              // Sequoia's other ground grows its own dry beige grass, never
-              // Earth's green
-              : isSequoiaBlock(block) ? this.seqGrass
-              : this.grass;
-            col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
-            this.tufts.setColorAt(nTufts, col);
-            nTufts++;
-          }
-          const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
-          for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
-            const rot = place();
-            const big = rnd() < 0.25;
-            const s = big ? 0.35 + rnd() * 0.35 : 0.08 + rnd() * 0.12;
-            scale.set(s * (0.8 + rnd() * 0.5), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.5));
-            pos.addScaledVector(dir, -s * 0.15); // sink in a little
-            m.compose(pos, rot, scale);
-            this.rocks.setMatrixAt(nRocks, m);
-            col.copy(block === HexBlockType.MOON_ROCK ? this.moonStone : this.stone).multiplyScalar(0.8 + rnd() * 0.35);
-            this.rocks.setColorAt(nRocks, col);
-            nRocks++;
-          }
-        }
-        frontier = next;
+    const maxDepth = planet.getMaxDepth();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const yaw = new THREE.Quaternion();
+    const Y = new THREE.Vector3(0, 1, 0);
+    const pos = new THREE.Vector3();
+    const scale = new THREE.Vector3();
+    const col = new THREE.Color();
+    forEachSurfaceTile(planet, player, RADIUS, (tile, dir, top, block, ground) => {
+      const ti = tile.index;
+      if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) return;
+      const plan = clutterFor(block);
+      if (!plan) return;
+      let seed = tileHash(ti);
+      const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+      q.setFromUnitVectors(Y, dir);
+      const place = () => {
+        // random point inside the hex: towards a corner, scaled down
+        const v = tile.vertices[Math.floor(rnd() * tile.vertices.length)];
+        const t = Math.sqrt(rnd()) * 0.82;
+        const p = tile.center.clone().lerp(v, t).normalize();
+        pos.copy(planet.center).addScaledVector(p, ground);
+        yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
+        return q.clone().multiply(yaw);
+      };
+      const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
+      for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
+        const rot = place();
+        const s = 0.7 + rnd() * 0.6;
+        scale.set(s, s * (0.8 + rnd() * 0.5), s);
+        m.compose(pos, rot, scale);
+        this.tufts.setMatrixAt(nTufts, m);
+        const r = rnd();
+        const tone = plan.straw ? STRAW
+          : block === HexBlockType.SEQ_GRASS ? this.seqGrass
+          : block === HexBlockType.SEQ_SCRUB ? this.seqScrub
+          // Sequoia's other ground grows its own dry beige grass, never
+          // Earth's green
+          : isSequoiaBlock(block) ? this.seqGrass
+          : this.grass;
+        col.copy(r < 0.33 ? tone.dark : r < 0.75 ? tone.mid : tone.light);
+        this.tufts.setColorAt(nTufts, col);
+        nTufts++;
       }
-    }
+      const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
+      for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
+        const rot = place();
+        const big = rnd() < 0.25;
+        const s = big ? 0.35 + rnd() * 0.35 : 0.08 + rnd() * 0.12;
+        scale.set(s * (0.8 + rnd() * 0.5), s * (0.5 + rnd() * 0.4), s * (0.8 + rnd() * 0.5));
+        pos.addScaledVector(dir, -s * 0.15); // sink in a little
+        m.compose(pos, rot, scale);
+        this.rocks.setMatrixAt(nRocks, m);
+        col.copy(block === HexBlockType.MOON_ROCK ? this.moonStone : this.stone).multiplyScalar(0.8 + rnd() * 0.35);
+        this.rocks.setColorAt(nRocks, col);
+        nRocks++;
+      }
+    });
     this.tufts.count = nTufts;
     this.rocks.count = nRocks;
     this.tufts.instanceMatrix.needsUpdate = true;
@@ -218,13 +198,6 @@ function clutterFor(block: number): Plan | null {
 function isSequoiaBlock(block: number): boolean {
   return block === HexBlockType.SEQ_GRASS || block === HexBlockType.SEQ_DIRT || block === HexBlockType.SEQ_SAND
     || block === HexBlockType.SEQ_SNOW || block === HexBlockType.SEQ_SCRUB || block === HexBlockType.SEQ_DUFF;
-}
-
-function hash(n: number): number {
-  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  return (h ^ (h >>> 16)) >>> 0;
 }
 
 function fallbackTones(d: number, m: number, l: number): Tones {
