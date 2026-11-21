@@ -734,6 +734,11 @@ export class LaunchPadUI {
       }
     }
 
+    // Parts that need another part aboard (an ion drive with no reactor
+    // core): the same reasons the stats model gives, so the flight and this
+    // check agree
+    errors.push(...computeRocketStats(parts.map(p => p.itemType)).problems);
+
     // Check engine-specific requirements
     for (const engine of engines) {
       const engineData = ITEM_DATA[engine.itemType].rocketPart;
@@ -1191,6 +1196,7 @@ export class LaunchPadUI {
       <div class="stat"><span>Cargo</span><b>${used}/${stats.cargoSlots}</b></div>
       <div class="stat"><span>Tier</span><b>${stats.tier}</b></div>
       ${twr < 1 && stats.thrust > 0 ? '<div class="stat-note">Too heavy to lift off here</div>' : ''}
+      ${stats.problems.map(p => `<div class="stat-note">${p}</div>`).join('')}
     `;
   }
 

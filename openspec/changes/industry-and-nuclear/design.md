@@ -175,7 +175,7 @@ model.
 
 | part | tier | dry mass | thrust | specific impulse |
 | --- | --- | --- | --- | --- |
-| nuclear thermal engine | 3 | 300 kg | 30 kN | 450 s |
+| nuclear thermal engine | 3 | 300 kg | 30 kN | 500 s |
 | ion drive | 4 | 120 kg | 1.5 kN | 3000 s |
 | reactor core | 4 | 400 kg | | |
 | battery pack | 3 | 60 kg | | |
