@@ -1,5 +1,6 @@
 import { getLandableBodies } from '../config/SolarSystemConfig';
 import { netSync } from '../net/NetSync';
+import type { SavedMachine } from '../power/MachineLogic';
 import { localGameTime } from '../world/Orbits';
 
 // Types for saved game data
@@ -199,6 +200,7 @@ export interface PlanetSaveData {
   cables: SavedCable[];
   removedTrees: SavedRemovedTree[];
   launchPads: SavedLaunchPad[];
+  machines?: SavedMachine[];        // the industry machines and batteries
 }
 
 // Legacy combined format (for migration)
@@ -278,6 +280,7 @@ const RECORD_KINDS: Record<string, { field: keyof PlanetRecordLists; key: (o: Re
   copperPipe: { field: 'copperPipes', key: depthKey },
   cable: { field: 'cables', key: depthKey },
   launchPad: { field: 'launchPads', key: (o) => String(o.centerTileIndex) },
+  machine: { field: 'machines', key: tileKey },
 };
 type PlanetRecordLists = Omit<PlanetSaveData, 'version' | 'timestamp' | 'tileChanges' | 'removedTrees'>;
 /** A torch's record key: its position (several torches can share a tile). */
@@ -308,6 +311,7 @@ export class GameStorage {
     hydroGenerators: SavedHydroGenerator[];
     removedTrees: SavedRemovedTree[];
     launchPads: SavedLaunchPad[];
+    machines: SavedMachine[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -316,7 +320,7 @@ export class GameStorage {
   constructor() {
     // Initialize planet data for every planet
     for (const planetId of PLANET_IDS) {
-      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [], machines: [] });
     }
   }
 
@@ -593,6 +597,33 @@ export class GameStorage {
       }
     }
     return allLaunchPads;
+  }
+
+  // The industry machines and batteries (src/planet/Machines.ts): one record
+  // kind for all of them, keyed by tile like the other machines
+  public saveMachine(planetId: string, data: SavedMachine): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.machines = planet.machines.filter(m => m.tileIndex !== data.tileIndex);
+    planet.machines.push(data);
+    this.persistPlanetToStorage(planetId);
+    publish('machine', planetId, data.tileIndex, data);
+  }
+
+  public removeMachine(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.machines = planet.machines.filter(m => m.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+    publish('machine', planetId, tileIndex, null);
+  }
+
+  public getMachines(): Array<SavedMachine & { planetId: string }> {
+    const all: Array<SavedMachine & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const m of planet.machines) all.push({ ...m, planetId });
+    }
+    return all;
   }
 
   // Save storage chest placement
@@ -953,6 +984,7 @@ export class GameStorage {
       planet.cables = data.cables || [];
       planet.removedTrees = data.removedTrees || [];
       planet.launchPads = data.launchPads || [];
+      planet.machines = data.machines || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -1087,6 +1119,7 @@ export class GameStorage {
       planet.cables = [];
       planet.removedTrees = [];
       planet.launchPads = [];
+      planet.machines = [];
     }
 
     // Clear all storage keys
@@ -1205,7 +1238,8 @@ export class GameStorage {
         copperPipes: planet.copperPipes,
         cables: planet.cables,
         removedTrees: planet.removedTrees,
-        launchPads: planet.launchPads
+        launchPads: planet.launchPads,
+        machines: planet.machines
       };
 
       const key = planetStorageKey(planetId);

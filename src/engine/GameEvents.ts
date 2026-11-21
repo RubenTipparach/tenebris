@@ -17,7 +17,8 @@
  * (src/player/MissionTracker.ts), since they arrive by many paths.
  */
 export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed'
-  | 'smelted' | 'caught' | 'caughtOn' | 'reached';
+  | 'smelted' | 'caught' | 'caughtOn' | 'reached'
+  | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

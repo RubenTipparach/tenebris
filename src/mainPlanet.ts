@@ -1655,6 +1655,11 @@ class PlanetGame {
       [ItemType.CABLE]: () => gameStorage.getCables(),
       [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
     };
+    // The industry machines and batteries share one record list
+    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR,
+      ItemType.BATTERY_LEAD_ACID, ItemType.BATTERY_LITHIUM, ItemType.BATTERY_SOLID_STATE]) {
+      machineLists[item] = () => gameStorage.getMachines().filter(m => m.itemType === item);
+    }
     const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
     this.missions = new MissionsPanel(inventory, existingWorld, () => ({
       held: (item) => inventory.getItemCount(item as ItemType),

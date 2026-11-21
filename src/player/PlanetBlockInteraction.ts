@@ -50,6 +50,10 @@ import { gameStorage, torchKey, SavedTorch, SavedFurnace, SavedStorageChest, Sav
 import { netSync } from '../net/NetSync';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
+import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine } from '../planet/Machines';
+import { MACHINE_CONFIG, MACHINE_KIND_OF, POWER_CONFIG } from '../config/PowerConfig';
+import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } from '../power/PowerGrid';
+import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
 
@@ -188,6 +192,7 @@ const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['garbagePile', () => gameStorage.getGarbagePiles()],
   ['steamEngine', () => gameStorage.getSteamEngines()],
   ['hydroGenerator', () => gameStorage.getHydroGenerators()],
+  ['machine', () => gameStorage.getMachines()],
   ['copperPipe', () => gameStorage.getCopperPipes()],
   ['cable', () => gameStorage.getCables()],
   ['electricFurnace', () => gameStorage.getElectricFurnaces()],
@@ -248,6 +253,14 @@ export class PlanetBlockInteraction {
   private cableNodeManager: CableNodeManager;
   private miningCableTarget: { cable: PlacedCable } | null = null;
   private cableConnectionRebuildTimer: number = 0;
+
+  // Industry machines + the power grid (openspec industry-and-nuclear, design 3-5)
+  private machineManager!: MachineManager;
+  private machineUI!: MachineUI;
+  private miningMachineTarget: { machine: PlacedMachine } | null = null;
+  private gridByTile = new Map<number, GridResult>();  // last solve, by member tile
+  private powerSolveTimer = 0;
+  private machineSaveTimer = 0;
 
   // Electric furnace system
   private electricFurnaceManager: ElectricFurnaceManager;
@@ -431,16 +444,7 @@ export class PlanetBlockInteraction {
     this.electronicsWorkbenchUI.setOnUpdateInventoryCallback(() => {
       this.craftingSystem.updateInventorySlotsPublic();
     });
-    this.electronicsWorkbenchUI.setIsPoweredCallback((tileIndex) => {
-      // Check if workbench is connected to a running power source via cables
-      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        tileIndex,
-        (steamTileIndex) => {
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          return engine?.isRunning ?? false;
-        }
-      );
-    });
+    this.electronicsWorkbenchUI.setIsPoweredCallback((tileIndex) => this.nodePowered(tileIndex));
 
     // Initialize computer system
     this.computerManager = new ComputerManager(planetObjectScene(scene), planetCenter, sunDirection);
@@ -451,15 +455,7 @@ export class PlanetBlockInteraction {
     this.computerUI.setOnOpenInventoryCallback(() => {
       this.craftingSystem.open();
     });
-    this.computerUI.setIsPoweredCallback((tileIndex) => {
-      return this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        tileIndex,
-        (steamTileIndex) => {
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          return engine?.isRunning ?? false;
-        }
-      );
-    });
+    this.computerUI.setIsPoweredCallback((tileIndex) => this.nodePowered(tileIndex));
 
     // Initialize 3D printer system
     this.printer3DManager = new Printer3DManager(planetObjectScene(scene), planetCenter, sunDirection);
@@ -600,8 +596,24 @@ export class PlanetBlockInteraction {
       (tileIndex) => this.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(tileIndex),
       (tileIndex) => this.computerManager.getComputerAtTile(tileIndex),
       (tileIndex) => this.printer3DManager.getPrinter3DAtTile(tileIndex),
-      (tileIndex) => this.getNeighborTileIndices(tileIndex)
+      (tileIndex, near) => this.getNeighborTileIndices(tileIndex, near)
     );
+
+    // Industry machines, batteries and hydro generators join the same cable
+    // networks as generic grid nodes
+    this.machineManager = new MachineManager(planetObjectScene(scene), planetCenter, sunDirection);
+    this.machineUI = new MachineUI(this.inventory, {
+      onMachineChanged: (m) => this.saveMachine(m),
+      onInventoryChanged: () => { this.updateHotbarUI(); this.saveInventory(); },
+      gridFor: (m) => this.gridByTile.get(m.tileIndex),
+    });
+    this.cableNodeManager.setPowerNodeLookup((tileIndex, near) => {
+      const m = this.machineAt(tileIndex, near);
+      if (m) return { kind: m.kind, position: m.position };
+      const h = this.hydroGeneratorManager.getHydroGeneratorAtTile(tileIndex);
+      if (h) return { kind: 'hydroGenerator', position: h.position };
+      return undefined;
+    });
 
     // Set up hydro generator connection callback
     this.hydroGeneratorUI.setConnectionCallback((hydroTileIndex) => {
@@ -1251,8 +1263,10 @@ export class PlanetBlockInteraction {
     if (this.cableConnectionRebuildTimer >= this.PIPE_CONNECTION_REBUILD_INTERVAL) {
       this.cableConnectionRebuildTimer = 0;
       this.cableNodeManager.rebuildAllConnections();
-      this.updateElectricFurnacePowerStatus();
     }
+
+    // Balance every cable network and run the industry machines
+    this.updatePowerGrid(deltaTime);
 
     // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();
@@ -1273,6 +1287,9 @@ export class PlanetBlockInteraction {
       this.printer3DManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
       this.launchPadManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
     }
+
+    // A machine panel is open: no mining or placing behind it
+    if (this.machineUI.isOpen()) { this.resetMining(); return; }
 
     // Don't process block interaction when inventory menu is open
     if (this.craftingSystem.isMenuOpen()) {
@@ -1319,6 +1336,7 @@ export class PlanetBlockInteraction {
     const computerMeshes = this.computerManager.getComputerMeshes();
     const printer3DMeshes = this.printer3DManager.getPrinter3DMeshes();
     const launchPadMeshes = this.launchPadManager.getMeshes();
+    const machineMeshes = this.machineManager.getMeshes();
 
     // Combine all meshes - push to avoid creating intermediate arrays
     for (const m of treeMeshes) allInteractableMeshes.push(m);
@@ -1335,6 +1353,7 @@ export class PlanetBlockInteraction {
     for (const m of computerMeshes) allInteractableMeshes.push(m);
     for (const m of printer3DMeshes) allInteractableMeshes.push(m);
     for (const m of launchPadMeshes) allInteractableMeshes.push(m);
+    for (const m of machineMeshes) allInteractableMeshes.push(m);
 
     // Single raycast for all interactable objects (sorted by distance automatically)
     const allIntersects = this.raycaster.intersectObjects(allInteractableMeshes, true);
@@ -1354,6 +1373,7 @@ export class PlanetBlockInteraction {
     const computerIntersects: THREE.Intersection[] = [];
     const printer3DIntersects: THREE.Intersection[] = [];
     const launchPadIntersects: THREE.Intersection[] = [];
+    const machineIntersects: THREE.Intersection[] = [];
 
     for (const hit of allIntersects) {
       const obj = hit.object;
@@ -1375,6 +1395,7 @@ export class PlanetBlockInteraction {
         if (data.isComputer) { computerIntersects.push(hit); break; }
         if (data.is3DPrinter) { printer3DIntersects.push(hit); break; }
         if (data.isLaunchPad) { launchPadIntersects.push(hit); break; }
+        if (data.isMachine) { machineIntersects.push(hit); break; }
         checkObj = checkObj.parent;
       }
     }
@@ -1442,10 +1463,14 @@ export class PlanetBlockInteraction {
     const computerDistance = computerIntersects.length > 0 ? computerIntersects[0].distance : Infinity;
     const printer3DDistance = printer3DIntersects.length > 0 ? printer3DIntersects[0].distance : Infinity;
     const launchPadDistance = launchPadIntersects.length > 0 ? launchPadIntersects[0].distance : Infinity;
-    const closestObjectDistance = Math.min(treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
+    const machineDistance = machineIntersects.length > 0 ? machineIntersects[0].distance : Infinity;
+    const closestObjectDistance = Math.min(machineDistance, treeDistance, torchDistance, furnaceDistance, storageChestDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
 
+    let machineHit: THREE.Intersection | null = null;
     if (closestBlockHit && closestBlockDistance < closestObjectDistance) {
       hitBlock = true;
+    } else if (machineDistance <= closestObjectDistance && machineDistance < Infinity) {
+      machineHit = machineIntersects[0];
     } else if (cableDistance <= closestObjectDistance && cableDistance < Infinity) {
       hitCable = true;
       cableHit = cableIntersects[0];
@@ -1492,7 +1517,21 @@ export class PlanetBlockInteraction {
       hitBlock = true;
     }
 
-    if (hitCable && cableHit) {
+    if (machineHit) {
+      if (this.blockWireframe) {
+        this.blockWireframe.visible = false;
+        this.wireframeCache = null;
+      }
+      const machine = this.machineManager.getByMesh(machineHit.object);
+      if (rightClick && this.rightClickCooldown === 0 && machine) {
+        this.machineUI.openFor(machine);
+        this.rightClickCooldown = this.CLICK_COOLDOWN;
+      } else if (leftClick && machine) {
+        this.handleMachineMining(deltaTime, machine);
+      } else {
+        this.resetMining();
+      }
+    } else if (hitCable && cableHit) {
       // No wireframe for cables
       if (this.blockWireframe) {
         this.blockWireframe.visible = false;
@@ -2630,6 +2669,7 @@ export class PlanetBlockInteraction {
 
   private resetMining(): void {
     this.miningTarget = null;
+    this.miningMachineTarget = null;
     this.miningTreeTarget = null;
     this.miningFurnaceTarget = null;
     this.miningStorageTarget = null;
@@ -2790,6 +2830,12 @@ export class PlanetBlockInteraction {
     // Handle computer placement
     if (selectedSlot.itemType === ItemType.COMPUTER) {
       this.placeComputer(planet, tileIndex, depth);
+      return;
+    }
+
+    // Industry machines and batteries (one path for all of them)
+    if (MACHINE_KIND_OF[selectedSlot.itemType]) {
+      this.placeMachine(planet, tileIndex, depth, selectedSlot.itemType);
       return;
     }
 
@@ -3814,7 +3860,7 @@ export class PlanetBlockInteraction {
   public setSunDirection(dir: THREE.Vector3): void {
     for (const m of [this.furnaceManager, this.storageChestManager, this.garbagePileManager, this.steamEngineManager,
       this.hydroGeneratorManager, this.copperPipeManager, this.cableNodeManager, this.electricFurnaceManager,
-      this.electronicsWorkbenchManager, this.computerManager, this.printer3DManager, this.launchPadManager]) {
+      this.electronicsWorkbenchManager, this.computerManager, this.printer3DManager, this.launchPadManager, this.machineManager]) {
       m.setSunDirection(dir);
     }
   }
@@ -3899,7 +3945,10 @@ export class PlanetBlockInteraction {
   }
 
   // Get neighbor tile indices for pipe connection detection
-  private getNeighborTileIndices(tileIndex: number): number[] {
+  private getNeighborTileIndices(tileIndex: number, near?: THREE.Vector3): number[] {
+    // Tile indices repeat from planet to planet: with a position, use its planet
+    const on = near ? this.planetOf(near) : undefined;
+    if (on) return (on.getTileByIndex(tileIndex)?.neighbors as number[] | undefined) ?? [];
     // Find which planet has this tile
     for (const planet of this.planets) {
       const tile = planet.getTileByIndex(tileIndex);
@@ -3996,27 +4045,208 @@ export class PlanetBlockInteraction {
     }
   }
 
-  // Update power status for all electric furnaces based on cable connections to running steam engines
-  private updateElectricFurnacePowerStatus(): void {
-    const electricFurnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
+  // ---- The power grid and the industry machines (openspec industry-and-nuclear, design 3-5) ----
 
-    for (const furnace of electricFurnaces) {
-      // Check if this furnace is connected to a running steam engine via cables
-      const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-        furnace.tileIndex,
-        (steamTileIndex) => {
-          // Check if steam engine at this tile is running
-          const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-          if (!engine) return false;
-          // Get the running state from the UI
-          const state = this.steamEngineUI.getEngineState(steamTileIndex);
-          return state?.isRunning ?? false;
+  /**
+   * Balance every cable network (the one grid: CableNodeManager's networks)
+   * and drive the isPowered flag every machine already reads, then run the
+   * industry machines one step. Solved every POWER_CONFIG.SOLVE_EVERY_S.
+   */
+  private updatePowerGrid(deltaTime: number): void {
+    this.powerSolveTimer += deltaTime;
+    if (this.powerSolveTimer < POWER_CONFIG.SOLVE_EVERY_S) return;
+    const dt = this.powerSolveTimer;
+    this.powerSolveTimer = 0;
+
+    const machines = this.machineManager.getAll();
+    const oil = new Map<PlacedMachine, boolean>();
+    for (const m of machines) if (m.kind === 'pumpJack') oil.set(m, this.oilBelow(m));
+    const demandW = (k: keyof typeof POWER_CONFIG.DEMAND_W) => POWER_CONFIG.DEMAND_W[k] ?? 0;
+
+    const grid = new Map<number, GridResult>();
+    const cablePos = new Map(this.cableNodeManager.getPlacedCables().map(c => [c.id, c.position]));
+    for (const net of this.cableNodeManager.getNetworks()) {
+      const near = cablePos.get(net.cables[0]);  // which planet this network is on
+      const gens: GridGenerator[] = [];
+      const cons: GridConsumer[] = [];
+      const bats: GridBattery[] = [];
+      const members: number[] = [];
+      for (const t of net.connectedSteamEngines) {
+        members.push(t);
+        if (this.steamEngineManager.getSteamEngineAtTile(t)?.isRunning) gens.push({ id: `steam${t}`, watts: POWER_CONFIG.SUPPLY_W.steamEngine ?? 0 });
+      }
+      for (const t of net.connectedElectricFurnaces) {
+        members.push(t);
+        if (this.electricFurnaceManager.getElectricFurnaceAtTile(t)?.smeltingItem != null) cons.push({ id: `efurnace${t}`, watts: demandW('electricFurnace') });
+      }
+      for (const t of net.connectedElectronicsWorkbenches) members.push(t);
+      for (const t of net.connectedComputers) {
+        members.push(t);
+        cons.push({ id: `computer${t}`, watts: demandW('computer') });
+      }
+      for (const t of net.connectedPrinters3D) {
+        members.push(t);
+        if (this.printer3DManager.getPrinter3DAtTile(t)?.currentJob) cons.push({ id: `printer${t}`, watts: demandW('printer3D') });
+      }
+      for (const n of net.nodes) {
+        const t = n.tileIndex;
+        members.push(t);
+        if (n.kind === 'hydroGenerator') {
+          if (this.hydroGeneratorManager.getHydroGeneratorAtTile(t)?.isActive) gens.push({ id: `hydro${t}`, watts: POWER_CONFIG.SUPPLY_W.hydroGenerator ?? 0 });
+          continue;
         }
-      );
-
-      // Update furnace power status
-      this.electricFurnaceManager.setFurnacePowered(furnace.tileIndex, isPowered);
+        const m = this.machineAt(t, near);
+        if (!m) continue;
+        if (m.kind === 'battery') {
+          const spec = POWER_CONFIG.BATTERIES[m.itemType];
+          bats.push({ id: `battery${t}`, chargeWh: m.chargeWh, capacityWh: spec.capacityWh, maxRateW: spec.maxRateW });
+        }
+        const supply = machineSupplyW(m);
+        if (supply > 0) gens.push({ id: `machine${t}`, watts: supply, nuclear: m.kind === 'reactor' });
+        if (wantsPower(m, oil.get(m) ?? false)) cons.push({ id: `machine${t}`, watts: demandW(m.kind) });
+      }
+      const result = solveNetwork(gens, cons, bats, dt);
+      for (const t of members) grid.set(t, result);
+      for (const b of bats) {
+        const m = this.machineAt(Number(b.id.slice('battery'.length)), near);
+        if (m) m.chargeWh = result.batteryCharge.get(b.id) ?? m.chargeWh;
+      }
     }
+    this.gridByTile = grid;
+
+    // The isPowered flags the older machines already read
+    for (const f of this.electricFurnaceManager.getPlacedElectricFurnaces()) this.electricFurnaceManager.setFurnacePowered(f.tileIndex, this.nodePowered(f.tileIndex));
+    for (const c of this.computerManager.getAllComputers()) this.computerManager.setComputerPowered(c, this.nodePowered(c.tileIndex));
+    for (const p of this.printer3DManager.getAllPrinters()) this.printer3DManager.setPrinterPowered(p, this.nodePowered(p.tileIndex));
+
+    // The industry machines' own step
+    this.machineSaveTimer += dt;
+    const saveAll = this.machineSaveTimer >= MACHINE_CONFIG.SAVE_EVERY_S;
+    if (saveAll) this.machineSaveTimer = 0;
+    for (const m of machines) {
+      m.powered = this.nodePowered(m.tileIndex);
+      const fx = tickMachine(m, dt, { oilBelow: oil.get(m) ?? false, reactorPower: (grid.get(m.tileIndex)?.nuclearW ?? 0) > 0 });
+      if (fx.pumpedCell) this.drainOilBelow(m);
+      if (fx.event === 'fabricated') {
+        for (const o of fx.made ?? []) emitGameEvent('crafted', o.itemType, o.quantity);
+      } else if (fx.event) {
+        emitGameEvent(fx.event, fx.made?.[0]?.itemType, fx.made?.[0]?.quantity ?? 1);
+      }
+      if (fx.event || (saveAll && this.machineBusy(m))) this.saveMachine(m);
+    }
+    this.machineUI.refresh();
+  }
+
+  /** Is this machine doing something whose state should be saved now and then? */
+  private machineBusy(m: PlacedMachine): boolean {
+    return m.progressS > 0 || m.kind === 'battery' || m.kind === 'reactor';
+  }
+
+  /**
+   * Is the node on this tile powered: its network's last solve kept its
+   * machines running, and there is something there to run them on.
+   */
+  private nodePowered(tileIndex: number): boolean {
+    const r = this.gridByTile.get(tileIndex);
+    return !!r && r.powered && (r.supplyW > 0 || r.storedWh > 0);
+  }
+
+  /** The machine on a tile (on the planet `near` is on, when given). */
+  private machineAt(tileIndex: number, near?: THREE.Vector3): PlacedMachine | undefined {
+    if (!near) return this.machineManager.getAtTile(tileIndex);
+    const id = this.planetIdAt(near);
+    return this.machineManager.getAll().find(m => m.tileIndex === tileIndex && this.planetIdAt(m.position) === id);
+  }
+
+  private planetOf(position: THREE.Vector3): Planet | undefined {
+    const id = this.planetIdAt(position);
+    return this.planets.find(p => this.getPlanetId(p) === id);
+  }
+
+  /** The topmost oil sand cell straight below a machine, or -1. */
+  private oilDepthBelow(m: PlacedMachine): number {
+    const planet = this.planetOf(m.position);
+    if (!planet) return -1;
+    for (let d = m.depth - 1; d >= 0; d--) {
+      if (planet.getBlock(m.tileIndex, d) === HexBlockType.OIL_SAND) return d;
+    }
+    return -1;
+  }
+
+  private oilBelow(m: PlacedMachine): boolean {
+    return this.oilDepthBelow(m) >= 0;
+  }
+
+  /** One pumped unit: the top oil sand cell below turns to stone (a persisted edit). */
+  private drainOilBelow(m: PlacedMachine): void {
+    const planet = this.planetOf(m.position);
+    const d = this.oilDepthBelow(m);
+    if (!planet || d < 0) return;
+    planet.setBlock(m.tileIndex, d, HexBlockType.STONE);
+    gameStorage.saveTileChange(this.getPlanetId(planet), m.tileIndex, d, HexBlockType.STONE);
+  }
+
+  private saveMachine(m: PlacedMachine): void {
+    gameStorage.saveMachine(this.planetIdAt(m.position), machineRecord(m));
+  }
+
+  /** Place a pump jack, refinery, centrifuge, reactor, fabricator or battery. */
+  private placeMachine(planet: Planet, tileIndex: number, depth: number, itemType: ItemType): void {
+    const planetId = this.getPlanetId(planet);
+    const kind = MACHINE_KIND_OF[itemType]!;
+    if (this.machineManager.getAll().some(m => m.tileIndex === tileIndex && this.planetIdAt(m.position) === planetId)) return;
+    // A reactor goes only on an airless body (the Moon, moons, asteroids, barren worlds)
+    if (kind === 'reactor' && getBodyConfig(planetId)?.hasAtmosphere !== false) {
+      showToast('Reactors can only be built off-world', { duration: 3000 });
+      return;
+    }
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return;
+    // depth is the air cell: the machine sits on the solid block below it
+    const groundTop = tile.center.clone().normalize().multiplyScalar(planet.depthToRadius(depth) - planet.getBlockHeight()).add(planet.center);
+    if (!this.inventory.useSelectedItem()) return;
+    const state = newMachineState(itemType, tileIndex, depth, MachineManager.centreAbove(groundTop, planet.center), 0);
+    const placed = this.machineManager.add(state, planet.center);
+    this.updateHotbarUI();
+    this.saveInventory();
+    this.saveMachine(placed);
+    if (kind === 'reactor') emitGameEvent('reactorBuilt', itemType, 1);
+    this.cableNodeManager.updateCablesNearTile(tileIndex);
+    this.cableNodeManager.rebuildAllConnections();
+  }
+
+  private handleMachineMining(deltaTime: number, machine: PlacedMachine): void {
+    if (this.miningMachineTarget === null || this.miningMachineTarget.machine !== machine) {
+      this.resetMining();
+      this.miningMachineTarget = { machine };
+      this.miningProgress = 0;
+    }
+    this.miningProgress += deltaTime / ITEM_DATA[machine.itemType].mineTime;
+    this.updateMiningUI(this.miningProgress);
+    this.playMiningSound(this.player.position);
+    if (this.miningProgress >= 1) {
+      this.breakMachine(machine);
+      this.resetMining();
+    }
+  }
+
+  /** Take a machine up: it and everything in it go back to the player (overflow to a pile). */
+  private breakMachine(machine: PlacedMachine): void {
+    const items = [{ itemType: machine.itemType, quantity: 1 }, ...machine.inputs, ...machine.outputs]
+      .filter(s => s.itemType !== ItemType.NONE && s.quantity > 0);
+    const overflow: { itemType: ItemType; quantity: number }[] = [];
+    for (const it of items) {
+      const left = this.inventory.addItem(it.itemType, it.quantity);
+      if (left > 0) overflow.push({ itemType: it.itemType, quantity: left });
+    }
+    this.updateHotbarUI();
+    this.saveInventory();
+    gameStorage.removeMachine(this.planetIdAt(machine.position), machine.tileIndex);
+    if (overflow.length > 0) this.createGarbagePileWithItems(machine.position.clone(), machine.tileIndex, overflow);
+    if (this.machineUI.getMachine() === machine) this.machineUI.close();
+    this.machineManager.remove(machine);
+    this.cableNodeManager.updateCablesNearTile(machine.tileIndex);
+    this.cableNodeManager.rebuildAllConnections();
   }
 
   // Save all storage chest and garbage pile states to local storage
@@ -4194,6 +4424,12 @@ export class PlanetBlockInteraction {
       case 'workbench': { const o = at(this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()); if (o) this.electronicsWorkbenchManager.removeElectronicsWorkbench(o); found = o; break; }
       case 'computer': { const o = at(this.computerManager.getAllComputers()); if (o) this.computerManager.removeComputer(o); found = o; break; }
       case 'printer3D': { const o = at(this.printer3DManager.getAllPrinters()); if (o) this.printer3DManager.removePrinter3D(o); found = o; break; }
+      case 'machine': {
+        const o = at(this.machineManager.getAll());
+        if (o) { if (this.machineUI.getMachine() === o) this.machineUI.close(); this.machineManager.remove(o); }
+        found = o;
+        break;
+      }
       case 'chest': { const o = at(this.storageChestManager.getPlacedChests()); if (o) this.storageChestManager.removeChest(o); found = o; break; }
       case 'garbagePile': { const o = at(this.garbagePileManager.getPlacedPiles()); if (o) this.garbagePileManager.removePile(o); found = o; break; }
       case 'steamEngine': { const o = at(this.steamEngineManager.getPlacedSteamEngines()); if (o) this.steamEngineManager.removeSteamEngine(o); found = o; break; }
@@ -4224,6 +4460,11 @@ export class PlanetBlockInteraction {
     if (!planet) return Promise.resolve();
     let pending: Promise<unknown> | void = undefined;
     switch (kind) {
+      case 'machine': {
+        const rec = saved as SavedMachine & { planetId: string };
+        this.machineManager.add(machineFromRecord(rec), planet.center);
+        break;
+      }
       case 'torch': {
         const savedTorch = saved as SavedTorch & { planetId: string };
         const worldPosition = new THREE.Vector3(
@@ -4640,13 +4881,7 @@ export class PlanetBlockInteraction {
           tileIndex: workbench.tileIndex,
           position: { x: workbench.position.x, y: workbench.position.y, z: workbench.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              workbench.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(workbench.tileIndex);
             return isPowered ? 'Powered' : 'No Power';
           },
           openUI: () => {
@@ -4667,13 +4902,7 @@ export class PlanetBlockInteraction {
           tileIndex: computer.tileIndex,
           position: { x: computer.position.x, y: computer.position.y, z: computer.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              computer.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(computer.tileIndex);
             return isPowered ? 'Powered' : 'No Power';
           },
           openUI: () => {
@@ -4693,13 +4922,7 @@ export class PlanetBlockInteraction {
           tileIndex: printer.tileIndex,
           position: { x: printer.position.x, y: printer.position.y, z: printer.position.z },
           getStatus: () => {
-            const isPowered = this.cableNodeManager.isElectricFurnaceConnectedToRunningSteamEngine(
-              printer.tileIndex,
-              (steamTileIndex) => {
-                const engine = this.steamEngineManager.getSteamEngineAtTile(steamTileIndex);
-                return engine?.isRunning ?? false;
-              }
-            );
+            const isPowered = this.nodePowered(printer.tileIndex);
             if (!isPowered) return 'No Power';
             if (printer.currentJob) {
               const progress = Math.round(printer.currentJob.progress * 100);
@@ -4712,6 +4935,19 @@ export class PlanetBlockInteraction {
           }
         }));
       }
+    });
+
+    // Register the industry machines and batteries
+    TechBlockRegistry.registerManager({
+      type: 'Machine',
+      getBlocks: (): TechBlockInfo[] => this.machineManager.getAll().map((m: PlacedMachine) => ({
+        type: ITEM_DATA[m.itemType]?.name ?? 'Machine',
+        id: `machine-${m.tileIndex}`,
+        tileIndex: m.tileIndex,
+        position: { x: m.position.x, y: m.position.y, z: m.position.z },
+        getStatus: () => m.status || (this.nodePowered(m.tileIndex) ? 'Powered' : 'No Power'),
+        openUI: () => this.machineUI.openFor(m),
+      })),
     });
 
     // Register Cables

@@ -124,6 +124,143 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
     ],
     output: { itemType: ItemType.PRINTER_3D, quantity: 1 },
   },
+  // --- Industry and nuclear (openspec industry-and-nuclear, design 3-5) ---
+  // Fuel rod: - E - / - Ti - / - E -  (2 enriched uranium + 1 titanium ingot)
+  {
+    name: 'Fuel Rod',
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.FUEL_ROD, quantity: 1 },
+  },
+  // Lead-acid battery: Fe S Fe / S Cu S / Fe S Fe  (iron and Cinder's sulfur)
+  {
+    name: 'Lead-Acid Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.SULFUR, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_LEAD_ACID, quantity: 1 },
+  },
+  // Lithium-ion battery: Li Co Li / Cu Cu Cu / Li Co Li
+  {
+    name: 'Lithium-Ion Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_COBALT, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_LITHIUM, quantity: 1 },
+  },
+  // Solid-state battery: Ti P Ti / P Ti P / Ti P Ti
+  {
+    name: 'Solid-State Battery',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.BATTERY_SOLID_STATE, quantity: 1 },
+  },
+  // Pump jack: Fe Fe Fe / - Fe - / Cu PSU Cu
+  {
+    name: 'Pump Jack',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.PUMP_JACK, quantity: 1 },
+  },
+  // Refinery: Al Al Al / Cu Fe Cu / Al PSU Al
+  {
+    name: 'Refinery',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.REFINERY, quantity: 1 },
+  },
+  // Centrifuge: Ti Ti Ti / Ti CPU Ti / Al PSU Al
+  {
+    name: 'Centrifuge',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.CENTRIFUGE, quantity: 1 },
+  },
+  // Reactor: Ti Ti Ti / Ti MB Ti / Ti PSU Ti
+  {
+    name: 'Fission Reactor',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.REACTOR, quantity: 1 },
+  },
+  // Nuclear fabricator: Ti P Ti / CPU MB CPU / Ti PSU Ti
+  {
+    name: 'Nuclear Fabricator',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.PLASTIC, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 3 },
+      { itemType: ItemType.MOTHERBOARD, quantity: 1, slot: 4 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.POWER_SUPPLY, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.NUCLEAR_FABRICATOR, quantity: 1 },
+  },
 ];
 
 export class ElectronicsWorkbenchUI {

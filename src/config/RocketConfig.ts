@@ -31,6 +31,7 @@ export const ROCKET_CONFIG = {
     { itemType: ItemType.ROCKET_FUEL, units: 25 },
     { itemType: ItemType.WATER_BUCKET, units: 15, returns: ItemType.BUCKET },
     { itemType: ItemType.ICE, units: 8 },
+    { itemType: ItemType.KEROSENE, units: 40 },  // refined from crude oil (industry-and-nuclear)
   ] as { itemType: ItemType; units: number; returns?: ItemType }[],
   // A rocket assembled on a NEW launch pad starts with empty tanks (pads from
   // older saves, and the starter rocket, keep launching full)
