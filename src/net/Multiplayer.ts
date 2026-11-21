@@ -176,7 +176,7 @@ export class Multiplayer {
       this.scene.add(r.group);
     }
     if (planet) r.planet = planet;
-    setPeer(id, r.planet);
+    setPeer(id, r.planet, p);
     if (p) r.target.fromArray(p);
     if (q) r.targetQ.fromArray(q);
   }

@@ -25,6 +25,7 @@ import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
 import { Fauna } from './planet/Fauna';
+import { netSync } from './net/NetSync';
 import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
@@ -863,7 +864,10 @@ class PlanetGame {
     for (const atmosphere of this.atmospheres) atmosphere.updateCameraPosition(this.engine.camera.position);
 
     // Update clouds (slow rotation)
-    this.earthClouds.update(deltaTime);
+    {
+      const worldMs = netSync.worldTimeMs();
+      this.earthClouds.update(deltaTime, worldMs === null ? null : worldMs / 1000);
+    }
 
     // Periodic water flow update (every 5 seconds)
     this.waterUpdateTimer += deltaTime;
