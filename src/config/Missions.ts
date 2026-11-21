@@ -352,6 +352,7 @@ export const MISSION_TREE_UI = {
   ],
   START_LEVEL: 4,
   PAD: 24,              // margin round the tree, px
+  PLAQUE_CHAR_W: 0.75,  // a branch plaque's width per character, in font sizes (packing)
   SIDE_W: 300,          // side panel width, px
   DRAG_SLOP_PX: 4,      // a click under this much movement opens a card
 };
