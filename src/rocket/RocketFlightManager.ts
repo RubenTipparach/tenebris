@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { planetObjectScene } from '../world/PlanetFrames';
 import { RocketController, PlanetGravitySource, RocketInputState } from './RocketController';
 import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
@@ -83,7 +84,7 @@ export class RocketFlightManager {
     this.flightUI = new RocketFlightUI();
 
     // Create landed rocket manager and UI
-    this.landedRocketManager = new LandedRocketManager(scene);
+    this.landedRocketManager = new LandedRocketManager(planetObjectScene(scene));
     this.landedRocketUI = new LandedRocketUI();
 
     // Set up landed rocket UI callbacks
@@ -149,6 +150,11 @@ export class RocketFlightManager {
     });
     // Also update landed rocket manager
     this.landedRocketManager.setPlanets(this.planets);
+  }
+
+  /** A body moved on its orbit: gravity and landings use its live centre. */
+  public setPlanetCenter(name: string, center: THREE.Vector3): void {
+    for (const p of this.planets) if (p.name === name) p.center.copy(center);
   }
 
   /**

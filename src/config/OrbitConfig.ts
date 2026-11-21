@@ -16,4 +16,13 @@ export const ORBIT_CONFIG = {
   GAS_GIANT_GRAVITY: 2.5,
   // Game-time multiplier (1 = real time). A debug knob for watching orbits.
   TIME_SCALE: 1,
+  // Something placed within this many radii of a planet's configured centre
+  // rides that planet (PlanetFrames)
+  ATTACH_RADII: 2,
+  // Sun direction changes smaller than this (radians) skip the uniform
+  // updates that frame
+  SUN_DIRECTION_EPSILON: 1e-4,
+  // Step (s) for a body's velocity by finite difference, for rebasing a
+  // rocket into a new frame
+  VELOCITY_DT_S: 0.5,
 } as const;

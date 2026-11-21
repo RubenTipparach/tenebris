@@ -34,6 +34,7 @@ import { Printer3DUI } from './Printer3DUI';
 import { LaunchPadUI } from './LaunchPadUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
+import { planetObjectScene } from '../world/PlanetFrames';
 import { gameStorage, torchKey, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
 import { netSync } from '../net/NetSync';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -286,7 +287,7 @@ export class PlanetBlockInteraction {
     this.inventory = new Inventory();
 
     // Initialize torch systems
-    this.torchManager = new TorchManager(scene);
+    this.torchManager = new TorchManager(planetObjectScene(scene));
     this.heldTorch = new HeldTorch(player.camera, scene);
 
     // Initialize furnace systems with planet center and sun direction for lighting
@@ -297,7 +298,7 @@ export class PlanetBlockInteraction {
       PlayerConfig.SUN_DIRECTION.y,
       PlayerConfig.SUN_DIRECTION.z
     ).normalize();
-    this.furnaceManager = new FurnaceManager(scene, planetCenter, sunDirection);
+    this.furnaceManager = new FurnaceManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.furnaceManager.setOnSmeltCompleteCallback(() => {
       // Save all furnace states when smelting completes (even when UI is closed)
       this.saveAllFurnaceStates();
@@ -322,14 +323,14 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize storage systems with planet center and sun direction for lighting
-    this.storageChestManager = new StorageChestManager(scene, planetCenter, sunDirection);
-    this.garbagePileManager = new GarbagePileManager(scene, planetCenter, sunDirection);
+    this.storageChestManager = new StorageChestManager(planetObjectScene(scene), planetCenter, sunDirection);
+    this.garbagePileManager = new GarbagePileManager(planetObjectScene(scene), planetCenter, sunDirection);
 
     // Initialize steam engine system
-    this.steamEngineManager = new SteamEngineManager(scene, planetCenter, sunDirection);
+    this.steamEngineManager = new SteamEngineManager(planetObjectScene(scene), planetCenter, sunDirection);
 
     // Initialize hydro generator system
-    this.hydroGeneratorManager = new HydroGeneratorManager(scene, planetCenter, sunDirection);
+    this.hydroGeneratorManager = new HydroGeneratorManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.hydroGeneratorUI = new HydroGeneratorUI();
     this.hydroGeneratorUI.setOnCloseCallback(() => {
       // Hydro generator close is handled by inventory menu close
@@ -339,7 +340,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize copper pipe system
-    this.copperPipeManager = new CopperPipeManager(scene, planetCenter, sunDirection);
+    this.copperPipeManager = new CopperPipeManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.copperPipeUI = new CopperPipeUI();
     this.copperPipeUI.setOnCloseCallback(() => {
       // Pipe UI close is handled by clicking elsewhere
@@ -370,11 +371,11 @@ export class PlanetBlockInteraction {
     );
 
     // Initialize cable node system (for power connections)
-    this.cableNodeManager = new CableNodeManager(scene, planetCenter, sunDirection);
+    this.cableNodeManager = new CableNodeManager(planetObjectScene(scene), planetCenter, sunDirection);
     // Machine callbacks are set after all managers are initialized (see below)
 
     // Initialize electric furnace system
-    this.electricFurnaceManager = new ElectricFurnaceManager(scene, planetCenter, sunDirection);
+    this.electricFurnaceManager = new ElectricFurnaceManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.electricFurnaceManager.setOnSmeltCompleteCallback(() => {
       this.saveAllElectricFurnaceStates();
     });
@@ -397,7 +398,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize electronics workbench system
-    this.electronicsWorkbenchManager = new ElectronicsWorkbenchManager(scene, planetCenter, sunDirection);
+    this.electronicsWorkbenchManager = new ElectronicsWorkbenchManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.electronicsWorkbenchUI = new ElectronicsWorkbenchUI(this.inventory);
     this.electronicsWorkbenchUI.setOnCloseCallback(() => {
       // Electronics workbench close is handled by inventory menu close
@@ -423,7 +424,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize computer system
-    this.computerManager = new ComputerManager(scene, planetCenter, sunDirection);
+    this.computerManager = new ComputerManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.computerUI = new ComputerUI();
     this.computerUI.setOnCloseCallback(() => {
       // Computer close callback
@@ -442,7 +443,7 @@ export class PlanetBlockInteraction {
     });
 
     // Initialize 3D printer system
-    this.printer3DManager = new Printer3DManager(scene, planetCenter, sunDirection);
+    this.printer3DManager = new Printer3DManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.printer3DUI = new Printer3DUI(this.inventory);
     this.printer3DUI.setOnItemCrafted((itemType, quantity) => {
       this.inventory.addItem(itemType, quantity);
@@ -470,7 +471,7 @@ export class PlanetBlockInteraction {
 
     // Initialize launch pad system
     const planetRadius = earthPlanet?.radius || 100;
-    this.launchPadManager = new LaunchPadManager(scene, planetCenter, sunDirection, planetRadius);
+    this.launchPadManager = new LaunchPadManager(planetObjectScene(scene), planetCenter, sunDirection, planetRadius);
     this.launchPadUI = new LaunchPadUI(this.inventory);
     this.launchPadUI.setOnCloseCallback(() => {
       // Launch pad close callback
@@ -3784,6 +3785,15 @@ export class PlanetBlockInteraction {
 
   public getInventory(): Inventory {
     return this.inventory;
+  }
+
+  /** Sunlight on the machines and the launch pads (live orbits: day and night). */
+  public setSunDirection(dir: THREE.Vector3): void {
+    for (const m of [this.furnaceManager, this.storageChestManager, this.garbagePileManager, this.steamEngineManager,
+      this.hydroGeneratorManager, this.copperPipeManager, this.cableNodeManager, this.electricFurnaceManager,
+      this.electronicsWorkbenchManager, this.computerManager, this.printer3DManager, this.launchPadManager]) {
+      m.setSunDirection(dir);
+    }
   }
 
   public getCraftingSystem(): CraftingSystem {
