@@ -17,6 +17,16 @@ export const RANCHING = {
   COW_LEATHER: [1, 2] as [number, number],
   // How far a hit knocks the animal back (m/s of shove)
   HIT_SHOVE: 3,
+  // The shove dies away at this rate (1/s)
+  SHOVE_DECAY: 4,
+  // A hit animal runs from whoever hit it for this long (s)
+  HIT_FLEE_S: 3,
+  // Shortest time between two hits while the button is held (s)
+  HIT_COOLDOWN_S: 0.4,
+  // A shorn sheep's fleece is drawn at this size (0 = gone, the skin shows)
+  SHORN_FLEECE_SCALE: 0,
+  // Multiplayer: hitter positions in an animal action are rounded to this many places
+  ACTION_DECIMALS: 2,
 };
 
 export const AIR = {

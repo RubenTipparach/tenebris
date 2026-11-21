@@ -162,6 +162,61 @@ const MODELS: Record<FaunaSpeciesId, () => FaunaModel> = {
     b.box('tail', [0.12, 0.12, 0.1], [0, 0.3, -0.27], 0xf4f0e8);
     return b.build();
   },
+  sheep: () => {
+    const wool = 0xeee6d2, face = 0x2e2824;
+    const b = new ModelBuilder().part('body', [0, 0.6, 0]);
+    // the shorn sheep: pale skin, seen once the fleece is gone
+    b.box('body', [0.42, 0.38, 0.75], [0, 0.62, 0], 0xd8c4b0);
+    // the fleece: its own part, so a shorn sheep can hide it (Fauna.ts)
+    b.part('fleece', [0, 0.64, 0]);
+    b.add('fleece', new THREE.IcosahedronGeometry(0.42, 1), wool, { at: [0, 0.66, 0], scale: [0.85, 0.8, 1.15] });
+    for (const [x, y, z] of [[0.17, 0.86, 0.22], [-0.17, 0.86, -0.08], [0.15, 0.84, -0.3], [-0.12, 0.9, 0.18], [0, 0.95, -0.02]]) {
+      b.add('fleece', new THREE.IcosahedronGeometry(0.17, 0), x > 0 ? wool : 0xe4dcc6, { at: [x, y, z] });
+    }
+    legs4(b, 0.14, 0.26, -0.26, 0.44, 0.09, face, 0x16120f);
+    b.part('head', [0, 0.74, 0.38]);
+    b.box('head', [0.22, 0.24, 0.3], [0, 0.78, 0.56], face);
+    b.box('head', [0.16, 0.12, 0.08], [0, 0.71, 0.72], 0x3a332e); // muzzle
+    b.box('head', [0.05, 0.05, 0.03], [0.08, 0.83, 0.71], 0x0e0c0a);
+    b.box('head', [0.05, 0.05, 0.03], [-0.08, 0.83, 0.71], 0x0e0c0a);
+    b.box('head', [0.14, 0.05, 0.08], [0.16, 0.84, 0.5], face, { rot: [0, 0, -0.4] }); // ears
+    b.box('head', [0.14, 0.05, 0.08], [-0.16, 0.84, 0.5], face, { rot: [0, 0, 0.4] });
+    b.ball('head', 0.1, [0, 0.92, 0.5], wool); // topknot
+    b.part('tail', [0, 0.72, -0.46], [0, 1, 0]);
+    b.box('tail', [0.1, 0.16, 0.1], [0, 0.66, -0.5], wool);
+    return b.build();
+  },
+  cow: () => {
+    const hide = 0xf0ece4, patch = 0x26221f, pink = 0xd89a8a;
+    const b = new ModelBuilder().part('body', [0, 1.0, 0]);
+    b.box('body', [0.6, 0.6, 1.3], [0, 1.05, 0], hide);
+    // patches, a hair proud of the hide
+    b.box('body', [0.02, 0.3, 0.42], [0.305, 1.1, 0.18], patch);
+    b.box('body', [0.02, 0.26, 0.32], [0.305, 0.94, -0.36], patch);
+    b.box('body', [0.02, 0.32, 0.36], [-0.305, 1.14, 0.3], patch);
+    b.box('body', [0.02, 0.24, 0.3], [-0.305, 0.92, -0.2], patch);
+    b.box('body', [0.36, 0.02, 0.42], [0.06, 1.355, -0.22], patch);
+    b.box('body', [0.24, 0.12, 0.24], [0, 0.7, -0.34], 0xe8a0a0); // udder
+    legs4(b, 0.2, 0.48, -0.48, 0.78, 0.15, hide, 0x2a2420);
+    b.part('head', [0, 1.18, 0.62]);
+    b.box('head', [0.34, 0.36, 0.42], [0, 1.24, 0.84], hide);
+    b.box('head', [0.2, 0.2, 0.02], [0.06, 1.3, 1.055], patch, { rot: [0, 0, 0.2] });
+    b.box('head', [0.3, 0.2, 0.16], [0, 1.1, 1.1], pink); // muzzle
+    b.box('head', [0.05, 0.05, 0.02], [0.07, 1.12, 1.185], 0x5a3a36);
+    b.box('head', [0.05, 0.05, 0.02], [-0.07, 1.12, 1.185], 0x5a3a36);
+    b.box('head', [0.05, 0.05, 0.03], [0.15, 1.32, 1.0], 0x0e0c0a);
+    b.box('head', [0.05, 0.05, 0.03], [-0.15, 1.32, 1.0], 0x0e0c0a);
+    b.box('head', [0.14, 0.06, 0.1], [0.24, 1.32, 0.74], 0x8a5a3a); // ears
+    b.box('head', [0.14, 0.06, 0.1], [-0.24, 1.32, 0.74], 0x8a5a3a);
+    for (const s of [1, -1]) { // horns
+      b.box('head', [0.16, 0.06, 0.06], [0.2 * s, 1.46, 0.8], 0xe8dcc0, { rot: [0, 0, 0.35 * s] });
+      b.box('head', [0.05, 0.12, 0.05], [0.29 * s, 1.54, 0.8], 0xc8b890, { rot: [0, 0, -0.3 * s] });
+    }
+    b.part('tail', [0, 1.3, -0.65], [0, 0, 1]);
+    b.box('tail', [0.05, 0.5, 0.05], [0, 1.05, -0.67], hide);
+    b.box('tail', [0.1, 0.14, 0.1], [0, 0.76, -0.67], patch);
+    return b.build();
+  },
   swallow: () => {
     const b = new ModelBuilder();
     b.box('body', [0.16, 0.14, 0.42], [0, 0, 0], 0x2b3f7a);

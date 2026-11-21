@@ -5,6 +5,8 @@ import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
 import { emitGameEvent } from '../engine/GameEvents';
+import type { Fauna } from '../planet/Fauna';
+import { RANCHING } from '../config/SurvivalConfig';
 import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
 import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
@@ -331,6 +333,9 @@ export class PlanetBlockInteraction {
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
+  // Ranching: the animals round the player (set by the game once it has them)
+  private fauna: Fauna | null = null;
+  private animalHitCooldown = 0;
   private readonly MAX_REACH = 8;
 
   // Mining state
@@ -1526,6 +1531,10 @@ export class PlanetBlockInteraction {
     const launchPadDistance = launchPadIntersects.length > 0 ? launchPadIntersects[0].distance : Infinity;
     const machineDistance = machineIntersects.length > 0 ? machineIntersects[0].distance : Infinity;
     const closestObjectDistance = Math.min(machineDistance, treeDistance, torchDistance, furnaceDistance, storageChestDistance, cookerDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
+
+    // An animal in front of everything else takes the clicks (shear / hit)
+    if (this.handleAnimal(deltaTime, origin, direction, leftClick, rightClick, selectedItem.itemType,
+      Math.min(closestBlockDistance, closestObjectDistance))) return;
 
     // A dish in hand and no machine in reach: right click eats it
     if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
@@ -4061,6 +4070,48 @@ export class PlanetBlockInteraction {
 
   public getInventory(): Inventory {
     return this.inventory;
+  }
+
+  /**
+   * The animals round the player, for shearing and hitting. Their rewards
+   * (wool, leather - including leather the MP host sends back for a cow this
+   * player felled) land in the inventory through the normal give path.
+   */
+  public setFauna(fauna: Fauna | null): void {
+    this.fauna = fauna;
+    fauna?.setRewardHandler((kind, count) => {
+      this.inventory.addItem(kind === 'wool' ? ItemType.WOOL : ItemType.LEATHER, count);
+      this.updateHotbarUI();
+      this.saveInventory();
+    });
+  }
+
+  /**
+   * An animal under the crosshair, nearer than any block or object
+   * (`nearestOther`): right click (the interact button) with shears shears a
+   * sheep; the break button hits it (a cow falls after its hits; anything
+   * else runs). Returns true when the animal took the crosshair, so the
+   * block behind it is neither mined nor built on.
+   */
+  private handleAnimal(dt: number, origin: THREE.Vector3, direction: THREE.Vector3, leftClick: boolean, rightClick: boolean,
+    held: ItemType, nearestOther: number): boolean {
+    this.animalHitCooldown = Math.max(0, this.animalHitCooldown - dt);
+    if (!this.fauna) return false;
+    const pick = this.fauna.pick(origin, direction, RANCHING.REACH_M);
+    if (!pick || pick.distance >= nearestOther) return false;
+    if (this.blockWireframe) {
+      this.blockWireframe.visible = false;
+      this.wireframeCache = null;
+    }
+    this.resetMining();
+    if (rightClick && this.rightClickCooldown === 0 && held === ItemType.SHEARS) {
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      if (this.fauna.shear(pick.uid) > 0) emitGameEvent('sheared');
+    } else if (leftClick && this.animalHitCooldown === 0) {
+      this.animalHitCooldown = RANCHING.HIT_COOLDOWN_S;
+      this.fauna.hit(pick.uid, this.player.position);
+    }
+    return true;
   }
 
   /** Sunlight on the machines and the launch pads (live orbits: day and night). */

@@ -8,8 +8,10 @@
 
 ## 2. Ranching
 
-- [ ] 2.1 Sheep and cow species, models, anims (Earth only). Verify: roster check; headless shot of a herd.
-- [ ] 2.2 Shearing and hitting animals (ray pick, shorn state, cow hits, drops, MP host action). Verify: headless shear and kill.
+- [x] 2.1 Sheep and cow species, models, anims (Earth only). Verify: roster check; headless shot of a herd.
+  Verified: scripts/ranching.test.ts (Earth-only roster, startup check, anim tracks match model parts); headless SP shot of a sheep and a cow herd spawned on Earth.
+- [x] 2.2 Shearing and hitting animals (ray pick, shorn state, cow hits, drops, MP host action). Verify: headless shear and kill.
+  Verified: scripts/ranching.test.ts (pick, wool range, shorn gives none, regrow, cow falls with leather); headless SP through PlanetBlockInteraction: shears gave wool, a 2nd shear gave none, the snapshot carried shorn=1, 3 hits removed a cow and gave leather. The MP action path (non-host to host, host 'drop' back) is untested with two clients.
 
 ## 3. Rocket power
 

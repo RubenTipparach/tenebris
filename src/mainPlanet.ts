@@ -832,6 +832,7 @@ class PlanetGame {
     if (!this.fauna) {
       validateFaunaRosters(this.planets.keys());
       this.fauna = new Fauna(this.engine.scene);
+      this.blockInteraction.setFauna(this.fauna); // shearing and hitting animals
     }
     {
       const pos = this.player.position;

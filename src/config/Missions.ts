@@ -564,7 +564,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- wool and leather (openspec wool-air-and-reentry): Earth's sheep and cows
   {
-    id: 'shear', branch: 'ranching', icon: I.WOOL, parent: 'ingots', title: 'Shear a sheep', help: 'Craft shears. Hold them and press F at a sheep.',
+    id: 'shear', branch: 'ranching', icon: I.WOOL, parent: 'ingots', title: 'Shear a sheep', help: 'Craft shears. Hold them and right-click a sheep.',
     objectives: [
       { kind: 'sheared', count: 1, label: 'Sheep shorn' },
       { kind: 'gained', item: I.WOOL, count: 4, label: 'Wool' },
