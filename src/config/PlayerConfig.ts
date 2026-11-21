@@ -1,6 +1,8 @@
 // Player configuration - adjust these values to tune gameplay
 
 export const PlayerConfig = {
+  // How often (s) planets left far behind give back their detailed terrain
+  RELEASE_DETAIL_CHECK_S: 2,
   // Lighting
   AMBIENT_LIGHT_INTENSITY: 0.75,      // Base ambient light (space darkness)
   DIRECTIONAL_LIGHT_INTENSITY: 1.0,   // Sun intensity

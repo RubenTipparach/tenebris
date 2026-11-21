@@ -102,6 +102,7 @@ class PlanetGame {
   private sunPosition: THREE.Vector3 = new THREE.Vector3();
 
   private teleportInProgress: boolean = false;
+  private releaseTimer = 0;
 
   // Track if Sequoia trees have been scattered (happens when terrain is ready)
 
@@ -730,6 +731,16 @@ class PlanetGame {
     // Update music system (checks if time to play new song)
     MusicManager.update();
 
+    // Give back the memory of planets left far behind (their terrain data
+    // and detailed meshes - hundreds of MB each); they rebuild on approach
+    this.releaseTimer -= deltaTime;
+    if (this.releaseTimer <= 0) {
+      this.releaseTimer = PlayerConfig.RELEASE_DETAIL_CHECK_S;
+      const viewer = this.engine.camera.position;
+      for (const planet of this.planets.values()) {
+        if (planet.isDetailedTerrainEnabled() && planet.isFarForRelease(viewer)) planet.releaseDetailedTerrain();
+      }
+    }
     this.multiplayer?.update(deltaTime);
     this.rocketSync?.update(deltaTime);
     // Ground clutter (pixel grass tufts, rocks) on every world
