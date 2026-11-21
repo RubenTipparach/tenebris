@@ -77,6 +77,17 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
     case HexBlockType.MOON_ORE_COBALT: return ItemType.ORE_COBALT;
     case HexBlockType.MOON_ORE_LITHIUM: return ItemType.ORE_LITHIUM;
+    // The city is built of stone and glass; its park lawns are soil
+    case HexBlockType.CITY_ROAD:
+    case HexBlockType.CITY_SIDEWALK:
+    case HexBlockType.CITY_PLAZA:
+    case HexBlockType.CITY_FACADE:
+    case HexBlockType.CITY_ROOF:
+    case HexBlockType.CITY_METAL:
+    case HexBlockType.CITY_FOUNDATION: return ItemType.STONE;
+    case HexBlockType.CITY_GLASS:
+    case HexBlockType.CITY_NEON: return ItemType.GLASS;
+    case HexBlockType.CITY_PARK: return ItemType.DIRT;
     default: return ItemType.NONE;
   }
 }

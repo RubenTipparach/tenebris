@@ -15,7 +15,8 @@ import {
   BuildConfig,
   ChunkGeometryData
 } from './ChunkGeometryBuilder';
-import { PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
+import { CityConfig, sampleCity, cityColumn, cityFloors, cityLodColor, cityMeanFloors } from '../shared/cityGen';
+import { PackedBlocks, PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -33,6 +34,7 @@ export interface PlanetConfig {
   detailRenderDistance?: number;  // Override for detail terrain render distance (tiles from player)
   isSpawnPlanet?: boolean;  // If true, generate detailed terrain immediately. If false, only LOD until approached.
   seedOffset?: number;  // Added to the world seed so this planet gets its own landscape (default 0)
+  city?: CityConfig;    // Ecumenopolis: the surface is city (src/shared/cityGen.ts), not natural terrain
 }
 
 export interface PlanetColumn {
@@ -270,6 +272,30 @@ export class Planet {
       : new THREE.Color(heightFactor * 0.7, heightFactor * 0.7, heightFactor * 0.7);
   }
 
+  // Angular size of one terrain tile: city streets are measured in tiles
+  // whichever mesh samples the city (detailed columns or a coarse LOD sphere)
+  private cityTileAngle(): number {
+    return Math.sqrt(4 * Math.PI / this.polyhedron.tiles.length);
+  }
+
+  // Far-LOD colour and night glow of a city planet at a direction
+  // (coarse: the LOD tiles span whole city blocks - see cityLodColor)
+  private cityLodTile(dir: THREE.Vector3, coarse: boolean): { color: THREE.Color; glow: number } {
+    const city = this.config.city!;
+    const s = sampleCity(dir.x, dir.y, dir.z, this.seed, city, this.cityTileAngle());
+    const [hex, glow] = cityLodColor(s, city, coarse);
+    return { color: new THREE.Color(hex), glow };
+  }
+
+  // Surface depth for the coarse LOD spheres (distant + fallback HIGH LOD):
+  // a city shows its smooth mean skyline there, not point-sampled spikes
+  private getLodSurfaceDepth(position: THREE.Vector3): number {
+    if (!this.config.city) return this.getHeightVariation(position);
+    const ground = this.getSeaLevelDepth();
+    const floors = cityMeanFloors(position.x, position.y, position.z, this.seed, this.config.city);
+    return ground + Math.min(this.MAX_DEPTH - 1 - ground, Math.round(floors));
+  }
+
   // Convert depth to radius
   // Depth system: 0 = bedrock (innermost), MAX_DEPTH-1 = sky (outermost)
   public depthToRadius(depth: number): number {
@@ -334,7 +360,9 @@ export class Planet {
     this.meshBuilder.setPlanetCenter(this.center);
     // Set water level for terrain shader underwater dimming
     const waterSurfaceRadius = this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET;
-    this.meshBuilder.setWaterLevel(waterSurfaceRadius);
+    // A city's street level sits at its "sea level", but it has no sea:
+    // nothing on it is shaded as under water
+    this.meshBuilder.setWaterLevel(this.config.city ? 0 : waterSurfaceRadius);
 
     // For spawn planets, generate detailed terrain immediately
     // For non-spawn planets, only generate distant LOD - full terrain is generated when approaching
@@ -471,6 +499,8 @@ export class Planet {
         // they are still the Debug-tab mockup
         biomes: !this.config.texturePath && this.config.hasWater !== false && (this.config.tileset === SEQUOIA_TILESET || biomeMockupOn()),
         seed: this.seed,
+        city: this.config.city,
+        cityTileAngle: this.cityTileAngle(),
         maxDepth: this.MAX_DEPTH,
         seaLevel: this.SEA_LEVEL,
         maxHeight: this.MAX_HEIGHT,
@@ -506,8 +536,11 @@ export class Planet {
       // Handle worker response. The worker sends 'terrainBatch' messages and
       // a final 'terrainResult'; each is ingested in its own task.
       const boundingRadius = this.BLOCK_HEIGHT * this.MAX_DEPTH;
-      const ingest = (columnsArray: Array<[number, number[]]>) => {
-        for (const [tileIndex, blocks] of columnsArray) {
+      const ingest = (packed: PackedBlocks) => {
+        for (let i = 0; i < packed.indices.length; i++) {
+          const tileIndex = packed.indices[i];
+          const o = i * packed.stride;
+          const blocks = Array.from(packed.data.subarray(o, o + packed.lengths[i]));
           const tile = tileMap.get(tileIndex);
           if (!tile) continue;
 
@@ -539,9 +572,9 @@ export class Planet {
         const { type, columns } = e.data;
 
         if (type === 'terrainBatch') {
-          ingest(columns as Array<[number, number[]]>);
+          ingest(columns as PackedBlocks);
         } else if (type === 'terrainResult') {
-          ingest(columns as Array<[number, number[]]>);
+          ingest(columns as PackedBlocks);
 
           // Terminate worker
           this.terrainWorker?.terminate();
@@ -1912,7 +1945,7 @@ export class Planet {
       let vertexOffset = 0;
 
       // First pass: calculate display radius for each tile
-      const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+      const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color; glow: number }>();
       const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
       const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
 
@@ -1926,7 +1959,7 @@ export class Planet {
       };
 
       for (const tile of lodPolyhedron.tiles) {
-        const surfaceDepth = this.getHeightVariation(tile.center);
+        const surfaceDepth = this.getLodSurfaceDepth(tile.center);
         const terrainRadius = this.depthToRadius(surfaceDepth);
         const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
         const displayRadius = isWater ? waterRadius : terrainRadius;
@@ -1937,7 +1970,10 @@ export class Planet {
         const isPolar = Math.abs(normalizedY) > polarThreshold;
 
         let color: THREE.Color;
-        if (isSingleTexturePlanet) {
+        let glow = 0;
+        if (this.config.city) {
+          ({ color, glow } = this.cityLodTile(tile.center, true));
+        } else if (isSingleTexturePlanet) {
           // Single texture planets (like moon) use grey shading based on height
           const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
           color = this.singleTextureLodColor(heightFactor);
@@ -1955,7 +1991,7 @@ export class Planet {
           color = new THREE.Color(lodColors.land);
         }
 
-        tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+        tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color, glow });
       }
 
       // Second pass: create geometry
@@ -2014,9 +2050,10 @@ export class Planet {
             break;
           }
         }
-        // Torch light values: center = full brightness (1.0), edges = dim (0.3)
-        const centerTorchValue = hasTorch ? 1.0 : 0.0;
-        const edgeTorchValue = hasTorch ? 0.3 : 0.0;
+        // Torch light values: center = full brightness (1.0), edges = dim (0.3).
+        // A city's lights glow on its night side the same way.
+        const centerTorchValue = hasTorch ? 1.0 : tileData.glow;
+        const edgeTorchValue = hasTorch ? 0.3 : tileData.glow;
 
         // Fan triangulation from center
         const centerIdx = vertexOffset;
@@ -2042,8 +2079,11 @@ export class Planet {
         // (Only for non-water tiles)
         // Iterate through edges (vertices), not neighbors, matching HexBlock.createSeparateGeometries
         if (!tileData.isWater) {
-          // Use grey for single-texture planets (moon), brown for Earth
-          const sideColor = isSingleTexturePlanet
+          // Use grey for single-texture planets (moon), brown for Earth,
+          // lit building walls on a city
+          const sideColor = this.config.city
+            ? new THREE.Color(this.config.city.lodPalette.wall[0])
+            : isSingleTexturePlanet
             ? this.singleTextureLodColor(0.72)
             : new THREE.Color(0x8b7355);
           const numSides = tile.vertices.length;
@@ -2179,7 +2219,7 @@ export class Planet {
     let vertexOffset = 0;
 
     // Calculate tile radii and colors
-    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color }>();
+    const tileDisplayRadii = new Map<number, { radius: number; isWater: boolean; color: THREE.Color; glow: number }>();
     const SEA_LEVEL_DEPTH = this.getSeaLevelDepth();
     const waterRadius = this.depthToRadius(SEA_LEVEL_DEPTH);
     const isSingleTexturePlanet = !!this.config.texturePath;
@@ -2191,7 +2231,7 @@ export class Planet {
     };
 
     for (const tile of fallbackPolyhedron.tiles) {
-      const surfaceDepth = this.getHeightVariation(tile.center);
+      const surfaceDepth = this.getLodSurfaceDepth(tile.center);
       const terrainRadius = this.depthToRadius(surfaceDepth);
       const isWater = !isSingleTexturePlanet && surfaceDepth < SEA_LEVEL_DEPTH;
       const displayRadius = isWater ? waterRadius : terrainRadius;
@@ -2202,7 +2242,10 @@ export class Planet {
       const isPolar = Math.abs(normalizedY) > polarThreshold;
 
       let color: THREE.Color;
-      if (isSingleTexturePlanet) {
+      let glow = 0;
+      if (this.config.city) {
+        ({ color, glow } = this.cityLodTile(tile.center, false));
+      } else if (isSingleTexturePlanet) {
         const heightFactor = Math.max(0.4, Math.min(1.0, 0.6 + surfaceDepth * 0.02));
         color = this.singleTextureLodColor(heightFactor);
       } else if (isWater && isPolar) {
@@ -2217,7 +2260,7 @@ export class Planet {
         color = new THREE.Color(lodColors.land);
       }
 
-      tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color });
+      tileDisplayRadii.set(tile.index, { radius: displayRadius, isWater, color, glow });
     }
 
     // Generate geometry for each tile
@@ -2278,7 +2321,9 @@ export class Planet {
       // Generate side walls for edges where this tile is higher than neighbor
       // (Only for non-water tiles)
       if (!tileData.isWater) {
-        const sideColor = isSingleTexturePlanet
+        const sideColor = this.config.city
+          ? new THREE.Color(this.config.city.lodPalette.wall[0])
+          : isSingleTexturePlanet
           ? this.singleTextureLodColor(0.72)
           : new THREE.Color(0x8b7355);
         const numSides = tile.vertices.length;
@@ -3501,6 +3546,23 @@ export class Planet {
     // Generate ore veins before block assignment
     this.generateOreVeins();
 
+    if (this.config.city) {
+      // Ecumenopolis: the same city the terrain worker builds
+      const city = this.config.city;
+      const ground = this.getSeaLevelDepth();
+      const tileAngle = this.cityTileAngle();
+      for (const tile of this.polyhedron.tiles) {
+        const sample = sampleCity(tile.center.x, tile.center.y, tile.center.z, this.seed, city, tileAngle);
+        const blocks = cityColumn(sample, city, ground, this.MAX_DEPTH,
+          d => this.oreVeinCache.get(`${tile.index},${d}`)) as HexBlockType[];
+        this.columns.set(tile.index, {
+          tile, blocks, isDirty: true,
+          boundingSphere: new THREE.Sphere(tile.center.clone().add(this.center), this.BLOCK_HEIGHT * this.MAX_DEPTH),
+        });
+      }
+      return;
+    }
+
     // First pass: Generate height map with geographic features
     const heightMap = new Map<number, number>();
 
@@ -3923,6 +3985,12 @@ export class Planet {
   }
 
   private getHeightVariation(position: THREE.Vector3): number {
+    if (this.config.city) {
+      // City: street level, plus the building standing there
+      const ground = this.getSeaLevelDepth();
+      const s = sampleCity(position.x, position.y, position.z, this.seed, this.config.city, this.cityTileAngle());
+      return ground + cityFloors(s, this.MAX_DEPTH - 1 - ground);
+    }
     const variation = this.config.heightVariation ?? 1.0;
     const dir = position.clone().normalize();
 

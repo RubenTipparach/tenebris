@@ -3,6 +3,8 @@
 
 import { HexBlockType } from '../shared/blockTypes';
 import { Vec3 } from '../shared/vec3';
+import { CityConfig, sampleCity, cityColumn } from '../shared/cityGen';
+import { packBlocks, PackedBlocks } from './packedTiles';
 
 // Tile data passed from main thread (serializable)
 interface TileData {
@@ -19,6 +21,10 @@ interface TerrainConfig {
   // Mockup: climate biomes (deserts, tundra, rocky highlands, alpine snow,
   // stone cliffs) built from existing blocks. Earth only.
   biomes?: boolean;
+  // Ecumenopolis: every column is city (src/shared/cityGen.ts); street level
+  // is the sea-level depth. cityTileAngle = one tile's angular size
+  city?: CityConfig;
+  cityTileAngle?: number;
   seed: number;
   maxDepth: number;
   seaLevel: number;
@@ -58,10 +64,12 @@ interface GenerateTerrainMessage {
   config: TerrainConfig;
 }
 
-// Result format for postMessage (Maps don't serialize well)
-interface SerializableTerrainResult {
-  type: 'terrainResult';
-  columns: Array<[number, number[]]>;  // Array of [tileIndex, blocks] pairs
+// Result format for postMessage: columns packed into transferable typed
+// arrays (structured-cloning 163k nested number arrays cost the main thread
+// tens of seconds on the big planets, more the deeper their columns)
+interface TerrainColumnsMessage {
+  type: 'terrainBatch' | 'terrainResult';
+  columns: PackedBlocks;
 }
 
 // ============ NOISE FUNCTIONS ============
@@ -308,15 +316,12 @@ function generateOreVeins(
     for (const tile of tiles) {
       const tileIndex = tile.index;
       for (let depth = oreConfig.minDepth; depth <= oreConfig.maxDepth; depth++) {
-        const key = `${tileIndex},${depth}`;
-        if (oreVeinCache.has(key)) continue;
-
+        // Roll first: only a seed point needs its key (building a string
+        // key per tile and depth was most of a big planet's generation time)
         const seed = config.seed + oreSeedOffset + tileIndex * 7919 + depth * 104729;
-        const random = seededRandom(seed);
-
-        if (random < oreConfig.veinChance) {
-          spreadOreVein(tileIndex, depth, oreConfig, seed, tileNeighbors, oreVeinCache);
-        }
+        if (seededRandom(seed) >= oreConfig.veinChance) continue;
+        if (oreVeinCache.has(`${tileIndex},${depth}`)) continue;
+        spreadOreVein(tileIndex, depth, oreConfig, seed, tileNeighbors, oreVeinCache);
       }
     }
   }
@@ -394,6 +399,16 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
 
   // Generate ore veins first
   const oreVeinCache = generateOreVeins(tiles, config);
+
+  if (config.city) {
+    const ground = config.maxDepth - 1 - config.seaLevel;
+    for (const tile of tiles) {
+      const s = sampleCity(tile.center.x, tile.center.y, tile.center.z, config.seed, config.city, config.cityTileAngle!);
+      columns.set(tile.index, cityColumn(s, config.city, ground, config.maxDepth,
+        d => oreVeinCache.get(`${tile.index},${d}`)));
+    }
+    return columns;
+  }
 
   // First pass: Generate height map
   const heightMap = new Map<number, number>();
@@ -558,18 +573,19 @@ self.onmessage = (e: MessageEvent<GenerateTerrainMessage>) => {
     // Post the columns in batches. One giant message has to be deserialized
     // on the main thread in a single task (hundreds of ms for a large planet);
     // separate messages are separate tasks, so frames render in between.
-    const entries = Array.from(columns.entries());
+    const entries = Array.from(columns.entries(), ([i, blocks]) => [i, { blocks }] as [number, { blocks: number[] }]);
     const BATCH = 8192;
+    const post = (type: TerrainColumnsMessage['type'], slice: typeof entries) => {
+      const packed = packBlocks(slice, slice.length);
+      const message: TerrainColumnsMessage = { type, columns: packed };
+      (self as unknown as Worker).postMessage(message,
+        [packed.indices.buffer, packed.lengths.buffer, packed.data.buffer] as Transferable[]);
+    };
     for (let i = 0; i + BATCH < entries.length; i += BATCH) {
-      self.postMessage({ type: 'terrainBatch', columns: entries.slice(i, i + BATCH) });
+      post('terrainBatch', entries.slice(i, i + BATCH));
     }
     const lastStart = entries.length > BATCH ? Math.floor((entries.length - 1) / BATCH) * BATCH : 0;
-    const result: SerializableTerrainResult = {
-      type: 'terrainResult',
-      columns: entries.slice(lastStart)
-    };
-
-    self.postMessage(result);
+    post('terrainResult', entries.slice(lastStart));
   }
 };
 

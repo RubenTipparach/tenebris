@@ -9,7 +9,7 @@ import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
-import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii } from './config/SolarSystemConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, CelestialBodyConfig } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -59,7 +59,8 @@ class PlanetGame {
   private mushroomTreeManager: MushroomTreeManager | null = null;
   private earthAtmosphere: Atmosphere | null = null;
   private earthClouds: CloudSystem = null!;
-  private sequoiaAtmosphere: Atmosphere | null = null;
+  // Atmospheres of the planets other than Earth (Sequoia, the city world)
+  private bodyAtmospheres: Atmosphere[] = [];
   private isReady: boolean = false;
   private elapsedTime: number = 0;
   private waterUpdateTimer: number = 0;
@@ -132,6 +133,7 @@ class PlanetGame {
           distantLODAltitude: bodyConfig.distantLODAltitude,
           detailRenderDistance: bodyConfig.detailRenderDistance,
           seedOffset: bodyConfig.terrain.seed,
+          city: bodyConfig.terrain.city,
         }
       );
       this.planets.set(bodyConfig.id, planet);
@@ -619,16 +621,7 @@ class PlanetGame {
       await this.yieldToMainThread();
 
       // Create atmosphere for Sequoia (with reddish tint)
-      const sequoiaConfig = getBodyConfig('sequoia')!;
-      if (sequoiaConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED) {
-        this.sequoiaAtmosphere = createAtmosphere(
-          this.sequoia.radius,
-          sequoiaSunDir,
-          sequoiaConfig.visual.atmosphereTint
-        );
-        this.sequoiaAtmosphere.setPosition(this.sequoia.center);
-        this.engine.scene.add(this.sequoiaAtmosphere.getMesh());
-      }
+      this.addBodyAtmosphere(this.sequoia, getBodyConfig('sequoia')!);
 
       // NOTE: Mushroom trees require terrain data which is generated on-demand when approaching
       // Trees will be scattered in the update loop after terrain is ready
@@ -654,6 +647,8 @@ class PlanetGame {
       await planet.initialize();
       planet.updateBoundingSpheres();
       planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+      const config = getBodyConfig(planet.getName());
+      if (config) this.addBodyAtmosphere(planet, config);
     }
 
     const elapsed = performance.now() - startTime;
@@ -811,8 +806,8 @@ class PlanetGame {
     if (this.earthAtmosphere) {
       this.earthAtmosphere.updateCameraPosition(this.engine.camera.position);
     }
-    if (this.sequoiaAtmosphere) {
-      this.sequoiaAtmosphere.updateCameraPosition(this.engine.camera.position);
+    for (const atmosphere of this.bodyAtmospheres) {
+      atmosphere.updateCameraPosition(this.engine.camera.position);
     }
 
     // Update clouds (slow rotation)
@@ -1113,7 +1108,7 @@ class PlanetGame {
 
     // Show overlay
     if (overlay) overlay.classList.remove('hidden');
-    if (titleEl) titleEl.textContent = `Preparing ${planetName.charAt(0).toUpperCase() + planetName.slice(1)}`;
+    if (titleEl) titleEl.textContent = `Preparing ${getBodyConfig(planetName)?.name ?? planetName}`;
     if (progressBar) progressBar.style.width = '0%';
 
     // Step 0: the planet may still be loading in the background
@@ -1147,6 +1142,19 @@ class PlanetGame {
 
     // Hide overlay
     if (overlay) overlay.classList.add('hidden');
+  }
+
+  // A planet's atmosphere shell (with its config tint), if it has one
+  private addBodyAtmosphere(planet: Planet, config: CelestialBodyConfig): void {
+    if (!config.hasAtmosphere || !PlayerConfig.ATMOSPHERE_ENABLED) return;
+    const atmosphere = createAtmosphere(
+      planet.radius,
+      calculateSunDirectionForPlanet(planet.center, this.sunPosition),
+      config.visual.atmosphereTint
+    );
+    atmosphere.setPosition(planet.center);
+    this.engine.scene.add(atmosphere.getMesh());
+    this.bodyAtmospheres.push(atmosphere);
   }
 
   private topBlock(planet: Planet, tileIndex: number): number {

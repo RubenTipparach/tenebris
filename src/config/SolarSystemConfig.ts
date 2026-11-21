@@ -3,6 +3,7 @@
 // Makes it easy to add new bodies by defining their properties here
 
 import * as THREE from 'three';
+import type { CityConfig } from '../shared/cityGen';
 
 /**
  * Types of celestial bodies
@@ -100,6 +101,10 @@ export interface TerrainConfig {
   /** Added to the world seed for this body, so bodies sharing the same
    *  generator still get their own landscape (0 / unset = the world seed) */
   seed?: number;
+  /** Ecumenopolis: the whole surface is city (src/shared/cityGen.ts) instead
+   *  of natural terrain. seaLevel is then the air above street level, i.e.
+   *  the tallest a tower can be. */
+  city?: CityConfig;
   /** Water color override (hex string, defaults to PlayerConfig.WATER_COLOR) */
   waterColor?: string;
   /** Deep water color override (hex string, defaults to PlayerConfig.WATER_DEEP_COLOR) */
@@ -278,6 +283,28 @@ export const SEQUOIA_TILESET: TilesetConfig = {
   water: '/textures/water.png',  // Reuse Earth water texture
   glass: '/textures/glass.png',  // Reuse Earth glass
   mineralsPath: '/textures/minerals/earth',  // Reuse Earth minerals for now
+};
+
+/**
+ * City tileset (the ecumenopolis): these textures only dress the planet's
+ * chunked LOD, whose buffers the city blocks draw into through
+ * BASE_TERRAIN_TYPE (stone = roofs, sand = roads, dirt = sidewalks,
+ * snow = plazas, grass = parks). Detailed blocks use their own textures.
+ */
+export const CITY_TILESET: TilesetConfig = {
+  basePath: '/textures/city',
+  stone: '/textures/city/roof.png',
+  dirt: '/textures/city/sidewalk.png',
+  grass: '/textures/city/park.png',
+  dirtGrass: '/textures/city/park_side.png',
+  sand: '/textures/city/road.png',
+  wood: '/textures/city/glass.png',
+  snow: '/textures/city/plaza.png',
+  dirtSnow: '/textures/city/curb.png',
+  ice: '/textures/ice.png',
+  water: '/textures/water.png',
+  glass: '/textures/glass.png',
+  mineralsPath: '/textures/minerals/earth',
 };
 
 /**
@@ -531,7 +558,91 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     },
 
     // =========================================================================
-    // THE BARREN WORLDS - eight more landable planets (lifeless rock)
+    // FERRUM -> METROPOLE PRIME: the ecumenopolis, a Sequoia-sized planet
+    // that is one city pole to pole (id stays 'ferrum' for saves/teleport)
+    // =========================================================================
+    {
+      id: 'ferrum',
+      name: 'Metropole Prime',
+      type: CelestialBodyType.PLANET,
+      radius: 200,
+      subdivisions: 7,
+      // Clear of the sun (~2.4 km centre to centre) and every other body
+      position: { x: 2600, y: 300, z: 2200 },
+      visual: {
+        heightVariation: 1.0,
+        terrainStyle: TerrainStyle.BARREN,
+        distantColor: '#5d778d',
+        atmosphereTint: '#d8a0ff',  // violet smog
+        lodColors: {
+          land: '#92a3b2',   // concrete
+          water: '#15578a',
+          ice: '#bfcad7',
+          snow: '#cfaa81',   // plazas
+          rock: '#3e3551',   // roofs
+        },
+      },
+      gravity: {
+        strength: 1.0,
+        fullRadiusMultiplier: 1.2,
+        falloffRadiusMultiplier: 1.5,
+      },
+      terrain: {
+        hasWater: false,
+        seaLevel: 36,      // air above street level: the tallest tower
+        seed: 404,
+        city: {
+          blockPitch: 18,
+          streetWidth: 2.2,
+          avenueEvery: 4,
+          avenueWidth: 3.6,
+          sidewalkWidth: 1,
+          districtScale: 2.6,
+          downtown: 0.62,
+          midrise: 0.47,
+          lowrise: 0.33,
+          towerFloors: [16, 36],
+          midriseFloors: [7, 15],
+          lowriseFloors: [3, 6],
+          industrialFloors: [2, 4],
+          parkChance: 0.05,
+          plazaChance: 0.04,
+          setbackTiles: 1.6,
+          setbackKeep: 0.72,
+          crownFloors: 14,
+          storefrontChance: 0.5,
+          lodPalette: {
+            road: ['#3e586e', 1.0],
+            sidewalk: ['#92a3b2', 0.5],
+            plaza: ['#bfcad7', 0.7],
+            park: ['#297537', 0.0],
+            tower: ['#15578a', 0.9],
+            towerAlt: ['#1096c3', 0.9],
+            midrise: ['#92a3b2', 0.7],
+            midriseAlt: ['#a09f91', 0.7],
+            lowrise: ['#5d778d', 0.6],
+            lowriseAlt: ['#ab8465', 0.6],
+            industrial: ['#725244', 0.3],
+            industrialAlt: ['#8d4526', 0.3],
+            wall: ['#3e586e', 0.6],
+          },
+        },
+      },
+      tileset: CITY_TILESET,
+      spawn: {
+        ...daySideSpawn({ x: 2600, y: 300, z: 2200 }),
+        altitudeAboveSurface: 3,
+      },
+      landable: true,
+      hasAtmosphere: true,
+      intermediateLODAltitude: 70,
+      highLODAltitude: 120,
+      distantLODAltitude: 170,
+      detailRenderDistance: 20,
+    },
+
+    // =========================================================================
+    // THE BARREN WORLDS - seven more landable planets (lifeless rock)
     // =========================================================================
     // Spread round Earth at 1.5-4 km so the rocket reaches each in a few
     // minutes, and kept clear of the sun (1000, 0, 4000).
@@ -541,8 +652,6 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202 }),
     barrenPlanet({ id: 'halcyon', name: 'Halcyon', radius: 55, subdivisions: 5, position: { x: -900, y: -250, z: -1800 },
       heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303 }),
-    barrenPlanet({ id: 'ferrum', name: 'Ferrum', radius: 90, subdivisions: 6, position: { x: 2600, y: 300, z: 2200 },
-      heightVariation: 1.0, gravity: 0.9, colour: '#953b25', seed: 404 }),
     barrenPlanet({ id: 'tessaly', name: 'Tessaly', radius: 50, subdivisions: 5, position: { x: -2400, y: 400, z: -400 },
       heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505 }),
     barrenPlanet({ id: 'nerith', name: 'Nerith', radius: 38, subdivisions: 5, position: { x: 300, y: -500, z: -2600 },

@@ -50,7 +50,18 @@ export enum HexBlockType {
   MOON_ORE_IRON = 31,
   MOON_ORE_ALUMINUM = 32,
   MOON_ORE_COBALT = 33,
-  MOON_ORE_LITHIUM = 34
+  MOON_ORE_LITHIUM = 34,
+  // The ecumenopolis (a planet that is all city, src/shared/cityGen.ts)
+  CITY_ROAD = 35,
+  CITY_SIDEWALK = 36,
+  CITY_PLAZA = 37,
+  CITY_FACADE = 38,      // concrete wall with windows
+  CITY_GLASS = 39,       // downtown tower curtain wall (opaque)
+  CITY_ROOF = 40,
+  CITY_NEON = 41,        // neon band: tower crowns, storefronts
+  CITY_METAL = 42,       // industrial sheds
+  CITY_PARK = 43,
+  CITY_FOUNDATION = 44,  // the undercity below street level
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -68,6 +79,19 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.MOON_ORE_ALUMINUM]: HexBlockType.MOON_ROCK,
   [HexBlockType.MOON_ORE_COBALT]: HexBlockType.MOON_ROCK,
   [HexBlockType.MOON_ORE_LITHIUM]: HexBlockType.MOON_ROCK,
+  // City blocks: which LOD buffer they draw in (the city tileset gives
+  // those buffers city textures: stone = roof, sand = road, dirt =
+  // sidewalk, snow = plaza, grass = park)
+  [HexBlockType.CITY_ROAD]: HexBlockType.SAND,
+  [HexBlockType.CITY_SIDEWALK]: HexBlockType.DIRT,
+  [HexBlockType.CITY_PLAZA]: HexBlockType.SNOW,
+  [HexBlockType.CITY_PARK]: HexBlockType.GRASS,
+  [HexBlockType.CITY_FACADE]: HexBlockType.STONE,
+  [HexBlockType.CITY_GLASS]: HexBlockType.STONE,
+  [HexBlockType.CITY_ROOF]: HexBlockType.STONE,
+  [HexBlockType.CITY_NEON]: HexBlockType.STONE,
+  [HexBlockType.CITY_METAL]: HexBlockType.STONE,
+  [HexBlockType.CITY_FOUNDATION]: HexBlockType.STONE,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -108,6 +132,16 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.MOON_ORE_ALUMINUM]: sameFaces('moonOreAluminum'),
   [HexBlockType.MOON_ORE_COBALT]: sameFaces('moonOreCobalt'),
   [HexBlockType.MOON_ORE_LITHIUM]: sameFaces('moonOreLithium'),
+  [HexBlockType.CITY_ROAD]: { top: 'cityRoad', side: 'cityFoundation', bottom: 'cityFoundation' },
+  [HexBlockType.CITY_SIDEWALK]: { top: 'citySidewalk', side: 'cityCurb', bottom: 'cityFoundation' },
+  [HexBlockType.CITY_PLAZA]: { top: 'cityPlaza', side: 'cityCurb', bottom: 'cityFoundation' },
+  [HexBlockType.CITY_FACADE]: { top: 'citySlab', side: 'cityFacade', bottom: 'citySlab' },
+  [HexBlockType.CITY_GLASS]: { top: 'citySlab', side: 'cityGlass', bottom: 'citySlab' },
+  [HexBlockType.CITY_ROOF]: { top: 'cityRoof', side: 'cityParapet', bottom: 'citySlab' },
+  [HexBlockType.CITY_NEON]: { top: 'cityDeck', side: 'cityNeon', bottom: 'cityDeck' },
+  [HexBlockType.CITY_METAL]: { top: 'cityDeck', side: 'cityMetal', bottom: 'cityDeck' },
+  [HexBlockType.CITY_PARK]: { top: 'cityPark', side: 'cityParkSide', bottom: 'cityFoundation' },
+  [HexBlockType.CITY_FOUNDATION]: sameFaces('cityFoundation'),
 };
 const DEFAULT_FACES = sameFaces('top');
 export function blockFaces(blockType: HexBlockType | number): BlockFaces {
