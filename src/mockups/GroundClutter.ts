@@ -40,7 +40,9 @@ export class GroundClutter {
   private rockMaterial: THREE.ShaderMaterial;
   private grass: Tones = fallbackTones(0x2f7d2a, 0x4fae3a, 0x86d45a);
   private seqGrass: Tones = fallbackTones(0x6a7a2a, 0x93a33c, 0xc2cf6a);
-  private seqScrub: Tones = fallbackTones(0x434137, 0x559642, 0x9bb675);
+  // Sequoia's dry grass green (Sweaft-64 olives): its grass tufts, on a
+  // beige ground - Sequoia has tufts, just no green grass ground
+  private seqScrub: Tones = fallbackTones(0x559642, 0x9bb675, 0xcfaa81);
   private stone = new THREE.Color(0x8a8780);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
@@ -61,7 +63,6 @@ export class GroundClutter {
       scene.add(m);
     }
     sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
-    sampleTones(getAssetPath('/textures/biomes/seq_scrub.png')).then(t => { if (t) { this.seqScrub = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
   }
@@ -202,7 +203,7 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.SEQ_SNOW: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
     // Biome surfaces: dry scrub tufts (in its own beige / olive tones), a few
     // tufts in the forests, straw on the savanna
-    case HexBlockType.SEQ_SCRUB: return { tufts: 3, tuftsRand: 4, straw: false, rockChance: 0.08, rocks: 1 };
+    case HexBlockType.SEQ_SCRUB: return { tufts: 5, tuftsRand: 5, straw: false, rockChance: 0.06, rocks: 1 };
     case HexBlockType.SEQ_DUFF: return { tufts: 0, tuftsRand: 1.5, straw: false, rockChance: 0.15, rocks: 2 };
     case HexBlockType.FOREST_FLOOR: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.15, rocks: 2 };
     case HexBlockType.DRY_GRASS: return { tufts: 3, tuftsRand: 4, straw: true, rockChance: 0.1, rocks: 1 };
