@@ -1119,7 +1119,7 @@ export class CraftingSystem {
       const name = document.createElement('span');
       // A recipe a mission has not unlocked yet: dimmed, with that mission
       const lockedBy = recipeLockedBy(recipe.output.itemType);
-      name.textContent = lockedBy ? `${recipe.name} - ${lockedBy}` : recipe.name;
+      name.textContent = lockedBy ? `${recipe.name} - Unlocked by: ${lockedBy}` : recipe.name;
       name.style.color = lockedBy ? '#777' : '#fff';
       if (lockedBy) item.style.opacity = '0.55';
 
@@ -1153,6 +1153,8 @@ export class CraftingSystem {
 
   private openDropdown(): void {
     if (this.dropdownList) {
+      // Rebuilt on open: which recipes are locked changes as missions finish
+      this.populateDropdownList();
       this.dropdownList.style.display = 'block';
       this.isDropdownOpen = true;
     }

@@ -165,7 +165,8 @@ export class MachineUI extends BaseModalMenu {
       const canPay = r.inputs.every(inp => this.inventory.getItemCount(inp.itemType) >= inp.quantity);
       const btn = document.createElement('button');
       const by = locked ? recipeLockedBy(r.output) : null;
-      btn.textContent = locked ? `Locked${by ? ': ' + by : ''}` : `Build (${r.timeS} s)`;
+      btn.textContent = locked ? `Unlocked by: ${by}` : `Build (${r.timeS} s)`;
+      if (locked) row.style.opacity = '0.5';
       btn.disabled = locked || !canPay || m.job !== null;
       btn.style.cssText = 'margin-left:auto;padding:4px 10px;font-family:inherit;cursor:pointer;';
       btn.onclick = () => {

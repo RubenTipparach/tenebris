@@ -1,12 +1,14 @@
 // Mission tree tests (openspec navigation-and-orbits, tasks 7.1, 9.1-9.3).
 // Run: npx tsx scripts/missions.test.ts
-import { MISSIONS, MISSION_BRANCHES } from '../src/config/Missions';
+import { MISSIONS, MISSION_BRANCHES, STARTER_RECIPES } from '../src/config/Missions';
 import { MissionTracker } from '../src/player/MissionTracker';
 import { ItemType, ITEM_DATA } from '../src/player/Inventory';
 import { CRAFTING_RECIPES } from '../src/player/CraftingSystem';
 import { ELECTRONICS_RECIPES } from '../src/player/ElectronicsWorkbenchUI';
 import { PRINTER_RECIPES } from '../src/player/Printer3DUI';
 import { SMELTING_RECIPES, ELECTRIC_SMELTING_RECIPES } from '../src/config/SmeltingRecipes';
+import { COOKERS } from '../src/config/CookingConfig';
+import { FABRICATOR_RECIPES } from '../src/config/PowerConfig';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 const byId = new Map(MISSIONS.map(m => [m.id, m]));
@@ -29,6 +31,8 @@ for (const r of CRAFTING_RECIPES) outputs.set(r.output.itemType, `crafting ${r.n
 for (const r of ELECTRONICS_RECIPES) outputs.set(r.output.itemType, `workbench ${r.name}`);
 for (const r of PRINTER_RECIPES) outputs.set(r.output, `printer ${r.name}`);
 for (const r of [...SMELTING_RECIPES, ...ELECTRIC_SMELTING_RECIPES]) outputs.set(r.output, `smelt ${ItemType[r.output]}`);
+for (const [kind, c] of Object.entries(COOKERS)) for (const r of c.recipes) outputs.set(r.output, `${kind} ${ItemType[r.output]}`);
+for (const r of FABRICATOR_RECIPES) outputs.set(r.output, `fabricator ${ItemType[r.output]}`);
 const reached = new Set<number>();
 for (const m of MISSIONS) { m.unlocks.forEach(u => reached.add(u)); m.objectives.forEach(o => { if (o.item !== undefined) reached.add(o.item); }); }
 const unreached = [...outputs].filter(([o]) => !reached.has(o)).map(([, n]) => n);
@@ -38,6 +42,21 @@ ok(unlockNotRecipe.length === 0, `every unlock names a real recipe output${unloc
 // A mission never asks for what only it unlocks (it could never finish)
 const selfLock = MISSIONS.filter(m => m.objectives.some(o => o.item !== undefined && m.unlocks.includes(o.item)));
 ok(selfLock.length === 0, `no mission needs its own unlock${selfLock.length ? ': ' + selfLock.map(m => m.id).join(', ') : ''}`);
+// The owner: "recipe should be locked until missions completed". Every
+// recipe is a starter or in EXACTLY one mission's unlocks; none is open by
+// default in a new world.
+const starters = new Set<number>(STARTER_RECIPES);
+const namings = new Map<number, number>();
+for (const m of MISSIONS) for (const u of m.unlocks) namings.set(u, (namings.get(u) ?? 0) + 1);
+const badGate = [...outputs].filter(([o]) => (starters.has(o) ? 1 : 0) + (namings.get(o) ?? 0) !== 1).map(([o, n]) => `${n} (${starters.has(o) ? 'starter+' : ''}${namings.get(o) ?? 0})`);
+ok(badGate.length === 0, `every recipe is a starter or one mission's unlock, never both or none${badGate.length ? ': ' + badGate.join(', ') : ''}`);
+ok(STARTER_RECIPES.every(o => outputs.has(o)) && STARTER_RECIPES.length <= 4, 'the starter list is short and names real recipes');
+const fresh = new MissionTracker(null);
+const openAtStart = [...outputs].filter(([o]) => fresh.recipeOpen(o) !== starters.has(o)).map(([, n]) => n);
+ok(openAtStart.length === 0, `a new world opens only the starters${openAtStart.length ? ': ' + openAtStart.join(', ') : ''}`);
+const lockedNames = [...outputs.keys()].filter(o => !starters.has(o)).filter(o => !fresh.lockedBy(o) || fresh.lockedBy(o) === '?');
+ok(lockedNames.length === 0, 'every locked recipe names its mission');
+
 // Every made/placed/gained thing a mission asks for is open by the time it opens
 const ancestors = (id: string): Set<string> => {
   const s = new Set<string>();
@@ -48,7 +67,7 @@ const ancestors = (id: string): Set<string> => {
 const unlockedBy = new Map<number, string>();
 for (const m of MISSIONS) for (const u of m.unlocks) unlockedBy.set(u, m.id);
 const lockedAsk = MISSIONS.flatMap(m => m.objectives
-  .filter(o => o.item !== undefined && unlockedBy.has(o.item) && !ancestors(m.id).has(unlockedBy.get(o.item)!))
+  .filter(o => o.item !== undefined && outputs.has(o.item) && !starters.has(o.item) && !ancestors(m.id).has(unlockedBy.get(o.item) ?? ''))
   .map(o => `${m.id}:${ItemType[o.item!]}`));
 ok(lockedAsk.length === 0, `every objective's recipe is unlocked before its mission opens${lockedAsk.length ? ': ' + lockedAsk.join(', ') : ''}`);
 
@@ -83,7 +102,13 @@ ok(t.state(byId.get('alienfish')!) === 'locked', 'Fish another world waits on it
 // ---- 9.2 unlocking
 const t5 = new MissionTracker(null);
 ok(!t5.recipeOpen(ItemType.ROCKET_ENGINE) && t5.lockedBy(ItemType.ROCKET_ENGINE) === 'Raise the tower', 'a new world has the rocket engine locked by Raise the tower');
-ok(t5.recipeOpen(ItemType.WOOD), 'a recipe no mission names is open');
+ok(t5.recipeOpen(ItemType.WOOD) && t5.recipeOpen(ItemType.STICK), 'the starters (planks, sticks) are open in a new world');
+ok(!t5.recipeOpen(ItemType.COAL) && t5.lockedBy(ItemType.COAL) === 'Build a furnace', 'coal waits on Build a furnace');
+ok(!t5.recipeOpen(ItemType.INGOT_IRON) && !t5.recipeOpen(ItemType.CAMPFIRE) && !t5.recipeOpen(ItemType.COOKED_FISH), 'smelts, machines and dishes start locked');
+const t10 = new MissionTracker({ v: 2, done: ['logs', 'planks'], prog: {}, low: {}, seen: {}, legacy: [] });
+t10.keepWhatTheWorldHas({ held: (i) => (i === ItemType.CAMPFIRE ? 1 : 0), placedMachines: (i) => (i === ItemType.KILN ? 1 : 0), padComplete: false, rocketAssembled: false });
+ok(t10.recipeOpen(ItemType.CAMPFIRE) && t10.recipeOpen(ItemType.KILN) && !t10.recipeOpen(ItemType.OVEN), 'a save from before every recipe was locked keeps what it carries and has placed');
+ok(new MissionTracker(t10.save()).recipeOpen(ItemType.KILN) && t10.save().rule !== undefined, 'what it kept survives a save; the save records the new rule');
 const t6 = new MissionTracker(null);
 t6.skipSatisfied({ held: (i) => (i === ItemType.ROCKET_ENGINE ? 1 : 0), placedMachines: () => 0, padComplete: false, rocketAssembled: false });
 ok(t6.recipeOpen(ItemType.ROCKET_ENGINE), 'an old world carrying an engine keeps its recipe');
@@ -110,7 +135,7 @@ ok(t4.isDone('map'), 'reaching a far waypoint completes Read the map');
 t4.event('smelted', ItemType.INGOT_IRON, 3, h);
 ok(!t4.isDone('ingots'), 'smelting before its mission opens does not count');
 const lateIds = ['moon', 'moonmetal', 'titanium', 'vacuum', 'icefuel', 'sequoia', 'explorer', 'alienfish'];
-const t9 = new MissionTracker({ v: 2, done: MISSIONS.filter(m => !lateIds.includes(m.id)).map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [] });
+const t9 = new MissionTracker({ v: 2, done: MISSIONS.filter(m => !lateIds.includes(m.id) && m.branch !== 'nuclear').map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [] });
 t9.event('landed', 'earth', 1, h);
 ok(!t9.isDone('moon'), 'landing on Earth does not count for the Moon');
 t9.event('landed', 'moon', 1, h);
@@ -125,3 +150,29 @@ t9.event('smelted', ItemType.INGOT_TITANIUM, 2, h);
 ok(t9.isDone('titanium'), 'smelting titanium completes Smelt titanium');
 t9.event('landed', 'cinder', 1, h); t9.event('landed', 'cinder', 1, h);
 ok(!t9.isDone('explorer'), 'the same world twice counts once for Explorer');
+
+// ---- industry-and-nuclear branches: their own events count
+const before = (ids: string[]) => MISSIONS.filter(m => !ids.includes(m.id)).map(m => m.id);
+const cookIds = ['cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'concrete', 'steel', 'girders', 'steelglass'];
+const t11 = new MissionTracker({ v: 2, done: before(cookIds), prog: {}, low: {}, seen: {}, legacy: [] });
+ok(t11.recipeOpen(ItemType.COOKED_FISH) && !t11.recipeOpen(ItemType.KILN), 'a campfire done opens cooked fish, not yet the kiln');
+t11.event('cooked', ItemType.COOKED_FISH, 1, h);
+ok(t11.isDone('cookfish') && t11.recipeOpen(ItemType.KILN), 'cooking a fish completes Cook a fish and unlocks the kiln');
+t11.event('placed', ItemType.KILN, 1, h); t11.event('cooked', ItemType.CLAY_POT, 1, h); t11.event('placed', ItemType.OVEN, 1, h);
+t11.event('cooked', ItemType.FISH_STEW, 1, h); t11.event('ate', ItemType.COOKED_FISH, 1, h);
+ok(t11.isDone('stew') && !t11.isDone('eat'), 'eating plain fish is not eating well');
+t11.event('ate', ItemType.FISH_STEW, 1, h);
+ok(t11.isDone('eat'), 'eating the stew completes Eat well');
+const t12 = new MissionTracker({ v: 2, done: before(['onbattery', 'lithium', 'solidstate', 'uranium', 'centrifuge', 'fuelrods', 'reactor', 'fabricator', 'ntr', 'ntrlaunch', 'ioncore', 'ionflight']), prog: {}, low: {}, seen: {}, legacy: [] });
+t12.event('onBattery', undefined, 1, h);
+ok(t12.isDone('onbattery') && t12.recipeOpen(ItemType.BATTERY_LITHIUM), 'a network on battery completes Run on battery and unlocks lithium-ion');
+t12.event('placed', ItemType.BATTERY_LITHIUM, 1, h);
+held[ItemType.ORE_URANIUM] = 0; t12.baseline(h); held[ItemType.ORE_URANIUM] = 4; t12.sample(h);
+t12.event('placed', ItemType.CENTRIFUGE, 1, h); t12.event('enriched', ItemType.ENRICHED_URANIUM, 1, h);
+t12.event('crafted', ItemType.FUEL_ROD, 2, h); t12.event('reactorBuilt', ItemType.REACTOR, 1, h);
+t12.event('placed', ItemType.NUCLEAR_FABRICATOR, 1, h); t12.event('crafted', ItemType.NUCLEAR_THERMAL_ENGINE, 1, h);
+ok(t12.isDone('ntr') && !t12.recipeOpen(ItemType.ION_DRIVE), 'the nuclear chain runs to the engine; the ion drive waits on a nuclear launch');
+t12.event('launchedWith', ItemType.ROCKET_ENGINE, 1, h);
+ok(!t12.isDone('ntrlaunch'), 'a chemical launch is not a nuclear launch');
+t12.event('launchedWith', ItemType.NUCLEAR_THERMAL_ENGINE, 1, h);
+ok(t12.isDone('ntrlaunch') && t12.recipeOpen(ItemType.ION_DRIVE) && t12.recipeOpen(ItemType.REACTOR_CORE), 'a nuclear launch unlocks the ion drive and reactor core');

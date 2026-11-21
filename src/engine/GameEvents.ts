@@ -14,13 +14,23 @@
  *   reached     a waypoint set 200 m or more away was reached
  *   cooked      key = ItemType a campfire, kiln or oven made
  *   ate         key = ItemType of the dish eaten
+ *   pumped      key = ItemType a pump jack filled (crude oil)
+ *   refined     key = ItemType a refinery made first (kerosene)
+ *   enriched    key = ItemType a centrifuge made
+ *   reactorBuilt key = ItemType of the reactor placed off-world
+ *   onBattery   a cable network went from running on its generators to
+ *               running on battery charge (src/power/PowerGrid.ts)
+ *   fueled      key = ItemType burnt to refuel a rocket, n = count
+ *   launchedWith key = ItemType of a part in the stack of a rocket that
+ *               just launched (one per part type, after 'launched')
  *
  * Items gained are not an event: they are read off the inventory itself
  * (src/player/MissionTracker.ts), since they arrive by many paths.
  */
 export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed'
   | 'smelted' | 'caught' | 'caughtOn' | 'reached' | 'cooked' | 'ate'
-  | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt';
+  | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
+  | 'onBattery' | 'fueled' | 'launchedWith';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

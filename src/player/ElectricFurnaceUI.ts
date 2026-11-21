@@ -1,6 +1,8 @@
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { PlacedElectricFurnace, ELECTRIC_SMELTING_RECIPES } from '../planet/ElectricFurnace';
 import { isElectricAdditive } from '../config/SmeltingRecipes';
+import { recipeLockedLabel, recipeOpen } from './RecipeGate';
+import { showToast } from '../utils/toast';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 
@@ -326,7 +328,12 @@ export class ElectricFurnaceUI {
     if (slotType !== this.SLOT_INPUT) return false;
     // Only smeltable items whose product won't clash with the output slot
     const outputItem = this.currentFurnace!.outputItem;
-    return ELECTRIC_SMELTING_RECIPES.some(r => r.input === itemType && (outputItem === null || outputItem === r.output));
+    const fits = ELECTRIC_SMELTING_RECIPES.filter(r => r.input === itemType && (outputItem === null || outputItem === r.output));
+    if (fits.length === 0) return false;
+    // Smelts a mission has not unlocked yet: refused, naming the mission
+    if (fits.some(r => recipeOpen(r.output))) return true;
+    showToast(`${ITEM_DATA[fits[0].output]?.name ?? 'That'} is locked - ${recipeLockedLabel(fits[0].output)}`, { duration: 3000 });
+    return false;
   }
 
   // Load a stack into an input slot; true when it went in

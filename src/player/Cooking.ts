@@ -1,6 +1,7 @@
 import { ItemType, InventorySlot, ITEM_DATA } from './Inventory';
 import { COOKERS, COOKER_SLOTS, CookerKind, CookingRecipe, Ingredient, FOOD, FOOD_CONFIG } from '../config/CookingConfig';
 import { FISH_ITEMS } from '../config/FishRosters';
+import { recipeOpen } from './RecipeGate';
 
 /**
  * The cooking rules, with no scene or DOM (so tests run them directly):
@@ -15,9 +16,10 @@ const matches = (ing: Ingredient, item: ItemType): boolean =>
  * The recipe a station's input slots make right now, and which input slot
  * each ingredient comes from - most ingredients first, so an oven with a
  * fish, a water bucket and a pot makes stew rather than plain cooked fish.
+ * A recipe a mission has not unlocked yet is skipped (src/player/RecipeGate).
  */
 export function findCookingRecipe(kind: CookerKind, slots: InventorySlot[]): { recipe: CookingRecipe; from: number[] } | null {
-  const recipes = [...COOKERS[kind].recipes].sort((a, b) => b.inputs.length - a.inputs.length);
+  const recipes = COOKERS[kind].recipes.filter(r => recipeOpen(r.output)).sort((a, b) => b.inputs.length - a.inputs.length);
   for (const recipe of recipes) {
     const used = new Set<number>();
     const from: number[] = [];

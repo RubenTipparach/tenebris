@@ -1,6 +1,8 @@
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
-import { PlacedFurnace, SMELTING_RECIPES } from '../planet/Furnace';
-import { furnaceFuel, SMELTS_PER_COAL } from '../config/SmeltingRecipes';
+import { PlacedFurnace } from '../planet/Furnace';
+import { furnaceFuel, smeltingRecipeFor, SMELTS_PER_COAL } from '../config/SmeltingRecipes';
+import { recipeLockedLabel } from './RecipeGate';
+import { showToast } from '../utils/toast';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 
@@ -463,7 +465,7 @@ export class FurnaceUI {
       }
     } else if (targetSlotType === this.SLOT_INPUT) {
       // Only accept smeltable ores
-      const recipe = SMELTING_RECIPES.find(r => r.input === slotData.itemType);
+      const recipe = this.smeltable(slotData.itemType);
       if (recipe) {
         // Check if output slot has a different item type (would cause conflict)
         if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {
@@ -575,7 +577,7 @@ export class FurnaceUI {
       } else {
         // No items in furnace input - try to add entire stack from selected slot
         const selectedItem = this.inventory.getSelectedItem();
-        const recipe = SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
+        const recipe = this.smeltable(selectedItem.itemType);
         if (recipe && selectedItem.quantity > 0) {
           if (this.currentFurnace.smeltingItem === null || this.currentFurnace.smeltingItem === selectedItem.itemType) {
             const toTransfer = selectedItem.quantity;
@@ -635,13 +637,24 @@ export class FurnaceUI {
     }
   }
 
+  /** The smelt for an input, if a mission has unlocked it; a locked one says which mission. */
+  private smeltable(itemType: ItemType) {
+    const recipe = smeltingRecipeFor(itemType);
+    const locked = recipe ? recipeLockedLabel(recipe.output) : null;
+    if (locked) {
+      showToast(`${ITEM_DATA[recipe!.output]?.name ?? 'That'} is locked - ${locked}`, { duration: 3000 });
+      return undefined;
+    }
+    return recipe;
+  }
+
   private handleInputSlotClick(): void {
     if (!this.currentFurnace) return;
 
     const selectedItem = this.inventory.getSelectedItem();
 
     // Check if holding a smeltable ore
-    const recipe = SMELTING_RECIPES.find(r => r.input === selectedItem.itemType);
+    const recipe = this.smeltable(selectedItem.itemType);
     if (recipe && selectedItem.quantity > 0) {
       // Check if output slot has a different item type (would cause conflict)
       if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputItem !== recipe.output) {

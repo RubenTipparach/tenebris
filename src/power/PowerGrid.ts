@@ -21,6 +21,7 @@ export interface GridResult {
   storedWh: number;            // after this step
   capacityWh: number;
   nuclearW: number;            // supply from reactors (the fabricator needs it)
+  onBattery: boolean;          // the machines run because batteries cover a shortfall
   batteryCharge: Map<string, number>;  // battery id -> new charge (Wh)
 }
 
@@ -66,7 +67,8 @@ export function solveNetwork(
   }
   const storedWh = [...batteryCharge.values()].reduce((s, v) => s + v, 0);
   const capacityWh = batteries.reduce((s, b) => s + b.capacityWh, 0);
-  return { powered, supplyW, demandW, storedWh, capacityWh, nuclearW, batteryCharge };
+  const onBattery = powered && net < 0;
+  return { powered, supplyW, demandW, storedWh, capacityWh, nuclearW, onBattery, batteryCharge };
 }
 
 /** "2.0 kW" / "450 W" */

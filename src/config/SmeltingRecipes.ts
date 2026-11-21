@@ -1,4 +1,5 @@
 import { ItemType } from '../player/Inventory';
+import { recipeOpen } from '../player/RecipeGate';
 
 /**
  * What the furnaces smelt (src/planet/Furnace.ts, ElectricFurnace.ts): kept
@@ -20,6 +21,17 @@ export const SMELTING_RECIPES: SmeltingRecipe[] = [
   { input: ItemType.CLAY, output: ItemType.BRICK, outputQuantity: 1 },                   // fired clay
   // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
 ];
+
+/** The furnace's smelt for an input, if any (open or not). */
+export function smeltingRecipeFor(input: ItemType | number | null): SmeltingRecipe | undefined {
+  return input === null ? undefined : SMELTING_RECIPES.find(r => r.input === input);
+}
+
+/** Whether a mission has unlocked the furnace's smelt for this input. */
+export function smeltOpen(input: ItemType | number): boolean {
+  const r = smeltingRecipeFor(input);
+  return !!r && recipeOpen(r.output);
+}
 
 /**
  * What burns in the furnace, and for how long: `smelts` is how many items

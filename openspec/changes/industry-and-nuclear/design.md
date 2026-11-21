@@ -240,23 +240,68 @@ play doesn't exist.
 
 ### 7. Missions
 
-New branches in `src/config/Missions.ts` (one parent each, ids
-append-only):
+New branches in `src/config/Missions.ts` (one parent each, extra needs as
+hidden `after` gates, ids append-only and appended after the old ones so the
+main line stays the "Now" order). Each mission uses what the one before it
+unlocked.
 
-- **Clay and cooking** (off the trunk):
-  - Find clay → Fire bricks → Build a campfire → Cook fish → Build a kiln
-    (pot) → Build an oven → Make stew → Eat well.
-- **Oil** (off Electronics):
-  - Find oil (a crude oil bucket) → Pump jack → Refinery → Kerosene → Fuel
-    a rocket with kerosene.
-- **Power storage** (off Power):
-  - Lead-acid battery → Keep the lights on (run a network on battery) →
-    Lithium-ion battery → Solid-state battery (gated on Plastic).
-- **Nuclear** (off the Moon and beyond, gated on Lithium-ion):
-  - Find uranium → Centrifuge → Fuel rods → Build a reactor off-world →
-    Nuclear fabricator → Nuclear thermal engine → Launch on nuclear
-    power → Reactor core and ion drive → Fly the ion drive.
-- **Coverage:** the coverage test covers every new recipe.
+**Every recipe waits on a mission** (the owner, 2026-11-21: "recipe should
+be locked until missions completed"):
+- Every recipe - crafting grid, workbench, 3D printer, nuclear fabricator,
+  campfire, kiln, oven, furnace and electric-furnace smelts and alloys - is
+  locked in a new world until its mission is done.
+- Only `STARTER_RECIPES` (planks, sticks: what Make planks asks for) is open
+  from the start. The rule "a recipe no mission names is open" is gone.
+- The test holds every recipe to the starter list or exactly one mission's
+  unlocks, and checks a new world opens nothing else.
+- Old worlds keep what they crafted, carry or placed: on the tree's first
+  look (as before), and once more for a tree save from before this rule
+  (a save without `rule`).
+- The basics moved onto the trunk: Build a furnace unlocks coal and glass,
+  Find ore the iron smelt, Smelt iron the copper smelt, Smelt copper the
+  aluminium and gold smelts, the electric furnace lithium and cobalt, Moon
+  metal the titanium smelt.
+- Locked recipes show dimmed with "Unlocked by: <mission>" in every list:
+  crafting, workbench, printer, fabricator, and a new recipe strip in the
+  cooking-station panels. The furnaces have no recipe list: loading an input
+  whose smelt is locked is refused with the same message, and a furnace or
+  station never makes a locked recipe.
+
+**Branches**
+- **Clay and cooking** (off Build a furnace):
+  - Find clay (unlocks the brick smelt) → Fire bricks (campfire) → Light a
+    campfire (cooked fish) → Cook a fish (gate: Catch fish; kiln) → Build a
+    kiln (clay pot) → Make a pot (oven) → Build an oven (gate: Smelt iron;
+    fish stew) → Make fish stew (gate: Carry water) → Eat well.
+- **Construction** (off Store things): see decision 9.
+- **Oil** (off Make chips, gate: Carry water):
+  - Strike oil (a crude oil bucket; pump jack) → Pump jack (place + pump;
+    refinery) → Refinery → Refine crude (kerosene and plastic) → Kerosene
+    rocket (gate: Build the rocket; refuel with kerosene).
+- **Power storage** (off Rare metals, gate: the workbench, which unlocks
+  lead-acid):
+  - Store power → Run on battery (lithium-ion) → Lithium-ion (solid-state)
+    → Solid-state (gate: Refine crude, for plastic).
+- **Nuclear** (off Vacuum engine, gate: Lithium-ion):
+  - Find uranium (centrifuge) → Enrich uranium (fuel rod) → Fuel rods
+    (reactor) → Reactor off-world (fabricator) → Nuclear fabricator (nuclear
+    thermal engine) → Nuclear engine → Nuclear launch (reactor core, ion
+    drive, battery pack) → Ion drive (gate: Solid-state) → Fly the ion
+    drive.
+
+**New events** (`src/engine/GameEvents.ts`), emitted where the game does
+the thing:
+- `onBattery`: a network goes over to its batteries (the grid solve's new
+  `onBattery` flag, edge-triggered in the machine tick).
+- `fueled`: a refuel burns an item (the refuel callback in `mainPlanet.ts`).
+- `launchedWith`: after `launched`, one per part type in the stack (a
+  `mainPlanet.ts` listener reads the flying rocket's parts; the rocket files
+  are not touched).
+- Already there: `cooked`, `ate`, `pumped`, `refined`, `enriched`,
+  `reactorBuilt`, `crafted` (the fabricator's outputs).
+
+**Coverage:** the test's recipe table now includes the cooking stations and
+the fabricator, so every one of their outputs is reached too.
 
 ### 9. Building materials
 
@@ -299,10 +344,12 @@ mining times rise in this order:
 - concrete, steel glass and steel girder.
 
 **Missions:** a Construction branch.
-- It hangs off Light and storage.
-- It runs: Clay block → Brick wall (place 8 brick blocks) → Cement →
-  Concrete (place 8) → Steel (needs the electric furnace: a hidden gate on
-  Power) → Girders → Steel-framed glass (place 4).
+- It hangs off Store things (Light and storage).
+- It runs: Build with clay (place 4 clay; gate: Find clay; brick block) →
+  Brick wall (place 8; cement) → Make cement (gate: Build a kiln; concrete)
+  → Pour concrete (place 8; gate: Carry water; steel) → Make steel (needs
+  the electric furnace: a hidden gate on Power; girders) → Steel frame
+  (place 4; steel glass) → Framed glass (place 4).
 
 ### 8. Build order
 

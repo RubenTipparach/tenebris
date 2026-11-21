@@ -8,7 +8,7 @@ import techFrag from '../shaders/tech/tech.frag';
 // Smelting recipes: ore -> ingot
 export { SMELTING_RECIPES } from '../config/SmeltingRecipes';
 export type { SmeltingRecipe } from '../config/SmeltingRecipes';
-import { SMELTING_RECIPES } from '../config/SmeltingRecipes';
+import { SMELTING_RECIPES, smeltOpen } from '../config/SmeltingRecipes';
 
 // Furnace texture layout (48x32, each face is 16x16):
 // Row 1: Front(0,0) | Side1(16,0) | Side2(32,0)
@@ -411,6 +411,8 @@ export class FurnaceManager {
     let anySmeltCompleted = false;
 
     for (const furnace of this.furnaces) {
+      // A smelt a mission has not unlocked yet waits (src/player/RecipeGate)
+      if (furnace.smeltingItem !== null && !smeltOpen(furnace.smeltingItem)) continue;
       if (furnace.fuelAmount > 0 && furnace.smeltingItem !== null) {
         // Progress the smelting
         const smeltRate = 1 / this.SMELT_TIME;

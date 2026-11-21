@@ -85,6 +85,8 @@ export class MissionsPanel {
     const held = (item: number) => this.inventory.getItemCount(item as ItemType);
     // A world played before the tree starts where it is, keeping its recipes
     if ((!saved || (saved as { v?: number }).v !== 2) && existingWorld) this.tracker.skipSatisfied(world());
+    // A tree save from before every recipe was locked keeps what it has
+    else if (saved && (saved as MissionSave).rule === undefined && existingWorld) this.tracker.keepWhatTheWorldHas(world());
     this.tracker.baseline(held);
     this.tracker.onComplete = (m) => {
       const names = m.unlocks.map(u => ITEM_DATA[u]?.name).filter(Boolean);
@@ -392,7 +394,7 @@ export class MissionsPanel {
       const label = document.createElement('span');
       label.textContent = 'UNLOCKS';
       un.appendChild(label);
-      for (const u of m.unlocks) un.appendChild(icon(ITEM_DATA[u]?.texture, UI.LEVELS[1].icon, ITEM_DATA[u]?.name));
+      for (const u of m.unlocks) un.appendChild(icon(ITEM_DATA[u]?.texture, UI.UNLOCK_ICON, ITEM_DATA[u]?.name));
       card.appendChild(un);
     }
     return card;

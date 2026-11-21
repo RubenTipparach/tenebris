@@ -1,5 +1,5 @@
 import { emitGameEvent } from '../engine/GameEvents';
-import { recipeLockedBy, recipeOpen } from './RecipeGate';
+import { recipeLockedBy, recipeLockedLabel, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
@@ -966,7 +966,9 @@ export class ElectronicsWorkbenchUI {
       ELECTRONICS_RECIPES.forEach((r, i) => {
         const opt = this.recipeDropdown!.querySelector<HTMLOptionElement>(`option[value="${i}"]`);
         const by = recipeLockedBy(r.output.itemType);
-        if (opt) opt.textContent = by ? `${r.name} (locked: ${by})` : r.name;
+        if (!opt) return;
+        opt.textContent = by ? `${r.name} - Unlocked by: ${by}` : r.name;
+        opt.style.color = by ? '#777' : '';
       });
     }
 
@@ -1080,6 +1082,9 @@ export class ElectronicsWorkbenchUI {
     if (this.craftButton) {
       const canCraft = this.isPowered && selectedRecipe && this.canCraftRecipe(selectedRecipe);
       this.craftButton.disabled = !canCraft;
+      // A locked recipe's button names the mission that unlocks it
+      const locked = selectedRecipe ? recipeLockedLabel(selectedRecipe.output.itemType) : null;
+      this.craftButton.textContent = locked ?? 'Craft';
     }
   }
 }
