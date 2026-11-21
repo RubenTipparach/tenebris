@@ -1225,6 +1225,11 @@ export class RocketController {
     return this.orientation.clone();
   }
 
+  /** Engines burning (thrust on, throttle open, fuel left) - what the exhaust shows */
+  public isExhaustActive(): boolean {
+    return this.isThrustActive && this.throttle > 0 && this.currentFuel > 0;
+  }
+
   public getThrottle(): number {
     return this.throttle;
   }

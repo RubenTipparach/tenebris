@@ -257,6 +257,20 @@ SPECIES = {
             'legF': track(rot=neg(arc(0.5))),
         }),
     },
+    # ---- Players (the multiplayer avatar, src/net/Avatar.ts) -----------
+    # Not fauna, but the same rig format: arms swing opposite the legs
+    'player': {
+        'idle': (3.0, {
+            'body': track(dy=wave(0.012)),
+            'head': track(rot=seq([0, 0, 0.06, 0.06, 0, 0, -0.04, 0])),
+            'armL': track(rot=wave(0.04)), 'armR': track(rot=wave(-0.04)),
+        }),
+        'move': (0.7, {
+            **biped_walk(0.7, 0.05),
+            'armL': track(rot=neg(wave(0.55))), 'armR': track(rot=wave(0.55)),
+            'head': track(rot=wave(0.03, mult=2)),
+        }),
+    },
 }
 
 

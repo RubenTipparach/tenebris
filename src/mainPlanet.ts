@@ -17,14 +17,18 @@ import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
 import { drawFuel, slotStore } from './rocket/RocketPerformance';
+import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
+import { CharacterCreator } from './net/CharacterCreator';
+import { loadMyLook } from './net/Avatar';
 import { WorldBrowser } from './net/WorldBrowser';
 import { currentWorld, prepareWorld, worldSocketUrl } from './net/WorldSession';
 import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
 import { Fauna } from './planet/Fauna';
+import { netSync } from './net/NetSync';
 import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
@@ -82,6 +86,7 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+  private rocketSync: RocketSync | null = null;
 
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
@@ -468,6 +473,15 @@ class PlanetGame {
         this.blockInteraction.openRocketCargo(cargo);
       });
 
+      // Other players' rockets, flying and landed (multiplayer; idle offline)
+      const padManager = this.blockInteraction.getLaunchPadManager();
+      this.rocketSync = new RocketSync(
+        this.engine.scene,
+        this.rocketFlightManager,
+        (itemType) => padManager.loadRocketPartAssets(itemType),
+        (position) => this.nearestPlanetId(position),
+      );
+
       // Crash (or manual abandon): respawn on the planet nearest the rocket
       this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
         this.respawnOnNearestPlanet(rocketPosition);
@@ -718,6 +732,7 @@ class PlanetGame {
     MusicManager.update();
 
     this.multiplayer?.update(deltaTime);
+    this.rocketSync?.update(deltaTime);
     // Ground clutter (grass tufts, rocks): always on Sequoia, on Earth with
     // the biome mockup
     if (!this.groundClutter) {
@@ -863,7 +878,10 @@ class PlanetGame {
     for (const atmosphere of this.atmospheres) atmosphere.updateCameraPosition(this.engine.camera.position);
 
     // Update clouds (slow rotation)
-    this.earthClouds.update(deltaTime);
+    {
+      const worldMs = netSync.worldTimeMs();
+      this.earthClouds.update(deltaTime, worldMs === null ? null : worldMs / 1000);
+    }
 
     // Periodic water flow update (every 5 seconds)
     this.waterUpdateTimer += deltaTime;
@@ -1315,10 +1333,20 @@ class PlanetGame {
       nameInput.addEventListener('change', () => {
         name = nameInput.value.trim().slice(0, 16) || name;
         write('tenebris_mp_name', name);
+        this.multiplayer?.setIdentity(name, loadMyLook());
       });
       // Typing in the box must not drive the player
       nameInput.addEventListener('keydown', (e) => e.stopPropagation());
     }
+
+    // Character creator: name and look (what other players see)
+    const creator = new CharacterCreator(() => name, (newName, look) => {
+      name = newName;
+      write('tenebris_mp_name', name);
+      if (nameInput) nameInput.value = name;
+      this.multiplayer?.setIdentity(name, look);
+    });
+    document.getElementById('character-btn')?.addEventListener('click', () => creator.open());
 
     // Server browser: list worlds, create one, join one (reloads into it)
     const browser = new WorldBrowser();
@@ -1334,18 +1362,22 @@ class PlanetGame {
     this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
       const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
       const p = flying ? flying.getPosition() : this.player.position;
-      let planet = this.player.getCurrentPlanet()?.getName();
-      if (!planet) {
-        let best = Infinity;
-        for (const [id, pl] of this.planets) {
-          const alt = p.distanceTo(pl.center) - pl.radius;
-          if (alt < best) { best = alt; planet = id; }
-        }
-      }
+      const planet = this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
       const o = this.player.exportForSave().orientation;
-      return { planet: planet ?? 'earth', p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
-    }, name);
+      return { planet, p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
+    }, name, creator.getLook());
     this.multiplayer.connect(worldSocketUrl(world.id));
+  }
+
+  /** The id of the planet whose surface is nearest `p` */
+  private nearestPlanetId(p: THREE.Vector3): string {
+    let planet = 'earth';
+    let best = Infinity;
+    for (const [id, pl] of this.planets) {
+      const alt = p.distanceTo(pl.center) - pl.radius;
+      if (alt < best) { best = alt; planet = id; }
+    }
+    return planet;
   }
 
   /**

@@ -34,7 +34,8 @@ import { Printer3DUI } from './Printer3DUI';
 import { LaunchPadUI } from './LaunchPadUI';
 import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
-import { gameStorage } from '../engine/GameStorage';
+import { gameStorage, torchKey, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
+import { netSync } from '../net/NetSync';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
 import { AudioManager } from '../engine/AudioManager';
@@ -156,6 +157,24 @@ function itemToBlock(itemType: ItemType): HexBlockType {
   }
 }
 
+// Every kind of saved world object, in load order (machines before the
+// cables that connect them), with where its saves live
+const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
+  ['torch', () => gameStorage.getTorches()],
+  ['furnace', () => gameStorage.getFurnaces()],
+  ['chest', () => gameStorage.getStorageChests()],
+  ['garbagePile', () => gameStorage.getGarbagePiles()],
+  ['steamEngine', () => gameStorage.getSteamEngines()],
+  ['hydroGenerator', () => gameStorage.getHydroGenerators()],
+  ['copperPipe', () => gameStorage.getCopperPipes()],
+  ['cable', () => gameStorage.getCables()],
+  ['electricFurnace', () => gameStorage.getElectricFurnaces()],
+  ['workbench', () => gameStorage.getElectronicsWorkbenches()],
+  ['computer', () => gameStorage.getComputers()],
+  ['printer3D', () => gameStorage.getPrinters3D()],
+  ['launchPad', () => gameStorage.getLaunchPads()],
+];
+
 export class PlanetBlockInteraction {
   private planets: Planet[];
   private player: PlanetPlayer;
@@ -231,7 +250,11 @@ export class PlanetBlockInteraction {
   // Launch pad system
   private launchPadManager: LaunchPadManager;
   private launchPadUI: LaunchPadUI;
-  private miningLaunchPadTarget: { launchPad: PlacedLaunchPad } | null = null;
+  // Multiplayer: object records being applied, per record address, and the
+  // save load they wait for
+  private remoteApplies = new Map<string, Promise<void>>();
+  private loadDone: Promise<unknown> = Promise.resolve();
+  private miningLaunchPadTarget: { launchPad: PlacedLaunchPad; tileIndex: number } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
@@ -460,6 +483,11 @@ export class PlanetBlockInteraction {
       this.craftingSystem.updateInventorySlotsPublic();
     });
     this.launchPadUI.setOnAddSegmentCallback((pad) => {
+      const problem = this.launchPadManager.towerSiteProblem(pad);
+      if (problem) {
+        showToast(problem, { duration: 3500 });
+        return false;
+      }
       const result = this.launchPadManager.addSegment(pad);
       if (result) {
         this.saveLaunchPadStates();
@@ -489,6 +517,10 @@ export class PlanetBlockInteraction {
     });
     // New generic rocket part callbacks
     this.launchPadUI.setOnAddRocketPartCallback(async (pad, itemType) => {
+      if (!pad.isComplete) {
+        showToast(`A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`, { duration: 3500 });
+        return false;
+      }
       const result = await this.launchPadManager.addRocketPart(pad, itemType);
       if (result) {
         this.saveLaunchPadStates();
@@ -654,6 +686,7 @@ export class PlanetBlockInteraction {
 
     // Register tech blocks with the registry for F3 debug menu
     this.registerTechBlocksWithRegistry();
+    this.registerRemoteRecords();
 
     this.createHighlightMesh();
     this.setupBlockSelection();
@@ -1563,13 +1596,25 @@ export class PlanetBlockInteraction {
         hitObject = hitObject.parent as THREE.Object3D;
       }
 
-      // Handle launch pad interaction (right click opens UI, left click mines)
+      // Which pad block was hit (the tower and rocket count as their hex)
+      let hitHex = launchPadHit.object.userData.padTileIndex as number | undefined;
+      if (hitHex === undefined && launchPad) {
+        hitHex = launchPadHit.object === launchPad.mesh || launchPad.segmentMeshes.includes(launchPadHit.object as THREE.Mesh)
+          ? launchPad.towerTileIndex : launchPad.rocketTileIndex;
+      }
+
+      // Handle launch pad interaction (right click opens UI, or with a
+      // Launch Pad Segment in hand stands the tower on this hex; left
+      // click takes up the pad block)
       if (rightClick && this.rightClickCooldown === 0 && launchPad) {
-        // Open launch pad UI
-        this.launchPadUI.open(launchPad);
+        if (this.inventory.getSelectedItem()?.itemType === ItemType.LAUNCH_PAD_SEGMENT && hitHex !== undefined && hitHex >= 0) {
+          this.placeTowerSegmentByHand(launchPad, hitHex);
+        } else {
+          this.launchPadUI.open(launchPad);
+        }
         this.rightClickCooldown = this.CLICK_COOLDOWN;
-      } else if (leftClick && launchPad) {
-        this.handleLaunchPadMining(deltaTime, launchPad);
+      } else if (leftClick && launchPad && hitHex !== undefined && hitHex >= 0) {
+        this.handleLaunchPadMining(deltaTime, launchPad, hitHex);
       } else {
         this.resetMining();
       }
@@ -2406,11 +2451,11 @@ export class PlanetBlockInteraction {
     this.printer3DManager.removePrinter3D(printer);
   }
 
-  private handleLaunchPadMining(deltaTime: number, launchPad: PlacedLaunchPad): void {
+  private handleLaunchPadMining(deltaTime: number, launchPad: PlacedLaunchPad, tileIndex: number): void {
     // Check if target changed
-    if (this.miningLaunchPadTarget === null || this.miningLaunchPadTarget.launchPad !== launchPad) {
+    if (this.miningLaunchPadTarget === null || this.miningLaunchPadTarget.launchPad !== launchPad || this.miningLaunchPadTarget.tileIndex !== tileIndex) {
       // New target, reset progress
-      this.miningLaunchPadTarget = { launchPad };
+      this.miningLaunchPadTarget = { launchPad, tileIndex };
       this.miningTarget = null;
       this.miningTreeTarget = null;
       this.miningFurnaceTarget = null;
@@ -2436,31 +2481,48 @@ export class PlanetBlockInteraction {
 
     // Check if mining complete
     if (this.miningProgress >= 1) {
-      this.breakLaunchPad(launchPad);
+      this.breakLaunchPadBlock(launchPad, tileIndex);
       this.resetMining();
     }
   }
 
-  private breakLaunchPad(launchPad: PlacedLaunchPad): void {
-    // Give the launch pad block back to the player
-    this.inventory.addItem(ItemType.LAUNCH_PAD_BLOCK, 1);
-
-    // Return any segments that were added
-    if (launchPad.segmentCount > 0) {
-      this.inventory.addItem(ItemType.LAUNCH_PAD_SEGMENT, launchPad.segmentCount);
+  // Take up one pad block (the hex the player mined)
+  private breakLaunchPadBlock(launchPad: PlacedLaunchPad, tileIndex: number): void {
+    const blocker = this.launchPadManager.hexRemovalBlocker(launchPad, tileIndex);
+    if (blocker) {
+      showToast(blocker, { duration: 3000 });
+      return;
     }
-
+    this.inventory.addItem(ItemType.LAUNCH_PAD_BLOCK, 1);
     this.updateHotbarUI();
     this.saveInventory();
 
-    // Remove launch pad from save
-    for (let i = 0; i < this.planets.length; i++) {
-      const planetId = this.getPlanetId(this.planets[i]);
+    const planetId = this.padPlanetId(launchPad);
+    this.launchPadManager.removeHex(launchPad, tileIndex);
+    if (launchPad.hexes.size === 0) {
       gameStorage.removeLaunchPad(planetId, launchPad.centerTileIndex);
+    } else {
+      this.saveLaunchPadStates();
     }
+  }
 
-    // Remove the launch pad from the world
-    this.launchPadManager.removeLaunchPad(launchPad);
+  // Stand the tower on a pad hex with the Launch Pad Segment in hand (or
+  // stack another segment on it)
+  private placeTowerSegmentByHand(pad: PlacedLaunchPad, tileIndex: number): void {
+    const target = pad.towerTileIndex >= 0 ? pad.towerTileIndex : tileIndex;
+    const problem = this.launchPadManager.towerSiteProblem(pad, pad.towerTileIndex >= 0 && tileIndex !== pad.towerTileIndex ? tileIndex : target);
+    if (problem) {
+      showToast(problem, { duration: 3500 });
+      return;
+    }
+    if (!this.launchPadManager.startTower(pad, target) || !this.launchPadManager.addSegment(pad)) {
+      showToast('The tower is as tall as it goes', { duration: 2500 });
+      return;
+    }
+    this.inventory.useSelectedItem();
+    this.updateHotbarUI();
+    this.saveInventory();
+    this.saveLaunchPadStates();
   }
 
   private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
@@ -3476,112 +3538,129 @@ export class PlanetBlockInteraction {
 
   // Place a launch pad on a hexagonal tile; depth is the air block above
   // the surface. Shared by the player placing one and the starter rocket.
-  private async placeLaunchPadAt(planet: Planet, tileIndex: number, depth: number): Promise<PlacedLaunchPad | null> {
-    // Get the tile to check for valid placement
+  /**
+   * Lay one Launch Pad Block on `tileIndex` (depth = the air above the
+   * ground there). It joins the pad it touches, levelled to that pad, or
+   * starts a new one. Returns the pad, or the reason it can't go there.
+   */
+  private async layPadBlock(planet: Planet, tileIndex: number, depth: number): Promise<PlacedLaunchPad | string> {
     const tile = planet.getTileByIndex(tileIndex);
-    if (!tile) return null;
-
-    // Validate placement - launch pad needs 6 neighbors (hexagon, not pentagon)
-    if (tile.isPentagon || tile.neighbors.length !== 6) {
-      console.log('Cannot place launch pad: must be placed on a hexagonal tile with 6 neighbors');
-      return null;
+    if (!tile) return 'Nothing to build on';
+    const touching = this.launchPadManager.padsTouching({ index: tileIndex, neighbors: tile.neighbors })
+      .filter(p => this.padPlanetId(p) === this.getPlanetId(planet));
+    if (touching.some(p => p.hexes.has(tileIndex))) return 'There is already a pad block there';
+    // Touching several pads joins them into the one with a rocket or tower
+    // on it (two built-on pads can't be joined)
+    touching.sort((x, y) => Number(y.rocketParts.length + y.segmentCount > 0) - Number(x.rocketParts.length + x.segmentCount > 0) || y.hexes.size - x.hexes.size);
+    if (touching.slice(1).some(p => p.rocketParts.length + p.segmentCount > 0)) return 'That would join two launch pads that both have a tower or rocket';
+    if (touching.length > 1) {
+      const lvl = this.padLevel(planet, touching[0]);
+      if (touching.slice(1).some(p => this.padLevel(planet, p) !== lvl)) return 'Those launch pads are at different levels';
     }
 
-    // Get all surrounding tiles
-    const surroundingTiles = tile.neighbors.map(idx => planet.getTileByIndex(idx)).filter(t => t !== null);
-    if (surroundingTiles.length !== 6) {
-      console.log('Cannot place launch pad: requires 6 surrounding tiles');
-      return null;
-    }
-
-    // Launch pads can be placed anywhere - no tech block distance restrictions
-    // (those restrictions apply to launch tower segments, not the base pad)
-
-    // depth is the air block position - launch pad should sit on the solid block below it
-    // Launch pad is 1/4 block height (BASE_HEIGHT = 0.25), so it sits on top of the solid block
     const blockHeight = planet.getBlockHeight();
-    const solidBlockTopRadius = planet.depthToRadius(depth) - blockHeight;
-    const launchPadHeight = blockHeight * 0.25; // 1/4 of block height
-
-    // Inner radius = top of solid block, outer radius = top of launch pad
-    const innerRadius = solidBlockTopRadius;
-    const outerRadius = solidBlockTopRadius + launchPadHeight;
-
-    const tileCenter = tile.center.clone().normalize();
-    const worldPosition = tileCenter.clone().multiplyScalar(outerRadius).add(planet.center);
-
-    // Pass original tile data for terrain-conforming geometry
-    const originalTileVertices = tile.vertices.map(v => v.clone());
-    const originalTileCenter = tile.center.clone();
-
-    // Calculate world positions for surrounding tile centers
-    const surroundingTileCenters = surroundingTiles.map(t => {
-      const tCenter = t!.center.clone().normalize();
-      return tCenter.multiplyScalar(outerRadius).add(planet.center);
-    });
-
-    const placedPad = await this.launchPadManager.placeLaunchPad(
-      worldPosition,
-      planet.center,
-      tileIndex,
-      tile.neighbors,
-      surroundingTileCenters,
-      originalTileVertices,
-      originalTileCenter,
-      innerRadius,
-      outerRadius,
-      this.launchPadPlatform(planet, tile.neighbors, depth, innerRadius, true)
-    );
-    if (placedPad) {
-      this.saveLaunchPadStates();
+    const padHeight = blockHeight * 0.25;  // the pad is 1/4 of a block tall
+    const pad = touching[0];
+    // The pad's level: the air depth its blocks sit in
+    let level = depth;
+    if (pad) {
+      level = this.padLevel(planet, pad);
+      if (Math.abs(level - depth) > ROCKET_CONFIG.PAD_MAX_STEP) return 'Pad blocks have to be level with the rest of the pad';
     }
-    return placedPad;
+    const outerRadius = planet.depthToRadius(level) - blockHeight + padHeight;
+    const hex = this.padHex(planet, tileIndex, level, outerRadius - padHeight, true);
+    if (!hex) return 'Nothing to build on';
+    if (pad) {
+      this.launchPadManager.addHex(pad, hex);
+      for (const other of touching.slice(1)) {
+        const otherKey = other.centerTileIndex;
+        if (this.launchPadManager.mergeInto(pad, other)) gameStorage.removeLaunchPad(this.getPlanetId(planet), otherKey);
+      }
+      this.saveLaunchPadStates();
+      return pad;
+    }
+    const created = await this.launchPadManager.createPad(planet.center, hex, outerRadius);
+    if (!created) return 'Could not build the pad';
+    created.blockHeight = blockHeight;
+    this.saveLaunchPadStates();
+    return created;
   }
 
   /**
-   * The six hexes around a pad's rocket tile, which make it a platform level
-   * with the pad. Where the ground is higher the blocks above pad level are
-   * cleared (saved like any other edit) so the platform is flat; where it is
-   * lower each hex reaches down to the ground, so nothing - the tower
-   * included, which stands on one of these - hovers.
+   * One pad hex. Where the ground is higher than the pad the blocks above pad
+   * level are cleared (saved like any other edit) so the pad is flat; where
+   * it is lower the hex reaches down to the ground, so it never hovers.
    */
-  private launchPadPlatform(planet: Planet, neighbors: number[], airDepth: number, padInner: number, clearAbove: boolean): PlatformTile[] {
+  private padHex(planet: Planet, n: number, airDepth: number, padInner: number, clearAbove: boolean): PlatformTile | null {
     const planetId = this.getPlanetId(planet);
-    const tiles: PlatformTile[] = [];
-    for (const n of neighbors) {
-      const tile = planet.getTileByIndex(n);
-      if (!tile) continue;
-      if (clearAbove) {
-        for (let d = airDepth; d < planet.getMaxDepth(); d++) {
-          if (planet.getBlock(n, d) !== HexBlockType.AIR) {
-            planet.setBlock(n, d, HexBlockType.AIR);
-            gameStorage.saveTileChange(planetId, n, d, HexBlockType.AIR);
-          }
-        }
-      }
-      let groundRadius = planet.depthToRadius(0);
-      for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+    const tile = planet.getTileByIndex(n);
+    if (!tile) return null;
+    if (clearAbove) {
+      for (let d = airDepth; d < planet.getMaxDepth(); d++) {
         if (planet.getBlock(n, d) !== HexBlockType.AIR) {
-          groundRadius = planet.depthToRadius(d);
-          break;
+          planet.setBlock(n, d, HexBlockType.AIR);
+          gameStorage.saveTileChange(planetId, n, d, HexBlockType.AIR);
         }
       }
-      tiles.push({ center: tile.center, vertices: tile.vertices, innerRadius: Math.min(groundRadius, padInner) });
     }
-    return tiles;
+    let groundRadius = planet.depthToRadius(0);
+    for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
+      if (planet.getBlock(n, d) !== HexBlockType.AIR) {
+        groundRadius = planet.depthToRadius(d);
+        break;
+      }
+    }
+    return { index: n, neighbors: [...tile.neighbors], center: tile.center, vertices: tile.vertices, innerRadius: Math.min(groundRadius, padInner) };
   }
 
   private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
-    const tile = planet.getTileByIndex(tileIndex);
-    if (!tile || tile.isPentagon || tile.neighbors.length !== 6) {
-      console.log('Cannot place launch pad: must be placed on a hexagonal tile with 6 neighbors');
+    const slot = this.inventory.getSelectedItem();
+    if (!slot || slot.itemType !== ItemType.LAUNCH_PAD_BLOCK || slot.quantity <= 0) return;
+    const result = await this.layPadBlock(planet, tileIndex, depth);
+    if (typeof result === 'string') {
+      showToast(result, { duration: 3000 });
       return;
     }
-    if (this.inventory.useSelectedItem()) {
-      await this.placeLaunchPadAt(planet, tileIndex, depth);
-      this.updateHotbarUI();
-      this.saveInventory();
+    this.inventory.useSelectedItem();
+    this.updateHotbarUI();
+    this.saveInventory();
+    if (result.isComplete && result.segmentCount === 0 && result.hexes.size === ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER) {
+      showToast('Launch pad complete - it can take a tower and a rocket now', { duration: 3000 });
+    } else if (!result.isComplete) {
+      showToast(`Launch pad: ${result.hexes.size} block${result.hexes.size === 1 ? '' : 's'} - a rocket needs ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER}: a middle hex with the full ring around it`, { duration: 2500 });
     }
+  }
+
+  // The air depth a pad's blocks sit in (its top is a quarter block above
+  // the ground block below that)
+  private padLevel(planet: Planet, pad: PlacedLaunchPad): number {
+    const blockHeight = planet.getBlockHeight();
+    const groundTop = pad.outerRadius - blockHeight * 0.25 + blockHeight;
+    let best = 0;
+    for (let d = 1; d < planet.getMaxDepth(); d++) {
+      if (Math.abs(planet.depthToRadius(d) - groundTop) < Math.abs(planet.depthToRadius(best) - groundTop)) best = d;
+    }
+    return best;
+  }
+
+  // The planet a pad is on: the one whose centre it was placed around
+  private padPlanetId(pad: PlacedLaunchPad): string {
+    return this.planetIdAt(pad.planetCenter);
+  }
+
+  // The planet a placed object is on: the nearest planet centre (tile
+  // indices exist on every planet, so they can't tell planets apart)
+  private planetIdAt(position: THREE.Vector3): string {
+    let planetId = this.getPlanetId(this.planets[0]);
+    let best = Infinity;
+    for (const planet of this.planets) {
+      const d = planet.center.distanceToSquared(position);
+      if (d < best) {
+        best = d;
+        planetId = this.getPlanetId(planet);
+      }
+    }
+    return planetId;
   }
 
   /**
@@ -3600,7 +3679,7 @@ export class PlanetBlockInteraction {
       }
       return -1;
     };
-    const occupied = new Set(this.launchPadManager.getLaunchPads().flatMap(p => [p.centerTileIndex, ...p.surroundingTileIndices]));
+    const occupied = new Set(this.launchPadManager.getLaunchPads().flatMap(p => [...p.hexes.keys(), ...[...p.hexes.values()].flatMap(h => h.tile.neighbors)]));
 
     // Breadth-first outward from the player: first hexagonal, dry tile whose
     // ring is all dry land within one block of it (so the pad sits flat),
@@ -3619,8 +3698,11 @@ export class PlanetBlockInteraction {
             return nd >= 0 && Math.abs(nd - d) <= 1 && !occupied.has(n);
           });
           if (ringOk) {
-            const pad = await this.placeLaunchPadAt(planet, tileIndex, d + 1);
-            if (!pad) continue;
+            // The middle first, then its ring: a complete 7-block pad
+            const pad = await this.layPadBlock(planet, tileIndex, d + 1);
+            if (typeof pad === 'string') continue;
+            for (const n of tile.neighbors) await this.layPadBlock(planet, n, d + 1);
+            if (!pad.isComplete) continue;
             const parts = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE];
             for (let i = 0; i < parts.length; i++) this.launchPadManager.addSegment(pad);
             for (const part of parts) await this.launchPadManager.addRocketPart(pad, part);
@@ -3794,16 +3876,7 @@ export class PlanetBlockInteraction {
   private saveSteamEngineStates(): void {
     const steamEngines = this.steamEngineManager.getPlacedSteamEngines();
     for (const engine of steamEngines) {
-      // Determine which planet this engine is on
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(engine.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(engine.position);
 
       // Get fuel state from UI
       const state = this.steamEngineUI.getEngineState(engine.tileIndex);
@@ -3823,19 +3896,10 @@ export class PlanetBlockInteraction {
   public saveLaunchPadStates(): void {
     const launchPads = this.launchPadManager.getLaunchPads();
     for (const pad of launchPads) {
-      // The pad's planet is the one whose centre it was placed around (tile
-      // indices exist on every planet, so they can't tell planets apart)
-      let planetId = this.getPlanetId(this.planets[0]);
-      let best = Infinity;
-      for (const planet of this.planets) {
-        const d = planet.center.distanceTo(pad.planetCenter);
-        if (d < best) {
-          best = d;
-          planetId = this.getPlanetId(planet);
-        }
-      }
-
+      const planetId = this.padPlanetId(pad);
       gameStorage.saveLaunchPad(planetId, pad.centerTileIndex, {
+        tiles: [...pad.hexes.keys()],
+        towerTile: pad.towerTileIndex,
         surroundingTileIndices: pad.surroundingTileIndices,
         position: { x: pad.position.x, y: pad.position.y, z: pad.position.z },
         rotation: pad.rotation,
@@ -3855,17 +3919,7 @@ export class PlanetBlockInteraction {
   private saveAllFurnaceStates(): void {
     const furnaces = this.furnaceManager.getPlacedFurnaces();
     for (const furnace of furnaces) {
-      // Determine which planet this furnace is on (by checking if position is closer to earth or moon center)
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        // Check if furnace tile exists on this planet
-        const tile = planet.getTileByIndex(furnace.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(furnace.position);
 
       gameStorage.saveFurnace(planetId, furnace.tileIndex, {
         position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
@@ -3884,15 +3938,7 @@ export class PlanetBlockInteraction {
   private saveAllElectricFurnaceStates(): void {
     const furnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
     for (const furnace of furnaces) {
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(furnace.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(furnace.position);
 
       gameStorage.saveElectricFurnace(planetId, furnace.tileIndex, {
         position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
@@ -3934,15 +3980,7 @@ export class PlanetBlockInteraction {
     // Save storage chests
     const chests = this.storageChestManager.getPlacedChests();
     for (const chest of chests) {
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(chest.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(chest.position);
 
       gameStorage.saveStorageChest(planetId, chest.tileIndex, {
         position: { x: chest.position.x, y: chest.position.y, z: chest.position.z },
@@ -3954,15 +3992,7 @@ export class PlanetBlockInteraction {
     // Save garbage piles
     const piles = this.garbagePileManager.getPlacedPiles();
     for (const pile of piles) {
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(pile.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(pile.position);
 
       gameStorage.saveGarbagePile(planetId, pile.tileIndex, {
         position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
@@ -3975,15 +4005,7 @@ export class PlanetBlockInteraction {
   private saveAllPrinter3DStates(): void {
     const printers = this.printer3DManager.getAllPrinters();
     for (const printer of printers) {
-      let planetId = 'earth';
-      for (let i = 0; i < this.planets.length; i++) {
-        const planet = this.planets[i];
-        const tile = planet.getTileByIndex(printer.tileIndex);
-        if (tile) {
-          planetId = this.getPlanetId(this.planets[i]);
-          break;
-        }
-      }
+      const planetId = this.planetIdAt(printer.position);
 
       // Convert Map ingredients to Record for JSON serialization
       const serializeIngredients = (ingredients: Map<ItemType, number>): Record<string, number> => {
@@ -4040,60 +4062,143 @@ export class PlanetBlockInteraction {
       }
     }
 
-    // Load saved torches
-    const savedTorches = gameStorage.getTorches();
-    for (const savedTorch of savedTorches) {
-      // Find which planet this torch belongs to
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedTorch.planetId
-      );
-      if (planet) {
+    // Load every saved object (torches, machines, chests, launch pads...).
+    // Remote records wait for these (loadDone) so the two can't race.
+    const restores: Promise<unknown>[] = [];
+    for (const [kind, getter] of SAVED_OBJECT_KINDS) {
+      for (const saved of getter()) restores.push(this.restoreSavedObject(kind, saved).catch(e => console.error(`restoring ${kind}`, e)));
+    }
+    this.loadDone = Promise.all(restores);
+    // Torch light is baked into the terrain once they're all down
+    this.rebakeTorchLight(gameStorage.getTorches().map(t => new THREE.Vector3(t.position.x, t.position.y, t.position.z)));
+    // Rebuild all pipe and cable connections after everything is loaded
+    this.copperPipeManager.rebuildAllConnections();
+
+    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${SAVED_OBJECT_KINDS.reduce((n, [, get]) => n + get().length, 0)} objects, inventory restored`);
+  }
+
+  /**
+   * Torch light is baked into the terrain: hand the planets the current
+   * torches and re-bake around the ones that changed.
+   */
+  private rebakeTorchLight(changed: THREE.Vector3[]): void {
+    const torchData = this.torchManager.getTorchDataForBaking();
+    const tilesWithTorches = this.torchManager.getTilesWithTorches();
+    for (const planet of this.planets) {
+      planet.setTorchData(torchData);
+      planet.setTilesWithTorches(tilesWithTorches);
+      for (const p of changed) planet.markTilesNearTorchDirty(p, PlayerConfig.TORCH_LIGHT_RANGE);
+    }
+  }
+
+  /**
+   * Multiplayer: apply another player's placed-object record. The object is
+   * rebuilt through the same restore path a save load uses, and this world's
+   * local save follows (NetSync stops it being sent back).
+   */
+  private applyRemoteRecord(kind: string, planetId: string, key: string, data: object | null): void {
+    // One at a time per object: restores are async, and a second update
+    // arriving mid-restore would otherwise find nothing to replace
+    const addr = `${kind}|${planetId}|${key}`;
+    const prev = this.remoteApplies.get(addr) ?? this.loadDone;
+    const next = prev.then(async () => {
+      const removedAt = this.removeWorldObject(kind, planetId, key);
+      gameStorage.applyRecord(kind, planetId, key, data);
+      if (data) await this.restoreSavedObject(kind, { ...data, planetId });
+      if (kind === 'torch') {
+        const p = (data as SavedTorch | null)?.position;
+        this.rebakeTorchLight([...(removedAt ? [removedAt] : []), ...(p ? [new THREE.Vector3(p.x, p.y, p.z)] : [])]);
+      }
+    }).catch(e => console.error(`[MP] ${addr}`, e)).finally(() => {
+      if (this.remoteApplies.get(addr) === next) this.remoteApplies.delete(addr);
+    });
+    this.remoteApplies.set(addr, next);
+  }
+
+  /** Register the multiplayer appliers for every placed-object kind. */
+  private registerRemoteRecords(): void {
+    for (const [kind] of SAVED_OBJECT_KINDS) {
+      netSync.onRecord(kind, (planetId, key, data) => this.applyRemoteRecord(kind, planetId, key, data), () => gameStorage.listRecords(kind));
+    }
+    netSync.onRecord('removedTree', (planetId, key, data) => {
+      if (!data) return;  // a felled tree stays felled
+      gameStorage.saveRemovedTree(planetId, Number(key));
+      if (planetId === 'earth') this.treeManager?.removeTreesAtTile(Number(key));
+    }, () => gameStorage.listRecords('removedTree'));
+  }
+
+  /**
+   * Take one placed object out of the world (not the save) by its record
+   * key. Returns where it stood, or null if there was nothing there.
+   */
+  private removeWorldObject(kind: string, planetId: string, key: string): THREE.Vector3 | null {
+    const tile = Number(key);
+    const on = (o: { position: THREE.Vector3 }) => this.planetIdAt(o.position) === planetId;
+    const at = <T extends { position: THREE.Vector3; tileIndex: number }>(list: T[]) => list.find(o => o.tileIndex === tile && on(o));
+    const atDepth = <T extends { position: THREE.Vector3; tileIndex: number; depth: number }>(list: T[]) =>
+      list.find(o => `${o.tileIndex}:${o.depth}` === key && on(o));
+    let found: { position: THREE.Vector3 } | undefined;
+    switch (kind) {
+      case 'torch': {
+        const t = this.torchManager.getPlacedTorches().find(o => torchKey(o.position) === key && on(o));
+        if (t) this.torchManager.removeTorch(t);
+        found = t;
+        break;
+      }
+      case 'furnace': { const o = at(this.furnaceManager.getPlacedFurnaces()); if (o) this.furnaceManager.removeFurnace(o); found = o; break; }
+      case 'electricFurnace': { const o = at(this.electricFurnaceManager.getPlacedElectricFurnaces()); if (o) this.electricFurnaceManager.removeElectricFurnace(o); found = o; break; }
+      case 'workbench': { const o = at(this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()); if (o) this.electronicsWorkbenchManager.removeElectronicsWorkbench(o); found = o; break; }
+      case 'computer': { const o = at(this.computerManager.getAllComputers()); if (o) this.computerManager.removeComputer(o); found = o; break; }
+      case 'printer3D': { const o = at(this.printer3DManager.getAllPrinters()); if (o) this.printer3DManager.removePrinter3D(o); found = o; break; }
+      case 'chest': { const o = at(this.storageChestManager.getPlacedChests()); if (o) this.storageChestManager.removeChest(o); found = o; break; }
+      case 'garbagePile': { const o = at(this.garbagePileManager.getPlacedPiles()); if (o) this.garbagePileManager.removePile(o); found = o; break; }
+      case 'steamEngine': { const o = at(this.steamEngineManager.getPlacedSteamEngines()); if (o) this.steamEngineManager.removeSteamEngine(o); found = o; break; }
+      case 'hydroGenerator': { const o = at(this.hydroGeneratorManager.getPlacedHydroGenerators()); if (o) this.hydroGeneratorManager.removeHydroGenerator(o); found = o; break; }
+      case 'copperPipe': { const o = atDepth(this.copperPipeManager.getPlacedPipes()); if (o) this.copperPipeManager.removePipe(o); found = o; break; }
+      case 'cable': { const o = atDepth(this.cableNodeManager.getPlacedCables()); if (o) this.cableNodeManager.removeCable(o); found = o; break; }
+      case 'launchPad': {
+        const pad = this.launchPadManager.getLaunchPads().find(p => p.centerTileIndex === tile && this.padPlanetId(p) === planetId);
+        if (pad) {
+          // a UI showing this pad would edit a pad that's gone
+          if (this.launchPadUI.getCurrentLaunchPad() === pad) this.launchPadUI.close();
+          this.launchPadManager.removeLaunchPad(pad);
+          found = pad;
+        }
+        break;
+      }
+    }
+    return found ? found.position.clone() : null;
+  }
+
+  /**
+   * Rebuild one saved object in the world - the one path both loading a save
+   * and a remote player's record (multiplayer) go through. `saved` is the
+   * stored record with its planetId.
+   */
+  private restoreSavedObject(kind: string, saved: { planetId: string }): Promise<unknown> {
+    const planet = this.planets.find((p) => this.getPlanetId(p) === saved.planetId);
+    if (!planet) return Promise.resolve();
+    let pending: Promise<unknown> | void = undefined;
+    switch (kind) {
+      case 'torch': {
+        const savedTorch = saved as SavedTorch & { planetId: string };
         const worldPosition = new THREE.Vector3(
           savedTorch.position.x,
           savedTorch.position.y,
           savedTorch.position.z
         );
         this.torchManager.placeTorch(worldPosition, planet.center, savedTorch.tileIndex);
+        break;
       }
-    }
-
-    // After loading all torches, update torch data on all planets and trigger geometry rebuild
-    if (savedTorches.length > 0) {
-      const torchData = this.torchManager.getTorchDataForBaking();
-      const tilesWithTorches = this.torchManager.getTilesWithTorches();
-      for (const planet of this.planets) {
-        planet.setTorchData(torchData);
-        planet.setTilesWithTorches(tilesWithTorches);
-      }
-
-      // Mark tiles near each torch as dirty so lighting is baked
-      for (const savedTorch of savedTorches) {
-        const worldPosition = new THREE.Vector3(
-          savedTorch.position.x,
-          savedTorch.position.y,
-          savedTorch.position.z
-        );
-        for (const planet of this.planets) {
-          planet.markTilesNearTorchDirty(worldPosition, PlayerConfig.TORCH_LIGHT_RANGE);
-        }
-      }
-    }
-
-    // Load saved furnaces
-    const savedFurnaces = gameStorage.getFurnaces();
-    for (const savedFurnace of savedFurnaces) {
-      // Find which planet this furnace belongs to
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedFurnace.planetId
-      );
-      if (planet) {
+      case 'furnace': {
+        const savedFurnace = saved as SavedFurnace & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedFurnace.position.x,
           savedFurnace.position.y,
           savedFurnace.position.z
         );
         // Restore the furnace at exact saved position (no offset recalculation)
-        this.furnaceManager.restoreFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.furnaceManager.restoreFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.fuelAmount = savedFurnace.fuelAmount;
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
@@ -4103,16 +4208,10 @@ export class PlanetBlockInteraction {
             placedFurnace.outputCount = savedFurnace.outputCount;
           }
         });
+        break;
       }
-    }
-
-    // Load saved storage chests
-    const savedStorageChests = gameStorage.getStorageChests();
-    for (const savedChest of savedStorageChests) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedChest.planetId
-      );
-      if (planet) {
+      case 'chest': {
+        const savedChest = saved as SavedStorageChest & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedChest.position.x,
           savedChest.position.y,
@@ -4123,17 +4222,11 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+        pending = this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+        break;
       }
-    }
-
-    // Load saved garbage piles
-    const savedGarbagePiles = gameStorage.getGarbagePiles();
-    for (const savedPile of savedGarbagePiles) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedPile.planetId
-      );
-      if (planet) {
+      case 'garbagePile': {
+        const savedPile = saved as SavedGarbagePile & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedPile.position.x,
           savedPile.position.y,
@@ -4144,24 +4237,18 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        this.garbagePileManager.restorePile(savedPosition, planet.center, savedPile.tileIndex, slots);
+        pending = this.garbagePileManager.restorePile(savedPosition, planet.center, savedPile.tileIndex, slots);
+        break;
       }
-    }
-
-    // Load saved steam engines
-    const savedSteamEngines = gameStorage.getSteamEngines();
-    for (const savedSteamEngine of savedSteamEngines) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedSteamEngine.planetId
-      );
-      if (planet) {
+      case 'steamEngine': {
+        const savedSteamEngine = saved as SavedSteamEngine & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedSteamEngine.position.x,
           savedSteamEngine.position.y,
           savedSteamEngine.position.z
         );
         // Restore the steam engine
-        this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
+        pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
 
         // Restore fuel state to UI
         this.steamEngineUI.restoreState(savedSteamEngine.tileIndex, {
@@ -4171,77 +4258,50 @@ export class PlanetBlockInteraction {
           waterInput: 0,
           steamOutput: 0,
         });
+        break;
       }
-    }
-
-    // Load saved hydro generators
-    const savedHydroGenerators = gameStorage.getHydroGenerators();
-    for (const savedHydroGenerator of savedHydroGenerators) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedHydroGenerator.planetId
-      );
-      if (planet) {
+      case 'hydroGenerator': {
+        const savedHydroGenerator = saved as SavedHydroGenerator & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedHydroGenerator.position.x,
           savedHydroGenerator.position.y,
           savedHydroGenerator.position.z
         );
         // Restore the hydro generator
-        this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.center, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
+        pending = this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.center, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
+        break;
       }
-    }
-
-    // Load saved copper pipes
-    const savedCopperPipes = gameStorage.getCopperPipes();
-    for (const savedPipe of savedCopperPipes) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedPipe.planetId
-      );
-      if (planet) {
+      case 'copperPipe': {
+        const savedPipe = saved as SavedCopperPipe & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedPipe.position.x,
           savedPipe.position.y,
           savedPipe.position.z
         );
         // Restore the copper pipe (fire and forget - material initialization is handled internally)
-        this.copperPipeManager.restorePipe(savedPosition, savedPipe.tileIndex, savedPipe.depth);
+        pending = this.copperPipeManager.restorePipe(savedPosition, savedPipe.tileIndex, savedPipe.depth);
+        break;
       }
-    }
-    // Rebuild all pipe connections after loading
-    this.copperPipeManager.rebuildAllConnections();
-
-    // Load saved cables
-    const savedCables = gameStorage.getCables();
-    for (const savedCable of savedCables) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedCable.planetId
-      );
-      if (planet) {
+      case 'cable': {
+        const savedCable = saved as SavedCable & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedCable.position.x,
           savedCable.position.y,
           savedCable.position.z
         );
         // Restore the cable
-        this.cableNodeManager.restoreCable(savedPosition, savedCable.tileIndex, savedCable.depth);
+        pending = this.cableNodeManager.restoreCable(savedPosition, savedCable.tileIndex, savedCable.depth);
+        break;
       }
-    }
-    // NOTE: rebuildAllConnections is called AFTER all machines are loaded (see below)
-
-    // Load saved electric furnaces
-    const savedElectricFurnaces = gameStorage.getElectricFurnaces();
-    for (const savedFurnace of savedElectricFurnaces) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedFurnace.planetId
-      );
-      if (planet) {
+      case 'electricFurnace': {
+        const savedFurnace = saved as SavedElectricFurnace & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedFurnace.position.x,
           savedFurnace.position.y,
           savedFurnace.position.z
         );
         // Restore the electric furnace
-        this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
@@ -4250,50 +4310,32 @@ export class PlanetBlockInteraction {
             placedFurnace.outputCount = savedFurnace.outputCount;
           }
         });
+        break;
       }
-    }
-
-    // Load saved electronics workbenches
-    const savedElectronicsWorkbenches = gameStorage.getElectronicsWorkbenches();
-    for (const savedWorkbench of savedElectronicsWorkbenches) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedWorkbench.planetId
-      );
-      if (planet) {
+      case 'workbench': {
+        const savedWorkbench = saved as SavedElectronicsWorkbench & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedWorkbench.position.x,
           savedWorkbench.position.y,
           savedWorkbench.position.z
         );
         // Restore the electronics workbench
-        this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.center, savedWorkbench.tileIndex, savedWorkbench.rotation);
+        pending = this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.center, savedWorkbench.tileIndex, savedWorkbench.rotation);
+        break;
       }
-    }
-
-    // Load saved computers
-    const savedComputers = gameStorage.getComputers();
-    for (const savedComputer of savedComputers) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedComputer.planetId
-      );
-      if (planet) {
+      case 'computer': {
+        const savedComputer = saved as SavedComputer & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedComputer.position.x,
           savedComputer.position.y,
           savedComputer.position.z
         );
         // Restore the computer
-        this.computerManager.restoreComputer(savedPosition, planet.center, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
+        pending = this.computerManager.restoreComputer(savedPosition, planet.center, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
+        break;
       }
-    }
-
-    // Load saved 3D printers
-    const savedPrinters3D = gameStorage.getPrinters3D();
-    for (const savedPrinter of savedPrinters3D) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedPrinter.planetId
-      );
-      if (planet) {
+      case 'printer3D': {
+        const savedPrinter = saved as SavedPrinter3D & { planetId: string };
         const savedPosition = new THREE.Vector3(
           savedPrinter.position.x,
           savedPrinter.position.y,
@@ -4331,7 +4373,7 @@ export class PlanetBlockInteraction {
           quantity: slot.quantity
         })) || null;
 
-        this.printer3DManager.restorePrinter3D(
+        pending = this.printer3DManager.restorePrinter3D(
           savedPosition,
           planet.center,
           savedPrinter.tileIndex,
@@ -4341,65 +4383,34 @@ export class PlanetBlockInteraction {
           printQueue,
           outputInventory
         );
+        break;
       }
-    }
-
-    // Load saved launch pads
-    const savedLaunchPads = gameStorage.getLaunchPads();
-    for (const savedPad of savedLaunchPads) {
-      const planet = this.planets.find((p) =>
-        this.getPlanetId(p) === savedPad.planetId
-      );
-      if (planet) {
-        // Get the tile data to generate proper world-space geometry
-        const tile = planet.getTileByIndex(savedPad.centerTileIndex);
-        if (!tile) continue;
-
-        const savedPosition = new THREE.Vector3(
-          savedPad.position.x,
-          savedPad.position.y,
-          savedPad.position.z
-        );
-
-        // Calculate radii for world-space geometry (same as placeLaunchPad)
-        // The saved position is at outerRadius, so we calculate from there
-        const distFromCenter = savedPosition.distanceTo(planet.center);
+      case 'launchPad': {
+        const savedPad = saved as SavedLaunchPad & { planetId: string };
+        const savedPosition = new THREE.Vector3(savedPad.position.x, savedPad.position.y, savedPad.position.z);
+        // Every pad block sits at the saved top (a pad is level)
         const blockHeight = planet.getBlockHeight();
-        const launchPadHeight = blockHeight * 0.25;
-        const outerRadius = distFromCenter;
-        const innerRadius = outerRadius - launchPadHeight;
-
-        // Calculate surrounding tile centers for the tower position
-        const surroundingTileCenters: THREE.Vector3[] = [];
-        for (const neighborIdx of savedPad.surroundingTileIndices) {
-          const neighborTile = planet.getTileByIndex(neighborIdx);
-          if (neighborTile) {
-            const neighborCenter = neighborTile.center.clone().normalize();
-            surroundingTileCenters.push(neighborCenter.multiplyScalar(outerRadius).add(planet.center));
-          }
-        }
-
-        // Restore the launch pad with proper tile geometry
-        this.launchPadManager.restoreLaunchPad(
-          savedPosition,
+        const outerRadius = savedPosition.distanceTo(planet.center);
+        const innerRadius = outerRadius - blockHeight * 0.25;
+        // Pads from older saves were placed whole: the middle and its ring
+        const tileIndices = savedPad.tiles ?? [savedPad.centerTileIndex, ...savedPad.surroundingTileIndices];
+        // the ground was levelled when the pad was placed; rebuild the hexes
+        // without touching blocks
+        const hexes = tileIndices.map(i => this.padHex(planet, i, 0, innerRadius, false)).filter((t): t is PlatformTile => t !== null);
+        if (hexes.length === 0) return Promise.resolve();
+        pending = this.launchPadManager.restorePad(
           planet.center,
+          hexes,
+          outerRadius,
+          blockHeight,
           savedPad.centerTileIndex,
-          savedPad.surroundingTileIndices,
-          surroundingTileCenters,
-          savedPad.rotation,
+          savedPad.towerTile ?? savedPad.surroundingTileIndices[0] ?? -1,
           savedPad.segmentCount,
           savedPad.rocketBlocks,
-          tile.vertices.map(v => v.clone()),
-          tile.center.clone(),
-          innerRadius,
-          outerRadius,
           savedPad.rocketParts,
-          // the ground was levelled when the pad was placed; rebuild the
-          // platform without touching blocks
-          this.launchPadPlatform(planet, savedPad.surroundingTileIndices, 0, innerRadius, false)
         ).then(pad => {
           // The rocket's tanks and cargo hold (absent in older saves: full, empty)
-          if (!pad) return;
+          if (!pad) return Promise.resolve();
           pad.fuel = savedPad.fuel ?? null;
           savedPad.cargo?.forEach((slot, i) => {
             if (i < pad.cargo.length && ITEM_DATA[slot.itemType as ItemType]) {
@@ -4407,10 +4418,10 @@ export class PlanetBlockInteraction {
             }
           });
         });
+        break;
       }
     }
-
-    console.log(`Loaded save: ${saveData.tileChanges.length} tile changes, ${savedTorches.length} torches, ${savedFurnaces.length} furnaces, ${savedElectricFurnaces.length} electric furnaces, ${savedElectronicsWorkbenches.length} electronics workbenches, ${savedComputers.length} computers, ${savedStorageChests.length} chests, ${savedGarbagePiles.length} piles, ${savedSteamEngines.length} steam engines, ${savedHydroGenerators.length} hydro generators, ${savedCopperPipes.length} copper pipes, ${savedCables.length} cables, ${savedLaunchPads.length} launch pads, inventory restored`);
+    return Promise.resolve(pending);
   }
 
   /**

@@ -482,6 +482,16 @@ freely. It ships to two places:
   editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
   `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
   local server.
+  What syncs: blocks (edits), poses + avatars (name and look from the
+  character creator, `src/net/Avatar.ts`), placed objects as **records**
+  (torches, felled trees, every machine and chest with its contents, launch
+  pads with tower / rocket / cargo, landed rockets) and **live frames**
+  (animals from each planet's host, rockets in flight), plus a shared
+  world clock. All of it goes through `src/net/NetSync.ts`. Placed objects
+  publish from the ONE save path (`GameStorage` save*/remove*) and remote
+  records rebuild through the ONE restore path a save load uses
+  (`PlanetBlockInteraction.restoreSavedObject`) - a new placeable object
+  joins by adding its kind there, never with its own sync code.
 
 Deploys are in `.github/workflows/js-deploy.yml`:
 
@@ -494,7 +504,8 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   the zip with butler to `ruben-tipparach/tenebris:html5` (needs
   `BUTLER_API_KEY`), and the `server` job runs `fly deploy` in `server-js/`
   (needs `FLY_API_TOKEN`) only after the itch push succeeds, so the server
-  always matches the itch build.
+  always matches the itch build. Pick **server only** in the Run workflow
+  box to redeploy just the server (a server fix) without an itch push.
 
 `static.yml` ("JS client - build + check") builds and verifies the client
 on every push to `main`; on branches it only runs by hand (Run workflow).
@@ -939,8 +950,12 @@ After each commit, always show these links to the user:
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
 - JS multiplayer server: https://tenebris-c.fly.dev/
 
-The `/admin` operator portal and the hex structure editor were served by
-the Rust server (`tenebris-server`); while the JS server is deployed on
-`tenebris-c` they are offline (deploy `tenebris-rs/fly.toml` to bring
-them back). The editor exports `*.template.json`
-into `tenebris-rs/assets/templates/`.
+The JS server has its own operator portal at
+https://tenebris-c.fly.dev/admin (`server-js/admin.js` + `admin.html`):
+worlds (rename / reset / delete), who is online (kick), object counts per
+kind (clear a kind), and a message to everyone in a world. It needs the
+`ADMIN_TOKEN` Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris-c`);
+without it the API stays off. The Rust server's hex structure editor (which
+exports `*.template.json` into `tenebris-rs/assets/templates/`) is offline
+while the JS server holds `tenebris-c` (deploy `tenebris-rs/fly.toml` to
+bring it back).

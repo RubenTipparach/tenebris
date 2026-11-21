@@ -7,6 +7,7 @@ import { FAUNA_CONFIG as C, FAUNA_SPECIES, FaunaSpecies, FaunaSpeciesId, faunaRo
 import { buildFaunaModel, FaunaModel } from './FaunaModels';
 import { surfaceTop, tileHash } from './SurfaceTiles';
 import { getAssetPath } from '../utils/assetPath';
+import { netSync } from '../net/NetSync';
 
 /**
  * Fauna: herds of creatures round the player, on the planet they stand on.
@@ -23,6 +24,14 @@ import { getAssetPath } from '../utils/assetPath';
  *   are played in the vertex shader, per part, blended by speed; the
  *   creature itself idles, wanders and flees on the surface (height follows
  *   the terrain, water and cliffs turn it back), fliers hover and bob.
+ * - Multiplayer: one player per planet - the host (NetSync.isHost, the
+ *   lowest id there) - runs everything above, spawning round every player
+ *   on the planet and fleeing from all of them, and sends a snapshot a few
+ *   times a second (live channel 'fauna'). Everyone else on that planet
+ *   spawns and simulates nothing: they ease their creatures towards the
+ *   latest snapshot and draw them through the same path. When the host
+ *   leaves, the next one takes over the creatures it was drawing, so
+ *   nobody sees the herds pop.
  */
 
 const CLIP_IDLE = 0;
@@ -34,6 +43,13 @@ const SPECIES_SALT = 0x165667b1;
 const HASH_SCALE = 1 / 4294967296;
 
 const enum State { Idle, Wander, Flee }
+
+// Species are sent as an index into this list (same build on every client)
+const SPECIES_IDS = Object.keys(FAUNA_SPECIES) as FaunaSpeciesId[];
+
+/** One creature in a snapshot: [id, species, site, dir xyz, groundR, face xyz, scale, tint, hover, moveW, speed, state] */
+type SnapCreature = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+interface FaunaSnapshot { planet: string; animals: SnapCreature[] }
 
 interface AnimFile {
   species: string;
@@ -88,6 +104,7 @@ class SpeciesRender {
 }
 
 interface Creature {
+  id: number;             // stable across the network
   render: SpeciesRender;
   cfg: FaunaSpecies;
   dir: THREE.Vector3;     // unit direction from the planet centre
@@ -106,6 +123,8 @@ interface Creature {
   scale: number;
   tint: number;
   bobPhase: number;
+  // Drawn from a host's snapshot: where it should be
+  target?: { dir: THREE.Vector3; face: THREE.Vector3; groundR: number; moveW: number; speed: number };
 }
 
 interface Herd { site: number; members: Creature[] }
@@ -122,13 +141,21 @@ export class Fauna {
   private sinceScan = Infinity;
   private arrived = true;
   private time = 0;
+  private nextId = 1;
+  private hosting = true;
+  private sinceSnapshot = 0;
+  private remoteSnap: FaunaSnapshot | null = null; // latest from the host, not yet applied
   // scratch
   private m = new THREE.Matrix4();
   private v = new THREE.Vector3();
   private x = new THREE.Vector3();
   private col = new THREE.Color();
 
-  constructor(private scene: THREE.Scene) {}
+  constructor(private scene: THREE.Scene) {
+    netSync.onLive('fauna', (_from, data: FaunaSnapshot) => {
+      if (data && typeof data.planet === 'string' && Array.isArray(data.animals)) this.remoteSnap = data;
+    });
+  }
 
   /** planet: the world the player stands on (null in space). */
   public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3): void {
@@ -150,13 +177,125 @@ export class Fauna {
     if (!planet || roster.length === 0) return;
     for (const id of roster) this.load(id);
 
+    const planetId = planet.getName();
+    const host = netSync.isHost(planetId);
+    if (host !== this.hosting) {
+      this.hosting = host;
+      if (host) this.takeOver(planet);
+    }
+    if (!host) {
+      const snap = this.remoteSnap;
+      if (snap && snap.planet === planetId) { this.applySnapshot(snap, planet); this.remoteSnap = null; }
+      for (const herd of this.herds) for (const c of herd.members) this.follow(c, planet, dt);
+      this.draw();
+      return;
+    }
+
+    // Everyone on the planet: animals spawn round each and flee from each
+    const viewers = [player];
+    for (const p of netSync.peerPositionsOn(planetId)) viewers.push(new THREE.Vector3(p[0], p[1], p[2]));
     this.sinceScan += dt;
     if (this.sinceScan >= C.rescanEverySeconds || player.distanceTo(this.lastScan) >= C.rescanMove) {
-      this.scan(planet, player, roster);
+      this.sinceScan = 0;
+      this.lastScan.copy(player);
+      const cap = C.maxCreatures * viewers.length;
+      viewers.forEach((v, i) => this.scan(planet, v, roster, cap, i === 0));
     }
-    for (const herd of this.herds) for (const c of herd.members) this.step(c, planet, player, dt);
-    this.despawn(player);
+    for (const herd of this.herds) for (const c of herd.members) this.step(c, planet, nearest(c.pos, viewers), dt);
+    this.despawn(viewers);
     this.draw();
+
+    this.sinceSnapshot += dt;
+    if (netSync.online() && this.sinceSnapshot >= 1 / C.mp.snapshotHz && netSync.peersOn(planetId).length > 0) {
+      this.sinceSnapshot = 0;
+      netSync.live('fauna', this.snapshot(planet));
+    }
+  }
+
+  // ---- multiplayer ------------------------------------------------------
+
+  private snapshot(planet: Planet): FaunaSnapshot {
+    const d = 10 ** C.mp.dirDecimals, l = 10 ** C.mp.lengthDecimals;
+    const r = (v: number, k: number) => Math.round(v * k) / k;
+    const animals: SnapCreature[] = [];
+    for (const h of this.herds) {
+      for (const c of h.members) {
+        if (animals.length >= C.mp.maxSnapshotCreatures) break;
+        animals.push([c.id, SPECIES_IDS.indexOf(c.render.id), h.site,
+          r(c.dir.x, d), r(c.dir.y, d), r(c.dir.z, d), r(c.groundR, l),
+          r(c.face.x, d), r(c.face.y, d), r(c.face.z, d),
+          r(c.scale, l), r(c.tint, l), r(c.hover, l), r(c.moveW, l), r(c.speed, l), c.state]);
+      }
+    }
+    return { planet: planet.getName(), animals };
+  }
+
+  /** Mirror the host's creatures: new ones appear where it says, gone ones go. */
+  private applySnapshot(snap: FaunaSnapshot, planet: Planet): void {
+    const poly = planet.getPolyhedron();
+    const byId = new Map<number, Creature>();
+    for (const h of this.herds) for (const c of h.members) byId.set(c.id, c);
+    const herds = new Map<number, Herd>();
+    for (const a of snap.animals) {
+      if (!Array.isArray(a) || a.length < 16) continue;
+      const [id, sp, site, dx, dy, dz, g, fx, fy, fz, scale, tint, hover, moveW, speed, state] = a;
+      const render = this.renders.get(SPECIES_IDS[sp]);
+      if (!render) { if (SPECIES_IDS[sp]) this.load(SPECIES_IDS[sp]); continue; }
+      const target = { dir: new THREE.Vector3(dx, dy, dz).normalize(), face: new THREE.Vector3(fx, fy, fz).normalize(), groundR: g, moveW, speed };
+      let c = byId.get(id);
+      if (!c || c.render !== render) {
+        const hint = poly.tiles[site] ?? poly.tiles[0];
+        const tile = poly.getTileAtPointFromHint(target.dir.clone().multiplyScalar(planet.radius), hint);
+        c = {
+          id, render, cfg: render.cfg, dir: target.dir.clone(), pos: new THREE.Vector3(), heading: target.face.clone(), face: target.face.clone(),
+          tile, tileR: g, groundR: g, hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
+          phase: [Math.random(), Math.random()], moveW, scale, tint, bobPhase: Math.random() * Math.PI * 2,
+        };
+        this.place(c, planet);
+      }
+      c.target = target;
+      c.state = state as State;
+      let herd = herds.get(site);
+      if (!herd) herds.set(site, herd = { site, members: [] });
+      herd.members.push(c);
+    }
+    this.herds = [...herds.values()];
+    this.sites = new Set(herds.keys());
+  }
+
+  /** Ease a drawn creature towards the host's latest word on it. */
+  private follow(c: Creature, planet: Planet, dt: number): void {
+    const t = c.target;
+    if (t) {
+      const k = Math.min(1, dt * C.mp.followRate);
+      c.dir.lerp(t.dir, k).normalize();
+      c.face.lerp(t.face, k);
+      tangent(c.face, c.dir);
+      c.heading.copy(c.face);
+      c.groundR += (t.groundR - c.groundR) * k;
+      c.moveW += (t.moveW - c.moveW) * k;
+      c.speed += (t.speed - c.speed) * k;
+    }
+    this.animate(c, dt);
+    this.place(c, planet);
+  }
+
+  /** Becoming the host: carry on simulating the creatures the old host left. */
+  private takeOver(planet: Planet): void {
+    const poly = planet.getPolyhedron();
+    let maxId = 0;
+    for (const h of this.herds) {
+      for (const c of h.members) {
+        maxId = Math.max(maxId, c.id);
+        c.target = undefined;
+        c.tile = poly.getTileAtPointFromHint(this.v.copy(c.dir).multiplyScalar(planet.radius), c.tile);
+        const { top } = surfaceTop(planet, c.tile.index);
+        c.tileR = top >= 0 ? planet.depthToRadius(top) : c.groundR;
+        if (c.state !== State.Idle) c.timer = lerp(c.cfg.wanderTime, Math.random());
+      }
+    }
+    this.nextId = Math.max(this.nextId, maxId + 1);
+    this.sinceScan = Infinity;
   }
 
   /** Counts for debugging / perf checks. */
@@ -168,11 +307,12 @@ export class Fauna {
   }
 
   /** Every live creature's species and world position (debug / screenshots). */
-  public debugCreatures(): { id: string; pos: THREE.Vector3; moving: boolean }[] {
-    return this.herds.flatMap(h => h.members.map(c => ({ id: c.render.id, pos: c.pos.clone(), moving: c.speed > 0.05 })));
+  public debugCreatures(): { id: string; uid: number; pos: THREE.Vector3; moving: boolean }[] {
+    return this.herds.flatMap(h => h.members.map(c => ({ id: c.render.id, uid: c.id, pos: c.pos.clone(), moving: c.speed > 0.05 })));
   }
 
   private clear(): void {
+    this.remoteSnap = null;
     this.herds = [];
     this.sites.clear();
     this.lastScan.set(1e9, 0, 0);
@@ -208,12 +348,11 @@ export class Fauna {
     return list;
   }
 
-  private scan(planet: Planet, player: THREE.Vector3, roster: FaunaSpeciesId[]): void {
-    this.sinceScan = 0;
-    this.lastScan.copy(player);
+  /** Spawn herds at the sites round one viewer (self: this client's player). */
+  private scan(planet: Planet, player: THREE.Vector3, roster: FaunaSpeciesId[], maxCreatures: number, self: boolean): void {
     const totalWeight = roster.reduce((s, id) => s + FAUNA_SPECIES[id].weight, 0);
     let live = this.herds.reduce((s, h) => s + h.members.length, 0);
-    const minDist = this.arrived ? C.arrivalMinSpawnDistance : C.minSpawnDistance;
+    const minDist = self && this.arrived ? C.arrivalMinSpawnDistance : C.minSpawnDistance;
     const playerDir = player.clone().sub(planet.center);
     const playerR = playerDir.length();
     playerDir.divideScalar(playerR);
@@ -221,7 +360,7 @@ export class Fauna {
     const cosMax = Math.cos(Math.min(Math.PI, C.spawnRadius / playerR));
     let sawGround = false;
     for (const { tile, dir } of this.sitesOf(planet)) {
-      if (live >= C.maxCreatures) break;
+      if (live >= maxCreatures) break;
       if (dir.dot(playerDir) < cosMax || this.sites.has(tile.index)) continue;
       const { top, block } = surfaceTop(planet, tile.index);
       if (top >= 0) sawGround = true;
@@ -239,7 +378,7 @@ export class Fauna {
       if (!render) continue; // still loading: the site is tried again next scan
       const cfg = FAUNA_SPECIES[id];
       const want = cfg.herd[0] + (tileHash(pick) % (cfg.herd[1] - cfg.herd[0] + 1));
-      const room = Math.min(want, C.maxCreatures - live, C.maxPerSpecies - this.speciesCount(render));
+      const room = Math.min(want, maxCreatures - live, C.maxPerSpecies - this.speciesCount(render));
       if (room <= 0) continue;
       const members: Creature[] = [];
       for (let i = 0; i < room; i++) {
@@ -252,7 +391,7 @@ export class Fauna {
       live += members.length;
     }
     // the first scan that finds generated terrain counts as the arrival one
-    if (sawGround) this.arrived = false;
+    if (self && sawGround) this.arrived = false;
   }
 
   private speciesCount(render: SpeciesRender): number {
@@ -275,7 +414,7 @@ export class Fauna {
     const tileR = planet.depthToRadius(top);
     const heading = randomTangent(dir, new THREE.Vector3());
     const c: Creature = {
-      render, cfg, dir, pos: new THREE.Vector3(), heading, face: heading.clone(), tile, tileR, groundR: tileR,
+      id: this.nextId++, render, cfg, dir, pos: new THREE.Vector3(), heading, face: heading.clone(), tile, tileR, groundR: tileR,
       hover: lerp(cfg.hover, Math.random()),
       state: State.Idle, timer: lerp(cfg.idleTime, Math.random()), speed: 0,
       phase: [Math.random(), Math.random()], moveW: 0,
@@ -342,14 +481,21 @@ export class Fauna {
       }
     }
     c.groundR += (c.tileR - c.groundR) * Math.min(1, dt * C.heightFollowRate);
+    this.animate(c, dt);
+    this.place(c, planet);
+  }
 
+  /** Advance the creature's clips from its speed (host and drawn alike). */
+  private animate(c: Creature, dt: number): void {
+    const cfg = c.cfg;
+    const blend = Math.min(1, dt * C.blendRate);
     // clip phases: the move cycle quickens with speed
     c.phase[CLIP_IDLE] = (c.phase[CLIP_IDLE] + dt / c.render.durations[CLIP_IDLE]) % 1;
     const rate = Math.max(c.speed / cfg.walkSpeed, cfg.motion === 'fly' || cfg.motion === 'float' ? 1 : 0);
     c.phase[CLIP_MOVE] = (c.phase[CLIP_MOVE] + dt / c.render.durations[CLIP_MOVE] * rate) % 1;
+    if (c.target) return; // drawn: the host's move weight is followed instead
     const moving = c.speed > cfg.walkSpeed * 0.2 ? 1 : 0;
     c.moveW += (moving - c.moveW) * blend;
-    this.place(c, planet);
   }
 
   private place(c: Creature, planet: Planet): void {
@@ -360,10 +506,10 @@ export class Fauna {
     c.pos.copy(planet.center).addScaledVector(c.dir, c.groundR + lift);
   }
 
-  private despawn(player: THREE.Vector3): void {
+  private despawn(viewers: THREE.Vector3[]): void {
     const far = C.despawnRadius;
     this.herds = this.herds.filter(h => {
-      if (h.members.some(c => c.pos.distanceTo(player) < far)) return true;
+      if (h.members.some(c => viewers.some(v => c.pos.distanceTo(v) < far))) return true;
       this.sites.delete(h.site);
       return false;
     });
@@ -390,6 +536,12 @@ export class Fauna {
       r.anim.needsUpdate = true;
     }
   }
+}
+
+function nearest(p: THREE.Vector3, list: THREE.Vector3[]): THREE.Vector3 {
+  let best = list[0], bd = Infinity;
+  for (const v of list) { const d = v.distanceToSquared(p); if (d < bd) { bd = d; best = v; } }
+  return best;
 }
 
 function isDryLand(top: number, block: number): boolean {

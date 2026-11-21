@@ -1,4 +1,5 @@
 import { getLandableBodies } from '../config/SolarSystemConfig';
+import { netSync } from '../net/NetSync';
 
 // Types for saved game data
 
@@ -146,8 +147,10 @@ export interface SavedRocketPart {
 
 // Launch pad data
 export interface SavedLaunchPad {
-  centerTileIndex: number;
-  surroundingTileIndices: number[];
+  centerTileIndex: number;          // the pad's first block (its save key)
+  surroundingTileIndices: number[]; // the rocket middle's ring
+  tiles?: number[];                 // every pad block (absent: placed whole - the centre + its ring)
+  towerTile?: number;               // the tower's hex (absent: the first ring hex)
   position: { x: number; y: number; z: number };
   rotation: number;
   segmentCount: number;
@@ -219,6 +222,23 @@ let worldPrefix = '';
 export function setSaveWorld(worldId: string | null): void {
   worldPrefix = worldId ? `w_${worldId.replace(/[^a-z0-9]/gi, '')}_` : '';
 }
+/**
+ * Forget this server world's local copy (its save slot and what it last
+ * synced) - the server reset it, so the next load starts from the server.
+ */
+export function clearWorldSave(): void {
+  if (!worldPrefix) return;
+  try {
+    const stale: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(`tenebris_${worldPrefix}`)) stale.push(k);
+    }
+    for (const k of stale) localStorage.removeItem(k);
+  } catch {
+    // storage blocked: nothing kept to clear
+  }
+}
 const STORAGE_KEY_PLAYER_BASE = 'player';
 // Each planet's edits live under tenebris_<planetId> (tenebris_earth,
 // tenebris_moon, tenebris_sequoia, ...). Sequoia used to share the moon's
@@ -227,6 +247,38 @@ const PLANET_IDS = getLandableBodies().map(body => body.id);
 const planetStorageKey = (planetId: string): string => `tenebris_${worldPrefix}${planetId}`;
 const playerStorageKey = (): string => `tenebris_${worldPrefix}${STORAGE_KEY_PLAYER_BASE}`;
 const LEGACY_STORAGE_KEY = 'tenebris_save';
+
+// Every placed-object save is also published to the multiplayer world as a
+// record (NetSync), so the one save path is the one sync path. Offline, and
+// while a remote record is being applied, this is a no-op.
+function publish(kind: string, planetId: string, key: string | number, data: object | null): void {
+  netSync.record(kind, planetId, key, data);
+}
+type RecordItem = { tileIndex: number; depth?: number; centerTileIndex?: number; position?: { x: number; y: number; z: number } };
+// Each published kind: the planet save array it lives in and its record key
+// (matching the keys the saveX / removeX methods publish under)
+const tileKey = (o: RecordItem) => String(o.tileIndex);
+const depthKey = (o: RecordItem) => `${o.tileIndex}:${o.depth}`;
+const RECORD_KINDS: Record<string, { field: keyof PlanetRecordLists; key: (o: RecordItem) => string }> = {
+  torch: { field: 'torches', key: (o) => torchKey(o.position!) },
+  furnace: { field: 'furnaces', key: tileKey },
+  electricFurnace: { field: 'electricFurnaces', key: tileKey },
+  workbench: { field: 'electronicsWorkbenches', key: tileKey },
+  computer: { field: 'computers', key: tileKey },
+  printer3D: { field: 'printers3D', key: tileKey },
+  chest: { field: 'storageChests', key: tileKey },
+  garbagePile: { field: 'garbagePiles', key: tileKey },
+  steamEngine: { field: 'steamEngines', key: tileKey },
+  hydroGenerator: { field: 'hydroGenerators', key: tileKey },
+  copperPipe: { field: 'copperPipes', key: depthKey },
+  cable: { field: 'cables', key: depthKey },
+  launchPad: { field: 'launchPads', key: (o) => String(o.centerTileIndex) },
+};
+type PlanetRecordLists = Omit<PlanetSaveData, 'version' | 'timestamp' | 'tileChanges' | 'removedTrees'>;
+/** A torch's record key: its position (several torches can share a tile). */
+export function torchKey(p: { x: number; y: number; z: number }): string {
+  return `${p.x.toFixed(2)}:${p.y.toFixed(2)}:${p.z.toFixed(2)}`;
+}
 const SAVE_VERSION = 2;
 
 export class GameStorage {
@@ -313,6 +365,7 @@ export class GameStorage {
 
     planet.torches.push({ tileIndex, position });
     this.persistPlanetToStorage(planetId);
+    publish('torch', planetId, torchKey(position), { tileIndex, position });
   }
 
   // Remove a torch from save
@@ -328,6 +381,7 @@ export class GameStorage {
       );
       if (planet.torches.length !== originalLength) {
         this.persistPlanetToStorage(planetId);
+        publish('torch', planetId, torchKey(position), null);
       }
     }
   }
@@ -352,6 +406,7 @@ export class GameStorage {
     planet.furnaces = planet.furnaces.filter(f => f.tileIndex !== tileIndex);
     planet.furnaces.push({ tileIndex, ...furnaceData });
     this.persistPlanetToStorage(planetId);
+    publish('furnace', planetId, tileIndex, { tileIndex, ...furnaceData });
   }
 
   // Remove a furnace from save
@@ -361,6 +416,7 @@ export class GameStorage {
 
     planet.furnaces = planet.furnaces.filter(f => f.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('furnace', planetId, tileIndex, null);
   }
 
   // Get all saved furnaces (with planetId for compatibility)
@@ -382,6 +438,7 @@ export class GameStorage {
     planet.electricFurnaces = planet.electricFurnaces.filter(f => f.tileIndex !== tileIndex);
     planet.electricFurnaces.push({ tileIndex, ...furnaceData });
     this.persistPlanetToStorage(planetId);
+    publish('electricFurnace', planetId, tileIndex, { tileIndex, ...furnaceData });
   }
 
   // Remove an electric furnace from save
@@ -391,6 +448,7 @@ export class GameStorage {
 
     planet.electricFurnaces = planet.electricFurnaces.filter(f => f.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('electricFurnace', planetId, tileIndex, null);
   }
 
   // Get all saved electric furnaces
@@ -412,6 +470,7 @@ export class GameStorage {
     planet.electronicsWorkbenches = planet.electronicsWorkbenches.filter(w => w.tileIndex !== tileIndex);
     planet.electronicsWorkbenches.push({ tileIndex, ...workbenchData });
     this.persistPlanetToStorage(planetId);
+    publish('workbench', planetId, tileIndex, { tileIndex, ...workbenchData });
   }
 
   // Remove an electronics workbench from save
@@ -421,6 +480,7 @@ export class GameStorage {
 
     planet.electronicsWorkbenches = planet.electronicsWorkbenches.filter(w => w.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('workbench', planetId, tileIndex, null);
   }
 
   // Get all saved electronics workbenches
@@ -442,6 +502,7 @@ export class GameStorage {
     planet.computers = planet.computers.filter(c => c.tileIndex !== tileIndex);
     planet.computers.push({ tileIndex, ...computerData });
     this.persistPlanetToStorage(planetId);
+    publish('computer', planetId, tileIndex, { tileIndex, ...computerData });
   }
 
   // Remove a computer from save
@@ -451,6 +512,7 @@ export class GameStorage {
 
     planet.computers = planet.computers.filter(c => c.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('computer', planetId, tileIndex, null);
   }
 
   // Get all saved computers
@@ -472,6 +534,7 @@ export class GameStorage {
     planet.printers3D = planet.printers3D.filter(p => p.tileIndex !== tileIndex);
     planet.printers3D.push({ tileIndex, ...printerData });
     this.persistPlanetToStorage(planetId);
+    publish('printer3D', planetId, tileIndex, { tileIndex, ...printerData });
   }
 
   // Remove a 3D printer from save
@@ -481,6 +544,7 @@ export class GameStorage {
 
     planet.printers3D = planet.printers3D.filter(p => p.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('printer3D', planetId, tileIndex, null);
   }
 
   // Get all saved 3D printers
@@ -502,6 +566,7 @@ export class GameStorage {
     planet.launchPads = planet.launchPads.filter(p => p.centerTileIndex !== centerTileIndex);
     planet.launchPads.push({ centerTileIndex, ...launchPadData });
     this.persistPlanetToStorage(planetId);
+    publish('launchPad', planetId, centerTileIndex, { centerTileIndex, ...launchPadData });
   }
 
   // Remove a launch pad from save
@@ -511,6 +576,7 @@ export class GameStorage {
 
     planet.launchPads = planet.launchPads.filter(p => p.centerTileIndex !== centerTileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('launchPad', planetId, centerTileIndex, null);
   }
 
   // Get all saved launch pads
@@ -532,6 +598,7 @@ export class GameStorage {
     planet.storageChests = planet.storageChests.filter(c => c.tileIndex !== tileIndex);
     planet.storageChests.push({ tileIndex, ...chestData });
     this.persistPlanetToStorage(planetId);
+    publish('chest', planetId, tileIndex, { tileIndex, ...chestData });
   }
 
   // Remove a storage chest from save
@@ -541,6 +608,7 @@ export class GameStorage {
 
     planet.storageChests = planet.storageChests.filter(c => c.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('chest', planetId, tileIndex, null);
   }
 
   // Get all saved storage chests
@@ -562,6 +630,7 @@ export class GameStorage {
     planet.garbagePiles = planet.garbagePiles.filter(p => p.tileIndex !== tileIndex);
     planet.garbagePiles.push({ tileIndex, ...pileData });
     this.persistPlanetToStorage(planetId);
+    publish('garbagePile', planetId, tileIndex, { tileIndex, ...pileData });
   }
 
   // Remove a garbage pile from save
@@ -571,6 +640,7 @@ export class GameStorage {
 
     planet.garbagePiles = planet.garbagePiles.filter(p => p.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('garbagePile', planetId, tileIndex, null);
   }
 
   // Get all saved garbage piles
@@ -592,6 +662,7 @@ export class GameStorage {
     planet.steamEngines = planet.steamEngines.filter(e => e.tileIndex !== tileIndex);
     planet.steamEngines.push({ tileIndex, ...engineData });
     this.persistPlanetToStorage(planetId);
+    publish('steamEngine', planetId, tileIndex, { tileIndex, ...engineData });
   }
 
   // Remove a steam engine from save
@@ -601,6 +672,7 @@ export class GameStorage {
 
     planet.steamEngines = planet.steamEngines.filter(e => e.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('steamEngine', planetId, tileIndex, null);
   }
 
   // Get all saved steam engines
@@ -622,6 +694,7 @@ export class GameStorage {
     planet.hydroGenerators = planet.hydroGenerators.filter(g => g.tileIndex !== tileIndex);
     planet.hydroGenerators.push({ tileIndex, ...generatorData });
     this.persistPlanetToStorage(planetId);
+    publish('hydroGenerator', planetId, tileIndex, { tileIndex, ...generatorData });
   }
 
   // Remove a hydro generator from save
@@ -631,6 +704,7 @@ export class GameStorage {
 
     planet.hydroGenerators = planet.hydroGenerators.filter(g => g.tileIndex !== tileIndex);
     this.persistPlanetToStorage(planetId);
+    publish('hydroGenerator', planetId, tileIndex, null);
   }
 
   // Get all saved hydro generators
@@ -653,6 +727,7 @@ export class GameStorage {
     planet.copperPipes = planet.copperPipes.filter(p => !(p.tileIndex === tileIndex && p.depth === depth));
     planet.copperPipes.push({ tileIndex, depth, ...pipeData });
     this.persistPlanetToStorage(planetId);
+    publish('copperPipe', planetId, `${tileIndex}:${depth}`, { tileIndex, depth, ...pipeData });
   }
 
   // Remove a copper pipe from save
@@ -662,6 +737,7 @@ export class GameStorage {
 
     planet.copperPipes = planet.copperPipes.filter(p => !(p.tileIndex === tileIndex && p.depth === depth));
     this.persistPlanetToStorage(planetId);
+    publish('copperPipe', planetId, `${tileIndex}:${depth}`, null);
   }
 
   // Get all saved copper pipes
@@ -683,6 +759,7 @@ export class GameStorage {
     planet.cables = planet.cables.filter(c => !(c.tileIndex === tileIndex && c.depth === depth));
     planet.cables.push({ tileIndex, depth, ...cableData });
     this.persistPlanetToStorage(planetId);
+    publish('cable', planetId, `${tileIndex}:${depth}`, { tileIndex, depth, ...cableData });
   }
 
   // Remove a cable from save
@@ -692,6 +769,7 @@ export class GameStorage {
 
     planet.cables = planet.cables.filter(c => !(c.tileIndex === tileIndex && c.depth === depth));
     this.persistPlanetToStorage(planetId);
+    publish('cable', planetId, `${tileIndex}:${depth}`, null);
   }
 
   // Get all saved cables
@@ -705,6 +783,37 @@ export class GameStorage {
     return allCables;
   }
 
+  /**
+   * Multiplayer: store another player's placed-object record (data null =
+   * removed) in this world's save, under the same arrays and keys the
+   * saveX / removeX methods use. Does not publish.
+   */
+  public applyRecord(kind: string, planetId: string, key: string, data: object | null): void {
+    const planet = this.planetData.get(planetId);
+    const spec = RECORD_KINDS[kind];
+    if (!planet || !spec) return;
+    const list = planet[spec.field] as object[];
+    const kept = list.filter(item => spec.key(item as never) !== key);
+    if (data) kept.push(data);
+    (planet[spec.field] as object[]) = kept;
+    this.persistPlanetToStorage(planetId);
+  }
+
+  /** Every stored record of a kind, as (planet, key, data) - for joining a server world. */
+  public listRecords(kind: string): Array<{ planet: string; key: string; data: object }> {
+    const out: Array<{ planet: string; key: string; data: object }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      if (kind === 'removedTree') {
+        for (const t of planet.removedTrees) out.push({ planet: planetId, key: String(t.tileIndex), data: { tileIndex: t.tileIndex } });
+        continue;
+      }
+      const spec = RECORD_KINDS[kind];
+      if (!spec) continue;
+      for (const item of planet[spec.field] as RecordItem[]) out.push({ planet: planetId, key: spec.key(item), data: item });
+    }
+    return out;
+  }
+
   // Save a removed tree to storage
   public saveRemovedTree(planetId: string, tileIndex: number): void {
     const planet = this.planetData.get(planetId);
@@ -714,6 +823,7 @@ export class GameStorage {
     if (!planet.removedTrees.some(t => t.tileIndex === tileIndex)) {
       planet.removedTrees.push({ tileIndex });
       this.persistPlanetToStorage(planetId);
+      publish('removedTree', planetId, tileIndex, { tileIndex });
     }
   }
 

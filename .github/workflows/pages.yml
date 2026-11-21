@@ -6,7 +6,9 @@
 # Deployment branches).
 #
 # Needs Pages enabled once: Settings > Pages > Source: GitHub Actions.
-# Until then the deploy step answers 404.
+# The "Enable GitHub Pages" step tries to switch it on itself; when the
+# workflow token isn't allowed to, it fails there with that instruction
+# instead of a bare 404 at the deploy step.
 name: GitHub Pages deploy
 
 on:
@@ -31,6 +33,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Enable GitHub Pages (Settings > Pages > Source - GitHub Actions)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

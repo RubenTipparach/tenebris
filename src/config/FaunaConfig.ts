@@ -79,6 +79,22 @@ export const FAUNA_CONFIG = {
   sunDiffuse: 0.6,
   /** Per-individual brightness variation, [min, max]. */
   tint: [0.85, 1.1] as [number, number],
+  /**
+   * Multiplayer: the planet's host (lowest player id there) simulates its
+   * animals, spawning round every player on the planet, and sends snapshots;
+   * everyone else draws those.
+   */
+  mp: {
+    /** Snapshots per second from the host. */
+    snapshotHz: 5,
+    /** Most creatures in one snapshot (keeps a frame well under the server's message cap). */
+    maxSnapshotCreatures: 100,
+    /** Follow rate (1/s) of a drawn creature towards its latest snapshot. */
+    followRate: 8,
+    /** Decimal places sent: unit directions, radii / sizes. */
+    dirDecimals: 4,
+    lengthDecimals: 2,
+  },
 };
 
 /**
