@@ -7,9 +7,9 @@
 ## 2. Orbit model and clock (orbital-motion, stage A)
 
 - [x] 2.1 `src/world/Orbits.ts`: orbits from config (radius, start angle, parent, period from the two anchors + Kepler with M ∝ gR²), `positionAt(body, t)`. Verify: unit test that t=0 gives the configured layout, the Moon's period is 60 min, Earth's 180 min, a planet at 2x Earth's distance ~509 min.
-- [ ] 2.2 Game clock: `gameTimeS` in the single-player save (advances only while played), `NetSync.worldTimeMs` online; `Orbits.now()` reads it. Verify: reload restores positions exactly (test); two headless MP clients agree on the Moon's angle.
-- [ ] 2.3 Reference body = the one the player is on or last left; every other body's distant LOD, atmosphere and clouds drawn at `pos(b,t) - pos(ref,t) + pos(ref,0)` each frame; Sun direction from the live relative position for every planet's lighting. Verify: headless, 15 min fast-forwarded on Earth moves the Moon a quarter orbit and the Sun a twelfth; the player stands still.
-- [ ] 2.4 Rocket tech report covers trip cost over a synodic period (best / worst). Verify: report prints the ranges.
+- [x] 2.2 Game clock: `gameTimeS` in the single-player save (advances only while played), `NetSync.worldTimeMs` online; `Orbits.now()` reads it. Verify: reload restores positions exactly (test); two headless MP clients agree on the Moon's angle.
+- [x] 2.3 Reference body = the one the player is on or last left; every other body's distant LOD, atmosphere and clouds drawn at `pos(b,t) - pos(ref,t) + pos(ref,0)` each frame; Sun direction from the live relative position for every planet's lighting. Verify: headless, 15 min fast-forwarded on Earth moves the Moon a quarter orbit and the Sun a twelfth; the player stands still.
+- [x] 2.4 Rocket tech report covers trip cost over a synodic period (best / worst). Verify: report prints the ranges.
 
 ## 3. World map (world-map)
 
@@ -39,5 +39,5 @@
 
 ## 8. Stage B and C (orbital-motion, later)
 
-- [ ] 8.1 Planet-bound objects parented to a per-planet root in planet-local space (saves unchanged). Verify: a torch on the Moon stays on it as the Moon moves while the player is on Earth.
-- [ ] 8.2 Sphere-of-influence handoff in flight: rebase rocket pose + velocity at a tick boundary. Verify: fly Earth to Moon with the reference body switching mid-flight, no jump.
+- [x] 8.1 Planet-bound objects parented to a per-planet root in planet-local space (saves unchanged). Verify: a torch on the Moon stays on it as the Moon moves while the player is on Earth.
+- [x] 8.2 Sphere-of-influence handoff in flight: rebase rocket pose + velocity at a tick boundary. Verify: fly Earth to Moon with the reference body switching mid-flight, no jump.

@@ -267,6 +267,8 @@ export class Planet {
     this.radius = radius;
     this.center = new THREE.Vector3(0, 0, 0);
     this.config = config;
+    this.attachRoot.name = 'planetAttachRoot';
+    scene.add(this.attachRoot);
 
     // Debug: log LOD config values
     console.log(`[Planet ${config.name}] Config LOD values: intermediate=${config.intermediateLODAltitude}, high=${config.highLODAltitude}, distant=${config.distantLODAltitude}`);
@@ -4134,6 +4136,32 @@ export class Planet {
     return waterChangedCount;
   }
 
+  // ---- live orbits (openspec navigation-and-orbits, orbital-motion) ----
+  //
+  // Where this body was configured: the frame everything placed on it is
+  // authored in (blocks, machines, trees, rockets - world coordinates with
+  // the body here). While the body is the reference frame it sits exactly
+  // there; when another body is the reference it moves on its orbit, and
+  // attachRoot carries what is on it by the same offset.
+  public readonly configuredCenter = new THREE.Vector3();
+  public readonly attachRoot = new THREE.Group();
+
+  /** Where the body is configured (call once, at creation). */
+  public setConfiguredCenter(c: THREE.Vector3): void {
+    this.configuredCenter.copy(c);
+    this.center.copy(c);
+    this.attachRoot.position.set(0, 0, 0);
+    this.updateBoundingSpheres();
+  }
+
+  /** Move the body (its orbit): every mesh, bound and shader centre follows. */
+  public setCenter(c: THREE.Vector3): void {
+    if (this.center.equals(c)) return;
+    this.center.copy(c);
+    this.attachRoot.position.copy(c).sub(this.configuredCenter);
+    this.updateBoundingSpheres();
+  }
+
   public updateBoundingSpheres(): void {
     for (const column of this.columns.values()) {
       column.boundingSphere.center.copy(column.tile.center).add(this.center);
@@ -4153,6 +4181,14 @@ export class Planet {
     this.meshBuilder.setPlanetCenter(this.center);
     // Update distant LOD mesh positions
     this.updateDistantLODPositions();
+    if (this.intermediateLODMesh) this.intermediateLODMesh.position.copy(this.center);
+    // Any other material that lights by the planet's centre (chunked LOD)
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.planetCenter) m.uniforms.planetCenter.value.copy(this.center);
+      });
+    }
   }
 
   // Update LOD chunk bounding spheres when planet center moves
@@ -4887,6 +4923,12 @@ export class Planet {
     for (const material of this.distantLODMaterials) {
       material.uniforms.sunDirection.value.copy(dir);
       material.uniformsNeedUpdate = true; // Force Three.js to upload new uniform values to GPU
+    }
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.sunDirection) m.uniforms.sunDirection.value.copy(dir);
+      });
     }
   }
 

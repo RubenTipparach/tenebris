@@ -1226,6 +1226,19 @@ export class RocketController {
     return this.position.clone();
   }
 
+  /**
+   * The reference frame changed under the rocket (it entered another body's
+   * sphere of influence): move it by the frames' offset and take the new
+   * frame's velocity off its own, at a tick boundary, so nothing jumps
+   * (openspec navigation-and-orbits 8.2). Orientation is unchanged - the
+   * frames differ by a translation only.
+   */
+  public rebase(offset: THREE.Vector3, frameVelocity: THREE.Vector3): void {
+    this.position.add(offset);
+    this.velocity.sub(frameVelocity);
+    this.pivot.position.copy(this.position);
+  }
+
   public getVelocity(): THREE.Vector3 {
     return this.velocity.clone();
   }

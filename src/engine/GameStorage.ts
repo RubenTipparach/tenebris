@@ -1,5 +1,6 @@
 import { getLandableBodies } from '../config/SolarSystemConfig';
 import { netSync } from '../net/NetSync';
+import { localGameTime } from '../world/Orbits';
 
 // Types for saved game data
 
@@ -175,6 +176,7 @@ export interface PlayerSaveData {
   velocity: { x: number; y: number; z: number };
   inventory: SavedInventorySlot[];
   music?: MusicSaveData;  // Music player state
+  gameTimeS?: number;     // the world's game clock (live orbits), seconds
   // Future: techStatus, techInventory, etc.
 }
 
@@ -1105,7 +1107,9 @@ export class GameStorage {
         orientation: this.playerData?.orientation || { x: 0, y: 0, z: 0, w: 1 },
         velocity: this.playerData?.velocity || { x: 0, y: 0, z: 0 },
         inventory: this.inventory,
-        music: this.playerData?.music
+        music: this.playerData?.music,
+        // the single-player clock, live (orbits are a function of it)
+        gameTimeS: localGameTime(),
       };
 
       localStorage.setItem(playerStorageKey(), JSON.stringify(data));
@@ -1154,6 +1158,11 @@ export class GameStorage {
   // Music on/off is a setting of this device, not of a world or a save:
   // it lives under its own key, so the player-pose autosave (which rewrites
   // the player save) and switching worlds can't reset it
+  /** The saved game clock (seconds of game time; 0 for an older save). */
+  public getGameTime(): number {
+    return this.playerData?.gameTimeS ?? 0;
+  }
+
   public getMusicState(): MusicSaveData | null {
     try {
       const raw = localStorage.getItem(MUSIC_KEY);
