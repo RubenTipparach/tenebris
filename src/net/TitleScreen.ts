@@ -63,10 +63,8 @@ function injectStyle(): void {
     #title-screen { position: fixed; inset: 0; z-index: 1900; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 50% 35%, #15203a, #05070c 70%); font-family: var(--game-font, monospace); }
     #title-screen .ts-panel { display: grid; gap: 12px; justify-items: center; width: min(360px, calc(100vw - 32px)); }
     #title-screen h1 { color: #4caf50; font-size: 56px; letter-spacing: 6px; margin: 0 0 18px; text-shadow: 0 0 24px rgba(76,175,80,0.35); }
-    #title-screen .ts-btn { width: 100%; padding: 13px 0; font: inherit; font-size: 20px; letter-spacing: 2px; color: #fff; background: #2a6fdb; border: none; border-radius: 6px; cursor: pointer; }
+    #title-screen .ts-btn { width: 100%; padding: 13px 0; font: inherit; font-size: 20px; letter-spacing: 2px; color: #fff; background: #4caf50; border: none; border-radius: 6px; cursor: pointer; }
     #title-screen .ts-btn:hover { filter: brightness(1.15); }
-    #title-screen .ts-primary { background: #4caf50; font-size: 24px; }
-    #title-screen .ts-quiet { background: #39424f; font-size: 16px; }
   `;
   document.head.appendChild(style);
 }
