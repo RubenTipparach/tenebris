@@ -734,9 +734,11 @@ class PlanetGame {
     // Give back the memory of planets left far behind (their terrain data
     // and detailed meshes - hundreds of MB each); they rebuild on approach
     this.releaseTimer -= deltaTime;
-    if (this.releaseTimer <= 0) {
+    if (this.releaseTimer <= 0 && !this.teleportInProgress) {
       this.releaseTimer = PlayerConfig.RELEASE_DETAIL_CHECK_S;
-      const viewer = this.engine.camera.position;
+      // where the player is (the camera catches up a frame after a teleport)
+      const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+      const viewer = flying ? flying.getPosition() : this.player.position;
       for (const planet of this.planets.values()) {
         if (planet.isDetailedTerrainEnabled() && planet.isFarForRelease(viewer)) planet.releaseDetailedTerrain();
       }
@@ -1423,10 +1425,25 @@ class PlanetGame {
     // check used to skip preparation and land the player on nothing.
     if (this.teleportInProgress) return;
     this.teleportInProgress = true;
+    // Leaving by teleport: give back the planets being left BEFORE the
+    // destination generates, so two planets' terrain are never held at once
+    // (leaving by flying away is the distance check in update). The player
+    // is held still meanwhile - the ground under them is one of them.
+    const wasEnabled = this.player.getEnabled();
+    this.player.setEnabled(false);
     try {
+      for (const other of this.planets.values()) {
+        if (other === planet) continue;
+        other.setAutoDetailHeld(true);
+        other.releaseDetailedTerrain();
+      }
       await this.preparePlanetForTeleport(planet, planetName);
+    } catch (e) {
+      this.player.setEnabled(wasEnabled);
+      throw e;
     } finally {
       this.teleportInProgress = false;
+      for (const other of this.planets.values()) other.setAutoDetailHeld(false);
     }
 
     const surfaceOffset = 1; // 1m above surface
@@ -1451,6 +1468,7 @@ class PlanetGame {
 
     this.player.position.copy(playerPos);
     this.player.velocity.set(0, 0, 0);
+    this.player.setEnabled(wasEnabled);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
   }

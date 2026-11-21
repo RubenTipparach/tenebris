@@ -464,11 +464,10 @@ export class Planet {
    * detailed meshes - and drop back to how a far planet starts (its chunked
    * LOD and distant spheres stay, so it still looks right from afar).
    * Coming back regenerates the terrain and re-applies every edit (editLog),
-   * as the first visit did. Not for the spawn planet, nor while a build is
-   * in flight (returns false; try again later).
+   * as the first visit did. Not while a build is in flight (returns false;
+   * the caller tries again later).
    */
   public releaseDetailedTerrain(): boolean {
-    if (this.config.isSpawnPlanet ?? true) return false;
     if (!this.detailedTerrainEnabled || this.detailedTerrainInitializing) return false;
     if (this.isWorkerBuildActive || this.isChunkWorkerBuildActive || this.isLODWorkerBuildActive || this.isIntermediateLODWorkerActive) return false;
 
@@ -548,6 +547,13 @@ export class Planet {
    */
   public isFarForRelease(viewer: THREE.Vector3): boolean {
     return this.getDistantLODLevel(viewer.distanceTo(this.center)) >= 1;
+  }
+
+  // While held, coming near doesn't load the terrain (a teleport is moving
+  // the player elsewhere; the planet they are leaving must not reload)
+  private autoDetailHeld = false;
+  public setAutoDetailHeld(held: boolean): void {
+    this.autoDetailHeld = held;
   }
 
   // Generate this planet's terrain data (once). Safe to call repeatedly.
@@ -4189,7 +4195,7 @@ export class Planet {
     // Within distant-LOD range of a planet that has no terrain yet: load it
     // now (a far planet holds only its distant LOD), and keep showing the
     // distant LOD until the rest is ready
-    if (distantLODLevel < 0 && !this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
+    if (distantLODLevel < 0 && !this.detailedTerrainEnabled && !this.detailedTerrainInitializing && !this.autoDetailHeld) {
       this.enableDetailedTerrain();
     }
     if (!this.fullyInitialized) {
@@ -4354,7 +4360,7 @@ export class Planet {
 
     // Enable detailed terrain when player approaches a non-spawn planet
     // This happens once when crossing the LOD switch altitude threshold
-    if (!this.detailedTerrainEnabled && !this.detailedTerrainInitializing) {
+    if (!this.detailedTerrainEnabled && !this.detailedTerrainInitializing && !this.autoDetailHeld) {
       this.enableDetailedTerrain();
     }
 
