@@ -182,6 +182,83 @@
       display: none;
     }
 
+    /* AIR (space suits): breath or tank air left, above the well-fed chip */
+    .air-chip {
+      position: fixed;
+      bottom: 112px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      width: 180px;
+      padding: 4px 10px 6px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #29ADFF;
+      border-radius: 10px;
+      color: #FFF1E8;
+      font-family: var(--game-font);
+      font-size: 12px;
+      letter-spacing: 1px;
+      pointer-events: none;
+      z-index: 100;
+    }
+    .air-chip-bar {
+      width: 100%;
+      height: 8px;
+      background: #1D2B53;
+      border: 1px solid #000;
+    }
+    .air-chip-fill {
+      height: 100%;
+      background: #29ADFF;
+    }
+    .air-chip.low { border-color: #FF004D; color: #FF004D; }
+    .air-chip.low .air-chip-fill { background: #FF004D; }
+
+    /* Ran out of air: the death screen before the respawn */
+    .air-death {
+      position: fixed;
+      inset: 0;
+      display: none;
+      justify-content: center;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.75);
+      z-index: 2000;
+      pointer-events: auto;
+    }
+    .air-death-panel {
+      text-align: center;
+      padding: 24px 40px;
+      background: rgba(29, 43, 83, 0.9);
+      border: 2px solid #FF004D;
+      border-radius: 10px;
+      font-family: var(--game-font);
+    }
+    .air-death-panel h1 {
+      margin: 0 0 10px;
+      font-size: 32px;
+      color: #FF004D;
+      letter-spacing: 3px;
+    }
+    .air-death-panel p {
+      margin: 0;
+      font-size: 14px;
+      color: #C2C3C7;
+    }
+
+    /* The suit slot in the inventory panel */
+    .equipment-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .equipment-row .equipment-label {
+      color: #aaa;
+      font-size: 13px;
+    }
+
     .hotbar-slot {
       width: 50px;
       height: 50px;
@@ -1484,6 +1561,12 @@
         <h3 style="margin-top: 15px;">Hotbar</h3>
         <div class="inventory-grid" id="inventory-hotbar">
           <!-- 9 hotbar slots -->
+        </div>
+        <h3 style="margin-top: 15px;">Equipment</h3>
+        <div class="equipment-row">
+          <!-- The worn space suit: use a suit in hand to put it on, click here to take it off -->
+          <div class="inventory-slot" id="suit-slot" title="Suit"><img style="display:none"><span class="slot-count"></span></div>
+          <span class="equipment-label">Suit</span>
         </div>
       </div>
     </div>

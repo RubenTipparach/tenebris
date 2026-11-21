@@ -461,6 +461,9 @@ export class CraftingSystem {
   private craftBtnElement: HTMLButtonElement | null = null;
   private inventoryGridElement: HTMLElement | null = null;
   private inventoryHotbarElement: HTMLElement | null = null;
+  // The suit slot (equipment): whether a suit is worn, and taking it off
+  private suitSlotElement: HTMLElement | null = null;
+  private suit: { worn: () => boolean; takeOff: () => void } | null = null;
   private isOpen: boolean = false;
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
@@ -516,6 +519,12 @@ export class CraftingSystem {
     this.craftBtnElement = document.getElementById('craft-btn') as HTMLButtonElement;
     this.inventoryGridElement = document.getElementById('inventory-grid');
     this.inventoryHotbarElement = document.getElementById('inventory-hotbar');
+    this.suitSlotElement = document.getElementById('suit-slot');
+    this.suitSlotElement?.addEventListener('click', () => {
+      if (!this.suit?.worn()) return;
+      this.suit.takeOff();
+      this.updateInventorySlots();
+    });
 
     // Disable browser context menu on inventory
     if (this.menuElement) {
@@ -1001,8 +1010,21 @@ export class CraftingSystem {
     this.updateCraftingGrid();
   }
 
+  /** The suit slot reads and takes off the worn suit (src/player/AirSystem.ts). */
+  public setSuitSlot(suit: { worn: () => boolean; takeOff: () => void }): void {
+    this.suit = suit;
+    this.updateInventorySlots();
+  }
+
   public updateInventorySlots(): void {
     const allSlots = this.inventory.getAllSlots();
+
+    // The suit slot: the suit's icon while it is worn
+    if (this.suitSlotElement) {
+      const worn = this.suit?.worn() ?? false;
+      this.updateSlotElement(this.suitSlotElement, { itemType: worn ? ItemType.SPACE_SUIT : ItemType.NONE, quantity: worn ? 1 : 0 });
+      this.suitSlotElement.title = worn ? 'Suit - click to take it off' : 'Suit - use a space suit to put it on';
+    }
 
     // Update storage slots
     const storageSlots = this.inventoryGridElement?.querySelectorAll('.inventory-slot');

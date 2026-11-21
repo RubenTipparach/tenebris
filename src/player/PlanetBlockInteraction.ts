@@ -7,6 +7,7 @@ import { showToast } from '../utils/toast';
 import { emitGameEvent } from '../engine/GameEvents';
 import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
+import type { AirSystem } from './AirSystem';
 import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
 
 // An engine, a fuel tank and a command module on the pad: a rocket that flies
@@ -264,6 +265,8 @@ export class PlanetBlockInteraction {
   private wellFedLoaded = false;
   private wellFedSaveTimer = 0;
   private wellFedChip: HTMLElement | null = null;
+  // Air and the space suit (src/player/AirSystem.ts), set by the game
+  private airSystem: AirSystem | null = null;
   private garbagePileManager: GarbagePileManager;
   private storageUI: StorageUI;
   private miningStorageTarget: { chest: PlacedStorageChest } | null = null;
@@ -1531,6 +1534,12 @@ export class PlanetBlockInteraction {
     if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity) {
       this.eatSelected();
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      return;
+    }
+    // A space suit in hand: right click puts it on (the suit slot takes it)
+    if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.SPACE_SUIT && selectedItem.quantity > 0 &&
+        closestObjectDistance === Infinity && this.airSystem?.wearSuitInHand()) {
       this.rightClickCooldown = this.CLICK_COOLDOWN;
       return;
     }
@@ -4063,6 +4072,11 @@ export class PlanetBlockInteraction {
     return this.inventory;
   }
 
+  /** The air system: using a space suit in hand puts it on. */
+  public setAirSystem(air: AirSystem): void {
+    this.airSystem = air;
+  }
+
   /** Sunlight on the machines and the launch pads (live orbits: day and night). */
   public setSunDirection(dir: THREE.Vector3): void {
     for (const m of [this.furnaceManager, this.storageChestManager, this.cookerManager, this.garbagePileManager, this.steamEngineManager,
@@ -4403,6 +4417,11 @@ export class PlanetBlockInteraction {
     // A reactor goes only on an airless body (the Moon, moons, asteroids, barren worlds)
     if (kind === 'reactor' && getBodyConfig(planetId)?.hasAtmosphere !== false) {
       showToast('Reactors can only be built off-world', { duration: 3000 });
+      return;
+    }
+    // A gas collector bottles the air, so only where it can be breathed
+    if (kind === 'gasCollector' && getBodyConfig(planetId)?.breathable !== true) {
+      showToast('No air to collect here', { duration: 3000 });
       return;
     }
     const tile = planet.getTileByIndex(tileIndex);

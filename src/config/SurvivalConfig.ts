@@ -30,4 +30,7 @@ export const AIR = {
   LOW_FRACTION: 0.25,
   // The death screen shows this long before the respawn (s)
   DEATH_SCREEN_S: 3,
+  // While a suit draws a tank, the air left in it is saved this often (s);
+  // putting the suit on or off, and a tank running out, save at once
+  SAVE_EVERY_S: 5,
 };
