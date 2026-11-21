@@ -1,3 +1,4 @@
+import { loadingManager } from '../engine/LoadingManager';
 import * as THREE from 'three';
 import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -29,6 +30,21 @@ const BIOME_TEXTURES: [string, string][] = [
   ['seqMoss', 'seq_moss'], ['seqMossSide', 'seq_moss_side'],
   ['seqDuff', 'seq_duff'], ['seqDuffSide', 'seq_duff_side'],
 ];
+
+// Magenta/black checker for a texture that failed to load
+let missing: THREE.DataTexture | null = null;
+function missingTexture(): THREE.Texture {
+  if (!missing) {
+    const d = new Uint8Array(4 * 4 * 4);
+    for (let i = 0; i < 16; i++) {
+      const on = ((i % 4) + Math.floor(i / 4)) % 2 === 0;
+      d.set(on ? [255, 0, 255, 255] : [0, 0, 0, 255], i * 4);
+    }
+    missing = new THREE.DataTexture(d, 4, 4);
+    missing.needsUpdate = true;
+  }
+  return missing;
+}
 
 // Texture loads shared by every planet's mesh builder (see loadTexture)
 const textureCache = new Map<string, Promise<THREE.Texture>>();
@@ -464,15 +480,18 @@ export class HexBlockMeshBuilder {
     // half a minute)
     const cached = textureCache.get(fullPath);
     if (cached) return cached;
-    const promise = new Promise<THREE.Texture>((resolve, reject) => {
+    const promise = new Promise<THREE.Texture>((resolve) => {
       this.textureLoader.load(
         fullPath,
         resolve,
         undefined,
-        (error) => {
+        () => {
+          // A missing texture must never hang loading (it used to reject the
+          // planet's whole initialization, leaving the loading bar stuck):
+          // draw a placeholder, say which file, and carry on
           console.error(`[HexBlock] Failed to load texture: ${fullPath} (original: ${path})`);
-          textureCache.delete(fullPath);
-          reject(error);
+          loadingManager.reportProblem(`Missing texture: ${path}`);
+          resolve(missingTexture());
         }
       );
     });

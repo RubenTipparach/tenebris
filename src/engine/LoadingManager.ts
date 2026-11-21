@@ -6,6 +6,10 @@ export interface LoadingStep {
   completed: boolean;
 }
 
+// A step running this long shows its elapsed time; this long, says it looks stuck
+const SLOW_STEP_S = 8;
+const STUCK_STEP_S = 60;
+
 class LoadingManagerImpl {
   private steps: Map<string, LoadingStep> = new Map();
   private totalWeight: number = 0;
@@ -13,6 +17,11 @@ class LoadingManagerImpl {
   private onProgressCallbacks: Array<(progress: number, status: string) => void> = [];
   private onCompleteCallbacks: Array<() => void> = [];
   private currentStatus: string = 'Initializing...';
+  // Stuck detection: when the status last changed, and anything that went
+  // wrong (shown under the bar so a stall is never silent)
+  private statusSince = performance.now();
+  private problems: string[] = [];
+  private watchdog: number | null = null;
 
   // Register a loading step with a weight
   registerStep(name: string, weight: number = 1): void {
@@ -60,8 +69,30 @@ class LoadingManagerImpl {
 
   // Update the current status message
   setStatus(status: string): void {
+    if (status !== this.currentStatus) this.statusSince = performance.now();
     this.currentStatus = status;
+    this.startWatchdog();
     this.notifyProgress();
+  }
+
+  // Something failed but loading carries on (e.g. a missing texture)
+  reportProblem(problem: string): void {
+    if (this.problems.length < 5 && !this.problems.includes(problem)) this.problems.push(problem);
+    this.updateDOM();
+  }
+
+  // Once a second while loading: a step that takes long says so, with how
+  // long it has been on it, so a slow load is told apart from a stuck one
+  private startWatchdog(): void {
+    if (this.watchdog !== null || typeof window === 'undefined') return;
+    this.watchdog = window.setInterval(() => {
+      if (this.isComplete()) {
+        window.clearInterval(this.watchdog!);
+        this.watchdog = null;
+        return;
+      }
+      this.updateDOM();
+    }, 1000);
   }
 
   // Get current progress (0-100)
@@ -103,7 +134,13 @@ class LoadingManagerImpl {
       progressBar.style.width = `${progress}%`;
     }
     if (statusEl) {
-      statusEl.textContent = this.currentStatus;
+      const secs = Math.floor((performance.now() - this.statusSince) / 1000);
+      let text = this.currentStatus;
+      if (secs >= SLOW_STEP_S) text += ` (${secs}s - still working)`;
+      if (secs >= STUCK_STEP_S) text += ' - this looks stuck; try reloading';
+      if (this.problems.length) text += `\n${this.problems.join('\n')}`;
+      statusEl.textContent = text;
+      statusEl.style.whiteSpace = 'pre-line';
     }
     if (percentageEl) {
       percentageEl.textContent = `${progress}%`;
