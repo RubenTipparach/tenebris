@@ -92,7 +92,6 @@ class PlanetGame {
   private solarSystemMockup: SolarSystemMockup | null = null;
   private groundClutter: GroundClutter | null = null;
   private fauna: Fauna | null = null; // creatures round the player (per-planet rosters)
-  private earthClutter = false; // biome mockup: clutter on Earth too
   private daytimeSkyMockup = false;
 
   // Shared frustum for all planet updates (calculated once per frame)
@@ -733,21 +732,17 @@ class PlanetGame {
 
     this.multiplayer?.update(deltaTime);
     this.rocketSync?.update(deltaTime);
-    // Ground clutter (grass tufts, rocks): always on Sequoia, on Earth with
-    // the biome mockup
+    // Ground clutter (pixel grass tufts, rocks) on every world
     if (!this.groundClutter) {
       this.groundClutter = new GroundClutter(this.engine.scene);
       this.groundClutter.setEnabled(true);
     }
     {
-      // On Sequoia, the Moon, every living world (it has flora), and Earth
-      // with the biome mockup
+      // The planet the player is on; rock worlds get stones only
+      // (clutterFor has no plants for their blocks)
       const pos = this.player.position;
       let on: Planet | null = null;
-      // Every world but Earth (there it follows the biome mockup); rock
-      // worlds get stones only (clutterFor has no plants for their blocks)
       for (const planet of this.planets.values()) {
-        if (planet === this.earth && !this.earthClutter) continue;
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
       }
       this.groundClutter.update(deltaTime, pos, on,
@@ -1293,9 +1288,8 @@ class PlanetGame {
       if (!on) this.engine.setStarVisibility(1);
     });
     bind('toggle-mock-trees', 'tenebris_mock_trees', (on) => setImprovedTreeShading(on));
-    // Terrain and tree biomes are read at load (reload to change them); the
-    // ground clutter follows the toggle live
-    bind('toggle-mock-biomes', 'tenebris_mock_biomes', (on) => { this.earthClutter = on; });
+    // Terrain and tree biomes are read at load (reload to change them)
+    bind('toggle-mock-biomes', 'tenebris_mock_biomes', () => { /* read at load */ });
     // The gas giants are part of the system now, not a toggle
     this.solarSystemMockup = new SolarSystemMockup(this.engine.farRoot, this.sunPosition, this.engine.farOrigin);
     this.solarSystemMockup.setEnabled(true);
