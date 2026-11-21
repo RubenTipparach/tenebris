@@ -1,25 +1,14 @@
+import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { ItemType } from '../player/Inventory';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 
 // Smelting recipes: ore -> ingot
-export interface SmeltingRecipe {
-  input: ItemType;
-  output: ItemType;
-  outputQuantity: number;
-}
-
-export const SMELTING_RECIPES: SmeltingRecipe[] = [
-  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 1 },
-  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 1 },
-  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 1 },
-  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 1 },
-  { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 1 },  // the Moon's
-  // Note: Lithium and Cobalt require electrical furnace (not implemented yet)
-];
+export { SMELTING_RECIPES } from '../config/SmeltingRecipes';
+export type { SmeltingRecipe } from '../config/SmeltingRecipes';
+import { SMELTING_RECIPES } from '../config/SmeltingRecipes';
 
 // Furnace texture layout (48x32, each face is 16x16):
 // Row 1: Front(0,0) | Side1(16,0) | Side2(32,0)
@@ -435,6 +424,7 @@ export class FurnaceManager {
             if (furnace.outputItem === null || furnace.outputItem === recipe.output) {
               furnace.outputItem = recipe.output;
               furnace.outputCount += recipe.outputQuantity;
+              emitGameEvent('smelted', recipe.output, recipe.outputQuantity);
             }
             // Consume fuel
             furnace.fuelAmount--;

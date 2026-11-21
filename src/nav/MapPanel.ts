@@ -1,3 +1,4 @@
+import { REACH_SET_FAR_M } from '../config/Missions';
 import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
@@ -456,7 +457,16 @@ export class MapPanel {
     const planet = this.nav.planets.get(this.mode.id)!;
     const dir = r.unproject(x, m.y);
     const tile = planet.getTileAtPoint(new THREE.Vector3(dir.x, dir.y, dir.z).multiplyScalar(planet.radius).add(planet.center));
-    if (tile) this.nav.waypoints.add(this.mode.id, tile.index);
+    if (!tile) return;
+    // Missions count reaching a waypoint set far away (PBD G3): far if on
+    // another world, or REACH_SET_FAR_M or more over the surface from here
+    const me = this.nav.player();
+    let far = me.planetId !== this.mode.id;
+    if (!far) {
+      const a = me.position.clone().sub(planet.center).normalize();
+      far = a.angleTo(tile.center.clone().normalize()) * planet.radius >= REACH_SET_FAR_M;
+    }
+    this.nav.waypoints.add(this.mode.id, tile.index, far);
   }
 
   private waypointAt(x: number, y: number): string | null {

@@ -1,4 +1,5 @@
 import { emitGameEvent } from '../engine/GameEvents';
+import { recipeLockedBy, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
@@ -592,6 +593,8 @@ export class ElectronicsWorkbenchUI {
   }
 
   private canCraftRecipe(recipe: ElectronicsRecipe): boolean {
+    // Locked until its mission is done (src/player/RecipeGate)
+    if (!recipeOpen(recipe.output.itemType)) return false;
     // Debug mode: bypass ingredient requirements
     if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       return true;
@@ -703,6 +706,7 @@ export class ElectronicsWorkbenchUI {
 
   private findMatchingRecipe(): ElectronicsRecipe | null {
     for (const recipe of ELECTRONICS_RECIPES) {
+      if (!recipeOpen(recipe.output.itemType)) continue;  // locked by a mission
       let matches = true;
 
       // Check all required inputs are present
@@ -819,6 +823,15 @@ export class ElectronicsWorkbenchUI {
 
   private updateUI(): void {
     if (!this.currentWorkbench) return;
+
+    // Recipes a mission has not unlocked yet read as locked, with that mission
+    if (this.recipeDropdown) {
+      ELECTRONICS_RECIPES.forEach((r, i) => {
+        const opt = this.recipeDropdown!.querySelector<HTMLOptionElement>(`option[value="${i}"]`);
+        const by = recipeLockedBy(r.output.itemType);
+        if (opt) opt.textContent = by ? `${r.name} (locked: ${by})` : r.name;
+      });
+    }
 
     // Update power status
     if (this.powerStatusElement) {

@@ -1,4 +1,5 @@
 import { emitGameEvent } from '../engine/GameEvents';
+import { recipeLockedBy, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
@@ -1005,8 +1006,11 @@ export class CraftingSystem {
       `;
 
       const name = document.createElement('span');
-      name.textContent = recipe.name;
-      name.style.color = '#fff';
+      // A recipe a mission has not unlocked yet: dimmed, with that mission
+      const lockedBy = recipeLockedBy(recipe.output.itemType);
+      name.textContent = lockedBy ? `${recipe.name} - ${lockedBy}` : recipe.name;
+      name.style.color = lockedBy ? '#777' : '#fff';
+      if (lockedBy) item.style.opacity = '0.55';
 
       const quantity = document.createElement('span');
       quantity.textContent = `x${recipe.output.quantity}`;
@@ -1114,8 +1118,8 @@ export class CraftingSystem {
     }
 
     // Check if player can craft (has enough of all required items, or bypass mode is enabled)
-    let canCraft = true;
-    if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
+    let canCraft = recipeOpen(this.selectedRecipe.output.itemType);
+    if (canCraft && !PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       for (const [itemType, quantity] of requiredItems) {
         if (!this.inventory.hasItem(itemType, quantity)) {
           canCraft = false;
@@ -1199,6 +1203,8 @@ export class CraftingSystem {
   }
 
   private canCraft(recipe: CraftingRecipe): boolean {
+    // Locked until its mission is done (src/player/RecipeGate)
+    if (!recipeOpen(recipe.output.itemType)) return false;
     // Debug mode: bypass ingredient requirements
     if (PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       return true;

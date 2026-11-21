@@ -1,3 +1,5 @@
+import { REACH_RADIUS_M } from '../config/Missions';
+import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
 import { CraftingSystem } from '../player/CraftingSystem';
@@ -30,6 +32,15 @@ export class Navigation {
       return;
     }
     const up = me.position.clone().sub(planet.center);
+    // Missions: a far waypoint on this world, walked to
+    for (const w of this.waypoints.all()) {
+      if (!w.far || w.body !== me.planetId) continue;
+      const t = planet.getPolyhedron().tiles[w.tile];
+      if (t && up.clone().normalize().angleTo(t.center.clone().normalize()) * planet.radius <= REACH_RADIUS_M) {
+        this.waypoints.markReached(w.id);
+        emitGameEvent('reached');
+      }
+    }
     const altitudeRadii = (up.length() - planet.radius) / planet.radius;
     const tiles = planet.getPolyhedron().tiles;
     const waypoints = this.waypoints.all()

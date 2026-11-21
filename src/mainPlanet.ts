@@ -22,6 +22,7 @@ import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
+import { emitGameEvent } from './engine/GameEvents';
 import { advanceGameTime, framePositionAt, gameTimeS, orbitOf, setLocalGameTime, useNetworkClock } from './world/Orbits';
 import { ORBIT_CONFIG } from './config/OrbitConfig';
 import { PlanetObjectRouter, planetObjectScene, setPlanetObjectRouter } from './world/PlanetFrames';
@@ -387,6 +388,10 @@ class PlanetGame {
       this.fishing = new FishingSystem(this.engine.scene, this.engine.camera, (item) => {
         const left = this.blockInteraction.getInventory().addItem(item, 1);
         this.blockInteraction.onInventoryChanged();
+        if (left === 0) {
+          emitGameEvent('caught', item);
+          emitGameEvent('caughtOn', this.player.getCurrentPlanet()?.getName() ?? 'earth');
+        }
         return left === 0;
       });
 
@@ -1645,6 +1650,8 @@ class PlanetGame {
       [ItemType.STEAM_ENGINE]: () => gameStorage.getSteamEngines(),
       [ItemType.HYDRO_GENERATOR]: () => gameStorage.getHydroGenerators(),
       [ItemType.TORCH]: () => gameStorage.getTorches(),
+      [ItemType.CABLE]: () => gameStorage.getCables(),
+      [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
     };
     const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
     this.missions = new MissionsPanel(inventory, existingWorld, () => ({

@@ -8,11 +8,16 @@
  *   assembled   a pad's rocket has an engine, a tank and a command module
  *   launched    a rocket left the ground
  *   landed      key = body id where a rocket touched down safely
+ *   smelted     key = ItemType a furnace or electric furnace made, n = count
+ *   caught      key = ItemType of the fish landed
+ *   caughtOn    key = body id the fish was landed on
+ *   reached     a waypoint set 200 m or more away was reached
  *
  * Items gained are not an event: they are read off the inventory itself
- * (src/player/Missions.ts), since they arrive by many paths.
+ * (src/player/MissionTracker.ts), since they arrive by many paths.
  */
-export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed';
+export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed'
+  | 'smelted' | 'caught' | 'caughtOn' | 'reached';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

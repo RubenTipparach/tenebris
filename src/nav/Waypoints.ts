@@ -38,9 +38,15 @@ export class Waypoints {
     return () => this.listeners.delete(fn);
   }
 
-  add(body: string, tile: number): void {
+  add(body: string, tile: number, far = false): void {
     const id = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
-    this.list = addWaypoint(this.list, { id, body, tile, setAt: Date.now() });
+    this.list = addWaypoint(this.list, { id, body, tile, setAt: Date.now(), ...(far ? { far: true } : {}) });
+    this.changed(true);
+  }
+
+  /** A far waypoint was reached: it counts once (missions: reached). */
+  markReached(id: string): void {
+    this.list = this.list.map(w => (w.id === id ? { id: w.id, body: w.body, tile: w.tile, setAt: w.setAt } : w));
     this.changed(true);
   }
 

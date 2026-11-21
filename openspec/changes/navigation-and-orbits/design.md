@@ -183,18 +183,36 @@ them.
 `{ id, branch, icon, title, help, parent, after?, objectives, unlocks }`.
 `unlocks` lists recipe output item types.
 
-**The tree,** with real recipe and item names:
+**The tree,** as built, with real recipe and item names. The organising rule
+(owner, 2026-11-21: "The missions should encourage players to go through
+the tech tree"):
+- every recipe output and every smelt in the game is unlocked by a mission
+  or asked for by one, and `scripts/missions.test.ts` lists any that are not;
+- each branch ends in a payoff that unlocks the next tier;
+- missions ask the player to use what the one before unlocked: craft it,
+  place it, run it.
 
-| branch | missions (parent -> child) | unlocks |
+The test also holds two more rules. No mission asks for its own unlock, and
+every objective's recipe is unlocked by one of that mission's ancestors.
+
+| branch | missions (parent -> child; `side` hangs below) | unlocks |
 | --- | --- | --- |
-| 0. Trunk | Chop a tree (logs 4) -> Make planks (planks, sticks) -> Dig stone (stone 8) -> Build a furnace (place Furnace) | planks: Furnace, Torch, Storage Chest |
-| 1. Mining and smelting | Find ore (iron 3, coal 2) -> Smelt iron (iron ingot 3) -> Smelt copper (copper ingot 2) -> Make glass | Smelt iron: Bucket. Smelt copper: Cable, Copper Pipe |
-| 2. Light and storage | Light the night (place 4 torches) -> Store things (place a Storage Chest) | |
-| 3. Power | Steam power (place a Steam Engine) -> Wire it up (place 4 Cables) -> Electric furnace (place one); and Water power (place a Hydro Generator) | Steam Engine: Hydro Generator, Electric Furnace |
-| 4. Electronics | Electronics workbench (place one) -> Chips (CPU Chip, RAM Module) -> Computer (craft and place) -> 3D printer (craft and place) | workbench: CPU, RAM, Motherboard, Power Supply. Chips: Computer, Print Nozzle, 3D Printer |
-| 5. Rocketry (after the 3D printer) | Pad blocks (print 7) -> Lay the pad -> Launch tower (3 segments) -> Rocket parts (engine, tank, command module) -> Assemble -> Launch -> Land on the Moon | Pad blocks: Launch Pad Block, Launch Pad Segment. Tower: Rocket Engine, Medium Fuel Tank, Command Module. Launch: Cargo Bay |
-| 6. The Moon and beyond (after landing on the Moon) | Moon metal (titanium ore 3) -> Titanium (smelt 3) -> Vacuum engine (print it and a Large Fuel Tank) -> Ice fuel (make rocket fuel from ice) -> Another world (land on Sequoia) -> Explorer (land on 3 more worlds) | Moon metal: Vacuum Engine, Large Fuel Tank. Ice fuel: the ice and snow fuel recipes |
-| 7. Getting about (after the trunk) | Read the map (reach a waypoint set 200 m away) -> Go fishing (Fishing Rod, catch 3 fish) | Read the map: Fishing Rod |
+| 0. Hands to fire | Chop a tree (logs 4) -> Make planks (planks 4, sticks 4) -> Dig stone (stone 8) -> Build a furnace (craft and place one) | Make planks: Furnace, Torch, Storage Chest, Fishing Rod |
+| 1. Mining and smelting (off the furnace) | Find ore (iron ore 3, craft coal 8) -> Smelt iron (smelt 3) -> Smelt copper (smelt 3) -> Light metals (smelt aluminum 3, gold 1); side: Carry water (craft a bucket, fill it) | Smelt iron: Bucket. Smelt copper: Cable, Copper Pipe. **Light metals: Steam Engine** (the power branch) |
+| 2. Power (off Light metals) | Steam power (place a steam engine and 2 pipes) -> Wire it up (place 4 cables) -> Electric furnace (place it) -> Rare metals (smelt lithium 2 and cobalt 2, electric furnace only); side: Water power (place a hydro generator) | Wire it up: Electric Furnace, Hydro Generator. **Rare metals: Electronics Workbench** |
+| 3. Electronics (off Rare metals) | Electronics workbench (place it) -> Make chips (CPU, RAM, motherboard, power supply) -> Build a 3D printer (craft a nozzle, place the printer); side: Make glass (8) -> Build a computer (place it) | workbench: CPU Chip, RAM Module, Motherboard, Power Supply, Print Nozzle. Make chips: Computer, 3D Printer. **Build a 3D printer: Launch Pad Block** (rocketry) |
+| 4. Rocketry (off the 3D printer) | Print pad blocks (7) -> Lay a launch pad -> Raise the tower (3 segments) -> Print rocket parts (engine, tank, command module) -> Build the rocket -> Launch -> Land on the Moon; side: Cargo bay (print one, off Launch) | Lay a launch pad: Launch Pad Segment. Raise the tower: Rocket Engine, Medium Fuel Tank, Command Module, Rocket Fuel. Launch: Cargo Bay. **Land on the Moon: Vacuum Engine, Large Fuel Tank** (the vacuum tier) |
+| 5. The Moon and beyond (off the Moon) | Moon metal (titanium ore 3) -> Smelt titanium (3) -> Vacuum engine (print it and a large tank) -> Ice fuel (craft rocket fuel 3) -> Another world (land on Sequoia) -> Explorer (land on 3 more worlds, each counted once) | |
+| 6. Light and storage (off the furnace) | Light the night (place 4 torches) -> Store things (place a chest) | |
+| 7. Fishing (off Make planks) | Make a fishing rod -> Catch fish (3) -> Three kinds of fish (3 species, each counted once) -> Fish another world (a catch on a body other than Earth; hidden `after`: Land on the Moon) | |
+| 8. Getting about (off the furnace) | Read the map (reach a waypoint set 200 m or more away) | |
+
+Every smelt has a mission: copper, iron, gold and aluminum in mining;
+lithium and cobalt in power; titanium on the Moon.
+
+Fishing events come from the catch in `src/mainPlanet.ts`. `caught` is
+keyed by species, so kinds count once each; `caughtOn` is keyed by the body
+the player stands on. Each world has its own fish (`Fishing.ts` rosters).
 
 **Unlocking:**
 - **One function** answers whether a recipe is open:
@@ -213,14 +231,17 @@ them.
 - **Lines:** SVG elbows from parent to child.
 - **States:** Done, Now, Open and Locked, with a legend.
 - **Branch plaques:** one per branch row.
-- **Zoom:** five designed levels, from overview to full card. Each level
+- **Zoom:** six designed levels, from a whole-tree overview of icons to
+  the full card. Each level
   sets the card size and the type size in whole pixels, never a CSS scale.
   Fit chooses the largest level that shows the whole tree.
 - **Side panel:** the clicked card's objectives with progress bars, its
   help, what it unlocks, what it needs, and what it opens next.
 
-**Events** are as in the first version (`src/engine/GameEvents.ts`). Two
-are added: `smelted` and `reached` (a waypoint, from the waypoint list).
+**Events** are as in the first version (`src/engine/GameEvents.ts`). Four
+are added: `smelted` (both furnaces), `caught` and `caughtOn` (a fish
+landed), and `reached` (a waypoint set 200 m or more away, walked to within
+8 m; the waypoint remembers whether it was set far).
 
 ## Risks / Trade-offs
 

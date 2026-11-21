@@ -1,28 +1,14 @@
+import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { ItemType } from '../player/Inventory';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 
 // Electric smelting recipes: ore -> ingot (requires power, no fuel)
-export interface ElectricSmeltingRecipe {
-  input: ItemType;
-  output: ItemType;
-  outputQuantity: number;
-}
-
-export const ELECTRIC_SMELTING_RECIPES: ElectricSmeltingRecipe[] = [
-  // Advanced ores that require electric furnace
-  { input: ItemType.ORE_LITHIUM, output: ItemType.INGOT_LITHIUM, outputQuantity: 2 },
-  { input: ItemType.ORE_COBALT, output: ItemType.INGOT_COBALT, outputQuantity: 2 },
-  // Can also smelt all other ores (5x faster than regular furnace, no fuel needed, double yield)
-  { input: ItemType.ORE_COPPER, output: ItemType.INGOT_COPPER, outputQuantity: 2 },
-  { input: ItemType.ORE_IRON, output: ItemType.INGOT_IRON, outputQuantity: 2 },
-  { input: ItemType.ORE_GOLD, output: ItemType.INGOT_GOLD, outputQuantity: 2 },
-  { input: ItemType.ORE_ALUMINUM, output: ItemType.INGOT_ALUMINUM, outputQuantity: 2 },
-  { input: ItemType.ORE_TITANIUM, output: ItemType.INGOT_TITANIUM, outputQuantity: 2 },
-];
+export { ELECTRIC_SMELTING_RECIPES } from '../config/SmeltingRecipes';
+export type { ElectricSmeltingRecipe } from '../config/SmeltingRecipes';
+import { ELECTRIC_SMELTING_RECIPES } from '../config/SmeltingRecipes';
 
 export interface PlacedElectricFurnace {
   mesh: THREE.Mesh;
@@ -385,6 +371,7 @@ export class ElectricFurnaceManager {
             if (furnace.outputItem === null || furnace.outputItem === recipe.output) {
               furnace.outputItem = recipe.output;
               furnace.outputCount += recipe.outputQuantity;
+              emitGameEvent('smelted', recipe.output, recipe.outputQuantity);
             }
             furnace.inputCount--;
             anySmeltCompleted = true;
