@@ -191,6 +191,28 @@ model.
   as with the existing two-engine stacks.
 - The tech report gains tier 3 and tier 4 builds.
 
+### 6b. Engine modes (found while building tier 3 and 4)
+
+**The problem:** every engine in a stack fires together. A lift engine and
+an ion drive blend to a specific impulse of about 93 s, so neither high
+tier can take off from Earth and the "lift with one, cruise on the other"
+play doesn't exist.
+
+**Engine modes:**
+- A rocket with more than one engine type has a mode per type, plus All.
+- A key cycles the mode in flight, shown on the HUD.
+- Only engines of the active mode fire; the fuel is shared.
+- `computeRocketStats` takes the mode. The pad stats show delta-v and
+  thrust-to-weight per mode, so a player sees: lift on the chemical engine
+  (high thrust-to-weight), then cruise on the ion drive (high delta-v).
+- The mode is saved with the flight.
+
+**The tech report:**
+- It flies a lift-then-cruise profile: chemical until clear of the
+  atmosphere, then the efficient engine.
+- It reports ion trips analytically, because ion burns outlast the
+  simulator's 1200 s cap.
+
 ### 7. Missions
 
 New branches in `src/config/Missions.ts` (one parent each, ids

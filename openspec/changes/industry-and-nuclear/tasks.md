@@ -31,6 +31,7 @@
 ## 6. Rocket tiers
 
 - [x] 6.1 PARTS rows for the nuclear thermal engine, ion drive, reactor core, battery pack; `requires` in computeRocketStats (ion needs a reactor core) with the reason shown and launch refused. Verify: tests of delta-v ordering and the ion requirement.
+- [ ] 6.3 Engine modes (design 6b): per-type modes + All, a key cycles in flight with a HUD label, only the active mode fires, shared fuel; computeRocketStats per mode; pad stats per mode; mode saved with the flight; tech report flies lift-then-cruise and reports ion trips analytically. Verify: tests (lift mode TWR > 1 on Earth with chem + ion + core; cruise mode delta-v ~ ion's); report shows Earth->Moon and beyond for tier 3 and 4.
 - [x] 6.2 Rocket tech report lists tier 3 and 4 builds. Verify: report output.
 
 ## 8. Building materials
