@@ -230,8 +230,13 @@ function singleTextureTileset(texture: string): TilesetConfig {
   };
 }
 
-/** Where the star sits (the 'sun' body below uses it too). */
-const SUN_POSITION = { x: 1000, y: 0, z: 4000 };
+/**
+ * Where the star sits (the 'sun' body below uses it too): in among the
+ * planets, so they lie all round it (the largest empty arc is about 72 deg)
+ * rather than all off to one side. Moving it changes no distance between
+ * planets, so rocket trips cost the same.
+ */
+const SUN_POSITION = { x: 2300, y: 0, z: 700 };
 
 /**
  * Spawn lat/lon on a body's sunlit side: the sub-solar point, swung

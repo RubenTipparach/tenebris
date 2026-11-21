@@ -279,6 +279,20 @@ export const MATERIAL_RENDER_ORDER: Record<string, number> = { water: 1, ice: 2,
 // Key of a material's buffer in mesher output: 'top' -> 'topData'
 export const bufferKey = (materialKey: string): string => `${materialKey}Data`;
 
+/**
+ * Does a side face of `self` show against `other` (the block across that
+ * face, undefined when unknown)? Against air always, water unless self is
+ * water. Ice and glass show only against air / water - a face touching any
+ * other block is dropped, or two coplanar faces z-fight through the
+ * translucency. A solid block shows through ice or glass beside it.
+ */
+export function sideFaceShows(self: number, other: number | undefined): boolean {
+  if (other === undefined || other === HexBlockType.AIR) return true;
+  if (other === HexBlockType.WATER) return self !== HexBlockType.WATER;
+  if (self === HexBlockType.ICE || self === HexBlockType.GLASS || self === HexBlockType.WATER) return false;
+  return other === HexBlockType.ICE || other === HexBlockType.GLASS;
+}
+
 export function isSolid(blockType: HexBlockType | number): boolean {
   return blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER;
 }

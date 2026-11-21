@@ -2,6 +2,7 @@
 // This runs synchronously on the CPU for fast visual feedback
 
 import { bakeSkyField, edgeNeighbors, skyAt, LightColumn, SkyField } from '../shared/voxelLight';
+import { sideFaceShows } from '../shared/blockTypes';
 import * as THREE from 'three';
 import { HexBlockType, blockFaces, bufferKey } from '../shared/blockTypes';
 import {
@@ -99,31 +100,31 @@ function depthToRadius(depth: number, config: BuildConfig): number {
 }
 
 // Check if block is transparent
-function isTransparentBlock(blockType: HexBlockType): boolean {
-  return blockType === HexBlockType.AIR ||
-         blockType === HexBlockType.WATER ||
-         blockType === HexBlockType.ICE ||
-         blockType === HexBlockType.GLASS;
-}
 
 // Check if column has exposed side at depth
-function hasExposedSide(
+function exposedEdges(
   column: ColumnData,
   depth: number,
-  neighborDataMap: Map<number, NeighborData>
-): boolean {
-  const blockType = column.blocks[depth];
-  if (blockType === HexBlockType.AIR || blockType === HexBlockType.WATER) return false;
+  neighborDataMap: Map<number, NeighborData>,
+  edges: number[]
+): boolean[] {
+  const self = column.blocks[depth];
+  return edges.map(n => sideFaceShows(self, n < 0 ? undefined : neighborDataMap.get(n)?.blocks[depth]));
+}
 
-  for (const neighborIndex of column.tile.neighbors) {
-    const neighborInfo = neighborDataMap.get(neighborIndex);
-    if (!neighborInfo) return true;
-
-    const neighborBlock = neighborInfo.blocks[depth];
-    if (neighborBlock === undefined) return true;
-    if (isTransparentBlock(neighborBlock)) return true;
-  }
-  return false;
+// Keep only the side quads (4 vertices each, one per edge) whose edge shows
+function keepSides(geom: { positions: number[]; normals: number[]; uvs: number[]; indices: number[] }, show: boolean[]): typeof geom {
+  const out = { positions: [] as number[], normals: [] as number[], uvs: [] as number[], indices: [] as number[] };
+  let v = 0;
+  show.forEach((on, i) => {
+    if (!on) return;
+    out.positions.push(...geom.positions.slice(i * 12, i * 12 + 12));
+    out.normals.push(...geom.normals.slice(i * 12, i * 12 + 12));
+    out.uvs.push(...geom.uvs.slice(i * 8, i * 8 + 8));
+    out.indices.push(v, v + 1, v + 2, v, v + 2, v + 3);
+    v += 4;
+  });
+  return out;
 }
 
 // Calculate torch light at position
@@ -434,7 +435,8 @@ function buildColumnGeometry(
 
     if (isWater && blockAbove !== HexBlockType.AIR && blockAbove !== HexBlockType.ICE && blockAbove !== HexBlockType.GLASS) continue;
 
-    const hasSideExposed = !isWater && hasExposedSide(column, depth, neighborDataMap);
+    const sideShow = isWater ? [] : exposedEdges(column, depth, neighborDataMap, edges);
+    const hasSideExposed = sideShow.some(Boolean);
 
     if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
@@ -481,7 +483,8 @@ function buildColumnGeometry(
     if (!isWater && hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
-        mergeGeometry(bufferFor(chunkData, faces.side), sidesGeom.positions, sidesGeom.normals, sidesGeom.uvs, sidesGeom.indices, config.sunDirection, sideLights(field, edges, depth), torches);
+        const shown = keepSides(sidesGeom, sideShow);
+        mergeGeometry(bufferFor(chunkData, faces.side), shown.positions, shown.normals, shown.uvs, shown.indices, config.sunDirection, sideLights(field, edges.filter((_, i) => sideShow[i]), depth), torches);
 
       }
     }
