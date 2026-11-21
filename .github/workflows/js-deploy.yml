@@ -9,6 +9,9 @@
 #                    to always matches the itch build
 #     server only    just the multiplayer server (a server fix, or its
 #                    first deploy) - no itch.io push
+#     pages + server GitHub Pages (rubentipparach.github.io/tenebris, the
+#                    pages.yml workflow) then the Fly server once Pages
+#                    deployed - no itch.io push
 #   The server's admin portal (https://tenebris-c.fly.dev/admin) needs an
 #   ADMIN_TOKEN Fly secret: fly secrets set ADMIN_TOKEN=... -a tenebris-c
 #
@@ -38,6 +41,7 @@ on:
         options:
           - itch + server
           - server only
+          - pages + server
 
 permissions:
   contents: read
@@ -49,8 +53,8 @@ concurrency:
 jobs:
   itch:
     name: itch.io - butler push ruben-tipparach/tenebris:html5
-    # manual releases only, unless just the server was asked for
-    if: github.event_name == 'workflow_dispatch' && inputs.ship != 'server only'
+    # manual releases only, when itch.io was asked for
+    if: github.event_name == 'workflow_dispatch' && inputs.ship == 'itch + server'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -106,14 +110,26 @@ jobs:
             -d "{\"event_type\":\"tenebris-updated\",\"client_payload\":{\"sha\":\"$GITHUB_SHA\"}}"
           echo "heavyphoton.com deploy triggered"
 
+  pages:
+    name: GitHub Pages - deploy rubentipparach.github.io/tenebris
+    # 'pages + server': the same Pages deploy pages.yml runs on push
+    if: github.event_name == 'workflow_dispatch' && inputs.ship == 'pages + server'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+
   server:
     name: Fly.io - deploy server-js to tenebris-c
-    # ships with the itch.io release, after it succeeds - or alone when
-    # 'server only' was picked
-    needs: itch
+    # ships after what it was released with succeeds (itch.io or Pages) -
+    # or alone when 'server only' was picked
+    needs: [itch, pages]
     if: >-
-      always() && github.event_name == 'workflow_dispatch' &&
-      (needs.itch.result == 'success' || (inputs.ship == 'server only' && needs.itch.result == 'skipped'))
+      always() && github.event_name == 'workflow_dispatch' && (
+        (inputs.ship == 'itch + server' && needs.itch.result == 'success') ||
+        (inputs.ship == 'pages + server' && needs.pages.result == 'success') ||
+        inputs.ship == 'server only')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
