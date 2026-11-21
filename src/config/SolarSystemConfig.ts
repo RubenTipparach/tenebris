@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import type { CityConfig } from '../shared/cityGen';
 import { HexBlockType } from '../shared/blockTypes';
 import type { FloraSpecies, EarthTreeSpecies } from '../planet/Tree';
+import { PlayerConfig } from './PlayerConfig';
 
 /**
  * Types of celestial bodies
@@ -43,6 +44,8 @@ export interface LodColorsConfig {
   snow: string;
   /** Color for rock/stone below sea level */
   rock: string;
+  /** Color for molten volcano craters */
+  lava: string;
 }
 
 /** Default Earth-like LOD colors */
@@ -52,6 +55,7 @@ export const DEFAULT_LOD_COLORS: LodColorsConfig = {
   ice: '#b8e0f0',    // Polar ice (light cyan)
   snow: '#f0f0f0',   // Snow white
   rock: '#888888',   // Grey rock
+  lava: '#ff7a1a',   // Glowing magma
 };
 
 /**
@@ -118,6 +122,12 @@ export interface TerrainConfig {
   /** Replace generic terrain blocks with this planet's own block IDs
    *  (e.g. GRASS -> SEQ_SCRUB on Sequoia, a biome's top -> CINDER_ASH) */
   blockRemap?: Partial<Record<number, HexBlockType>>;
+  /** Rock worlds: volcano cones with molten craters (count) */
+  volcanoes?: number;
+  /** Rock worlds: a frozen crust (frost over glacier ice, blue ice on slopes) */
+  iceCover?: boolean;
+  /** Rock worlds: meteoric iron at the surface, extra ore veins */
+  metalRich?: boolean;
 }
 
 /**
@@ -229,19 +239,51 @@ function daySideSpawn(position: { x: number; y: number; z: number }): { latitude
   return { latitude, longitude };
 }
 
-/** What makes one barren world different from the next. */
-interface BarrenWorld {
+/**
+ * Goldberg subdivisions that keep a body's tiles about 1.75 m across at its
+ * radius (each step doubles the tile count's square root). Capped at 7:
+ * subdivision 8 is 655k tiles - several seconds and over a GB to build - so a
+ * body past 200 m simply gets slightly larger tiles.
+ */
+function subdivisionsFor(radius: number): number {
+  if (radius <= 8) return 2;
+  if (radius < 18) return 3;
+  if (radius < 35) return 4;
+  if (radius < 71) return 5;
+  if (radius < 141) return 6;
+  return 7;
+}
+
+/** What makes one rock world (planet, moon or asteroid) different from the next. */
+interface RockWorld {
   id: string;
   name: string;
   radius: number;
-  subdivisions: number;       // 4 = radius ~25, 5 = ~50, 6 = ~100 (keeps tiles ~1.75 m)
   position: { x: number; y: number; z: number };
   heightVariation: number;
   gravity: number;            // 1 = Earth
   colour: string;             // distant and far-LOD colour
   seed: number;               // offset from the world seed
   life?: AlienLife;           // biomes and plants (none = lifeless rock)
+  type?: CelestialBodyType;   // default PLANET
+  parent?: string;            // the body a moon belongs to
+  texture?: string;           // default public/textures/planets/<id>.png
+  volcanoes?: number;         // volcano cones with molten craters
+  iceCover?: boolean;         // a frozen crust over glacier ice
+  metalRich?: boolean;        // meteoric iron at the surface, extra ore
 }
+
+// Small bodies need a shallower column (sea level = air above the datum,
+// plus dig depth) or its bottom would pass the centre; a volcano needs
+// headroom for its cone
+const FULL_COLUMN_RADIUS = 45;
+const SMALL_SEA_LEVEL_SHARE = 0.3;
+const SMALL_DEPTH_SHARE = 0.35;
+const VOLCANO_HEADROOM = 4;
+const SMALL_BODY_RADIUS = 40;     // below this the LOD bands get floors, so
+const SMALL_INTERMEDIATE_ALT = 15; // a jump doesn't drop the detailed terrain
+const SMALL_HIGH_ALT = 25;
+const SMALL_DISTANT_ALT = 60;
 
 /**
  * A living alien world's biomes and plants. Its terrain keeps its rock (the
@@ -264,14 +306,20 @@ interface AlienLife {
 }
 
 /**
- * A landable rock planet with its own surface texture
+ * A lifeless, landable rock world with its own surface texture
  * (public/textures/planets/<id>.png, from scripts/gen-planet-textures.py).
- * No water or atmosphere; native rock, polar ice and ore veins come from the
- * single-texture terrain generator, like the Moon's. Without `life` it is
- * lifeless rock; with it, alien biomes and plants grow on that rock.
+ * No water, atmosphere, flora or fauna; native rock, polar ice and ore
+ * veins come from the single-texture terrain generator, like the Moon's -
+ * plus volcano cones, an ice crust or meteoric iron where the world has them.
  */
-function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
-  const texture = `/textures/planets/${w.id}.png`;
+function rockWorld(w: RockWorld): CelestialBodyConfig {
+  const texture = w.texture ?? `/textures/planets/${w.id}.png`;
+  const small = w.radius < FULL_COLUMN_RADIUS;
+  const seaLevel = small ? Math.max(3, Math.round(w.radius * SMALL_SEA_LEVEL_SHARE)) : undefined;
+  const headroom = w.volcanoes ? VOLCANO_HEADROOM : 0;
+  const tiny = w.radius < SMALL_BODY_RADIUS;
+  // A living world's three grounds dress its tileset's grass / sand / snow,
+  // so its distant LOD wears them
   const life = w.life;
   const ground = (i: number) => `/textures/alien/${w.id}_${life!.grounds[i][0]}.png`;
   const tileset = singleTextureTileset(texture);
@@ -284,14 +332,15 @@ function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
   return {
     id: w.id,
     name: w.name,
-    type: CelestialBodyType.PLANET,
+    type: w.type ?? CelestialBodyType.PLANET,
     radius: w.radius,
-    subdivisions: w.subdivisions,
+    subdivisions: subdivisionsFor(w.radius),
     position: w.position,
+    orbit: w.parent ? { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 } : undefined,
     visual: {
       texturePath: texture,
       heightVariation: w.heightVariation,
-      terrainStyle: TerrainStyle.BARREN,
+      terrainStyle: w.volcanoes ? TerrainStyle.VOLCANIC : w.iceCover ? TerrainStyle.ICY : TerrainStyle.BARREN,
       distantColor: w.colour,
       lodColors: { rock: w.colour },
     },
@@ -313,16 +362,26 @@ function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
         [HexBlockType.STONE]: HexBlockType.MOON_ROCK,
         [HexBlockType.SNOW]: HexBlockType.MOON_ROCK,
       } : undefined,
+      seaLevel: seaLevel !== undefined ? seaLevel + headroom : headroom ? PlayerConfig.TERRAIN_SEA_LEVEL + headroom : undefined,
+      maxDepth: small ? Math.max(3, Math.round(w.radius * SMALL_DEPTH_SHARE)) : undefined,
+      volcanoes: w.volcanoes,
+      iceCover: w.iceCover,
+      metalRich: w.metalRich,
     },
     tileset,
     flora: life?.flora,
     floraDensity: life?.floraDensity,
     spawn: {
       ...daySideSpawn(w.position),
-      altitudeAboveSurface: 3,
+      altitudeAboveSurface: tiny ? 2 : 3,
     },
     landable: true,
     hasAtmosphere: false,
+    ...(tiny ? {
+      intermediateLODAltitude: SMALL_INTERMEDIATE_ALT,
+      highLODAltitude: SMALL_HIGH_ALT,
+      distantLODAltitude: SMALL_DISTANT_ALT,
+    } : {}),
   };
 }
 
@@ -330,6 +389,7 @@ function barrenPlanet(w: BarrenWorld): CelestialBodyConfig {
 interface JungleWorld {
   id: string;
   name: string;
+  parent: string;        // the gas giant it orbits
   radius: number;
   subdivisions: number;
   position: { x: number; y: number; z: number };
@@ -361,6 +421,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     radius: w.radius,
     subdivisions: w.subdivisions,
     position: w.position,
+    orbit: { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 },
     visual: {
       heightVariation: 0.8,
       terrainStyle: TerrainStyle.EARTH_LIKE,
@@ -402,6 +463,35 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     floraDensity: w.floraDensity,
   };
 }
+/** A moon of `parent` (a rock world). */
+const moon = (parent: string, w: Omit<RockWorld, 'parent' | 'type'>) =>
+  rockWorld({ ...w, parent, type: CelestialBodyType.MOON });
+
+/** An asteroid: tiny, lumpy, nearly weightless; textures shared per kind. */
+type AsteroidKind = 'rock' | 'metal' | 'ice';
+const asteroid = (kind: AsteroidKind, w: Omit<RockWorld, 'type' | 'texture' | 'heightVariation' | 'gravity'>) =>
+  rockWorld({
+    ...w, type: CelestialBodyType.ASTEROID, texture: `/textures/planets/asteroid_${kind}.png`,
+    heightVariation: 1.0, gravity: 0.12, metalRich: kind === 'metal', iceCover: kind === 'ice',
+  });
+
+/**
+ * The gas giants: visual only (not landable, no terrain, no gravity), drawn
+ * by src/mockups/SolarSystemMockup.ts in the far layer. They stand still, so
+ * their moons (landable rock worlds below) can sit beside them.
+ */
+export interface GasGiantConfig {
+  id: string;
+  name: string;
+  radius: number;
+  position: { x: number; y: number; z: number };
+}
+// A gas giant's rings reach this far out (radii); its moons sit beyond them
+export const GAS_GIANT_RING_OUTER = 2.3;
+export const GAS_GIANTS: GasGiantConfig[] = [
+  { id: 'brontes', name: 'Brontes', radius: 480, position: { x: -5200, y: 600, z: -3600 } },
+  { id: 'aurelia', name: 'Aurelia', radius: 380, position: { x: 5200, y: -400, z: 4600 } },
+];
 
 /**
  * Sequoia tileset - alien planet with unique terrain textures
@@ -819,17 +909,17 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     },
 
     // =========================================================================
-    // THE BARREN WORLDS - eight more landable planets. Five of them have
-    // alien life (biomes in their own grounds, one plant species per biome,
-    // every species only on its own planet); Kessel and Nerith stay lifeless
+    // THE ROCK WORLDS - seven more landable planets, radius 80-280 (Ferrum is the city
+    // world above). Five have alien life (biomes in their own grounds, one
+    // plant species per biome, every species only on its own planet);
+    // Kessel and Nerith stay lifeless
     // =========================================================================
-    // Spread round Earth at 1.5-4 km so the rocket reaches each in a few
-    // minutes, and kept clear of the sun (1000, 0, 4000).
-    // Cinder: ash plains bristling with glowing obsidian ember spires, red
-    // ember-moss hollows under thorn trees hung with burning pods, and bare
-    // sulfur flats
-    barrenPlanet({ id: 'cinder', name: 'Cinder', radius: 45, subdivisions: 5, position: { x: -1600, y: 150, z: 900 },
-      heightVariation: 0.9, gravity: 0.6, colour: '#5a3a30', seed: 101,
+    // Spread round Earth at 1.5-4.5 km so the rocket reaches each in a few
+    // minutes, clear of the sun (1000, 0, 4000) and of each other's gravity
+    // (every pair sits further apart than their two falloff radii; the boot
+    // log warns when they don't - bodyClearanceProblems below).
+    rockWorld({ id: 'cinder', name: 'Cinder', radius: 130, position: { x: -1600, y: 150, z: 900 },
+      heightVariation: 0.6, gravity: 0.6, colour: '#5a3a30', seed: 101, volcanoes: 6,
       life: {
         grounds: [['embermoss', HexBlockType.CINDER_EMBERMOSS], ['ash', HexBlockType.CINDER_ASH], ['sulfur', HexBlockType.CINDER_SULFUR]],
         climate: { mild: HexBlockType.CINDER_ASH, wet: HexBlockType.CINDER_EMBERMOSS, cold: HexBlockType.CINDER_EMBERMOSS, warm: HexBlockType.CINDER_SULFUR, hot: HexBlockType.CINDER_SULFUR },
@@ -840,9 +930,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    // Vesper: orange dunes of spiral reeds, rose clay pans of bulbous
-    // balloon cacti, and white salt flats where nothing grows
-    barrenPlanet({ id: 'vesper', name: 'Vesper', radius: 60, subdivisions: 5, position: { x: 2200, y: -100, z: -600 },
+    rockWorld({ id: 'vesper', name: 'Vesper', radius: 280, position: { x: 2800, y: -100, z: -1200 },
       heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202,
       life: {
         grounds: [['clay', HexBlockType.VESPER_CLAY], ['dune', HexBlockType.VESPER_DUNE], ['salt', HexBlockType.VESPER_SALT]],
@@ -854,9 +942,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    // Halcyon: verdigris moss under crystal trees with faceted canopies,
-    // amethyst geode fields sprouting violet shard blooms, mint glass sands
-    barrenPlanet({ id: 'halcyon', name: 'Halcyon', radius: 55, subdivisions: 5, position: { x: -900, y: -250, z: -1800 },
+    rockWorld({ id: 'halcyon', name: 'Halcyon', radius: 120, position: { x: -1100, y: -250, z: -2000 },
       heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303,
       life: {
         grounds: [['moss', HexBlockType.HALCYON_MOSS], ['geode', HexBlockType.HALCYON_GEODE], ['glass', HexBlockType.HALCYON_GLASS]],
@@ -868,10 +954,8 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    // Tessaly: frost crust reefs of frost coral, lilac snow moss under tall
-    // ice-flower spires, and bare blue glaze
-    barrenPlanet({ id: 'tessaly', name: 'Tessaly', radius: 50, subdivisions: 5, position: { x: -2400, y: 400, z: -400 },
-      heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505,
+    rockWorld({ id: 'tessaly', name: 'Tessaly', radius: 160, position: { x: -2800, y: 400, z: -600 },
+      heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505, iceCover: true,
       life: {
         grounds: [['snowmoss', HexBlockType.TESSALY_SNOWMOSS], ['glaze', HexBlockType.TESSALY_GLAZE], ['frost', HexBlockType.TESSALY_FROST]],
         climate: { mild: HexBlockType.TESSALY_FROST, wet: HexBlockType.TESSALY_SNOWMOSS, cold: HexBlockType.TESSALY_GLAZE, warm: HexBlockType.TESSALY_SNOWMOSS, hot: HexBlockType.TESSALY_GLAZE },
@@ -882,14 +966,11 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    barrenPlanet({ id: 'nerith', name: 'Nerith', radius: 38, subdivisions: 5, position: { x: 300, y: -500, z: -2600 },
+    rockWorld({ id: 'nerith', name: 'Nerith', radius: 90, position: { x: 300, y: -500, z: -2600 },
       heightVariation: 0.7, gravity: 0.45, colour: '#61708a', seed: 606 }),
-    barrenPlanet({ id: 'kessel', name: 'Kessel', radius: 25, subdivisions: 4, position: { x: -300, y: 600, z: 2400 },
-      heightVariation: 1.0, gravity: 0.25, colour: '#655d77', seed: 707 }),
-    // Umbra: dark indigo moss lit by clusters of bioluminescent glowcaps,
-    // violet mycelium mats under veil willows trailing glowing tendrils,
-    // and black shale
-    barrenPlanet({ id: 'umbra', name: 'Umbra', radius: 45, subdivisions: 5, position: { x: 3600, y: -200, z: 600 },
+    rockWorld({ id: 'kessel', name: 'Kessel', radius: 80, position: { x: -300, y: 600, z: 2400 },
+      heightVariation: 1.0, gravity: 0.35, colour: '#655d77', seed: 707 }),
+    rockWorld({ id: 'umbra', name: 'Umbra', radius: 110, position: { x: 4000, y: -200, z: 600 },
       heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808,
       life: {
         grounds: [['moss', HexBlockType.UMBRA_MOSS], ['shale', HexBlockType.UMBRA_SHALE], ['mycel', HexBlockType.UMBRA_MYCEL]],
@@ -905,13 +986,12 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // =========================================================================
     // THE JUNGLE MOONS - lush moons of the gas giants (Verdance of Brontes,
     // Mirewood of Aurelia), each with its own jungle species.
-    // PLACEHOLDER positions (near Sequoia) until the gas giants' moons are
-    // placed for real; the gas giants are still a far-field mockup.
+    // In the slots reserved beside each giant (RESERVED_SLOTS).
     // =========================================================================
     // Verdance: emerald deep jungle under giant buttressed canopy trees hung
     // with lianas, olive mangrove swamps on stilt roots, fan palms on the
     // pale river banks; red laterite soil
-    jungleMoon({ id: 'verdance', name: 'Verdance', radius: 75, subdivisions: 6, position: { x: 1300, y: 250, z: -300 },
+    jungleMoon({ id: 'verdance', name: 'Verdance', parent: 'brontes', radius: 70, subdivisions: 6, position: { x: -3700, y: 800, z: -2900 },
       seed: 909, water: '#2f6b52', waterDeep: '#18402f', land: '#2f7a3a', atmosphereTint: '#c8ffd0',
       blocks: [HexBlockType.VERD_JUNGLE, HexBlockType.VERD_SWAMP, HexBlockType.VERD_BANK, HexBlockType.VERD_SOIL, HexBlockType.VERD_ROCK],
       flora: {
@@ -924,7 +1004,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // Mirewood: lime-and-teal jungle of giant elephant-ear plants, black peat
     // swamps of bottle-trunked swamp cypress, and grey silt banks under
     // drooping weeping ferns; dark peat soil, banded violet rock
-    jungleMoon({ id: 'mirewood', name: 'Mirewood', radius: 70, subdivisions: 6, position: { x: 1200, y: -300, z: 900 },
+    jungleMoon({ id: 'mirewood', name: 'Mirewood', parent: 'aurelia', radius: 70, subdivisions: 6, position: { x: 3900, y: -100, z: 4000 },
       seed: 1010, water: '#3a5a40', waterDeep: '#1d2f22', land: '#4f8a44', atmosphereTint: '#e0ffc0',
       blocks: [HexBlockType.MIRE_JUNGLE, HexBlockType.MIRE_SWAMP, HexBlockType.MIRE_BANK, HexBlockType.MIRE_SOIL, HexBlockType.MIRE_ROCK],
       flora: {
@@ -936,71 +1016,94 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     }),
 
     // =========================================================================
-    // EXAMPLE: Additional bodies that could be added
+    // THE PLANETS' MOONS - each beside its planet, outside its gravity
     // =========================================================================
+    moon('sequoia', { id: 'ember', name: 'Ember', radius: 45, position: { x: 1250, y: 100, z: 600 },
+      heightVariation: 0.4, gravity: 0.35, colour: '#3a2622', seed: 901, volcanoes: 4 }),
+    moon('sequoia', { id: 'rime', name: 'Rime', radius: 30, position: { x: 900, y: 450, z: 100 },
+      heightVariation: 0.5, gravity: 0.25, colour: '#cfe6f2', seed: 902, iceCover: true }),
+    moon('vesper', { id: 'sable', name: 'Sable', radius: 35, position: { x: 2600, y: 500, z: -1800 },
+      heightVariation: 0.8, gravity: 0.3, colour: '#5d5246', seed: 903, metalRich: true }),
+    moon('halcyon', { id: 'glint', name: 'Glint', radius: 28, position: { x: -700, y: -100, z: -2250 },
+      heightVariation: 0.6, gravity: 0.25, colour: '#9fd3e6', seed: 904, iceCover: true }),
+    moon('umbra', { id: 'nyx', name: 'Nyx', radius: 45, position: { x: 4000, y: 250, z: 850 },
+      heightVariation: 0.6, gravity: 0.35, colour: '#7f8fc0', seed: 905, iceCover: true }),
+    moon('umbra', { id: 'brand', name: 'Brand', radius: 30, position: { x: 4250, y: -500, z: 250 },
+      heightVariation: 0.4, gravity: 0.25, colour: '#4a2a24', seed: 906, volcanoes: 2 }),
+    moon('cinder', { id: 'scoria', name: 'Scoria', radius: 32, position: { x: -2050, y: 230, z: 1100 },
+      heightVariation: 0.7, gravity: 0.25, colour: '#6b4a3c', seed: 907 }),
+    moon('ferrum', { id: 'lodestone', name: 'Lodestone', radius: 40, position: { x: 3300, y: 400, z: 2050 },
+      heightVariation: 0.7, gravity: 0.35, colour: '#5b5f66', seed: 908, metalRich: true }),
 
-    // Uncomment to add Mars
-    // {
-    //   id: 'mars',
-    //   name: 'Mars',
-    //   type: CelestialBodyType.PLANET,
-    //   radius: 80,
-    //   subdivisions: 5,
-    //   position: { x: 1500, y: 100, z: 500 },
-    //   visual: {
-    //     texturePath: '/textures/mars.png', // Would need to create this
-    //     heightVariation: 0.8,
-    //     terrainStyle: TerrainStyle.BARREN,
-    //     distantColor: '#dd6644',
-    //   },
-    //   gravity: {
-    //     strength: 0.38,
-    //     fullRadiusMultiplier: 1.4,
-    //     falloffRadiusMultiplier: 1.8,
-    //   },
-    //   terrain: {
-    //     hasWater: false,
-    //   },
-    //   spawn: {
-    //     latitude: 0,
-    //     longitude: 0,
-    //     altitudeAboveSurface: 3,
-    //   },
-    //   landable: true,
-    //   hasAtmosphere: true, // Thin atmosphere
-    // },
+    // =========================================================================
+    // THE GAS GIANTS' MOONS (the giants themselves: GAS_GIANTS above)
+    // =========================================================================
+    // Each giant also has a jungle moon (Verdance by Brontes, Mirewood by
+    // Aurelia) - their slots are kept free: see RESERVED_SLOTS.
+    moon('brontes', { id: 'pyrra', name: 'Pyrra', radius: 60, position: { x: -6500, y: 300, z: -2600 },
+      heightVariation: 0.4, gravity: 0.4, colour: '#c9a640', seed: 911, volcanoes: 7 }),
+    moon('brontes', { id: 'glacia', name: 'Glacia', radius: 70, position: { x: -5000, y: 1100, z: -5300 },
+      heightVariation: 0.5, gravity: 0.45, colour: '#e3eef2', seed: 912, iceCover: true }),
+    moon('brontes', { id: 'obol', name: 'Obol', radius: 35, position: { x: -6100, y: 1500, z: -4900 },
+      heightVariation: 0.9, gravity: 0.3, colour: '#7a6a5c', seed: 913 }),
+    moon('aurelia', { id: 'calyx', name: 'Calyx', radius: 55, position: { x: 6100, y: 100, z: 5500 },
+      heightVariation: 0.6, gravity: 0.4, colour: '#a8d8e8', seed: 914, iceCover: true, volcanoes: 2 }),
+    moon('aurelia', { id: 'ashfall', name: 'Ashfall', radius: 45, position: { x: 5700, y: -1100, z: 3400 },
+      heightVariation: 0.5, gravity: 0.35, colour: '#3d3b3f', seed: 915, volcanoes: 5 }),
+    moon('aurelia', { id: 'ingot', name: 'Ingot', radius: 30, position: { x: 4800, y: 500, z: 5700 },
+      heightVariation: 0.8, gravity: 0.25, colour: '#8a7f70', seed: 916, metalRich: true }),
 
-    // Uncomment to add an asteroid
-    // {
-    //   id: 'asteroid_1',
-    //   name: 'Asteroid Alpha',
-    //   type: CelestialBodyType.ASTEROID,
-    //   radius: 15,
-    //   subdivisions: 3,
-    //   position: { x: 800, y: 200, z: -300 },
-    //   visual: {
-    //     texturePath: '/textures/moon.png', // Reuse moon texture
-    //     heightVariation: 1.0, // Very bumpy
-    //     terrainStyle: TerrainStyle.BARREN,
-    //     distantColor: '#666666',
-    //   },
-    //   gravity: {
-    //     strength: 0.05, // Very weak gravity
-    //     fullRadiusMultiplier: 1.2,
-    //     falloffRadiusMultiplier: 2.0,
-    //   },
-    //   terrain: {
-    //     hasWater: false,
-    //   },
-    //   landable: true,
-    //   hasAtmosphere: false,
-    // },
+    // =========================================================================
+    // THE ASTEROIDS - a loose belt round the inner system, ~5 km out
+    // =========================================================================
+    asteroid('rock', { id: 'talus', name: 'Talus', radius: 10, position: { x: 4700, y: 300, z: -2200 }, colour: '#6e6258', seed: 921 }),
+    asteroid('metal', { id: 'ferrite', name: 'Ferrite', radius: 12, position: { x: 1500, y: -400, z: -4900 }, colour: '#77736c', seed: 922 }),
+    asteroid('ice', { id: 'hailstone', name: 'Hailstone', radius: 9, position: { x: -2600, y: 500, z: -4300 }, colour: '#c8e4ef', seed: 923 }),
+    asteroid('rock', { id: 'clinker', name: 'Clinker', radius: 14, position: { x: -4600, y: -300, z: -1200 }, colour: '#5a5048', seed: 924 }),
+    asteroid('metal', { id: 'nickel', name: 'Nickel', radius: 11, position: { x: -4400, y: 200, z: 2300 }, colour: '#837f77', seed: 925 }),
+    asteroid('ice', { id: 'sleet', name: 'Sleet', radius: 13, position: { x: -1900, y: -600, z: 4400 }, colour: '#b4d6e4', seed: 926 }),
+    asteroid('rock', { id: 'grit', name: 'Grit', radius: 8, position: { x: 5000, y: -300, z: 1900 }, colour: '#665a50', seed: 927 }),
+    asteroid('metal', { id: 'magnetite', name: 'Magnetite', radius: 15, position: { x: 3600, y: 600, z: -3600 }, colour: '#5f5c58', seed: 928 }),
   ],
 };
 
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+/**
+ * Room kept free for bodies that are configured elsewhere (the jungle moons
+ * of the gas giants): position and radius, so nothing else is placed there.
+ */
+export const RESERVED_SLOTS: Array<{ id: string; radius: number; position: { x: number; y: number; z: number } }> = [
+  { id: 'verdance', radius: 70, position: { x: -3700, y: 800, z: -2900 } },  // Brontes + (1500, 200, 700)
+  { id: 'mirewood', radius: 70, position: { x: 3900, y: -100, z: 4000 } },   // Aurelia + (-1300, 300, -600)
+];
+
+// Space left between two bodies' outer reach (gravity falloff, a giant's rings)
+const CLEARANCE_MARGIN = 50;
+const RESERVED_FALLOFF = 2.4;
+
+/**
+ * Pairs of bodies too close together: their gravity wells (or a giant's
+ * rings) overlap. Empty when the layout is sound; logged at boot.
+ */
+export function bodyClearanceProblems(): string[] {
+  const reach: Array<{ id: string; r: number; p: { x: number; y: number; z: number } }> = [
+    ...SOLAR_SYSTEM.bodies.map(b => ({ id: b.id, r: b.radius * b.gravity.falloffRadiusMultiplier, p: b.position })),
+    ...GAS_GIANTS.map(g => ({ id: g.id, r: g.radius * GAS_GIANT_RING_OUTER, p: g.position })),
+    ...RESERVED_SLOTS.filter(r => !getBodyConfig(r.id)).map(r => ({ id: r.id, r: r.radius * RESERVED_FALLOFF, p: r.position })),
+  ];
+  const problems: string[] = [];
+  for (let i = 0; i < reach.length; i++) {
+    for (let j = i + 1; j < reach.length; j++) {
+      const a = reach[i], b = reach[j];
+      const d = Math.hypot(a.p.x - b.p.x, a.p.y - b.p.y, a.p.z - b.p.z);
+      if (d < a.r + b.r + CLEARANCE_MARGIN) problems.push(`${a.id} and ${b.id}: ${d.toFixed(0)} apart, need ${(a.r + b.r + CLEARANCE_MARGIN).toFixed(0)}`);
+    }
+  }
+  return problems;
+}
 
 /**
  * Get a celestial body config by ID

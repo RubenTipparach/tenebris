@@ -46,7 +46,10 @@ export class GroundClutter {
   private seqScrub: Tones = fallbackTones(0x559642, 0x9bb675, 0xcfaa81);
   private stone = new THREE.Color(0x8a8780);
   private moonStone = new THREE.Color(0x6e6e74);
-  private nativeRock: THREE.Color | null = null;
+  // Each rock world's own stone (sampled from its surface texture), and the
+  // volcanic stone of the basalt family
+  private bodyStone = new Map<string, THREE.Color>();
+  private basaltStone = new THREE.Color(0x2c2c25);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
   private sinceBuild = 0;
@@ -69,6 +72,7 @@ export class GroundClutter {
     sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/moon.png')).then(t => { if (t) { this.moonStone = t.mid; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/bodies/basalt_side.png')).then(t => { if (t) { this.basaltStone = t.mid; this.lastPlanet = null; } });
   }
 
   public setEnabled(on: boolean): void {
@@ -78,11 +82,8 @@ export class GroundClutter {
     this.lastPlanet = null;
   }
 
-  /** planet: the world the player stands on (null in space). nativeRock:
-   *  the colour of a rock world's own rock (its MOON_ROCK), moon grey if unset. */
-  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3, nativeRock?: THREE.Color): void {
-    if (nativeRock && !nativeRock.equals(this.nativeRock ?? this.moonStone)) { this.nativeRock = nativeRock.clone(); this.lastPlanet = null; }
-    if (!nativeRock && this.nativeRock) { this.nativeRock = null; this.lastPlanet = null; }
+  /** planet: the world the player stands on (null in space). */
+  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3): void {
     if (!this.enabled) return;
     this.time += dt;
     this.sinceBuild += dt;
@@ -99,8 +100,24 @@ export class GroundClutter {
     this.rebuild(player, planet);
   }
 
+  // The stone colour of a rock world's native rock (moon rock is drawn in
+  // each body's own texture): sampled once per texture, the Moon's grey
+  // until it arrives
+  private nativeStone(planet: Planet): THREE.Color {
+    const tex = planet.getSurfaceTexturePath();
+    if (!tex) return this.moonStone;
+    let c = this.bodyStone.get(tex);
+    if (!c) {
+      c = this.moonStone.clone();
+      this.bodyStone.set(tex, c);
+      sampleTones(getAssetPath(tex)).then(t => { if (t) { c!.copy(t.mid); this.lastPlanet = null; } });
+    }
+    return c;
+  }
+
   private rebuild(player: THREE.Vector3, planet: Planet): void {
     this.lastPlanet = planet;
+    const native = this.nativeStone(planet);
     this.lastCenter.copy(player);
     this.sinceBuild = 0;
     let nTufts = 0, nRocks = 0;
@@ -159,7 +176,7 @@ export class GroundClutter {
         pos.addScaledVector(dir, -s * 0.15); // sink in a little
         m.compose(pos, rot, scale);
         this.rocks.setMatrixAt(nRocks, m);
-        col.copy(alien?.rock ?? (block === HexBlockType.MOON_ROCK ? this.nativeRock ?? this.moonStone : this.stone)).multiplyScalar(0.8 + rnd() * 0.35);
+        col.copy(alien?.rock ?? (block === HexBlockType.MOON_ROCK ? native : isVolcanic(block) ? this.basaltStone : this.stone)).multiplyScalar(0.8 + rnd() * 0.35);
         this.rocks.setColorAt(nRocks, col);
         nRocks++;
       }
@@ -197,6 +214,12 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.SEQ_DUFF: return { tufts: 0, tuftsRand: 1.5, straw: false, rockChance: 0.15, rocks: 2 };
     case HexBlockType.FOREST_FLOOR: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.15, rocks: 2 };
     case HexBlockType.DRY_GRASS: return { tufts: 3, tuftsRand: 4, straw: true, rockChance: 0.1, rocks: 1 };
+    // Moons and asteroids: lifeless, so stones only - volcanic bombs on the
+    // cones, a few on the lava fields and iron; bare ice and magma stay clear
+    case HexBlockType.BASALT: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.45, rocks: 3 };
+    case HexBlockType.LAVA_ROCK: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
+    case HexBlockType.SULFUR: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.15, rocks: 1 };
+    case HexBlockType.IRON_NICKEL: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.3, rocks: 2 };
     default: return null;
   }
 }
@@ -403,4 +426,8 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       }
     `,
   });
+}
+
+function isVolcanic(block: number): boolean {
+  return block === HexBlockType.BASALT || block === HexBlockType.LAVA_ROCK || block === HexBlockType.SULFUR;
 }

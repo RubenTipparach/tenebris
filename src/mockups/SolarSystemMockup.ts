@@ -1,38 +1,36 @@
 import * as THREE from 'three';
+import { GAS_GIANTS, GAS_GIANT_RING_OUTER } from '../config/SolarSystemConfig';
 
 /**
- * The gas giants: Brontes and Aurelia, far out round the star.
+ * The gas giants: Brontes and Aurelia, out past the rock worlds.
  *
- * Visual only - not landable, no terrain, no gravity (the ten landable
- * planets are real Planets from SolarSystemConfig). Each giant is a
- * procedurally shaded banded sphere lit by the star, with rings, on an
- * inclined orbit whose speed follows Kepler's third law (period ~ r^1.5).
- * Orbit lines and name tags show in space only. Drawn in the engine's far
- * layer (floating origin), so the 1e6 far plane keeps them in view.
+ * Visual only - not landable, no terrain, no gravity (the landable planets,
+ * moons and asteroids are real Planets from SolarSystemConfig). Each giant
+ * is a procedurally shaded banded sphere lit by the star, with rings. They
+ * stand still at their GAS_GIANTS positions (size and place live there), so
+ * their landable moons stay beside them. Name tags show in space only.
+ * Drawn in the engine's far layer (floating origin), so the 1e6 far plane
+ * keeps them in view.
  */
 
 type Kind = 'rocky' | 'icy' | 'desert' | 'ocean' | 'lava' | 'gas';
 
 interface BodySpec {
-  name: string;
+  id: string;           // its GAS_GIANTS entry: name, radius, position
   kind: Kind;
-  radius: number;
-  orbit: number;        // orbit radius around the star
-  inclination: number;  // degrees
-  phase: number;        // starting angle, radians
   colors: [number, number, number];
   rings?: boolean;
   atmosphere?: number;  // glow colour
 }
 
-// Far outside the landable planets (all within ~4 km of Earth; the star
-// is ~4.1 km from Earth), so the giants never crowd them.
 const BODIES: BodySpec[] = [
-  { name: 'Brontes', kind: 'gas', radius: 240, orbit: 7600, inclination: 1.5, phase: 3.3, colors: [0x8a5a34, 0xd9b38c, 0xf5e6d0], rings: true },
-  { name: 'Aurelia', kind: 'gas', radius: 190, orbit: 9200, inclination: 2.5, phase: 0.9, colors: [0x6b5a2b, 0xe0c068, 0xfff1c2], rings: true },
+  { id: 'brontes', kind: 'gas', colors: [0x8a5a34, 0xd9b38c, 0xf5e6d0], rings: true },
+  { id: 'aurelia', kind: 'gas', colors: [0x6b5a2b, 0xe0c068, 0xfff1c2], rings: true },
 ];
 
-const BASE_PERIOD_S = 240;       // orbit period at r = 2000, in seconds of play
+const SPIN_RATE = 0.05;          // rad/s
+const RING_INNER = 1.4;          // ring band, in giant radii
+const RING_TILT = Math.PI / 2 - 0.6;
 const KIND_ID: Record<Kind, number> = { rocky: 0, icy: 1, desert: 2, ocean: 3, lava: 4, gas: 5 };
 
 const vertexShader = `
@@ -124,11 +122,8 @@ const glowShader = {
 
 interface Body {
   spec: BodySpec;
-  guides: THREE.Object3D[];   // orbit line + name tag (space only)
-  pivot: THREE.Group;   // tilted orbital plane, at the star
-  holder: THREE.Group;  // moves around the orbit
-  angle: number;
-  speed: number;        // rad/s
+  guides: THREE.Object3D[];   // name tag (space only)
+  holder: THREE.Group;        // at the giant's fixed position
 }
 
 export class SolarSystemMockup {
@@ -157,41 +152,27 @@ export class SolarSystemMockup {
     return this.enabled;
   }
 
-  // showGuides: draw orbit lines and name tags (in space; from the ground
-  // they streak across the daytime sky)
+  // showGuides: draw the name tags (in space; from the ground they would
+  // hang in the daytime sky)
   public update(dt: number, showGuides: boolean): void {
     if (!this.enabled) return;
     this.sunUniform.value.copy(this.sunPosition).sub(this.origin);
     for (const b of this.bodies) {
       for (const g of b.guides) g.visible = showGuides;
-      b.angle += b.speed * dt;
-      b.holder.position.set(Math.cos(b.angle) * b.spec.orbit, 0, Math.sin(b.angle) * b.spec.orbit);
-      b.holder.rotation.y += dt * 0.05; // slow spin
+      b.holder.rotation.y += dt * SPIN_RATE; // slow spin
     }
   }
 
   private makeBody(spec: BodySpec, index: number): Body {
-    const pivot = new THREE.Group();
-    pivot.position.copy(this.sunPosition);
-    pivot.rotation.x = THREE.MathUtils.degToRad(spec.inclination);
-    pivot.rotation.y = index * 0.7;
-    this.root.add(pivot);
-
-    // Orbit line
-    const pts: THREE.Vector3[] = [];
-    for (let i = 0; i <= 256; i++) {
-      const a = (i / 256) * Math.PI * 2;
-      pts.push(new THREE.Vector3(Math.cos(a) * spec.orbit, 0, Math.sin(a) * spec.orbit));
-    }
-    const orbitLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x5f6b8a, transparent: true, opacity: 0.35 }));
-    pivot.add(orbitLine);
-
+    const giant = GAS_GIANTS.find(g => g.id === spec.id)!;
+    const radius = giant.radius;
     const holder = new THREE.Group();
-    pivot.add(holder);
+    holder.position.set(giant.position.x, giant.position.y, giant.position.z);
+    this.root.add(holder);
 
     const c = spec.colors.map(h => new THREE.Color(h));
     const planet = new THREE.Mesh(
-      new THREE.SphereGeometry(spec.radius, 64, 40),
+      new THREE.SphereGeometry(radius, 64, 40),
       new THREE.ShaderMaterial({
         uniforms: {
           sunPosition: this.sunUniform,
@@ -207,7 +188,7 @@ export class SolarSystemMockup {
 
     if (spec.atmosphere !== undefined) {
       const glow = new THREE.Mesh(
-        new THREE.SphereGeometry(spec.radius * 1.08, 48, 32),
+        new THREE.SphereGeometry(radius * 1.08, 48, 32),
         new THREE.ShaderMaterial({
           uniforms: { glowColor: { value: new THREE.Color(spec.atmosphere) }, sunPosition: this.sunUniform },
           vertexShader: glowShader.vertexShader,
@@ -223,18 +204,17 @@ export class SolarSystemMockup {
 
     if (spec.rings) {
       const ring = new THREE.Mesh(
-        new THREE.RingGeometry(spec.radius * 1.4, spec.radius * 2.3, 128, 1),
+        new THREE.RingGeometry(radius * RING_INNER, radius * GAS_GIANT_RING_OUTER, 128, 1),
         new THREE.MeshBasicMaterial({ color: c[2].clone().lerp(c[1], 0.4), side: THREE.DoubleSide, transparent: true, opacity: 0.55, depthWrite: false })
       );
-      ring.rotation.x = Math.PI / 2 - 0.6;
+      ring.rotation.x = RING_TILT;
       holder.add(ring);
     }
 
-    const label = this.makeLabel(spec.name, spec.radius);
+    const label = this.makeLabel(giant.name, radius);
     holder.add(label);
 
-    const speed = (Math.PI * 2) / (BASE_PERIOD_S * Math.pow(spec.orbit / 2000, 1.5));
-    return { spec, guides: [orbitLine, label], pivot, holder, angle: spec.phase, speed };
+    return { spec, guides: [label], holder };
   }
 
   private makeLabel(name: string, radius: number): THREE.Sprite {

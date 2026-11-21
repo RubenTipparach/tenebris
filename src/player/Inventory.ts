@@ -81,6 +81,10 @@ export enum ItemType {
   FISH_REEF = 59,
   FISH_DEEPBACK = 60,
   FISH_SERPENT = 61,
+  // The moons' and asteroids' own rock (numbered clear of the other item
+  // families, beside their block ids 70-89)
+  BASALT = 170,
+  SULFUR = 171,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -242,6 +246,8 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.SEQ_DIRT]: { name: 'Sequoia Soil', stackSize: 64, texture: '/textures/planet_seq/planet_seq_dirt.png', mineTime: 0.5 },
   [ItemType.SEQ_SAND]: { name: 'Sequoia Sand', stackSize: 64, texture: '/textures/planet_seq/planet_seq_sand.png', mineTime: 0.5 },
   [ItemType.SEQ_SNOW]: { name: 'Sequoia Snow', stackSize: 64, texture: '/textures/planet_seq/planet_seq_snow.png', mineTime: 0.5 },
+  [ItemType.BASALT]: { name: 'Basalt', stackSize: 64, texture: '/textures/bodies/basalt_side.png', mineTime: 1.5 },
+  [ItemType.SULFUR]: { name: 'Sulfur', stackSize: 64, texture: '/textures/bodies/sulfur.png', mineTime: 0.8 },
   [ItemType.ROCKET_FUEL]: { name: 'Rocket Fuel', stackSize: 64, texture: '/textures/icons/rocket_fuel.png', mineTime: 0.3 },
   [ItemType.FISH_MINNOW]: { name: 'Minnow', stackSize: 16, texture: '/textures/fish/minnow.png', mineTime: 0.3 },
   [ItemType.FISH_SILVERFIN]: { name: 'Silverfin', stackSize: 16, texture: '/textures/fish/silverfin.png', mineTime: 0.3 },

@@ -9,7 +9,7 @@ import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
-import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii } from './config/SolarSystemConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -47,6 +47,9 @@ function startWithRocket(): boolean {
 function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition: THREE.Vector3): THREE.Vector3 {
   return sunPosition.clone().sub(planetCenter).normalize();
 }
+
+// Background loading holds the main thread at most this long between frames
+const DEFERRED_SLICE_MS = 30;
 
 class PlanetGame {
   private engine: GameEngine;
@@ -140,10 +143,17 @@ class PlanetGame {
           city: bodyConfig.terrain.city,
           biomes: bodyConfig.terrain.biomes,
           blockRemap: bodyConfig.terrain.blockRemap,
+          maxDepth: bodyConfig.terrain.maxDepth,
+          volcanoes: bodyConfig.terrain.volcanoes,
+          iceCover: bodyConfig.terrain.iceCover,
+          metalRich: bodyConfig.terrain.metalRich,
+          spawnLatLon: bodyConfig.spawn,
         }
       );
       this.planets.set(bodyConfig.id, planet);
     }
+
+    for (const problem of bodyClearanceProblems()) console.warn(`[SolarSystem] bodies too close: ${problem}`);
 
     // Set up quick references for backwards compatibility
     this.earth = this.planets.get('earth')!;
@@ -643,18 +653,25 @@ class PlanetGame {
       console.log('[Deferred] Sequoia initialized with atmosphere (trees on approach)');
     }
 
-    // The barren worlds: LOD only (a sphere to see from afar), one at a
-    // time with frames in between. Their terrain is generated on approach
-    // or teleport (Planet.update -> enableDetailedTerrain), not now, so
-    // eight extra planets cost nothing until someone goes there.
+    // The rock worlds, moons and asteroids: their distant LOD only (a few
+    // low-detail spheres to see from afar), one at a time with frames in
+    // between. Everything else - textures, tiles, terrain, workers - loads
+    // on approach or teleport (Planet.update -> enableDetailedTerrain), so
+    // thirty extra bodies cost next to nothing until someone goes there.
+    // Time-sliced: a frame renders between slices, not between bodies.
+    const distantStart = performance.now();
+    let sliceStart = distantStart;
     for (const planet of this.planets.values()) {
       if (planet === this.earth || planet === this.moon || planet === this.sequoia) continue;
-      await this.yieldToMainThread();
-      await planet.initialize();
-      planet.updateBoundingSpheres();
+      if (performance.now() - sliceStart > DEFERRED_SLICE_MS) {
+        await this.yieldToMainThread();
+        sliceStart = performance.now();
+      }
       planet.setSunDirection(calculateSunDirectionForPlanet(planet.center, this.sunPosition));
       for (const [id, p] of this.planets) if (p === planet) this.addAtmosphere(id, planet);
+      planet.initializeDistant();
     }
+    console.log(`[Deferred] Distant LODs for the rock worlds in ${(performance.now() - distantStart).toFixed(0)}ms`);
 
     const elapsed = performance.now() - startTime;
     console.log(`[Deferred] All planets initialized in ${elapsed.toFixed(0)}ms`);
@@ -700,18 +717,14 @@ class PlanetGame {
       // with the biome mockup
       const pos = this.player.position;
       let on: Planet | null = null;
-      let nativeRock: THREE.Color | undefined;
-      for (const [id, planet] of this.planets) {
-        if (pos.distanceTo(planet.center) >= planet.radius * 1.2) continue;
-        const body = getBodyConfig(id);
-        const wanted = planet === this.earth ? this.earthClutter : planet === this.moon || !!body?.flora;
-        if (!wanted) continue;
-        on = planet;
-        if (planet !== this.moon && body?.visual.texturePath) nativeRock = new THREE.Color(body.visual.distantColor);
-        break;
+      // Every world but Earth (there it follows the biome mockup); rock
+      // worlds get stones only (clutterFor has no plants for their blocks)
+      for (const planet of this.planets.values()) {
+        if (planet === this.earth && !this.earthClutter) continue;
+        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
       }
       this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition), nativeRock);
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)
@@ -1068,13 +1081,30 @@ class PlanetGame {
     // the same planet again still fires 'change'.
     if (teleportSelect) {
       // One option per landable body, straight from the solar system config
-      for (const body of SOLAR_SYSTEM.bodies) {
-        if (!body.landable) continue;
-        const option = document.createElement('option');
-        option.value = body.id;
-        option.textContent = body.name;
-        teleportSelect.appendChild(option);
+      // Grouped: each planet with its moons, each gas giant's moons, then
+      // the asteroids (anything else landable last)
+      const landable = SOLAR_SYSTEM.bodies.filter(b => b.landable);
+      const listed = new Set<string>();
+      const group = (label: string, bodies: typeof landable) => {
+        if (bodies.length === 0) return;
+        const g = document.createElement('optgroup');
+        g.label = label;
+        for (const body of bodies) {
+          const option = document.createElement('option');
+          option.value = body.id;
+          option.textContent = body.orbit?.parent ? `  ${body.name}` : body.name;
+          g.appendChild(option);
+          listed.add(body.id);
+        }
+        teleportSelect.appendChild(g);
+      };
+      const moonsOf = (id: string) => landable.filter(b => b.type === CelestialBodyType.MOON && b.orbit?.parent === id);
+      for (const planet of landable.filter(b => b.type === CelestialBodyType.PLANET)) {
+        group(planet.name, [planet, ...moonsOf(planet.id)]);
       }
+      for (const giant of GAS_GIANTS) group(`${giant.name} (gas giant)`, moonsOf(giant.id));
+      group('Asteroids', landable.filter(b => b.type === CelestialBodyType.ASTEROID));
+      group('Other', landable.filter(b => !listed.has(b.id)));
       teleportSelect.addEventListener('change', () => {
         const target = teleportSelect.value;
         teleportSelect.value = '';
