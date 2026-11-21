@@ -44,6 +44,7 @@ export class GroundClutter {
   // beige ground - Sequoia has tufts, just no green grass ground
   private seqScrub: Tones = fallbackTones(0x559642, 0x9bb675, 0xcfaa81);
   private stone = new THREE.Color(0x8a8780);
+  private moonStone = new THREE.Color(0x6e6e74);
   private lastCenter = new THREE.Vector3(1e9, 0, 0);
   private lastPlanet: Planet | null = null;
   private sinceBuild = 0;
@@ -65,6 +66,7 @@ export class GroundClutter {
     sampleTones(getAssetPath('/textures/grass.png')).then(t => { if (t) { this.grass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath(SEQUOIA_TILESET.grass)).then(t => { if (t) { this.seqGrass = t; this.lastPlanet = null; } });
     sampleTones(getAssetPath('/textures/rocks.png')).then(t => { if (t) { this.stone = t.mid; this.lastPlanet = null; } });
+    sampleTones(getAssetPath('/textures/moon.png')).then(t => { if (t) { this.moonStone = t.mid; this.lastPlanet = null; } });
   }
 
   public setEnabled(on: boolean): void {
@@ -168,7 +170,7 @@ export class GroundClutter {
             pos.addScaledVector(dir, -s * 0.15); // sink in a little
             m.compose(pos, rot, scale);
             this.rocks.setMatrixAt(nRocks, m);
-            col.copy(this.stone).multiplyScalar(0.8 + rnd() * 0.35);
+            col.copy(block === HexBlockType.MOON_ROCK ? this.moonStone : this.stone).multiplyScalar(0.8 + rnd() * 0.35);
             this.rocks.setColorAt(nRocks, col);
             nRocks++;
           }
@@ -201,6 +203,8 @@ function clutterFor(block: number): Plan | null {
     case HexBlockType.SEQ_DIRT: return { tufts: 0, tuftsRand: 2, straw: false, rockChance: 0.2, rocks: 2 };
     case HexBlockType.SEQ_SAND: return { tufts: 0, tuftsRand: 1.2, straw: true, rockChance: 0.15, rocks: 2 };
     case HexBlockType.SEQ_SNOW: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.25, rocks: 2 };
+    // The Moon: no plants, a field of boulders and pebbles in its own grey
+    case HexBlockType.MOON_ROCK: return { tufts: 0, tuftsRand: 0, straw: false, rockChance: 0.4, rocks: 3 };
     // Biome surfaces: dry scrub tufts (in its own beige / olive tones), a few
     // tufts in the forests, straw on the savanna
     case HexBlockType.SEQ_SCRUB: return { tufts: 5, tuftsRand: 5, straw: false, rockChance: 0.06, rocks: 1 };

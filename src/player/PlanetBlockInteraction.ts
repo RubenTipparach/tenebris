@@ -72,6 +72,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.DRY_GRASS: return ItemType.DIRT;
     case HexBlockType.SEQ_SCRUB: return ItemType.SEQ_DIRT;
     case HexBlockType.SEQ_DUFF: return ItemType.SEQ_DIRT;
+    // The Moon's minerals give the ordinary ores
+    case HexBlockType.MOON_ORE_IRON: return ItemType.ORE_IRON;
+    case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
+    case HexBlockType.MOON_ORE_COBALT: return ItemType.ORE_COBALT;
+    case HexBlockType.MOON_ORE_LITHIUM: return ItemType.ORE_LITHIUM;
     default: return ItemType.NONE;
   }
 }

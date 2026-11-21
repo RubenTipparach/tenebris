@@ -3,7 +3,7 @@ import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
+import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS, SEQUOIA_TILESET, MOON_TILESET } from '../config/SolarSystemConfig';
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
@@ -455,6 +455,16 @@ export class Planet {
           // Sequoia's cold lowlands are redwood forest floor, not snow;
           // its snow is only the peaks and poles
           [HexBlockType.DIRT_SNOW]: HexBlockType.SEQ_DUFF,
+        } : this.config.texturePath === MOON_TILESET.stone ? {
+          // The Moon's minerals in its own rock: iron, aluminium, cobalt,
+          // lithium. No coal, copper or gold there - those veins stay rock
+          [HexBlockType.ORE_IRON]: HexBlockType.MOON_ORE_IRON,
+          [HexBlockType.ORE_ALUMINUM]: HexBlockType.MOON_ORE_ALUMINUM,
+          [HexBlockType.ORE_COBALT]: HexBlockType.MOON_ORE_COBALT,
+          [HexBlockType.ORE_LITHIUM]: HexBlockType.MOON_ORE_LITHIUM,
+          [HexBlockType.ORE_COAL]: HexBlockType.MOON_ROCK,
+          [HexBlockType.ORE_COPPER]: HexBlockType.MOON_ROCK,
+          [HexBlockType.ORE_GOLD]: HexBlockType.MOON_ROCK,
         } : undefined,
         // Sequoia always has its biomes (desert, rocky highlands, snow
         // beside its grassland, in its own blocks via blockRemap); on Earth

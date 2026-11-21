@@ -42,8 +42,8 @@ for key, var, field in re.findall(r"materials\.set\('(\w+)', createTerrainMateri
 for var, field in re.findall(r"const (\w+) = await loadFixed\(e\.(\w+)\);", HEX):
     for key in re.findall(r"materials\.set\('(\w+)', createTerrainMaterial\(%s\)\)" % var, HEX):
         TEX[key] = SETS['e'][field]
-for key, file in re.findall(r"\['(\w+)', '([\w]+)'\]", re.search(r'BIOME_TEXTURES[^=]*= \[(.*?)\];', HEX, re.S).group(1)):
-    TEX[key] = f'/textures/biomes/{file}.png'
+for key, file in re.findall(r"\['(\w+)', '([\w/]+)'\]", re.search(r'BIOME_TEXTURES[^=]*= \[(.*?)\];', HEX, re.S).group(1)):
+    TEX[key] = f'/textures/{file}.png'
 # Earth's own tileset keys (loaded through the planet's tileset on Earth)
 for key, field in [('top', 'grass'), ('side', 'dirt'), ('grassSide', 'dirtGrass'), ('stone', 'stone'),
                    ('wood', 'wood'), ('sand', 'sand'), ('snow', 'snow'), ('dirtSnow', 'dirtSnow'),

@@ -45,7 +45,12 @@ export enum HexBlockType {
   FOREST_FLOOR = 27,
   DRY_GRASS = 28,
   SEQ_SCRUB = 29,
-  SEQ_DUFF = 30
+  SEQ_DUFF = 30,
+  // The Moon's minerals, in moon rock (they drop the ordinary ore items)
+  MOON_ORE_IRON = 31,
+  MOON_ORE_ALUMINUM = 32,
+  MOON_ORE_COBALT = 33,
+  MOON_ORE_LITHIUM = 34
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -59,6 +64,10 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.DRY_GRASS]: HexBlockType.GRASS,
   [HexBlockType.SEQ_SCRUB]: HexBlockType.GRASS,
   [HexBlockType.SEQ_DUFF]: HexBlockType.DIRT,
+  [HexBlockType.MOON_ORE_IRON]: HexBlockType.MOON_ROCK,
+  [HexBlockType.MOON_ORE_ALUMINUM]: HexBlockType.MOON_ROCK,
+  [HexBlockType.MOON_ORE_COBALT]: HexBlockType.MOON_ROCK,
+  [HexBlockType.MOON_ORE_LITHIUM]: HexBlockType.MOON_ROCK,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -95,6 +104,10 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.DRY_GRASS]: { top: 'dryGrass', side: 'dryGrassSide', bottom: 'side' },
   [HexBlockType.SEQ_SCRUB]: { top: 'seqScrub', side: 'seqScrubSide', bottom: 'seqDirt' },
   [HexBlockType.SEQ_DUFF]: { top: 'seqDuff', side: 'seqDuffSide', bottom: 'seqDirt' },
+  [HexBlockType.MOON_ORE_IRON]: sameFaces('moonOreIron'),
+  [HexBlockType.MOON_ORE_ALUMINUM]: sameFaces('moonOreAluminum'),
+  [HexBlockType.MOON_ORE_COBALT]: sameFaces('moonOreCobalt'),
+  [HexBlockType.MOON_ORE_LITHIUM]: sameFaces('moonOreLithium'),
 };
 const DEFAULT_FACES = sameFaces('top');
 export function blockFaces(blockType: HexBlockType | number): BlockFaces {

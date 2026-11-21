@@ -699,6 +699,7 @@ class PlanetGame {
       const pos = this.player.position;
       let on: Planet | null = null;
       if (this.sequoia && pos.distanceTo(this.sequoia.center) < this.sequoia.radius * 1.2) on = this.sequoia;
+      else if (this.moon && pos.distanceTo(this.moon.center) < this.moon.radius * 1.2) on = this.moon;
       else if (this.earthClutter && pos.distanceTo(this.earth.center) < this.earth.radius * 1.2) on = this.earth;
       this.groundClutter.update(deltaTime, pos, on,
         calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));

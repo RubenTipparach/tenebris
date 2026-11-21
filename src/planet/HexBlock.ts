@@ -23,12 +23,14 @@ export enum FaceType {
   SIDE = 'side'
 }
 
-// Biome surface materials: material key -> texture in /textures/biomes/
+// Drawn block materials (scripts/gen-biome-textures.py): key -> /textures/<file>.png
 const BIOME_TEXTURES: [string, string][] = [
-  ['forestFloor', 'forest_floor'], ['forestFloorSide', 'forest_floor_side'],
-  ['dryGrass', 'dry_grass'], ['dryGrassSide', 'dry_grass_side'],
-  ['seqScrub', 'seq_scrub'], ['seqScrubSide', 'seq_scrub_side'],
-  ['seqDuff', 'seq_duff'], ['seqDuffSide', 'seq_duff_side'],
+  ['forestFloor', 'biomes/forest_floor'], ['forestFloorSide', 'biomes/forest_floor_side'],
+  ['dryGrass', 'biomes/dry_grass'], ['dryGrassSide', 'biomes/dry_grass_side'],
+  ['seqScrub', 'biomes/seq_scrub'], ['seqScrubSide', 'biomes/seq_scrub_side'],
+  ['seqDuff', 'biomes/seq_duff'], ['seqDuffSide', 'biomes/seq_duff_side'],
+  ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
+  ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
 ];
 
 // Magenta/black checker for a texture that failed to load
@@ -118,7 +120,7 @@ export class HexBlockMeshBuilder {
       for (const v of Object.values(set)) if (typeof v === 'string' && v.endsWith('.png')) wanted.add(v);
     }
     if (singleTexturePath) wanted.add(singleTexturePath);
-    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/biomes/${file}.png`);
+    for (const [, file] of BIOME_TEXTURES) wanted.add(`/textures/${file}.png`);
     await Promise.allSettled([...wanted].map(path => this.loadTexture(path)));
     // Use provided water colors or defaults from PlayerConfig
     const waterColor = waterColors?.color || PlayerConfig.WATER_COLOR;
@@ -293,7 +295,7 @@ export class HexBlockMeshBuilder {
     this.materials.set('seqSnowSide', createTerrainMaterial(await loadFixed(q.dirtSnow)));
     // Biome surfaces (scripts/gen-biome-textures.py)
     for (const [key, file] of BIOME_TEXTURES) {
-      this.materials.set(key, createTerrainMaterial(await loadFixed(`/textures/biomes/${file}.png`)));
+      this.materials.set(key, createTerrainMaterial(await loadFixed(`/textures/${file}.png`)));
     }
     const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
     const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);

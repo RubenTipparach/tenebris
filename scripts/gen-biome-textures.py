@@ -23,6 +23,9 @@ Blocks:
                 and dry grass green; it has no lush green grass
   seq_duff      Sequoia: needle duff (redwood forest)
 
+Also the Moon's ore blocks (public/textures/moon/ore_*.png): moon.png with
+the mineral drawn into it as lit nodules.
+
 Deterministic. Run from the repo root:  python3 scripts/gen-biome-textures.py
 """
 import os
@@ -74,18 +77,21 @@ def check(px, exempt=None):
 
 
 def read_png(path):
-    """Minimal 8-bit RGBA/RGB non-interlaced PNG reader -> rows of (r,g,b)."""
+    """Minimal 8-bit RGBA/RGB/indexed non-interlaced PNG reader -> rows of (r,g,b)."""
     d = open(path, 'rb').read()
-    i, idat = 8, b''
+    i, idat, plte = 8, b'', None
     while i < len(d):
         ln = struct.unpack('>I', d[i:i + 4])[0]
         t, c = d[i + 4:i + 8], d[i + 8:i + 8 + ln]
         if t == b'IHDR':
             w, h, bd, ct = struct.unpack('>IIBB', c[:10])
+        elif t == b'PLTE':
+            plte = [tuple(c[k:k + 3]) for k in range(0, len(c), 3)]
         elif t == b'IDAT':
             idat += c
         i += 12 + ln
-    bpp = {6: 4, 2: 3}[ct]
+    assert bd == 8, f'{path}: only 8-bit PNGs'
+    bpp = {6: 4, 2: 3, 3: 1}[ct]
     raw = zlib.decompress(idat)
     rows, prev, p = [], bytearray(w * bpp), 0
     for _ in range(h):
@@ -102,7 +108,10 @@ def read_png(path):
                 pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
                 pr = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
                 line[x] = (line[x] + pr) & 255
-        rows.append([tuple(line[x * bpp:x * bpp + 3]) for x in range(w)])
+        if ct == 3:   # palette-indexed
+            rows.append([plte[line[x]] for x in range(w)])
+        else:
+            rows.append([tuple(line[x * bpp:x * bpp + 3]) for x in range(w)])
         prev = line
     return rows
 
@@ -198,6 +207,33 @@ def seq_duff(rng):
     return t.px
 
 
+# Moon minerals: veins in the Moon's own rock (moon.png, reused as shipped),
+# with the mineral drawn in palette ramps as lit nodules
+MOON_ORES = {
+    'iron': [rgb(h) for h in ('#522b2f', '#7d4636', '#a8633e', '#e69d69')],       # rusty iron oxide
+    'aluminum': [rgb(h) for h in ('#92a3b2', '#bfcad7', '#fffefe')],            # bright anorthosite
+    'cobalt': [rgb(h) for h in ('#191954', '#15578a', '#1096c3', '#74effe')],
+    'lithium': [rgb(h) for h in ('#4f1d83', '#7d2dbd', '#9e3ba2', '#c34988')],
+}
+
+
+def moon_ore(rng, rock, ramp):
+    px = [list(rock[y % len(rock)][:N]) for y in range(N)]
+    t = Tile(ramp, 1)
+    t.px = px
+    drawn = set()
+    for _ in range(5):                                     # nodules, 2x2 to 3x3
+        w, h = rng.choice([(2, 2), (3, 2), (2, 3), (3, 3)])
+        cells = blob(rng.randrange(N), rng.randrange(N), w, h)
+        t.clump(cells, ramp, 1)
+        drawn |= {(x % N, y % N) for x, y in cells}
+    for _ in range(2):                                     # a glint or two
+        x, y = rng.choice(sorted(drawn))
+        t.put(x, y, ramp[-1])
+    exempt = {(x, y) for y in range(N) for x in range(N)} - drawn
+    return t.px, exempt
+
+
 def side(rng, top_px, soil, lip=3):
     """The block's side: the game's own soil, under a lip of the top (wavy edge)."""
     px = [list(soil[y % len(soil)][:N]) for y in range(N)]
@@ -225,6 +261,15 @@ def main():
         check(s, exempt)
         write_png(os.path.join(OUT, f'{name}_side.png'), s)
         print('wrote', name)
+    # Moon ore blocks (own rng, so the biome tiles above don't change)
+    moon_rock = read_png(os.path.join(ROOT, 'moon.png'))
+    mrng = random.Random(7070)
+    os.makedirs(os.path.join(ROOT, 'moon'), exist_ok=True)
+    for name, ramp in MOON_ORES.items():
+        px, exempt = moon_ore(mrng, moon_rock, ramp)
+        check(px, exempt)
+        write_png(os.path.join(ROOT, 'moon', f'ore_{name}.png'), px)
+        print('wrote moon ore', name)
 
 
 if __name__ == '__main__':
