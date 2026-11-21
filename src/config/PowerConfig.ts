@@ -11,6 +11,7 @@ export type PowerNodeKind =
   | 'steamEngine' | 'hydroGenerator' | 'reactor'
   | 'electricFurnace' | 'computer' | 'printer3D'
   | 'pumpJack' | 'refinery' | 'centrifuge' | 'nuclearFabricator'
+  | 'gasCollector'
   | 'battery';
 
 export const POWER_CONFIG = {
@@ -33,6 +34,7 @@ export const POWER_CONFIG = {
     refinery: 1500,
     centrifuge: 2000,
     nuclearFabricator: 20000,
+    gasCollector: 400,
   } as Partial<Record<PowerNodeKind, number>>,
 
   // Batteries: capacity (Wh) and the most they can take in / give out (W),
@@ -62,6 +64,9 @@ export const MACHINE_CONFIG = {
   // Reactor: up to ROD_SLOTS fuel rods, each lasting ROD_LIFE_S of running
   REACTOR_ROD_SLOTS: 4,
   REACTOR_ROD_LIFE_S: 30 * 60,
+  // Gas collector (openspec wool-air-and-reentry, design 4): one empty tank
+  // in -> one oxygen tank out every fillS while powered, where the air is breathable
+  gasCollector: { fillS: 15 },
   // A busy machine's record (progress, battery charge, rod life) is saved this often (s)
   SAVE_EVERY_S: 5,
   // Slots each machine shows: inputs, outputs
@@ -71,6 +76,7 @@ export const MACHINE_CONFIG = {
     centrifuge: { inputs: 1, outputs: 1 },
     reactor: { inputs: 4, outputs: 0 },
     nuclearFabricator: { inputs: 0, outputs: 1 },
+    gasCollector: { inputs: 1, outputs: 1 },
     battery: { inputs: 0, outputs: 0 },
   } as Record<string, { inputs: number; outputs: number }>,
 } as const;
@@ -136,6 +142,7 @@ export const MACHINE_KIND_OF: Partial<Record<ItemType, PowerNodeKind>> = {
   [ItemType.CENTRIFUGE]: 'centrifuge',
   [ItemType.REACTOR]: 'reactor',
   [ItemType.NUCLEAR_FABRICATOR]: 'nuclearFabricator',
+  [ItemType.GAS_COLLECTOR]: 'gasCollector',
   [ItemType.BATTERY_LEAD_ACID]: 'battery',
   [ItemType.BATTERY_LITHIUM]: 'battery',
   [ItemType.BATTERY_SOLID_STATE]: 'battery',

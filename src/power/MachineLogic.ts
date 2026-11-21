@@ -86,6 +86,7 @@ export function wantsPower(m: MachineState, oilBelow: boolean): boolean {
     case 'refinery': return countIn(m.inputs, ItemType.CRUDE_OIL_BUCKET) > 0;
     case 'centrifuge': return countIn(m.inputs, ItemType.ORE_URANIUM) >= MACHINE_CONFIG.ENRICH_IN;
     case 'nuclearFabricator': return m.job !== null;
+    case 'gasCollector': return countIn(m.inputs, ItemType.EMPTY_TANK) > 0;
     default: return false;
   }
 }
@@ -98,7 +99,7 @@ export function reactorFuelled(m: MachineState): boolean {
 export interface TickEffects {
   pumpedCell?: boolean;      // the pump took one oil sand cell (caller edits the world)
   made?: { itemType: ItemType; quantity: number }[];  // outputs produced (events)
-  event?: 'pumped' | 'refined' | 'enriched' | 'fabricated';
+  event?: 'pumped' | 'refined' | 'enriched' | 'fabricated' | 'bottled';
 }
 
 /**
@@ -157,6 +158,21 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
         m.progressS = 0;
         fx.made = [{ itemType: ItemType.ENRICHED_URANIUM, quantity: 1 }];
         fx.event = 'enriched';
+      }
+      break;
+    }
+    case 'gasCollector': {
+      if (countIn(m.inputs, ItemType.EMPTY_TANK) === 0) { m.status = 'Needs empty tanks'; m.progressS = 0; break; }
+      if (!m.powered) { m.status = 'No power'; break; }
+      const fillS = MACHINE_CONFIG.gasCollector.fillS;
+      m.progressS += dtS;
+      m.status = 'Filling';
+      if (m.progressS >= fillS) {
+        if (!addToSlots(m.outputs, ItemType.OXYGEN_TANK, 1)) { m.status = 'Output full'; m.progressS = fillS; break; }
+        takeFrom(m.inputs, ItemType.EMPTY_TANK, 1);
+        m.progressS = 0;
+        fx.made = [{ itemType: ItemType.OXYGEN_TANK, quantity: 1 }];
+        fx.event = 'bottled';
       }
       break;
     }
@@ -240,6 +256,7 @@ export function acceptsInput(kind: PowerNodeKind, itemType: ItemType): boolean {
     case 'refinery': return itemType === ItemType.CRUDE_OIL_BUCKET;
     case 'centrifuge': return itemType === ItemType.ORE_URANIUM;
     case 'reactor': return itemType === ItemType.FUEL_ROD;
+    case 'gasCollector': return itemType === ItemType.EMPTY_TANK;
     default: return false;
   }
 }
