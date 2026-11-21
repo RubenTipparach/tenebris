@@ -31,7 +31,27 @@ const BIOME_TEXTURES: [string, string][] = [
   ['seqDuff', 'biomes/seq_duff'], ['seqDuffSide', 'biomes/seq_duff_side'],
   ['moonOreIron', 'moon/ore_iron'], ['moonOreAluminum', 'moon/ore_aluminum'],
   ['moonOreCobalt', 'moon/ore_cobalt'], ['moonOreLithium', 'moon/ore_lithium'],
+  // Moons and asteroids (scripts/gen-body-textures.py)
+  ['basalt', 'bodies/basalt'], ['basaltSide', 'bodies/basalt_side'],
+  ['magma', 'bodies/magma'],
+  ['lavaRock', 'bodies/lava_rock'], ['lavaRockSide', 'bodies/lava_rock_side'],
+  ['sulfur', 'bodies/sulfur'], ['sulfurSide', 'bodies/sulfur_side'],
+  ['frost', 'bodies/frost'], ['frostSide', 'bodies/frost_side'],
+  ['blueIce', 'bodies/blue_ice'],
+  ['ironNickel', 'bodies/iron_nickel'],
 ];
+
+// Materials that light themselves (molten rock): drawn unlit, so they glow
+// on the night side and underground
+const SELF_LIT = new Set(['magma']);
+function selfLitMaterial(texture: THREE.Texture): THREE.Material {
+  // The terrain shader writes texels as they are; a basic material converts
+  // to the output colour space, so tag (a copy of) the texture sRGB to match
+  const tex = texture.clone();
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return new THREE.MeshBasicMaterial({ map: tex });
+}
 
 // Magenta/black checker for a texture that failed to load
 let missing: THREE.DataTexture | null = null;
@@ -295,7 +315,8 @@ export class HexBlockMeshBuilder {
     this.materials.set('seqSnowSide', createTerrainMaterial(await loadFixed(q.dirtSnow)));
     // Biome surfaces (scripts/gen-biome-textures.py)
     for (const [key, file] of BIOME_TEXTURES) {
-      this.materials.set(key, createTerrainMaterial(await loadFixed(`/textures/${file}.png`)));
+      const tex = await loadFixed(`/textures/${file}.png`);
+      this.materials.set(key, SELF_LIT.has(key) ? selfLitMaterial(tex) : createTerrainMaterial(tex));
     }
     const fixedIce = ts === EARTH_TILESET ? iceTexture : await loadFixed(EARTH_TILESET.ice);
     const fixedGlass = ts === EARTH_TILESET ? glassTexture : await loadFixed(EARTH_TILESET.glass);

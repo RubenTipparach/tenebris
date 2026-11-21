@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bake the surface texture of each barren landable planet.
+"""Bake the surface texture of each barren landable planet, moon and asteroid kind.
 
 One 16x16 pixel-art tile per planet in public/textures/planets/<id>.png, in
 the same style and size as moon.png (a single-texture planet uses it for
@@ -110,10 +110,63 @@ PLANETS = {
 }
 
 
+def rock(base, weights=(3, 4, 2, 2), *marks):
+    """A body's rock: mottled base (hex colours) then marks, each a
+    (helper, args...) tuple applied in order."""
+    def make(r):
+        p = mottled(r, [hexc(c) for c in base], list(weights))
+        for f, *args in marks:
+            f(r, p, *[hexc(a) if isinstance(a, str) else [hexc(c) for c in a] if isinstance(a, list) else a for a in args])
+        return p
+    return make
+
+
+# The moons and asteroid kinds, in Sweaft-64 colours (the planets above
+# predate the palette rule and stay as they were)
+BODIES = {
+    # sooty red-brown rock, ember cracks
+    'ember': rock(['#2e0d06', '#41322c', '#522b2f', '#2c2c25'], (3, 4, 3, 2), (crack, '#d4462b', 3, 6), (crack, '#fb902f', 1, 2)),
+    # pale frost, grey fractures
+    'rime': rock(['#bfcad7', '#d2f8ff', '#fffefe', '#92a3b2'], (3, 3, 2, 2), (crack, '#5d778d', 3, 5)),
+    # dark brown with bright metal pits
+    'sable': rock(['#41322c', '#2b1f35', '#522b2f', '#725244'], (3, 3, 3, 2), (crater, '#170916', '#a09f91', 3)),
+    # glassy blue ice
+    'glint': rock(['#74effe', '#d2f8ff', '#1096c3', '#bfcad7'], (3, 3, 2, 2), (crack, '#15578a', 2, 6)),
+    # lavender frost with white veins
+    'nyx': rock(['#69608b', '#92a3b2', '#bfcad7', '#3e3551'], (3, 3, 2, 2), (crack, '#d2f8ff', 3, 3)),
+    # scorched black, orange cracks
+    'brand': rock(['#161612', '#2e0d06', '#2c2c25', '#4a051e'], (3, 3, 3, 1), (crack, '#fe6420', 4, 5)),
+    # porous red-brown cinders
+    'scoria': rock(['#733126', '#8d4526', '#561c27', '#a8633e'], (3, 3, 2, 2), (crater, '#2e0d06', '#c56d25', 6)),
+    # banded iron grey
+    'lodestone': rock(['#3e586e', '#1f3b52', '#434137', '#5d778d'], (3, 3, 2, 2), (stripes, ['#92a3b2', '#010e1a'], 4)),
+    # sulfur-yellow plains, dark vents
+    'pyrra': rock(['#c56d25', '#faaf5c', '#cfaa81', '#fb902f'], (3, 3, 2, 2), (crater, '#841c1d', '#eab798', 4), (crack, '#2e0d06', 2, 4)),
+    # white ice crossed by rust-brown lineae
+    'glacia': rock(['#fffefe', '#d2f8ff', '#bfcad7', '#eab798'], (3, 3, 3, 1), (crack, '#a8633e', 4, 8)),
+    # grey-brown, cratered
+    'obol': rock(['#725244', '#434137', '#a09f91', '#41322c'], (3, 3, 2, 2), (crater, '#2c2c25', '#cfaa81', 5)),
+    # teal ice
+    'calyx': rock(['#53998b', '#84e3b5', '#c1f1d8', '#204f63'], (3, 3, 2, 2), (crack, '#0c2f44', 3, 6)),
+    # ash grey-violet, a few hot cracks
+    'ashfall': rock(['#3e3551', '#2b1f35', '#434137', '#69608b'], (3, 3, 3, 2), (crack, '#fe6420', 2, 4), (crater, '#170916', '#92a3b2', 2)),
+    # brassy metal, banded
+    'ingot': rock(['#ab8465', '#725244', '#cfaa81', '#a09f91'], (3, 3, 2, 2), (stripes, ['#eab798', '#41322c'], 3)),
+    # asteroid kinds: rubble, nickel-iron, dirty ice
+    'asteroid_rock': rock(['#434137', '#2c2c25', '#725244', '#a09f91'], (3, 3, 2, 1), (crater, '#161612', '#cfaa81', 4)),
+    'asteroid_metal': rock(['#5d778d', '#3e586e', '#92a3b2', '#434137'], (3, 3, 2, 2), (crater, '#1f3b52', '#bfcad7', 3)),
+    'asteroid_ice': rock(['#bfcad7', '#92a3b2', '#d2f8ff', '#5d778d'], (3, 3, 2, 1), (crater, '#3e586e', '#fffefe', 3)),
+}
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     for i, (name, make) in enumerate(sorted(PLANETS.items())):
         rng = random.Random(1000 + i)
+        write_png(os.path.join(OUT, f'{name}.png'), make(rng))
+        print('wrote', f'public/textures/planets/{name}.png')
+    for i, (name, make) in enumerate(sorted(BODIES.items())):
+        rng = random.Random(3000 + i)
         write_png(os.path.join(OUT, f'{name}.png'), make(rng))
         print('wrote', f'public/textures/planets/{name}.png')
 

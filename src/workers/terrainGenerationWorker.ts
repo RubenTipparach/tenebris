@@ -3,6 +3,7 @@
 
 import { HexBlockType } from '../shared/blockTypes';
 import { Vec3 } from '../shared/vec3';
+import { hash3D, fractalSimplex3D, surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_NONE, VOLCANO_FLANK, VOLCANO_SLOPE, VOLCANO_RIM, VOLCANO_CRATER } from '../shared/terrainShape';
 
 // Tile data passed from main thread (serializable)
 interface TileData {
@@ -12,32 +13,21 @@ interface TileData {
 }
 
 // Planet config passed from main thread
-interface TerrainConfig {
+interface TerrainConfig extends ShapeParams {
   // Replace generic terrain blocks with a planet's own block IDs
   // (e.g. GRASS -> SEQ_GRASS on Sequoia); keys and values are HexBlockType
   blockRemap?: Record<number, number>;
   // Mockup: climate biomes (deserts, tundra, rocky highlands, alpine snow,
   // stone cliffs) built from existing blocks. Earth only.
   biomes?: boolean;
-  seed: number;
-  maxDepth: number;
-  seaLevel: number;
-  maxHeight: number;
   hasWater: boolean;
   isSingleTexturePlanet: boolean;  // Moon-like planets
-  heightVariation: number;
   polarThreshold: number;
-  // Terrain generation parameters
-  continentScale: number;
-  mountainScale: number;
-  hillScale: number;
-  detailScale: number;
-  continentWeight: number;
-  mountainHeight: number;
-  hillWeight: number;
-  detailWeight: number;
-  oceanDepthPower: number;
-  terrainMaxDepth: number;
+  // Rock worlds only (isSingleTexturePlanet): an ice moon's frozen crust
+  // (frost over glacier ice, blue ice on the slopes), and a metal-rich
+  // body's meteoric iron at the surface and extra ore below
+  iceCover?: boolean;
+  metalRich?: boolean;
   // Ore configs
   oreConfigs: OreConfig[];
 }
@@ -62,224 +52,6 @@ interface GenerateTerrainMessage {
 interface SerializableTerrainResult {
   type: 'terrainResult';
   columns: Array<[number, number[]]>;  // Array of [tileIndex, blocks] pairs
-}
-
-// ============ NOISE FUNCTIONS ============
-// These are pure functions that don't depend on any external state
-
-function hash3D(x: number, y: number, z: number, seed: number): number {
-  let h = (x * 374761393 + y * 668265263 + z * 1274126177 + seed) | 0;
-  h = ((h ^ (h >> 13)) * 1274126177) | 0;
-  return h ^ (h >> 16);
-}
-
-function grad3D(ix: number, iy: number, iz: number, x: number, y: number, z: number, seed: number): number {
-  const hash = hash3D(ix, iy, iz, seed) & 15;
-  const gradients = [
-    [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
-    [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
-    [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
-    [1, 1, 0], [-1, 1, 0], [0, -1, 1], [0, -1, -1]
-  ];
-  const g = gradients[hash];
-  return g[0] * x + g[1] * y + g[2] * z;
-}
-
-function simplex3D(x: number, y: number, z: number, seed: number): number {
-  const F3 = 1.0 / 3.0;
-  const G3 = 1.0 / 6.0;
-
-  // Incorporate seed
-  x += seed * 0.1;
-  y += seed * 0.13;
-  z += seed * 0.17;
-
-  const s = (x + y + z) * F3;
-  const i = Math.floor(x + s);
-  const j = Math.floor(y + s);
-  const k = Math.floor(z + s);
-
-  const t = (i + j + k) * G3;
-  const X0 = i - t;
-  const Y0 = j - t;
-  const Z0 = k - t;
-
-  const x0 = x - X0;
-  const y0 = y - Y0;
-  const z0 = z - Z0;
-
-  let i1: number, j1: number, k1: number;
-  let i2: number, j2: number, k2: number;
-
-  if (x0 >= y0) {
-    if (y0 >= z0) {
-      i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 1; k2 = 0;
-    } else if (x0 >= z0) {
-      i1 = 1; j1 = 0; k1 = 0; i2 = 1; j2 = 0; k2 = 1;
-    } else {
-      i1 = 0; j1 = 0; k1 = 1; i2 = 1; j2 = 0; k2 = 1;
-    }
-  } else {
-    if (y0 < z0) {
-      i1 = 0; j1 = 0; k1 = 1; i2 = 0; j2 = 1; k2 = 1;
-    } else if (x0 < z0) {
-      i1 = 0; j1 = 1; k1 = 0; i2 = 0; j2 = 1; k2 = 1;
-    } else {
-      i1 = 0; j1 = 1; k1 = 0; i2 = 1; j2 = 1; k2 = 0;
-    }
-  }
-
-  const x1 = x0 - i1 + G3;
-  const y1 = y0 - j1 + G3;
-  const z1 = z0 - k1 + G3;
-  const x2 = x0 - i2 + 2.0 * G3;
-  const y2 = y0 - j2 + 2.0 * G3;
-  const z2 = z0 - k2 + 2.0 * G3;
-  const x3 = x0 - 1.0 + 3.0 * G3;
-  const y3 = y0 - 1.0 + 3.0 * G3;
-  const z3 = z0 - 1.0 + 3.0 * G3;
-
-  let n0 = 0, n1 = 0, n2 = 0, n3 = 0;
-
-  let t0 = 0.6 - x0 * x0 - y0 * y0 - z0 * z0;
-  if (t0 >= 0) {
-    t0 *= t0;
-    n0 = t0 * t0 * grad3D(i, j, k, x0, y0, z0, seed);
-  }
-
-  let t1 = 0.6 - x1 * x1 - y1 * y1 - z1 * z1;
-  if (t1 >= 0) {
-    t1 *= t1;
-    n1 = t1 * t1 * grad3D(i + i1, j + j1, k + k1, x1, y1, z1, seed);
-  }
-
-  let t2 = 0.6 - x2 * x2 - y2 * y2 - z2 * z2;
-  if (t2 >= 0) {
-    t2 *= t2;
-    n2 = t2 * t2 * grad3D(i + i2, j + j2, k + k2, x2, y2, z2, seed);
-  }
-
-  let t3 = 0.6 - x3 * x3 - y3 * y3 - z3 * z3;
-  if (t3 >= 0) {
-    t3 *= t3;
-    n3 = t3 * t3 * grad3D(i + 1, j + 1, k + 1, x3, y3, z3, seed);
-  }
-
-  return 32.0 * (n0 + n1 + n2 + n3);
-}
-
-function fractalSimplex3D(
-  x: number, y: number, z: number,
-  period: number,
-  octaves: number,
-  persistence: number,
-  lacunarity: number,
-  seed: number
-): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = period;
-  let maxValue = 0;
-
-  for (let i = 0; i < octaves; i++) {
-    value += simplex3D(x * frequency, y * frequency, z * frequency, seed) * amplitude;
-    maxValue += amplitude;
-    amplitude *= persistence;
-    frequency *= lacunarity;
-  }
-
-  return value / maxValue;
-}
-
-function ridgeSimplex3D(
-  x: number, y: number, z: number,
-  period: number,
-  octaves: number,
-  persistence: number,
-  lacunarity: number,
-  seed: number
-): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = period;
-  let maxValue = 0;
-
-  for (let i = 0; i < octaves; i++) {
-    const noise = simplex3D(x * frequency, y * frequency, z * frequency, seed);
-    const ridge = 1.0 - Math.abs(noise);
-    value += ridge * ridge * amplitude;
-    maxValue += amplitude;
-    amplitude *= persistence;
-    frequency *= lacunarity;
-  }
-
-  return value / maxValue;
-}
-
-// ============ HEIGHT VARIATION ============
-
-function getHeightVariation(center: Vec3, config: TerrainConfig): number {
-  const variation = config.heightVariation;
-  const len = Math.sqrt(center.x * center.x + center.y * center.y + center.z * center.z);
-  const dirX = center.x / len;
-  const dirY = center.y / len;
-  const dirZ = center.z / len;
-
-  // Layer 1: Continental Base
-  const continentNoise = fractalSimplex3D(
-    dirX, dirY, dirZ,
-    config.continentScale,
-    6, 0.5, 2.0,
-    config.seed
-  );
-  const continentValue = Math.sign(continentNoise) * Math.pow(Math.abs(continentNoise), 0.8);
-
-  // Layer 2: Mountain Ridges
-  const mountainNoise = ridgeSimplex3D(
-    dirX, dirY, dirZ,
-    config.mountainScale,
-    4, 0.5, 2.2,
-    config.seed
-  );
-  const landFactor = Math.max(0, continentValue);
-  const mountainHeight = mountainNoise * landFactor * config.mountainHeight;
-
-  // Layer 3: Hills and Variation
-  const hillNoise = fractalSimplex3D(
-    dirX, dirY, dirZ,
-    config.hillScale,
-    3, 0.5, 2.0,
-    config.seed
-  );
-
-  // Layer 4: Surface Detail
-  const detailNoise = fractalSimplex3D(
-    dirX, dirY, dirZ,
-    config.detailScale,
-    2, 0.5, 2.0,
-    config.seed
-  );
-
-  // Combine all layers
-  let height = continentValue * config.continentWeight;
-  height += mountainHeight;
-  height += hillNoise * config.hillWeight * (landFactor > 0.1 ? 1.0 : 0.3);
-  height += detailNoise * config.detailWeight;
-
-  // Convert height to depth
-  const SEA_LEVEL_DEPTH = config.maxDepth - 1 - config.seaLevel;
-
-  let depth: number;
-  if (height >= 0) {
-    const landHeight = height * config.maxHeight * variation;
-    depth = SEA_LEVEL_DEPTH + landHeight;
-  } else {
-    const oceanFactor = Math.pow(Math.abs(height), config.oceanDepthPower);
-    const oceanDepth = oceanFactor * config.terrainMaxDepth * variation;
-    depth = SEA_LEVEL_DEPTH - oceanDepth;
-  }
-
-  return Math.max(0, Math.min(config.maxDepth - 1, Math.round(depth)));
 }
 
 // ============ ORE GENERATION ============
@@ -314,7 +86,7 @@ function generateOreVeins(
         const seed = config.seed + oreSeedOffset + tileIndex * 7919 + depth * 104729;
         const random = seededRandom(seed);
 
-        if (random < oreConfig.veinChance) {
+        if (random < oreConfig.veinChance * (config.metalRich ? METAL_ORE_MULTIPLIER : 1)) {
           spreadOreVein(tileIndex, depth, oreConfig, seed, tileNeighbors, oreVeinCache);
         }
       }
@@ -389,6 +161,84 @@ const BIOME_FOREST_MOIST = 0.18; // damp forest floor (leaf litter under a close
 const BIOME_SAVANNA_TEMP = 0.5;  // warm and fairly dry, short of desert
 const BIOME_SAVANNA_MOIST = 0.06;
 
+// ============ ROCK WORLDS (the Moon, the barren planets, moons, asteroids) ============
+
+// A rock world's surface layer per column: what lies on top and how deep it
+// goes, before the native rock (MOON_ROCK, drawn in the body's own texture)
+interface Crust {
+  top: number;       // block at the surface
+  under: number;     // block in the layers just below it
+  thickness: number; // how many layers below the surface are `under`
+}
+
+const CRUST_PATCH_SCALE = 9;     // sulfur / meteoric iron / lava-field patches
+const SULFUR_PATCH = 0.2;        // patch noise above this: sulfur on the upper slopes
+const LAVA_FIELD_PATCH = 0.5;    // and away from the cones: a cracked lava field
+const LAVA_STREAK_PERMILLE = 140; // upper-slope columns that are a lava streak
+const FLANK_LAVA_PERMILLE = 45;
+const BLUE_ICE_STEP = 2;         // a step this high to a neighbour bares blue ice
+const ICE_SHEET_DEPTH = 3;       // glacier ice under the frost (fuel)
+const IRON_PATCH = 0.18;         // patch noise above this: meteoric iron at the surface
+const ICE_POCKET_PERMILLE = 15;
+const ICY_ICE_POCKET_PERMILLE = 70;
+const IRON_POCKET_PERMILLE = 40;
+const METAL_ORE_MULTIPLIER = 3;
+
+function rockWorldCrust(tile: TileData, surfaceDepth: number, heightMap: Map<number, number>, config: TerrainConfig): Crust | null {
+  const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
+  const x = tile.center.x / len, y = tile.center.y / len, z = tile.center.z / len;
+  const roll = (hash3D(tile.index, 4421, 977, config.seed) >>> 0) % 1000;
+  const patch = fractalSimplex3D(x, y, z, CRUST_PATCH_SCALE, 2, 0.5, 2.0, config.seed + 303);
+
+  if (config.volcanoes) {
+    const zone = volcanoAt(x, y, z, config).zone;
+    if (zone === VOLCANO_CRATER) return { top: HexBlockType.MAGMA, under: HexBlockType.MAGMA, thickness: 2 };
+    if (zone === VOLCANO_RIM) return { top: HexBlockType.LAVA_ROCK, under: HexBlockType.BASALT, thickness: 3 };
+    if (zone === VOLCANO_SLOPE) {
+      const top = patch > SULFUR_PATCH ? HexBlockType.SULFUR
+        : roll < LAVA_STREAK_PERMILLE ? HexBlockType.LAVA_ROCK : HexBlockType.BASALT;
+      return { top, under: HexBlockType.BASALT, thickness: 3 };
+    }
+    if (zone === VOLCANO_FLANK) {
+      return { top: roll < FLANK_LAVA_PERMILLE ? HexBlockType.LAVA_ROCK : HexBlockType.BASALT, under: HexBlockType.BASALT, thickness: 2 };
+    }
+    if (zone === VOLCANO_NONE && !config.iceCover && patch > LAVA_FIELD_PATCH) {
+      return { top: HexBlockType.LAVA_ROCK, under: HexBlockType.BASALT, thickness: 1 };
+    }
+  }
+  if (config.iceCover) {
+    let steep = 0;
+    for (const n of tile.neighbors) steep = Math.max(steep, Math.abs((heightMap.get(n) ?? surfaceDepth) - surfaceDepth));
+    return { top: steep >= BLUE_ICE_STEP ? HexBlockType.BLUE_ICE : HexBlockType.FROST, under: HexBlockType.ICE, thickness: ICE_SHEET_DEPTH };
+  }
+  if (config.metalRich && patch > IRON_PATCH) {
+    return { top: HexBlockType.IRON_NICKEL, under: HexBlockType.IRON_NICKEL, thickness: 1 };
+  }
+  return null;
+}
+
+// Airless rock worlds still hold resources: the ore veins generated for
+// every planet, and water ice - patchy just under the surface near the
+// poles, plus rare pockets elsewhere (common on an ice moon). Ice is the raw
+// material for rocket fuel, so a ship can refuel off-world.
+function rockWorldBlock(
+  tile: TileData, depth: number, surfaceDepth: number, crust: Crust | null,
+  normalizedY: number, oreVeinCache: Map<string, number>, config: TerrainConfig
+): number {
+  if (crust && depth >= surfaceDepth - crust.thickness) {
+    return depth === surfaceDepth ? crust.top : crust.under;
+  }
+  const oreType = depth <= surfaceDepth - 3 ? oreVeinCache.get(`${tile.index},${depth}`) : undefined;
+  const roll = (hash3D(tile.index, depth, 7919, config.seed) >>> 0) % 1000;
+  const nearPole = Math.abs(normalizedY) > config.polarThreshold * 0.85;
+  const polarIce = nearPole && depth < surfaceDepth && depth >= surfaceDepth - 4 && roll < 600;
+  const icePocket = depth < surfaceDepth - 2 && roll < (config.iceCover ? ICY_ICE_POCKET_PERMILLE : ICE_POCKET_PERMILLE);
+  if (oreType !== undefined) return oreType;
+  if (polarIce || icePocket) return HexBlockType.ICE;
+  if (config.metalRich && depth < surfaceDepth - 1 && roll >= 900 && roll < 900 + IRON_POCKET_PERMILLE) return HexBlockType.IRON_NICKEL;
+  return HexBlockType.MOON_ROCK;
+}
+
 function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, number[]> {
   const columns = new Map<number, number[]>();
 
@@ -398,7 +248,7 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
   // First pass: Generate height map
   const heightMap = new Map<number, number>();
   for (const tile of tiles) {
-    const surfaceDepth = getHeightVariation(tile.center, config);
+    const surfaceDepth = surfaceDepthAt(tile.center, config);
     heightMap.set(tile.index, surfaceDepth);
   }
 
@@ -463,27 +313,13 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
     const normalizedY = tile.center.y / len;
     const isPolar = !config.isSingleTexturePlanet && Math.abs(normalizedY) > config.polarThreshold;
     const isUnderwater = config.hasWater && surfaceDepth < SEA_LEVEL_DEPTH;
+    const crust = config.isSingleTexturePlanet ? rockWorldCrust(tile, surfaceDepth, heightMap, config) : null;
 
     for (let depth = 0; depth < config.maxDepth; depth++) {
       if (depth > surfaceDepth) {
         blocks.push(HexBlockType.AIR);
       } else if (config.isSingleTexturePlanet) {
-        // Airless rock worlds (the Moon) still hold resources: the ore veins
-        // generated for every planet, and water ice - patchy just under the
-        // surface near the poles, plus rare pockets elsewhere. Ice is the
-        // raw material for rocket fuel, so a ship can refuel off-world.
-        const oreType = depth <= surfaceDepth - 3 ? oreVeinCache.get(`${tile.index},${depth}`) : undefined;
-        const roll = (hash3D(tile.index, depth, 7919, config.seed) >>> 0) % 1000;
-        const nearPole = Math.abs(normalizedY) > config.polarThreshold * 0.85;
-        const polarIce = nearPole && depth < surfaceDepth && depth >= surfaceDepth - 4 && roll < 600;
-        const icePocket = depth < surfaceDepth - 2 && roll < 15;
-        if (oreType !== undefined) {
-          blocks.push(oreType);
-        } else if (polarIce || icePocket) {
-          blocks.push(HexBlockType.ICE);
-        } else {
-          blocks.push(HexBlockType.MOON_ROCK);
-        }
+        blocks.push(rockWorldBlock(tile, depth, surfaceDepth, crust!, normalizedY, oreVeinCache, config));
       } else if (depth === surfaceDepth && biomeTop.has(tile.index)) {
         blocks.push(biomeTop.get(tile.index)!);
       } else if (depth > surfaceDepth - 3 && (biomeTop.get(tile.index) === HexBlockType.SAND || biomeTop.get(tile.index) === HexBlockType.STONE || biomeTop.get(tile.index) === HexBlockType.SNOW)) {

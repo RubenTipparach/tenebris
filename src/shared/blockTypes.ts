@@ -50,7 +50,19 @@ export enum HexBlockType {
   MOON_ORE_IRON = 31,
   MOON_ORE_ALUMINUM = 32,
   MOON_ORE_COBALT = 33,
-  MOON_ORE_LITHIUM = 34
+  MOON_ORE_LITHIUM = 34,
+  // The moons' and asteroids' crusts (ids 70-89 are this family's).
+  // Volcanic: basalt cones, molten magma in the craters, cracked lava rock
+  // round them, sulfur crust on the upper slopes. Icy: a frost crust over
+  // glacier ice, blue ice where it breaks out on the slopes. Metal-rich:
+  // meteoric iron at the surface.
+  BASALT = 70,
+  MAGMA = 71,
+  LAVA_ROCK = 72,
+  FROST = 73,
+  BLUE_ICE = 74,
+  IRON_NICKEL = 75,
+  SULFUR = 76
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -68,6 +80,13 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.MOON_ORE_ALUMINUM]: HexBlockType.MOON_ROCK,
   [HexBlockType.MOON_ORE_COBALT]: HexBlockType.MOON_ROCK,
   [HexBlockType.MOON_ORE_LITHIUM]: HexBlockType.MOON_ROCK,
+  [HexBlockType.BASALT]: HexBlockType.MOON_ROCK,
+  [HexBlockType.MAGMA]: HexBlockType.MOON_ROCK,
+  [HexBlockType.LAVA_ROCK]: HexBlockType.MOON_ROCK,
+  [HexBlockType.SULFUR]: HexBlockType.MOON_ROCK,
+  [HexBlockType.IRON_NICKEL]: HexBlockType.MOON_ROCK,
+  [HexBlockType.FROST]: HexBlockType.SNOW,
+  [HexBlockType.BLUE_ICE]: HexBlockType.SNOW,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -108,6 +127,13 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.MOON_ORE_ALUMINUM]: sameFaces('moonOreAluminum'),
   [HexBlockType.MOON_ORE_COBALT]: sameFaces('moonOreCobalt'),
   [HexBlockType.MOON_ORE_LITHIUM]: sameFaces('moonOreLithium'),
+  [HexBlockType.BASALT]: { top: 'basalt', side: 'basaltSide', bottom: 'basalt' },
+  [HexBlockType.MAGMA]: sameFaces('magma'),
+  [HexBlockType.LAVA_ROCK]: { top: 'lavaRock', side: 'lavaRockSide', bottom: 'basalt' },
+  [HexBlockType.FROST]: { top: 'frost', side: 'frostSide', bottom: 'blueIce' },
+  [HexBlockType.BLUE_ICE]: sameFaces('blueIce'),
+  [HexBlockType.IRON_NICKEL]: sameFaces('ironNickel'),
+  [HexBlockType.SULFUR]: { top: 'sulfur', side: 'sulfurSide', bottom: 'basalt' },
 };
 const DEFAULT_FACES = sameFaces('top');
 export function blockFaces(blockType: HexBlockType | number): BlockFaces {

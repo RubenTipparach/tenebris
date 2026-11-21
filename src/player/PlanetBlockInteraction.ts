@@ -77,6 +77,15 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
     case HexBlockType.MOON_ORE_COBALT: return ItemType.ORE_COBALT;
     case HexBlockType.MOON_ORE_LITHIUM: return ItemType.ORE_LITHIUM;
+    // Moons and asteroids: volcanic rock gives basalt (magma cools as it is
+    // dug), frost and glacier ice give ice for fuel, meteoric iron gives iron
+    case HexBlockType.BASALT: return ItemType.BASALT;
+    case HexBlockType.LAVA_ROCK: return ItemType.BASALT;
+    case HexBlockType.MAGMA: return ItemType.BASALT;
+    case HexBlockType.SULFUR: return ItemType.SULFUR;
+    case HexBlockType.FROST: return ItemType.ICE;
+    case HexBlockType.BLUE_ICE: return ItemType.ICE;
+    case HexBlockType.IRON_NICKEL: return ItemType.ORE_IRON;
     default: return ItemType.NONE;
   }
 }
@@ -108,6 +117,8 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.SEQ_DIRT: return HexBlockType.SEQ_DIRT;
     case ItemType.SEQ_SAND: return HexBlockType.SEQ_SAND;
     case ItemType.SEQ_SNOW: return HexBlockType.SEQ_SNOW;
+    case ItemType.BASALT: return HexBlockType.BASALT;
+    case ItemType.SULFUR: return HexBlockType.SULFUR;
     default: return HexBlockType.AIR;
   }
 }
