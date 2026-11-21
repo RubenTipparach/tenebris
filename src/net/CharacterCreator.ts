@@ -72,8 +72,8 @@ export class CharacterCreator {
     const sun = new THREE.DirectionalLight(0xffffff, 1.4);
     sun.position.set(2, 3, 4);
     this.scene.add(sun);
-    this.camera.position.set(0, -0.75, 4.2);
-    this.camera.lookAt(0, -0.75, 0);
+    this.camera.position.set(0, 0.85, 4.2);
+    this.camera.lookAt(0, 0.85, 0);
     injectStyle();
     this.renderSlots();
   }

@@ -7,9 +7,10 @@ import { getAssetPath } from '../utils/assetPath';
  * clips (public/animations/player.anim.json, written by
  * scripts/gen-fauna-anims.py in the same rig format as the animals).
  *
- * Frame: the group's origin is at the eyes and +Y is the player's up, like
- * the camera, so a pose quaternion from the player drops straight on. The
- * player looks down -Z.
+ * Frame: the group's origin is at the FEET (the player's position) and +Y
+ * is the player's up, so a pose from the player drops straight on. The
+ * player looks down -Z. (Body parts are laid out round the eyes and lifted
+ * by -FEET_Y.)
  */
 
 // Each slot picks from a fixed palette (PICO-8 colours plus skin tones), so
@@ -40,6 +41,7 @@ const R = {
   LEG: [0.2, 0.7, 0.2],
   LEG_X: 0.12,
   BOOT: 0.14,
+  TAG_ABOVE_EYES: 0.6,
   // Above this ground speed (m/s) the walk clip is fully on
   WALK_SPEED: 3,
 } as const;
@@ -110,6 +112,7 @@ export class Avatar {
     // Model faces +Z (the rig's forward); the player looks down -Z
     const model = new THREE.Group();
     model.rotation.y = Math.PI;
+    model.position.y = -R.FEET_Y;
     this.group.add(model);
     this.parts.body = new THREE.Group();
     model.add(this.parts.body);
@@ -189,7 +192,7 @@ export class Avatar {
     this.materials.push(m);
     const tag = new THREE.Sprite(m);
     tag.scale.set(2, 0.5, 1);
-    tag.position.y = 0.6;
+    tag.position.y = -R.FEET_Y + R.TAG_ABOVE_EYES;
     return tag;
   }
 
