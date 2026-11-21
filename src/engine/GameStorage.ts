@@ -43,6 +43,16 @@ export interface SavedStorageChest {
   slots: SavedInventorySlot[];
 }
 
+// Cooking station data (campfire, kiln, oven: src/planet/Cookers.ts)
+export interface SavedCooker {
+  tileIndex: number;
+  kind: 'campfire' | 'kiln' | 'oven';
+  position: { x: number; y: number; z: number };  // the station's centre
+  rotation: number;
+  slots: SavedInventorySlot[];
+  progress: number;
+}
+
 // Garbage pile data
 export interface SavedGarbagePile {
   tileIndex: number;
@@ -192,6 +202,7 @@ export interface PlanetSaveData {
   computers: SavedComputer[];
   printers3D: SavedPrinter3D[];
   storageChests: SavedStorageChest[];
+  cookers?: SavedCooker[];
   garbagePiles: SavedGarbagePile[];
   steamEngines: SavedSteamEngine[];
   hydroGenerators: SavedHydroGenerator[];
@@ -272,6 +283,7 @@ const RECORD_KINDS: Record<string, { field: keyof PlanetRecordLists; key: (o: Re
   computer: { field: 'computers', key: tileKey },
   printer3D: { field: 'printers3D', key: tileKey },
   chest: { field: 'storageChests', key: tileKey },
+  cooker: { field: 'cookers', key: tileKey },
   garbagePile: { field: 'garbagePiles', key: tileKey },
   steamEngine: { field: 'steamEngines', key: tileKey },
   hydroGenerator: { field: 'hydroGenerators', key: tileKey },
@@ -301,6 +313,7 @@ export class GameStorage {
     computers: SavedComputer[];
     printers3D: SavedPrinter3D[];
     storageChests: SavedStorageChest[];
+    cookers: SavedCooker[];
     garbagePiles: SavedGarbagePile[];
     steamEngines: SavedSteamEngine[];
     copperPipes: SavedCopperPipe[];
@@ -316,7 +329,7 @@ export class GameStorage {
   constructor() {
     // Initialize planet data for every planet
     for (const planetId of PLANET_IDS) {
-      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
+      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], cookers: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [] });
     }
   }
 
@@ -625,6 +638,32 @@ export class GameStorage {
       }
     }
     return allChests;
+  }
+
+  // Save a cooking station (placement, slots and progress)
+  public saveCooker(planetId: string, tileIndex: number, data: Omit<SavedCooker, 'tileIndex'>): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.cookers = planet.cookers.filter(c => c.tileIndex !== tileIndex);
+    planet.cookers.push({ tileIndex, ...data });
+    this.persistPlanetToStorage(planetId);
+    publish('cooker', planetId, tileIndex, { tileIndex, ...data });
+  }
+
+  public removeCooker(planetId: string, tileIndex: number): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.cookers = planet.cookers.filter(c => c.tileIndex !== tileIndex);
+    this.persistPlanetToStorage(planetId);
+    publish('cooker', planetId, tileIndex, null);
+  }
+
+  public getCookers(): Array<SavedCooker & { planetId: string }> {
+    const all: Array<SavedCooker & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const c of planet.cookers) all.push({ ...c, planetId });
+    }
+    return all;
   }
 
   // Save garbage pile placement
@@ -946,6 +985,7 @@ export class GameStorage {
       planet.computers = data.computers || [];
       planet.printers3D = data.printers3D || [];
       planet.storageChests = data.storageChests || [];
+      planet.cookers = data.cookers || [];
       planet.garbagePiles = data.garbagePiles || [];
       planet.steamEngines = data.steamEngines || [];
       planet.hydroGenerators = data.hydroGenerators || [];
@@ -1080,6 +1120,7 @@ export class GameStorage {
       planet.electricFurnaces = [];
       planet.electronicsWorkbenches = [];
       planet.storageChests = [];
+      planet.cookers = [];
       planet.garbagePiles = [];
       planet.steamEngines = [];
       planet.hydroGenerators = [];
@@ -1115,6 +1156,25 @@ export class GameStorage {
       localStorage.setItem(playerStorageKey(), JSON.stringify(data));
     } catch (error) {
       console.error('Failed to save player data:', error);
+    }
+  }
+
+  // The well-fed state (src/player/Cooking.ts): its own key per world slot
+  public getWellFed<T>(): T | null {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}wellfed`);
+      return raw ? JSON.parse(raw) as T : null;
+    } catch {
+      return null;
+    }
+  }
+
+  public saveWellFed(state: object | null): void {
+    try {
+      if (state) localStorage.setItem(`tenebris_${worldPrefix}wellfed`, JSON.stringify(state));
+      else localStorage.removeItem(`tenebris_${worldPrefix}wellfed`);
+    } catch {
+      // storage blocked: kept for this session only
     }
   }
 
@@ -1199,6 +1259,7 @@ export class GameStorage {
         computers: planet.computers,
         printers3D: planet.printers3D,
         storageChests: planet.storageChests,
+        cookers: planet.cookers,
         garbagePiles: planet.garbagePiles,
         steamEngines: planet.steamEngines,
         hydroGenerators: planet.hydroGenerators,
