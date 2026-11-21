@@ -1,4 +1,5 @@
 import { ItemType } from '../player/Inventory';
+import { COOKERS } from './CookingConfig';
 
 /**
  * What the kiln fires (industry-and-nuclear cooking, task group 3). Kept here,
@@ -14,13 +15,13 @@ export interface KilnRecipe {
   outputQuantity: number;
 }
 
-export const KILN_RECIPES: KilnRecipe[] = [
-  {
-    inputs: [
-      { itemType: ItemType.CLAY, quantity: 1 },
-      { itemType: ItemType.STONE, quantity: 1 },
-    ],
-    output: ItemType.CEMENT,
+// The kiln's recipes live in one place, the kiln station's own list
+// (CookingConfig COOKERS.kiln); this view of them is derived, never a
+// second copy to keep in step.
+export const KILN_RECIPES: KilnRecipe[] = COOKERS.kiln.recipes
+  .filter(r => r.inputs.every(i => i !== 'fish'))
+  .map(r => ({
+    inputs: (r.inputs as ItemType[]).map(itemType => ({ itemType, quantity: 1 })),
+    output: r.output,
     outputQuantity: 1,
-  },
-];
+  }));

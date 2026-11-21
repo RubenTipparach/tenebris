@@ -47,6 +47,8 @@ export const COOKERS: Record<CookerKind, {
     width: 0.8,
     height: 0.8,
     recipes: [
+      // cement first: it takes more ingredients (clay burnt with stone)
+      { inputs: [ItemType.CLAY, ItemType.STONE], output: ItemType.CEMENT, timeS: 8 },
       { inputs: [ItemType.CLAY], output: ItemType.CLAY_POT, timeS: 8 },
     ],
   },
