@@ -124,6 +124,7 @@ interface Body {
   spec: BodySpec;
   guides: THREE.Object3D[];   // name tag (space only)
   holder: THREE.Group;        // at the giant's position (moves on its orbit)
+  spin: number;               // its own slow turn (radians)
 }
 
 export class SolarSystemMockup {
@@ -159,8 +160,16 @@ export class SolarSystemMockup {
     this.sunUniform.value.copy(this.sunPosition).sub(this.origin);
     for (const b of this.bodies) {
       for (const g of b.guides) g.visible = showGuides;
-      b.holder.rotation.y += dt * SPIN_RATE; // slow spin
+      b.spin += dt * SPIN_RATE; // slow spin
+      b.holder.rotation.y = b.spin - this.frameYaw;
     }
+  }
+
+  // The reference frame's turn (openspec day-night): the giants' positions
+  // come turned from the orbits; this turns their bands and rings with it
+  private frameYaw = 0;
+  public setFrameYaw(yaw: number): void {
+    this.frameYaw = yaw;
   }
 
   /** A giant moved on its orbit (world position, far-layer coordinates). */
@@ -219,7 +228,7 @@ export class SolarSystemMockup {
     const label = this.makeLabel(giant.name, radius);
     holder.add(label);
 
-    return { spec, guides: [label], holder };
+    return { spec, guides: [label], holder, spin: 0 };
   }
 
   private makeLabel(name: string, radius: number): THREE.Sprite {

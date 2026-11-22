@@ -288,6 +288,7 @@ interface RockWorld {
   iceCover?: boolean;         // a frozen crust over glacier ice
   metalRich?: boolean;        // meteoric iron at the surface, extra ore
   extraOres?: Deposit[];      // deposits beyond the common ores
+  dayMin?: number;            // solar day, minutes (default by type)
 }
 
 // Small bodies need a shallower column (sea level = air above the datum,
@@ -354,6 +355,7 @@ function rockWorld(w: RockWorld): CelestialBodyConfig {
     subdivisions: subdivisionsFor(w.radius),
     position: w.position,
     orbit: w.parent ? { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 } : undefined,
+    dayMin: w.dayMin,
     visual: {
       texturePath: texture,
       heightVariation: w.heightVariation,
@@ -422,6 +424,7 @@ interface JungleWorld {
   atmosphereTint: string;
   flora: FloraTable;
   floraDensity: number;
+  dayMin?: number;       // solar day, minutes (default by type)
 }
 
 /**
@@ -442,6 +445,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     subdivisions: w.subdivisions,
     position: w.position,
     orbit: { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 },
+    dayMin: w.dayMin,
     visual: {
       heightVariation: 0.8,
       terrainStyle: TerrainStyle.EARTH_LIKE,
@@ -619,6 +623,9 @@ export interface CelestialBodyConfig {
   /** Whether its air can be breathed without a suit, and bottled by a gas
    *  collector (openspec wool-air-and-reentry). Never true without an atmosphere. */
   breathable: boolean;
+  /** Solar day: minutes of game time from sunrise to sunrise (openspec
+   *  day-night). Unset: ORBIT_CONFIG.DAY_MIN for its type. */
+  dayMin?: number;
   /** Trees / alien plants per biome ground (none = no flora) */
   flora?: FloraTable;
   /** How thick the flora grows: scatter attempts per unit of surface area
@@ -705,6 +712,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       radius: 100,
       subdivisions: 6,
       position: { x: 0, y: 0, z: 0 },
+      dayMin: 20, // a Minecraft-length day (openspec day-night)
       visual: {
         heightVariation: 1.0,
         terrainStyle: TerrainStyle.EARTH_LIKE,
@@ -743,6 +751,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       radius: 50,
       subdivisions: 5,
       position: { x: 400, y: 0, z: 0 }, // ~250 units from Earth surface
+      dayMin: 24, // its own day, not locked to Earth (openspec day-night)
       orbit: {
         parent: 'earth',
         distance: 400,
@@ -798,6 +807,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       radius: 200,  // 2x Earth's radius
       subdivisions: 7,
       position: { x: 800, y: 100, z: 400 },
+      dayMin: 30, // a big world, a long day
       visual: {
         heightVariation: 1.0,
         terrainStyle: TerrainStyle.EARTH_LIKE,  // Same biome logic as Earth
@@ -873,6 +883,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       subdivisions: 7,
       // Clear of the sun (~2.4 km centre to centre) and every other body
       position: { x: 2600, y: 300, z: 2200 },
+      dayMin: 24,
       visual: {
         heightVariation: 1.0,
         terrainStyle: TerrainStyle.BARREN,
@@ -957,7 +968,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // minutes, clear of the sun (1000, 0, 4000) and of each other's gravity
     // (every pair sits further apart than their two falloff radii; the boot
     // log warns when they don't - bodyClearanceProblems below).
-    rockWorld({ id: 'cinder', name: 'Cinder', extraOres: [DEPOSITS.URANIUM], radius: 130, position: { x: -1600, y: 150, z: 900 },
+    rockWorld({ id: 'cinder', name: 'Cinder', dayMin: 16, extraOres: [DEPOSITS.URANIUM], radius: 130, position: { x: -1600, y: 150, z: 900 },
       heightVariation: 0.6, gravity: 0.6, colour: '#5a3a30', seed: 101, volcanoes: 6,
       life: {
         grounds: [['embermoss', HexBlockType.CINDER_EMBERMOSS], ['ash', HexBlockType.CINDER_ASH], ['sulfur', HexBlockType.CINDER_SULFUR]],
@@ -969,7 +980,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'vesper', name: 'Vesper', radius: 280, position: { x: 2800, y: -100, z: -1200 },
+    rockWorld({ id: 'vesper', name: 'Vesper', dayMin: 36, radius: 280, position: { x: 2800, y: -100, z: -1200 },
       heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202,
       life: {
         grounds: [['clay', HexBlockType.VESPER_CLAY], ['dune', HexBlockType.VESPER_DUNE], ['salt', HexBlockType.VESPER_SALT]],
@@ -981,7 +992,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'halcyon', name: 'Halcyon', radius: 120, position: { x: -1100, y: -250, z: -2000 },
+    rockWorld({ id: 'halcyon', name: 'Halcyon', dayMin: 18, radius: 120, position: { x: -1100, y: -250, z: -2000 },
       heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303,
       life: {
         grounds: [['moss', HexBlockType.HALCYON_MOSS], ['geode', HexBlockType.HALCYON_GEODE], ['glass', HexBlockType.HALCYON_GLASS]],
@@ -993,7 +1004,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'tessaly', name: 'Tessaly', radius: 160, position: { x: -2800, y: 400, z: -600 },
+    rockWorld({ id: 'tessaly', name: 'Tessaly', dayMin: 28, radius: 160, position: { x: -2800, y: 400, z: -600 },
       heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505, iceCover: true,
       life: {
         grounds: [['snowmoss', HexBlockType.TESSALY_SNOWMOSS], ['glaze', HexBlockType.TESSALY_GLAZE], ['frost', HexBlockType.TESSALY_FROST]],
@@ -1005,11 +1016,11 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'nerith', name: 'Nerith', radius: 90, position: { x: 300, y: -500, z: -2600 },
+    rockWorld({ id: 'nerith', name: 'Nerith', dayMin: 14, radius: 90, position: { x: 300, y: -500, z: -2600 },
       heightVariation: 0.7, gravity: 0.45, colour: '#61708a', seed: 606 }),
-    rockWorld({ id: 'kessel', name: 'Kessel', radius: 80, position: { x: -300, y: 600, z: 2400 },
+    rockWorld({ id: 'kessel', name: 'Kessel', dayMin: 12, radius: 80, position: { x: -300, y: 600, z: 2400 },
       heightVariation: 1.0, gravity: 0.35, colour: '#655d77', seed: 707 }),
-    rockWorld({ id: 'umbra', name: 'Umbra', radius: 110, position: { x: 4000, y: -200, z: 600 },
+    rockWorld({ id: 'umbra', name: 'Umbra', dayMin: 40, radius: 110, position: { x: 4000, y: -200, z: 600 },
       heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808,
       life: {
         grounds: [['moss', HexBlockType.UMBRA_MOSS], ['shale', HexBlockType.UMBRA_SHALE], ['mycel', HexBlockType.UMBRA_MYCEL]],
@@ -1030,7 +1041,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // Verdance: emerald deep jungle under giant buttressed canopy trees hung
     // with lianas, olive mangrove swamps on stilt roots, fan palms on the
     // pale river banks; red laterite soil
-    jungleMoon({ id: 'verdance', name: 'Verdance', parent: 'brontes', radius: 70, subdivisions: 6, position: { x: -3700, y: 800, z: -2900 },
+    jungleMoon({ id: 'verdance', name: 'Verdance', dayMin: 22, parent: 'brontes', radius: 70, subdivisions: 6, position: { x: -3700, y: 800, z: -2900 },
       seed: 909, water: '#2f6b52', waterDeep: '#18402f', land: '#2f7a3a', atmosphereTint: '#c8ffd0',
       blocks: [HexBlockType.VERD_JUNGLE, HexBlockType.VERD_SWAMP, HexBlockType.VERD_BANK, HexBlockType.VERD_SOIL, HexBlockType.VERD_ROCK],
       flora: {
@@ -1043,7 +1054,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // Mirewood: lime-and-teal jungle of giant elephant-ear plants, black peat
     // swamps of bottle-trunked swamp cypress, and grey silt banks under
     // drooping weeping ferns; dark peat soil, banded violet rock
-    jungleMoon({ id: 'mirewood', name: 'Mirewood', parent: 'aurelia', radius: 70, subdivisions: 6, position: { x: 3900, y: -100, z: 4000 },
+    jungleMoon({ id: 'mirewood', name: 'Mirewood', dayMin: 26, parent: 'aurelia', radius: 70, subdivisions: 6, position: { x: 3900, y: -100, z: 4000 },
       seed: 1010, water: '#3a5a40', waterDeep: '#1d2f22', land: '#4f8a44', atmosphereTint: '#e0ffc0',
       blocks: [HexBlockType.MIRE_JUNGLE, HexBlockType.MIRE_SWAMP, HexBlockType.MIRE_BANK, HexBlockType.MIRE_SOIL, HexBlockType.MIRE_ROCK],
       flora: {

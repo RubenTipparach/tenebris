@@ -188,6 +188,16 @@ export class GameEngine {
     if (mat?.uniforms.starVisibility) mat.uniforms.starVisibility.value = v;
   }
 
+  /**
+   * Turn the stars and nebula with the reference frame (openspec day-night):
+   * the same yaw the orbits turn the Sun and the other bodies by, so the
+   * stars wheel overhead with the Sun. The sky pattern is fixed to the
+   * starfield sphere (skybox.vert), so turning the sphere turns the sky.
+   */
+  public setSkyYaw(yaw: number): void {
+    if (this.starfield) this.starfield.rotation.y = -yaw;
+  }
+
   public setSunPosition(position: THREE.Vector3, radius?: number): void {
     // Update sun mesh to actual position
     if (this.sunMesh) {
