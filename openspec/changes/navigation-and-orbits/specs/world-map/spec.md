@@ -29,11 +29,7 @@ hexagon (a pentagon at the twelve pentagon tiles), laid out by its latitude
 and longitude, filled with the colour of the topmost solid block of that
 tile's column. A block's colour SHALL come from that block's own texture, so
 every planet's ground, water and biome blocks look as they do in the world.
-North SHALL be at the top. Tiles SHALL meet with no outline or seam, so the
-ground reads as continuous colour, not a grid of cells. Each tile's colour
-SHALL show relief: brighter the higher its ground stands over sea level,
-darker the deeper the water over it, and lit or shaded by its slope toward
-the light (up-left on the map).
+North SHALL be at the top.
 
 #### Scenario: Water and land
 
@@ -44,6 +40,17 @@ the light (up-left on the map).
 
 - **WHEN** the map of Sequoia is open
 - **THEN** its tiles show Sequoia's own blocks (its beige scrub, its sands), not Earth's
+
+### Requirement: The map reads as ground with relief, not cells
+
+Tiles SHALL meet with no outline or seam. Each tile's colour SHALL be
+brighter the higher its ground stands over sea level, darker the deeper the
+water over it, and lit or shaded by its slope toward the light (up-left on
+the map).
+
+#### Scenario: Hills and deep water
+- **WHEN** the map of Earth is open
+- **THEN** no cell edges show, hills read lighter with shaded far slopes, and deep sea is darker than shallows
 
 ### Requirement: The map follows edits
 
