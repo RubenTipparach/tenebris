@@ -12,11 +12,23 @@
  * scripts/gen-fauna-anims.py.
  */
 
+import { FISH_ROSTERS, FishSpecies } from './FishRosters';
+import { ItemType } from '../player/Inventory';
+
 export type FaunaMotion =
-  | 'walk'   // on the ground
+  | 'walk'   // on the ground (or the seabed, for habitat 'seabed')
   | 'hop'    // on the ground; the hop arc is in the baked clip
   | 'fly'    // hovers above the ground, flaps when it moves
-  | 'float'; // drifts high and slow (jellies)
+  | 'float'  // drifts high and slow (jellies)
+  | 'swim'   // in the water, between the seabed and the surface (habitat 'water')
+  | 'drift'; // in the water, slow, bobbing and pulsing (sea jellies)
+
+/**
+ * Where a species lives: dry land (the default), the open water (swimmers
+ * and drifters: kept between seabed and surface), or the seabed under the
+ * water (crawlers: they walk on submerged ground and never leave the water).
+ */
+export type FaunaHabitat = 'land' | 'water' | 'seabed';
 
 export interface FaunaSpecies {
   /** The one planet (body id) this species lives on. */
@@ -51,6 +63,24 @@ export interface FaunaSpecies {
    * hits bring it down for leather. Omitted = neither.
    */
   ranch?: 'wool' | 'hide';
+  /** Omitted = 'land'. */
+  habitat?: FaunaHabitat;
+  /**
+   * Swimmers: the depth each one keeps, as a fraction of the water column
+   * ([0 = seabed, 1 = surface], picked per individual and again on each
+   * wander), before the margins clamp it (src/planet/SwimRules.ts).
+   */
+  swimBand?: [number, number];
+  /**
+   * Schooling swimmers: the herd swims as one - the first member leads, the
+   * rest hold an offset round it, up to this far (units). Omitted = each
+   * member wanders on its own.
+   */
+  school?: number;
+  /** The baked clip file (public/animations/<anim>.anim.json); omitted = the species id. */
+  anim?: string;
+  /** A species derived from a fishing-table fish (its model is the parametric fish). */
+  fish?: FishSpecies;
 }
 
 export const FAUNA_CONFIG = {
@@ -68,8 +98,10 @@ export const FAUNA_CONFIG = {
   rescanEverySeconds: 3,
   /** Fraction of dry surface tiles that are a herd's home. */
   siteChance: 0.0035,
-  /** Hard caps. */
-  maxCreatures: 48,
+  /** Hard caps (per viewer): all creatures, then land and water life apart, so one can't crowd out the other. */
+  maxCreatures: 80,
+  maxLand: 48,
+  maxWater: 48,
   maxPerSpecies: 24,
   /** Height following (1/s): how fast a creature settles onto a new tile. */
   heightFollowRate: 10,
@@ -111,7 +143,120 @@ export const FAUNA_CONFIG = {
  */
 export const FAUNA_LIFELESS = ['moon', 'kessel', 'nerith', 'ferrum'] as const;
 
-export const FAUNA_SPECIES = {
+/** Per-body water life numbers; a body with water but no entry uses `default`. */
+export interface WaterLifeConfig {
+  /** Fraction of water surface tiles that are a school's / crawler group's home. */
+  siteChance: number;
+  /** Least water depth (blocks) a swimmer spawns in / swims into, and a crawler. */
+  minSwimDepth: number;
+  minCrawlDepth: number;
+  /** Clearance (units) a swimmer keeps above the seabed and below the surface, on top of half its body. */
+  bedMargin: number;
+  surfaceMargin: number;
+  /** Fraction of the model's bounding radius counted as half its height. */
+  bodyHalf: number;
+  /** How fast (1/s) a swimmer eases to its depth. */
+  depthFollowRate: number;
+  /** School followers: steering gain (1/s per unit off station) and the most extra speed it adds (x walk). */
+  schoolGain: number;
+  schoolCatchUp: number;
+  /** A follower that sees the player alarms the whole school for this long (s). */
+  schoolAlarmS: number;
+  /** A blocked swimmer turns round by about half a turn, give or take up to this much (radians). */
+  turnJitter: number;
+  /** Speed kept when a swimmer meets the shore (it turns, smoothly). */
+  blockedSpeedKeep: number;
+  /** Swimmers fleeing dive to this fraction of the column. */
+  fleeDepth: number;
+  /** A swimmer meeting a rising seabed lifts its column fraction by this much. */
+  riseOnBlock: number;
+}
+
+const WATER_BASE: WaterLifeConfig = {
+  siteChance: 0.006, minSwimDepth: 2, minCrawlDepth: 1, bedMargin: 0.15, surfaceMargin: 0.35, bodyHalf: 0.5,
+  depthFollowRate: 1.5, schoolGain: 1.2, schoolCatchUp: 1.5, schoolAlarmS: 3, turnJitter: Math.PI / 2,
+  blockedSpeedKeep: 0.5, fleeDepth: 0.15, riseOnBlock: 0.5,
+};
+
+export const FAUNA_WATER: Record<string, WaterLifeConfig> & { default: WaterLifeConfig } = {
+  default: WATER_BASE,
+  earth: { ...WATER_BASE, siteChance: 0.008 },
+  sequoia: { ...WATER_BASE, siteChance: 0.007, bedMargin: 0.2, surfaceMargin: 0.4, depthFollowRate: 1.2 },
+  // The jungle moons are small (few tiles) and their waters shallow, so more
+  // of their water is home to something and one block of water is enough
+  verdance: { ...WATER_BASE, siteChance: 0.03, minSwimDepth: 1, bedMargin: 0.12, surfaceMargin: 0.3, depthFollowRate: 1.8 },
+  mirewood: { ...WATER_BASE, siteChance: 0.03, minSwimDepth: 1, bedMargin: 0.12, surfaceMargin: 0.3, depthFollowRate: 1.8 },
+};
+
+export function waterLife(planetId: string): WaterLifeConfig {
+  return FAUNA_WATER[planetId] ?? FAUNA_WATER.default;
+}
+
+/**
+ * The swimming fish: one fauna entry per fishing-table fish (FISH_ROSTERS),
+ * derived here so the schools on a planet are exactly its catch. Numbers
+ * that turn a fish's size and fight into how it swims:
+ */
+export const FISH_FAUNA = {
+  /** Drawn length = max(minLength, lengthM * visualScale) units (game scale, like the rabbits). */
+  visualScale: 1.6,
+  minLength: 0.3,
+  /** Cruise speed = speedBase + speedPerM * drawn length; flee = cruise * fleeMul * (fleeBase + pull). */
+  speedBase: 0.5,
+  speedPerM: 0.8,
+  fleeMul: 2.5,
+  fleeBase: 0.6,
+  fleeRadius: 5,
+  idleTime: [1, 3] as [number, number],
+  wanderTime: [3, 7] as [number, number],
+  /** Default school size and body height / length when the look omits them. */
+  school: [3, 6] as [number, number],
+  height: 0.3,
+  /** School spread (units) per drawn length, times sqrt(largest school). */
+  spreadPerLength: 1.4,
+  /** Per-individual size spread. */
+  scale: [0.85, 1.15] as [number, number],
+  swimBand: [0.2, 0.8] as [number, number],
+  /** Spawn weight = bite * weightMul (eager biters are the common ones). */
+  weightMul: 3,
+  /** Eels and serpents undulate slower and don't school. */
+  eelSpeedMul: 0.7,
+};
+
+/** The fauna id of a fishing-table fish: FISH_MINNOW -> fishMinnow. */
+export function fishFaunaId(f: FishSpecies): string {
+  const key = ItemType[f.item] ?? `FISH_${f.item}`;
+  return key.toLowerCase().replace(/_([a-z0-9])/g, (_m, c: string) => c.toUpperCase());
+}
+
+/** Drawn length (units) of a fishing-table fish, model and motion alike. */
+export function fishDrawnLength(f: FishSpecies): number {
+  return Math.max(FISH_FAUNA.minLength, f.lengthM * FISH_FAUNA.visualScale);
+}
+
+function fishFauna(): Record<string, FaunaSpecies> {
+  const F = FISH_FAUNA;
+  const out: Record<string, FaunaSpecies> = {};
+  for (const [planet, fish] of Object.entries(FISH_ROSTERS)) {
+    for (const f of fish) {
+      const len = fishDrawnLength(f);
+      const eel = f.look.shape === 'eel';
+      const walk = (F.speedBase + F.speedPerM * len) * (eel ? F.eelSpeedMul : 1);
+      const herd = f.look.school ?? F.school;
+      out[fishFaunaId(f)] = {
+        planet, name: f.name, motion: 'swim', habitat: 'water',
+        walkSpeed: walk, fleeSpeed: walk * F.fleeMul * (F.fleeBase + f.pull), fleeRadius: F.fleeRadius,
+        idleTime: F.idleTime, wanderTime: F.wanderTime, herd,
+        scale: F.scale, hover: [0, 0], bob: [0, 0], maxStep: 99, weight: f.bite * F.weightMul, glow: 0,
+        swimBand: F.swimBand, school: herd[1] > 1 && !eel ? len * F.spreadPerLength * Math.sqrt(herd[1]) : undefined,
+        anim: `swim_${f.look.shape}`, fish: f,
+      };
+    }
+  }
+  return out;
+}
+
+const CREATURES = {
   // ---- Earth: classic-ish, stylized ---------------------------------------
   deer: {
     planet: 'earth', name: 'Deer', motion: 'walk',
@@ -212,9 +357,69 @@ export const FAUNA_SPECIES = {
     walkSpeed: 1.4, fleeSpeed: 4.5, fleeRadius: 6, idleTime: [2, 6], wanderTime: [0.8, 2],
     herd: [2, 5], scale: [0.9, 1.3], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 1.5, glow: 0.8,
   },
+  // ==== Sea life (openspec ocean-life). The fish are derived from the
+  // fishing table (fishFauna, above); these are each sea's other creatures
+  // ---- Earth: shore crabs, drifting jellies, sea turtles ------------------
+  crab: {
+    planet: 'earth', name: 'Shore crab', motion: 'walk', habitat: 'seabed',
+    walkSpeed: 0.6, fleeSpeed: 2.2, fleeRadius: 4, idleTime: [2, 6], wanderTime: [1.5, 4],
+    herd: [2, 4], scale: [0.9, 1.3], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 2, glow: 0,
+  },
+  jellyfish: {
+    planet: 'earth', name: 'Sea jelly', motion: 'drift', habitat: 'water',
+    walkSpeed: 0.22, fleeSpeed: 0.45, fleeRadius: 0, idleTime: [3, 8], wanderTime: [6, 12],
+    herd: [3, 6], scale: [0.7, 1.2], hover: [0, 0], bob: [0.22, 0.2], maxStep: 99, weight: 1.2, glow: 0.35,
+    swimBand: [0.45, 0.9],
+  },
+  seaTurtle: {
+    planet: 'earth', name: 'Sea turtle', motion: 'swim', habitat: 'water',
+    walkSpeed: 0.9, fleeSpeed: 2.4, fleeRadius: 5, idleTime: [2, 5], wanderTime: [5, 10],
+    herd: [1, 2], scale: [0.9, 1.2], hover: [0, 0], bob: [0.08, 0.3], maxStep: 99, weight: 0.8, glow: 0,
+    swimBand: [0.3, 0.8],
+  },
+  // ---- Sequoia: glowing squid shoals, shell crawlers on the bed ------------
+  lanternSquid: {
+    planet: 'sequoia', name: 'Lantern squid', motion: 'swim', habitat: 'water',
+    walkSpeed: 1.1, fleeSpeed: 5.5, fleeRadius: 6, idleTime: [1.5, 4], wanderTime: [3, 6],
+    herd: [3, 5], scale: [0.85, 1.15], hover: [0, 0], bob: [0.05, 0.5], maxStep: 99, weight: 1.5, glow: 1.2,
+    swimBand: [0.2, 0.7], school: 2.2,
+  },
+  shellCrawler: {
+    planet: 'sequoia', name: 'Shell crawler', motion: 'walk', habitat: 'seabed',
+    walkSpeed: 0.4, fleeSpeed: 1.2, fleeRadius: 3, idleTime: [3, 8], wanderTime: [2, 5],
+    herd: [1, 3], scale: [0.9, 1.3], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 1.5, glow: 0.5,
+  },
+  // ---- Verdance: a river otter of the mangroves ----------------------------
+  mossOtter: {
+    planet: 'verdance', name: 'Moss otter', motion: 'swim', habitat: 'water',
+    walkSpeed: 1.5, fleeSpeed: 5, fleeRadius: 7, idleTime: [1, 3], wanderTime: [2, 5],
+    herd: [1, 3], scale: [0.9, 1.1], hover: [0, 0], bob: [0.06, 0.6], maxStep: 99, weight: 1.2, glow: 0,
+    swimBand: [0.5, 0.95],
+  },
+  // ---- Mirewood: a glowing newt on the peat bed ----------------------------
+  bogNewt: {
+    planet: 'mirewood', name: 'Bog newt', motion: 'walk', habitat: 'seabed',
+    walkSpeed: 0.7, fleeSpeed: 2.6, fleeRadius: 4, idleTime: [2, 6], wanderTime: [1.5, 4],
+    herd: [2, 4], scale: [0.9, 1.2], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 1.5, glow: 0.9,
+  },
 } satisfies Record<string, FaunaSpecies>;
 
-export type FaunaSpeciesId = keyof typeof FAUNA_SPECIES;
+/** The hand-built creatures (each has its own model in FaunaModels.ts). */
+export type FaunaCreatureId = keyof typeof CREATURES;
+
+/** Every species: the creatures, then the swimming fish derived from FISH_ROSTERS. */
+export const FAUNA_SPECIES: typeof CREATURES & Record<string, FaunaSpecies> = { ...CREATURES, ...fishFauna() };
+
+export type FaunaSpeciesId = string;
+
+export function habitatOf(s: FaunaSpecies): FaunaHabitat {
+  return s.habitat ?? 'land';
+}
+
+/** True for species that live in the water (swimmers, drifters and seabed crawlers). */
+export function isWaterLife(s: FaunaSpecies): boolean {
+  return habitatOf(s) !== 'land';
+}
 
 export const FAUNA_SPECIES_IDS = Object.keys(FAUNA_SPECIES) as FaunaSpeciesId[];
 
@@ -224,10 +429,11 @@ export function faunaRoster(planetId: string): FaunaSpeciesId[] {
 }
 
 /**
- * Throws if a species is on two planets, or a lifeless world has any.
- * Run once at startup (a cheap assert: twelve-odd entries).
+ * Throws if a species is on two planets, or a lifeless world has any, or a
+ * fish is on two fishing tables, or - when `waterPlanets` is given - water
+ * life lives on a world without water. Run once at startup (a cheap assert).
  */
-export function validateFaunaRosters(knownPlanets: Iterable<string>): void {
+export function validateFaunaRosters(knownPlanets: Iterable<string>, waterPlanets?: Iterable<string>): void {
   const planets = new Set(knownPlanets);
   const seen = new Map<FaunaSpeciesId, string>();
   for (const p of planets) {
@@ -245,5 +451,23 @@ export function validateFaunaRosters(knownPlanets: Iterable<string>): void {
   }
   for (const p of FAUNA_LIFELESS) {
     if (faunaRoster(p).length) throw new Error(`[Fauna] lifeless world ${p} has fauna: ${faunaRoster(p).join(', ')}`);
+    if (FISH_ROSTERS[p]?.length) throw new Error(`[Fauna] lifeless world ${p} has fish`);
+  }
+  const fishHome = new Map<ItemType, string>();
+  for (const [p, fish] of Object.entries(FISH_ROSTERS)) {
+    for (const f of fish) {
+      const other = fishHome.get(f.item);
+      if (other !== undefined && other !== p) throw new Error(`[Fauna] fish ${f.name} is on both ${other} and ${p}`);
+      fishHome.set(f.item, p);
+    }
+  }
+  if (waterPlanets) {
+    const wet = new Set(waterPlanets);
+    for (const id of FAUNA_SPECIES_IDS) {
+      const s = FAUNA_SPECIES[id];
+      if (isWaterLife(s) && planets.has(s.planet) && !wet.has(s.planet)) {
+        throw new Error(`[Fauna] water species ${id} lives on ${s.planet}, which has no water`);
+      }
+    }
   }
 }

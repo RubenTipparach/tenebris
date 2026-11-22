@@ -6,3 +6,7 @@
 - `silverfin`, `perch`, `deepback`: copied from RubenTipparach/Pale-Blue-Dot
   `assets/items/fish/` (drawn by its `tools/gen_item_icons.py`), along with
   the fishing rules in `src/player/Fishing.ts`.
+- `tetra`, `catfish`, `leaf_pike` (Verdance) and `peat_eel`, `gourami`,
+  `violet_gar` (Mirewood): drawn by this repo's `scripts/gen-item-icons.py`
+  (`fish_icon`, PICO-8 colours matching their swimming models in
+  `src/config/FishRosters.ts`).

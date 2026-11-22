@@ -18,6 +18,21 @@ export function surfaceTop(planet: Planet, tileIndex: number): { top: number; bl
 }
 
 /**
+ * The water in a column whose top block is water: the radius of its surface
+ * (top face of the highest water block) and of its seabed (top face of the
+ * first solid block under it), and how many blocks deep it is. Null when the
+ * column's top isn't water (dry land, ice, or not generated yet).
+ */
+export function waterColumn(planet: Planet, tileIndex: number): { surface: number; seabed: number; depth: number } | null {
+  const { top, block } = surfaceTop(planet, tileIndex);
+  if (top < 0 || block !== HexBlockType.WATER) return null;
+  let d = top;
+  while (d >= 0 && planet.getBlock(tileIndex, d) === HexBlockType.WATER) d--;
+  // d is the seabed block (or -1: water to the core, the bottom of the world)
+  return { surface: planet.depthToRadius(top), seabed: planet.depthToRadius(d), depth: top - d };
+}
+
+/**
  * Visit every tile whose ground point lies within `radius` of `point`, by a
  * breadth-first walk out from the tile under it. `dir` is the tile's unit
  * direction from the planet centre, `ground` the radius of its top surface

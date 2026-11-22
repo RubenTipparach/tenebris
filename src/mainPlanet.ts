@@ -864,7 +864,8 @@ class PlanetGame {
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)
     if (!this.fauna) {
-      validateFaunaRosters(this.planets.keys());
+      // (water life only on worlds with water: openspec ocean-life)
+      validateFaunaRosters(this.planets.keys(), [...this.planets.keys()].filter(id => getBodyConfig(id)?.terrain.hasWater));
       this.fauna = new Fauna(this.engine.scene);
       this.blockInteraction.setFauna(this.fauna); // shearing and hitting animals
     }
