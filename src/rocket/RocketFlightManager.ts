@@ -158,6 +158,13 @@ export class RocketFlightManager {
   }
 
   /** A body moved on its orbit: gravity and landings use its live centre. */
+  /** The live sun position, for solar arrays (shared with the controller) */
+  private sunPosition = new THREE.Vector3();
+  public setSunPosition(sun: THREE.Vector3): void {
+    this.sunPosition.copy(sun);
+    this.rocketController?.setSunPosition(this.sunPosition);
+  }
+
   public setPlanetCenter(name: string, center: THREE.Vector3): void {
     for (const p of this.planets) if (p.name === name) p.center.copy(center);
   }
@@ -288,6 +295,7 @@ export class RocketFlightManager {
 
     // Create rocket controller
     this.rocketController = new RocketController(this.scene);
+    this.rocketController.setSunPosition(this.sunPosition);
 
     // Get surface normal from launch pad position (pointing away from planet center)
     // For simplicity, assume Earth at origin
@@ -419,6 +427,7 @@ export class RocketFlightManager {
 
     // Create rocket controller
     this.rocketController = new RocketController(this.scene);
+    this.rocketController.setSunPosition(this.sunPosition);
 
     // Initialize the rocket from the landed state
     this.rocketController.initializeFromLanded(

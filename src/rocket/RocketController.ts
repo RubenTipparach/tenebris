@@ -1,8 +1,9 @@
 import { emitGameEvent } from '../engine/GameEvents';
 import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
 
-// The sun stands still at its configured place (planets orbit it)
-const SUN_POSITION = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.position ?? { x: 0, y: 0, z: 0 };
+// Where the sun is until the flight manager hands over the live one (the
+// orbits move it in the reference body's frame)
+const SUN_CONFIG_POSITION = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.position ?? { x: 0, y: 0, z: 0 };
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
@@ -159,6 +160,7 @@ export class RocketController {
   private solarW: number = 0;          // the stack's solar arrays, full sun
   private sunlit: boolean = true;
   private flatWarned: boolean = false;
+  private sunPosition: { x: number; y: number; z: number } = SUN_CONFIG_POSITION;
   private lowPowerWarned: boolean = false;
 
   // Re-entry heat and the parachute (design 3)
@@ -1471,9 +1473,14 @@ export class RocketController {
    */
   private updateSolar(deltaTime: number): void {
     if (this.solarW <= 0) return;
-    this.sunlit = inSunlight(this.position, SUN_POSITION, this.planets);
+    this.sunlit = inSunlight(this.position, this.sunPosition, this.planets);
     this.chargeWh = solarCharge(this.chargeWh, this.batteryCapacityWh, this.solarW, this.sunlit, deltaTime);
     if (this.getChargeSecondsLeft() > ROCKET_CONFIG.POWER.LOW_WARN_S) { this.flatWarned = false; this.lowPowerWarned = false; }
+  }
+
+  /** The live sun position (the flight manager's, updated as the orbits move) */
+  public setSunPosition(sun: { x: number; y: number; z: number }): void {
+    this.sunPosition = sun;
   }
 
   /** Is the stack charging from the sun right now (it has arrays and is sunlit)? */

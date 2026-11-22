@@ -1058,6 +1058,7 @@ class PlanetGame {
     framePositionAt('sun', ref, t, p);
     this.sunPosition.set(p.x, p.y, p.z);
     this.engine.setSunPosition(this.sunPosition);
+    this.rocketFlightManager?.setSunPosition(this.sunPosition);
     const center = new THREE.Vector3();
     for (const [id, planet] of this.planets) {
       framePositionAt(id, ref, t, p);
