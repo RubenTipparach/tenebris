@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import type { CityConfig } from '../shared/cityGen';
 import { HexBlockType } from '../shared/blockTypes';
 import type { FloraSpecies, EarthTreeSpecies } from '../planet/Tree';
+import type { SeaFloraTable } from './SeaFloraConfig';
 import { PlayerConfig } from './PlayerConfig';
 
 /**
@@ -424,6 +425,7 @@ interface JungleWorld {
   atmosphereTint: string;
   flora: FloraTable;
   floraDensity: number;
+  seaFlora: SeaFloraTable;
   dayMin?: number;       // solar day, minutes (default by type)
 }
 
@@ -487,6 +489,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     breathable: true,
     flora: w.flora,
     floraDensity: w.floraDensity,
+    seaFlora: w.seaFlora,
   };
 }
 /** A moon of `parent` (a rock world). */
@@ -631,6 +634,9 @@ export interface CelestialBodyConfig {
   /** How thick the flora grows: scatter attempts per unit of surface area
    *  relative to Earth's PlayerConfig.TREE_COUNT (default 1) */
   floraDensity?: number;
+  /** Plants on its submerged seabed, by depth / warmth / patch (openspec
+   *  ocean-life; none = a bare seabed). Only on a body with water. */
+  seaFlora?: SeaFloraTable;
   /** Altitude where INTERMEDIATE LOD activates (above this = simplified terrain, below = full detail blocks).
    *  LOD levels: DETAILED (0 to here) -> INTERMEDIATE (here to highLODAltitude) -> HIGH -> DISTANT
    *  If not set, defaults to: radius * 0.25 */
@@ -729,6 +735,18 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         extraOres: [DEPOSITS.OIL],
         hasWater: true,
         seaLevel: 12,
+      },
+      // Sea flora: coral reefs in the warm shallows, seagrass meadows in the
+      // other shallows, kelp forests where the water is cool (high
+      // latitude or deep). Zones in priority order, one species per bed.
+      seaFlora: {
+        warmth: { noiseScale: 2.5, noiseAmp: 0.15, depthCooling: 0.05 },
+        patchScale: 3,
+        zones: [
+          { species: 'coral', depth: [1, 3], warmth: [0.62, 9], patch: -0.25, chance: 0.9, perTile: [2, 3] },
+          { species: 'kelp', depth: [2, 20], warmth: [-9, 0.45], patch: -0.35, chance: 0.85, perTile: [1, 3] },
+          { species: 'seagrass', depth: [1, 2], chance: 0.8, perTile: [4, 5] },
+        ],
       },
       tileset: EARTH_TILESET,
       spawn: {
@@ -856,6 +874,14 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.SEQ_GRASS]: { species: 'lantern', chance: 0.3 },
       },
       floraDensity: 0.5,
+      // Sea flora: glow anemones in the shallows, sea fans deeper down
+      seaFlora: {
+        patchScale: 3,
+        zones: [
+          { species: 'glowanemone', depth: [1, 3], patch: -0.3, chance: 0.85, perTile: [2, 3] },
+          { species: 'seafan', depth: [3, 20], patch: -0.2, chance: 0.75, perTile: [1, 2] },
+        ],
+      },
       tileset: SEQUOIA_TILESET,
       spawn: {
         latitude: 30,
@@ -1050,6 +1076,14 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.VERD_BANK]: { species: 'fanpalm', chance: 0.6 },
       },
       floraDensity: 3.5,
+      // Reed beds in the shallowest water, lily pads on the surface past them
+      seaFlora: {
+        patchScale: 4,
+        zones: [
+          { species: 'reedbed', depth: [1, 1], patch: -0.3, chance: 0.85, perTile: [3, 4] },
+          { species: 'lilypad', depth: [2, 3], patch: -0.2, chance: 0.8, perTile: [1, 3] },
+        ],
+      },
     }),
     // Mirewood: lime-and-teal jungle of giant elephant-ear plants, black peat
     // swamps of bottle-trunked swamp cypress, and grey silt banks under
@@ -1063,6 +1097,14 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.MIRE_BANK]: { species: 'weepfern', chance: 0.7 },
       },
       floraDensity: 3.5,
+      // Bladderwort mats under the surface of the shallows, swamp weed deeper
+      seaFlora: {
+        patchScale: 4,
+        zones: [
+          { species: 'bladderwort', depth: [1, 2], patch: -0.3, chance: 0.85, perTile: [1, 3] },
+          { species: 'swampweed', depth: [2, 20], patch: -0.25, chance: 0.85, perTile: [2, 3] },
+        ],
+      },
     }),
 
     // =========================================================================
@@ -1216,12 +1258,17 @@ export function getGravityRadii(body: CelestialBodyConfig): { fullRadius: number
 /**
  * Every flora species grows on exactly ONE planet (CLAUDE.md: each planet's
  * flora roster is its own). Checked at load against the real tables, Earth's
- * trees included: a species leaking onto a second planet throws.
+ * trees and every body's sea flora included: a species leaking onto a second
+ * planet throws, and so does sea flora on a body without a sea.
  */
 export function assertFloraRostersDisjoint(bodies: CelestialBodyConfig[], earthSpecies: readonly string[]): void {
   const owner = new Map<string, string>(earthSpecies.map(sp => [sp, 'earth']));
   for (const body of bodies) {
-    const own = new Set(Object.values(body.flora ?? {}).map(f => f!.species as string));
+    if (body.seaFlora && !body.terrain.hasWater) throw new Error(`Sea flora on ${body.id}, which has no sea`);
+    const own = new Set<string>([
+      ...Object.values(body.flora ?? {}).map(f => f!.species as string),
+      ...(body.seaFlora?.zones ?? []).map(z => z.species as string),
+    ]);
     for (const sp of own) {
       const other = owner.get(sp);
       if (other && other !== body.id) throw new Error(`Flora species '${sp}' grows on both ${other} and ${body.id}`);

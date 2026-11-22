@@ -850,11 +850,14 @@ class PlanetGame {
       // (clutterFor has no plants for their blocks)
       const pos = this.player.position;
       let on: Planet | null = null;
-      for (const planet of this.planets.values()) {
-        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
+      let onId: string | null = null;
+      for (const [id, planet] of this.planets) {
+        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; onId = id; break; }
       }
+      // Its body config carries the sea flora table (openspec ocean-life)
       this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition),
+        onId ? getBodyConfig(onId) : undefined, this.player.getIsInWater());
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)
