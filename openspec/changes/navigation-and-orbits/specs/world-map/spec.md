@@ -29,7 +29,11 @@ hexagon (a pentagon at the twelve pentagon tiles), laid out by its latitude
 and longitude, filled with the colour of the topmost solid block of that
 tile's column. A block's colour SHALL come from that block's own texture, so
 every planet's ground, water and biome blocks look as they do in the world.
-North SHALL be at the top.
+North SHALL be at the top. Tiles SHALL meet with no outline or seam, so the
+ground reads as continuous colour, not a grid of cells. Each tile's colour
+SHALL show relief: brighter the higher its ground stands over sea level,
+darker the deeper the water over it, and lit or shaded by its slope toward
+the light (up-left on the map).
 
 #### Scenario: Water and land
 

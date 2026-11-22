@@ -27,8 +27,19 @@ export const NAVIGATION_CONFIG = {
   WAYPOINT_HIT_PX: 12,
   // Colour of tiles not known yet (map still generating)
   UNKNOWN_TILE_COLOUR: '#20242c',
-  // Hexagon outline darkening (0 = none), so tiles read as hexes
-  TILE_OUTLINE_ALPHA: 0.18,
+  // Each tile is stroked this wide in its own colour, so neighbouring tiles
+  // meet with no seam and the ground reads as one surface, not a grid of hex
+  // cells (owner: "hex cells is distracting, none of that please")
+  TILE_SEAM_PX: 1,
+  // Relief (owner: "tint block colors by height on the map", "give it some
+  // depth"): a tile's colour is scaled by its ground height against sea
+  // level, and lit by its slope toward the light (up-left on the map)
+  RELIEF_PER_BLOCK_UP: 0.035,     // brighter per block above sea level
+  RELIEF_MAX_UP: 0.35,            // at most this much brighter
+  RELIEF_PER_BLOCK_DOWN: 0.09,    // water darker per block of depth to the seabed
+  RELIEF_MAX_DOWN: 0.6,           // at most this much darker
+  HILLSHADE_PER_BLOCK: 0.12,      // lit / shaded per block of rise toward the light
+  HILLSHADE_MAX: 0.35,            // at most this much either way
   // Water's map colour when its material carries no texture
   WATER_FALLBACK_COLOUR: '#1d5fa8',
 
