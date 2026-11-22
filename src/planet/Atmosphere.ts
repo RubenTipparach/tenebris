@@ -3,6 +3,7 @@ import atmosphereVert from '../shaders/atmosphere/atmosphere.vert';
 import atmosphereFrag from '../shaders/atmosphere/atmosphere.frag';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { SkyParams } from '../shared/skyLight';
+import { SKY_LOOK } from '../config/LightingConfig';
 
 export interface AtmosphereConfig {
   planetRadius: number;     // Actual planet surface radius
@@ -29,6 +30,14 @@ export function skyParamsFor(planetRadius: number, groundRadius: number, tint?: 
     samples: PlayerConfig.ATMOSPHERE_SAMPLES,
     lightSamples: PlayerConfig.ATMOSPHERE_LIGHT_SAMPLES,
     tint: [c.r, c.g, c.b],
+    twilightFrom: SKY_LOOK.TWILIGHT_FROM,
+    penumbraWidth: SKY_LOOK.PENUMBRA_WIDTH,
+    duskFrom: SKY_LOOK.DUSK_FROM,
+    duskTo: SKY_LOOK.DUSK_TO,
+    duskTint: [...SKY_LOOK.DUSK_TINT],
+    duskStrength: SKY_LOOK.DUSK_STRENGTH,
+    horizonGlow: [...SKY_LOOK.HORIZON_GLOW],
+    horizonPower: SKY_LOOK.HORIZON_POWER,
   };
 }
 
@@ -57,6 +66,15 @@ function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderM
       numSamples: { value: PlayerConfig.ATMOSPHERE_SAMPLES },
       numLightSamples: { value: PlayerConfig.ATMOSPHERE_LIGHT_SAMPLES },
       atmosphereTint: { value: tintColor },
+      // The sunset (SKY_LOOK), the same numbers the ground's fill is worked out with
+      twilightFrom: { value: sky.twilightFrom },
+      penumbraWidth: { value: sky.penumbraWidth },
+      duskFrom: { value: sky.duskFrom },
+      duskTo: { value: sky.duskTo },
+      duskTint: { value: new THREE.Vector3(...sky.duskTint) },
+      duskStrength: { value: sky.duskStrength },
+      horizonGlow: { value: new THREE.Vector3(...sky.horizonGlow) },
+      horizonPower: { value: sky.horizonPower },
     },
     vertexShader: atmosphereVert,
     fragmentShader: atmosphereFrag,

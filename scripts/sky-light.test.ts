@@ -1,7 +1,7 @@
 // Sky light (openspec sky-lighting): the terrain's sun and fill come from
 // the same atmosphere the sky is drawn with. Run: npx tsx scripts/sky-light.test.ts
 import { buildSkyLightTable, displayedSky, luminance, skyFill, sunTransmittance, RGB } from '../src/shared/skyLight';
-import { SKY_LIGHT_CONFIG as C } from '../src/config/LightingConfig';
+import { SKY_LIGHT_CONFIG as C, SKY_LOOK as K } from '../src/config/LightingConfig';
 import { PlayerConfig } from '../src/config/PlayerConfig';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
@@ -12,6 +12,8 @@ const earth = {
   rayleighScale: PlayerConfig.ATMOSPHERE_RAYLEIGH_SCALE, mieScale: PlayerConfig.ATMOSPHERE_MIE_SCALE, mieG: PlayerConfig.ATMOSPHERE_MIE_G,
   sunIntensity: PlayerConfig.ATMOSPHERE_SUN_INTENSITY, samples: PlayerConfig.ATMOSPHERE_SAMPLES, lightSamples: PlayerConfig.ATMOSPHERE_LIGHT_SAMPLES,
   tint: [1, 1, 1] as RGB,
+  twilightFrom: K.TWILIGHT_FROM, penumbraWidth: K.PENUMBRA_WIDTH, duskFrom: K.DUSK_FROM, duskTo: K.DUSK_TO,
+  duskTint: [...K.DUSK_TINT] as RGB, duskStrength: K.DUSK_STRENGTH, horizonGlow: [...K.HORIZON_GLOW] as RGB, horizonPower: K.HORIZON_POWER,
 };
 const tuning = { lutSize: C.LUT_SIZE, sunDiscE: C.SUN_DISC_E, fillSaturation: C.FILL_SATURATION, nightFill: [...C.NIGHT_FILL] as RGB, airlessFill: [...C.AIRLESS_FILL] as RGB };
 const n = C.LUT_SIZE;
@@ -33,9 +35,13 @@ ok(luminance(at(0, 0)) > 0 && luminance(at(0, 0)) < luminance(at(0, 0.1)), 'the 
 ok(Math.abs(luminance(at(1, 1)) - 1) < 0.05, 'noon fill is 1');
 const noonFill = at(1, 1);
 ok(noonFill[2] > noonFill[0], 'the noon fill is bluer than it is red (the sky is blue)');
-const dusk = luminance(at(1, -0.15));
-ok(dusk > 0.3, `a glowing dusk sky still lights the ground (fill ${dusk.toFixed(2)} at e = -0.15)`);
+const dusk = luminance(at(1, -0.04));
+ok(dusk > 0.2, `a glowing dusk sky still lights the ground (fill ${dusk.toFixed(2)} at e = -0.04)`);
 ok(dusk < 1, 'dusk fill is under noon');
+const sunsetFill = at(1, 0.03), noonF = at(1, 1);
+ok(sunsetFill[0] / sunsetFill[2] > noonF[0] / noonF[2], 'the sunset fill is warmer than noon (the dusk tint)');
+const past = luminance(at(1, K.TWILIGHT_FROM - 0.05));
+ok(past < 0.2, `once the twilight is over the ground is near night (fill ${past.toFixed(2)})`);
 const night = at(1, -1);
 ok(night.every((c, k) => Math.abs(c - C.NIGHT_FILL[k]) < 1e-3), 'deep night falls to the starlight floor');
 let monotone = true;
@@ -46,6 +52,10 @@ ok(monotone, 'the fill only grows as the sun climbs');
 const deepNightSky = displayedSky(earth, [0, 1, 0], [0, -1, 0]);
 ok(luminance(deepNightSky) < 1e-4, 'straight up at midnight the sky is dark (the ground shades the air)');
 ok(luminance(skyFill(earth, -0.05)) > luminance(skyFill(earth, -0.4)), 'twilight fades out as the sun sinks');
+// the horizon glows on the sun's side at sunset, not opposite it
+const sunsetSun: [number, number, number] = [Math.sqrt(1 - 0.02 * 0.02), 0.02, 0];
+const towardSun = displayedSky(earth, [0.995, 0.0998, 0], sunsetSun), awayFromSun = displayedSky(earth, [-0.995, 0.0998, 0], sunsetSun);
+ok(luminance(towardSun) > luminance(awayFromSun) && towardSun[0] > towardSun[2], 'at sunset the horizon toward the sun is brighter than away from it, and warm');
 
 // ---- airless worlds: no sky light, only ground bounce by day
 const airless = buildSkyLightTable(null, tuning);

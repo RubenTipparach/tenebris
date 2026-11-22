@@ -40,3 +40,27 @@ export const SKY_LIGHT_CONFIG = {
   AIRLESS_FILL: [0.35, 0.35, 0.37] as [number, number, number],
 } as const;
 
+/**
+ * The sky's sunset (openspec sky-lighting design 9, Pale Blue Dot's
+ * sky_atmosphere.wgsl): read by atmosphere.frag and by the CPU twin in
+ * src/shared/skyLight.ts (the ground's fill), through skyParamsFor - one
+ * source. Heights are sines of the sun over the viewer's horizon.
+ */
+export const SKY_LOOK = {
+  /** The low air's sunlight is gone this far below the horizon (PBD: -0.12, ~7 degrees) */
+  TWILIGHT_FROM: -0.12,
+  /** Soft edge of the planet's shadow on the air (world units) */
+  PENUMBRA_WIDTH: 4,
+  /** The dusk tint starts with the sun this high ... */
+  DUSK_FROM: 0.2,
+  /** ... and is gone with it this far below */
+  DUSK_TO: -0.2,
+  /** What the dusk multiplies the sky by (warm: more red, less blue) */
+  DUSK_TINT: [2.1, 0.65, 0.24] as [number, number, number],
+  DUSK_STRENGTH: 0.65,
+  /** The orange glow along the horizon at dusk, on the sun's side */
+  HORIZON_GLOW: [0.9, 0.27, 0.06] as [number, number, number],
+  /** How tightly it hugs the horizon */
+  HORIZON_POWER: 5,
+} as const;
+

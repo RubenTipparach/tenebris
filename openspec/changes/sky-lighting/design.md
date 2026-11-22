@@ -49,3 +49,23 @@
 8. **Earth's air is thick:** 21 m over an 89 m planet. So twilight lasts until
    the sun is about 25° down: the fill is 0.62 of noon at e = -0.15 and 0.13 at
    e = -0.4. That is what the sky shows, and the ground now matches it.
+9. **Pale Blue Dot's sky** (owner, 2026-11-22: "Can we use a similar sky model
+   to pdb? Which doesn't show those ray marched bands at sunset but has
+   proper sunsets?"). `atmosphere.frag` takes over the terms of PBD's
+   `sky_atmosphere.wgsl`:
+   - 16 even midpoint steps with no per-pixel dither, so no grain or
+     swimming bands;
+   - a soft penumbra (`PENUMBRA_WIDTH`) for the ground's shadow on the air;
+   - **one twilight:** near the ground, each sample's sunlight is the
+     viewer's own `smoothstep(TWILIGHT_FROM, 0, sun height)`. The sky and the
+     ground darken together, gone about 7 degrees after sunset;
+   - **a dusk tint:** the sky is multiplied toward `DUSK_TINT` while the sun
+     is between `DUSK_FROM` and `DUSK_TO`;
+   - **an orange `HORIZON_GLOW`** hugging the horizon (`HORIZON_POWER`) on
+     the sun's side;
+   - a ray into the ground takes the air just over the horizon
+     (`horizonRay`).
+   `SKY_LOOK` in LightingConfig holds the numbers. `skyParamsFor` hands them
+   to the shader and to `skyLight.ts`, whose `displayedSky` mirrors the
+   shader term for term, so the ground's fill follows the new sunset.
+

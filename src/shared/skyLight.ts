@@ -32,6 +32,15 @@ export interface SkyParams {
   samples: number;
   lightSamples: number;
   tint: RGB;
+  // The sunset (LightingConfig SKY_LOOK), as atmosphere.frag reads it
+  twilightFrom: number;
+  penumbraWidth: number;
+  duskFrom: number;
+  duskTo: number;
+  duskTint: RGB;
+  duskStrength: number;
+  horizonGlow: RGB;
+  horizonPower: number;
 }
 
 // The shader's constants (atmosphere.frag): part of the model's identity
@@ -82,33 +91,48 @@ export function sunTransmittance(p: SkyParams, e: number): RGB {
   return [0, 1, 2].map(i => Math.exp(-(p.rayleighScale * WAVELENGTHS_INV4[i] + p.mieScale) * depth)) as RGB;
 }
 
-/** The sky colour the shader draws looking along `dir` from the ground (its tonemap x alpha, as blended) */
+/** atmosphere.frag's density: altitude over the density base, 0..1 of the shell */
+function densityAt(p: SkyParams, q: V): number {
+  return density(p, Math.hypot(q[0], q[1], q[2]));
+}
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * The sky colour the shader draws looking along `dir` from the ground (its
+ * tonemap x alpha, as blended) - atmosphere.frag's main(), term for term, for
+ * a viewer standing at groundRadius (so "near the ground" is 1).
+ */
 export function displayedSky(p: SkyParams, dir: V, sun: V): RGB {
   const o = ground(p);
   const atm = raySphere(o, dir, p.atmosphereRadius);
   if (!atm || atm[1] < 0) return [0, 0, 0];
   const start = Math.max(0, atm[0]);
-  let end = atm[1];
-  const pl = raySphere(o, dir, p.planetRadius);
-  if (pl && pl[0] > 0) end = Math.min(end, pl[0]);
+  const end = atm[1];
   if (start >= end) return [0, 0, 0];
+  const sunHeight = sun[1];                                   // the viewer's up is +y
+  const twilight = smoothstep(p.twilightFrom, 0, sunHeight);
   const step = (end - start) / p.samples;
   const sumR: RGB = [0, 0, 0], sumM: RGB = [0, 0, 0];
   let depthView = 0;
   for (let i = 0; i < p.samples; i++) {
     const t = start + step * (i + 0.5);
     const q: V = [o[0] + dir[0] * t, o[1] + dir[1] * t, o[2] + dir[2] * t];
-    const h = Math.hypot(q[0], q[1], q[2]);
-    if (h < p.planetRadius) continue;
-    const dens = density(p, h);
+    if (Math.hypot(q[0], q[1], q[2]) < p.planetRadius) continue;
+    const dens = densityAt(p, q);
     depthView += dens * step;
-    const shadow = raySphere(q, sun, p.groundRadius);
-    if (shadow && shadow[0] > 0) continue;
+    // near the ground every sample's sunlight is the viewer's twilight (the
+    // frag's penumbra term only matters for a viewer high above the shell)
+    const visible = twilight;
+    if (visible <= 0) continue;
     const sunHit = raySphere(q, sun, p.atmosphereRadius);
     const sunDepth = opticalDepth(p, q, sun, sunHit ? Math.max(0, sunHit[1]) : 0);
     for (let c = 0; c < 3; c++) {
-      const tau = p.rayleighScale * WAVELENGTHS_INV4[c] * (depthView + sunDepth) + p.mieScale * (depthView + sunDepth);
-      const att = Math.exp(-tau);
+      const tau = (p.rayleighScale * WAVELENGTHS_INV4[c] + p.mieScale) * (depthView + sunDepth);
+      const att = Math.exp(-tau) * visible;
       sumR[c] += dens * att * step;
       sumM[c] += dens * att * step;
     }
@@ -116,9 +140,16 @@ export function displayedSky(p: SkyParams, dir: V, sun: V): RGB {
   const cos = dot(dir, sun);
   const phaseR = 0.75 * (1 + cos * cos);
   const g2 = p.mieG * p.mieG;
-  const phaseM = (1 - g2) / (4 * Math.PI * Math.pow(1 + g2 - 2 * p.mieG * cos, 1.5));
+  const phaseM = (1 - g2) / (4 * Math.PI * Math.pow(Math.max(1 + g2 - 2 * p.mieG * cos, 0.001), 1.5));
+  // the sunset: dusk tint, and the horizon glow on the sun's side
+  const dusk = (1 - smoothstep(0, p.duskFrom, sunHeight)) * smoothstep(p.duskTo, 0, sunHeight);
+  const horizon = Math.pow(Math.min(1, Math.max(0, 1 - Math.abs(dir[1]))), p.horizonPower);
+  const across: V = [dir[0], 0, dir[2]], toward: V = [sun[0], 0, sun[2]];
+  const sunSide = smoothstep(-0.3, 1, dot(across, toward) / Math.sqrt(Math.max(dot(across, across) * dot(toward, toward), 1e-8)));
   const col = [0, 1, 2].map(c => {
-    const raw = p.sunIntensity * (sumR[c] * p.rayleighScale * WAVELENGTHS_INV4[c] * phaseR + sumM[c] * p.mieScale * phaseM) * p.tint[c];
+    let raw = p.sunIntensity * (sumR[c] * p.rayleighScale * WAVELENGTHS_INV4[c] * phaseR + sumM[c] * p.mieScale * phaseM) * p.tint[c];
+    raw = raw + (raw * p.duskTint[c] - raw) * dusk * p.duskStrength;
+    raw += p.horizonGlow[c] * dusk * horizon * sunSide;
     return 1 - Math.exp(-raw);
   }) as RGB;
   const alpha = Math.min(0.95, Math.max(0, Math.hypot(col[0], col[1], col[2]) * 1.5));
