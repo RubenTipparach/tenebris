@@ -42,11 +42,23 @@ const GIANT_LOOK = {
   RING_SHADOW_SOFT: 0.03,      // the planet's shadow edge on the rings, in radii
   RING_SHADOW_ON_PLANET: 0.75, // how dark the rings' shadow falls on the cloud tops
   // Atmosphere: the haze shell's thickness and how much of the limb it hazes
-  HAZE_RADIUS: 1.035,
-  HAZE_POWER: 3.0,
+  HAZE_RADIUS: 1.08,           // the haze shell's outer edge, in giant radii
+  HAZE_SCALE_HEIGHT: 0.22,     // density falls by e over this share of the shell
+  HAZE_DENSITY: 1.6,           // how opaque a full limb path is
+  HAZE_SAMPLES: 8,             // steps along the view ray through the shell
   HAZE_STRENGTH: 0.9,
   LIMB_DARKENING: 0.45,        // the disc's edge is this much darker
   TERMINATOR_TINT: [1.0, 0.55, 0.3] as [number, number, number],  // haze along the day/night line
+  // Clouds (owner: "really cool cloud like shaders with normals on gas
+  // giants"): a cloud height field of warped bands, eddies and a storm,
+  // shaded through its own normals, the bands sliding past each other
+  CLOUD_BANDS: 16,             // bands from pole to pole
+  CLOUD_WARP: 0.3,             // how far the bands fold and swirl
+  CLOUD_BUMP: 0.55,            // how strongly the height field tilts the normal
+  CLOUD_FLOW: 0.004,           // band drift (radians/s), opposite ways by latitude
+  STORM_LAT: -0.32,            // the great storm's latitude (sine)
+  STORM_SIZE: 0.16,            // its radius, as a share of the giant's
+  STORM_COLOUR: [0.75, 0.32, 0.18] as [number, number, number],
 };
 
 /**
@@ -81,9 +93,15 @@ const vertexShader = `
   varying vec3 vNormal;
   varying vec3 vLocal;
   varying vec3 vWorld;
+  varying vec3 vEast;
+  varying vec3 vNorth;
   void main() {
     vLocal = normalize(position);
     vNormal = normalize(mat3(modelMatrix) * normal);
+    // the surface's east and north, in world space (for the cloud normals)
+    vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), vLocal) + vec3(1e-5, 0.0, 0.0));
+    vEast = normalize(mat3(modelMatrix) * east);
+    vNorth = normalize(mat3(modelMatrix) * cross(vLocal, east));
     vec4 w = modelMatrix * vec4(position, 1.0);
     vWorld = w.xyz;
     gl_Position = projectionMatrix * viewMatrix * w;
@@ -100,6 +118,16 @@ const fragmentShader = `
   uniform float hazeStrength;
   uniform float limbDarkening;
   uniform vec3 terminatorTint;
+  uniform float time;
+  uniform float cloudBands;
+  uniform float cloudWarp;
+  uniform float cloudBump;
+  uniform float cloudFlow;
+  uniform float stormLat;
+  uniform float stormSize;
+  uniform vec3 stormColour;
+  varying vec3 vEast;
+  varying vec3 vNorth;
   ${ringDensityGlsl}
   uniform vec3 c0;
   uniform vec3 c1;
@@ -119,14 +147,49 @@ const fragmentShader = `
   }
   float fbm(vec3 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * noise(p); p *= 2.03; a *= 0.5; } return s; }
 
+  // The bands slide: each latitude turns about the axis at its own speed,
+  // neighbouring bands opposite ways
+  vec3 flowed(vec3 p) {
+    float a = time * cloudFlow * sin(p.y * cloudBands * 0.5);
+    float c = cos(a), s = sin(a);
+    return vec3(c * p.x - s * p.z, p.y, s * p.x + c * p.z);
+  }
+  // The great storm: an oval at stormLat, its swirl turning the clouds round it
+  float storm(vec3 p) {
+    vec3 centre = normalize(vec3(0.0, stormLat, sqrt(1.0 - stormLat * stormLat)));
+    vec3 d = p - centre;
+    return 1.0 - smoothstep(0.0, stormSize, length(vec2(dot(d, vec3(1.0, 0.0, 0.0)) * 0.6, d.y)));
+  }
+  // Cloud height: bands folded by a domain warp, eddies, the storm's swirl
+  float cloudHeight(vec3 p) {
+    vec3 q = flowed(p);
+    float st = storm(p);
+    // swirl round the storm
+    float ang = st * st * 3.0;
+    q.xz = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * q.xz;
+    vec3 w = q + cloudWarp * vec3(fbm(q * 3.0), fbm(q * 3.0 + 7.3), fbm(q * 3.0 + 3.1)) - cloudWarp * 0.5;
+    float band = sin((w.y + 0.1 * fbm(w * 5.0)) * cloudBands) * 0.5 + 0.5;
+    float eddies = fbm(w * 9.0 + band * 2.0);
+    return mix(band * 0.65 + eddies * 0.35, 0.9 + 0.1 * eddies, st);
+  }
+
   void main() {
     vec3 p = vLocal;
     vec3 col;
     float n = fbm(p * 3.0);
+    vec3 Nbump = normalize(vNormal);
     if (kind > 4.5) {
-      // gas giant: latitude bands warped by noise
-      float band = sin((p.y + 0.15 * fbm(p * 4.0)) * 18.0) * 0.5 + 0.5;
-      col = mix(mix(c0, c1, band), c2, smoothstep(0.6, 0.9, fbm(p * 6.0 + band)));
+      // gas giant: a cloud height field, coloured by height and lit through
+      // its own normals so every swirl and billow has a lit and a dark side
+      float h = cloudHeight(p);
+      float e = 0.004;
+      float he = cloudHeight(normalize(p + normalize(cross(vec3(0.0, 1.0, 0.0), p) + vec3(1e-5, 0.0, 0.0)) * e));
+      float hn = cloudHeight(normalize(p + vec3(0.0, e, 0.0)));
+      Nbump = normalize(normalize(vNormal) - cloudBump * ((he - h) / e * vEast + (hn - h) / e * vNorth) * 0.05);
+      // dark belts low, pale zones high, the palest only on the tallest billows
+      col = mix(c0, c1, smoothstep(0.25, 0.7, h));
+      col = mix(col, c2, smoothstep(0.82, 1.0, h) * 0.8);
+      col = mix(col, stormColour, storm(p) * 0.85);
     } else if (kind > 3.5) {
       // lava: dark crust, glowing cracks
       float crack = smoothstep(0.48, 0.52, n);
@@ -144,7 +207,7 @@ const fragmentShader = `
     vec3 L = normalize(sunPosition - vWorld);
     vec3 V = normalize(cameraPosition - vWorld);
     float ndl = dot(N, L);
-    float diff = max(0.0, ndl);
+    float diff = max(0.0, dot(Nbump, L)) * smoothstep(-0.05, 0.1, ndl);
     // the rings' shadow on the cloud tops: the ray to the sun through the ring plane
     float shade = 1.0;
     if (dot(ringNormal, ringNormal) > 0.5) {
@@ -163,7 +226,7 @@ const fragmentShader = `
     lit *= mix(1.0 - limbDarkening, 1.0, pow(facing, 0.5));
     float rim = pow(1.0 - facing, 2.0);
     vec3 haze = mix(hazeColor * terminatorTint, hazeColor, smoothstep(0.0, 0.45, ndl));
-    lit += haze * rim * hazeStrength * smoothstep(-0.15, 0.3, ndl) * 0.5;
+    lit += haze * rim * hazeStrength * smoothstep(-0.15, 0.3, ndl) * 0.25;
     if (kind > 3.5 && kind < 4.5) lit += c2 * pow(1.0 - smoothstep(0.48, 0.52, n), 4.0) * 0.5; // lava glows on the night side
     gl_FragColor = vec4(lit, 1.0);
   }
@@ -182,22 +245,57 @@ const glowShader = {
       gl_Position = projectionMatrix * viewMatrix * w;
     }
   `,
+  // Soft by construction: the haze is integrated along the view ray through
+  // the shell, thinning with height, so a ray grazing the shell's outer edge
+  // crosses almost none (no hard border) and one skimming the limb the most
   fragmentShader: `
     uniform vec3 glowColor;
     uniform vec3 sunPosition;
-    uniform float hazePower;
+    uniform vec3 planetCenter;
+    uniform float planetRadius;
+    uniform float shellRadius;
+    uniform float scaleHeight;
+    uniform float hazeDensity;
     uniform float hazeStrength;
     uniform vec3 terminatorTint;
     varying vec3 vNormal;
     varying vec3 vWorld;
+    #define MAX_HAZE_SAMPLES 16
+    uniform int hazeSamples;
+    vec2 hitSphere(vec3 ro, vec3 rd, float r) {
+      vec3 oc = ro - planetCenter;
+      float b = dot(oc, rd), c = dot(oc, oc) - r * r, d = b * b - c;
+      if (d < 0.0) return vec2(-1.0);
+      float s = sqrt(d);
+      return vec2(-b - s, -b + s);
+    }
     void main() {
-      vec3 N = normalize(vNormal);
-      vec3 V = normalize(cameraPosition - vWorld);
-      float ndl = dot(N, normalize(sunPosition - vWorld));
-      float rim = pow(1.0 - abs(dot(N, V)), hazePower);
-      float day = smoothstep(-0.25, 0.35, ndl);
-      vec3 col = mix(glowColor * terminatorTint, glowColor, smoothstep(0.0, 0.5, ndl));
-      gl_FragColor = vec4(col, rim * day * hazeStrength);
+      vec3 ro = cameraPosition;
+      vec3 rd = normalize(vWorld - cameraPosition);
+      vec2 shell = hitSphere(ro, rd, shellRadius);
+      float t0 = max(shell.x, 0.0), t1 = shell.y;
+      vec2 core = hitSphere(ro, rd, planetRadius);
+      if (core.x > 0.0) t1 = min(t1, core.x);
+      if (t1 <= t0) discard;
+      float step = (t1 - t0) / float(hazeSamples);
+      float thick = shellRadius - planetRadius;
+      float depth = 0.0, light = 0.0, warm = 0.0;
+      for (int i = 0; i < MAX_HAZE_SAMPLES; i++) {
+        if (i >= hazeSamples) break;
+        vec3 p = ro + rd * (t0 + step * (float(i) + 0.5));
+        vec3 up = normalize(p - planetCenter);
+        float h = clamp((length(p - planetCenter) - planetRadius) / thick, 0.0, 1.0);
+        float dens = exp(-h / scaleHeight) * step / thick;
+        float ndl = dot(up, normalize(sunPosition - p));
+        depth += dens;
+        light += dens * smoothstep(-0.25, 0.35, ndl);
+        warm += dens * (1.0 - smoothstep(0.0, 0.5, ndl));
+      }
+      float cover = 1.0 - exp(-depth * hazeDensity);
+      float lit = depth > 0.0 ? light / depth : 0.0;
+      float terminator = depth > 0.0 ? warm / depth : 0.0;
+      vec3 col = mix(glowColor, glowColor * terminatorTint, terminator);
+      gl_FragColor = vec4(col, cover * lit * hazeStrength);
     }
   `,
 };
@@ -275,6 +373,8 @@ export class SolarSystemMockup {
   // Sun position relative to the far layer's floating origin, shared by
   // every material
   private sunUniform = { value: new THREE.Vector3() };
+  // The clouds' clock (their bands drift)
+  private timeUniform = { value: 0 };
 
   // scene: the engine's far layer root (world coordinates, floating origin)
   constructor(scene: THREE.Object3D, private sunPosition: THREE.Vector3, private origin: THREE.Vector3) {
@@ -298,6 +398,7 @@ export class SolarSystemMockup {
   public update(dt: number, showGuides: boolean): void {
     if (!this.enabled) return;
     this.sunUniform.value.copy(this.sunPosition).sub(this.origin);
+    this.timeUniform.value += dt;
     for (const b of this.bodies) {
       for (const g of b.guides) g.visible = showGuides;
       b.spin += dt * SPIN_RATE; // slow spin
@@ -351,6 +452,10 @@ export class SolarSystemMockup {
           c0: { value: c[0] }, c1: { value: c[1] }, c2: { value: c[2] },
           kind: { value: KIND_ID[spec.kind] },
           seed: { value: index * 17.3 },
+          time: this.timeUniform,
+          cloudBands: { value: G.CLOUD_BANDS }, cloudWarp: { value: G.CLOUD_WARP }, cloudBump: { value: G.CLOUD_BUMP },
+          cloudFlow: { value: G.CLOUD_FLOW }, stormLat: { value: G.STORM_LAT }, stormSize: { value: G.STORM_SIZE },
+          stormColour: { value: new THREE.Vector3(...G.STORM_COLOUR) },
         },
         vertexShader,
         fragmentShader,
@@ -364,7 +469,10 @@ export class SolarSystemMockup {
         new THREE.ShaderMaterial({
           uniforms: {
             glowColor: { value: new THREE.Color(spec.atmosphere) }, sunPosition: this.sunUniform,
-            hazePower: { value: G.HAZE_POWER }, hazeStrength: { value: G.HAZE_STRENGTH },
+            planetCenter: uniforms.planetCenter, planetRadius: { value: radius },
+            shellRadius: { value: radius * G.HAZE_RADIUS }, scaleHeight: { value: G.HAZE_SCALE_HEIGHT },
+            hazeDensity: { value: G.HAZE_DENSITY }, hazeSamples: { value: G.HAZE_SAMPLES },
+            hazeStrength: { value: G.HAZE_STRENGTH },
             terminatorTint: { value: new THREE.Vector3(...G.TERMINATOR_TINT) },
           },
           vertexShader: glowShader.vertexShader,

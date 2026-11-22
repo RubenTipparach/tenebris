@@ -15,7 +15,20 @@ fall on the planet's cloud tops.
 
 A gas giant SHALL be drawn with a haze shell and limb haze in its own tint
 on its day side, warmer along the day/night line, and none on its night side.
+The shell SHALL fade softly with the density of air along the view ray, with
+no hard outer border.
 
 #### Scenario: The limb
 - **WHEN** the player sees a gas giant's lit limb
 - **THEN** a soft glow of its atmosphere rings the edge of the disc
+
+### Requirement: Gas giant cloud tops have relief
+
+A gas giant's cloud bands SHALL be drawn from a height field (domain-warped
+bands, eddies and a storm oval) whose surface normal is lit by the sun, so
+the cloud tops show billows and shadows, and the bands SHALL drift slowly
+over time at speeds that vary with latitude.
+
+#### Scenario: Close to Brontes
+- **WHEN** the player is close to Brontes's day side
+- **THEN** the tan bands show lit and shadowed billows, a reddish storm oval, and drift slowly
