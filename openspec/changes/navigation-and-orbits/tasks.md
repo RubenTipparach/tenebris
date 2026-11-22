@@ -43,6 +43,8 @@
 - [x] 9.2 Unlocking: one `recipeOpen(output)` asked by the crafting grid, the electronics workbench and the 3D printer; locked recipes dimmed with the mission's title and refused; old worlds keep what they crafted, carry or placed. Verify: tests of locked/open/legacy; headless the printer shows the engine locked in a new world.
 - [x] 9.3 New events `smelted` and `reached` (waypoint within 8 m that was set 200 m+ away). Verify: tests.
 - [x] 9.4 Tree panel: cards laid out from the tree, branch plaques, parent lines, Done/Now/Open/Locked, pan, designed zoom levels and Fit, side panel with objectives, help, unlocks, needs, opens next. Verify: headless screenshots fitted, zoomed, and with a card's side panel open.
+- [x] 9.5 Pan bounds (Pale Blue Dot's `apply()`): `clampPan` in `MissionTreeLayout.ts` keeps `PAN_KEEP_PX` of the nearest card in view, applied on drag, zoom, Fit and centring. Verify: test that a drag far off every side at every zoom level stops with a card in view; headless drags far each way and zoomed out and in.
+- [x] 9.6 HUD tracker (`src/player/MissionHud.ts`): the now mission's icon, title and objectives with counts at the top right, redrawn on tracker changes, hidden while a menu is open, click opens Missions; "Show Mission on HUD" in Settings, saved as `tenebris_mission_hud`, on by default. Verify: headless the counts move, a done mission shows the next, the switch hides it.
 
 ## 8. Stage B and C (orbital-motion, later)
 

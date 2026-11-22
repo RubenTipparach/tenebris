@@ -299,3 +299,30 @@ export function packTree(L: Level): TreeLayout {
   }
   return best;
 }
+
+/**
+ * Pan bounds (Pale Blue Dot's mission tree, apply()): the tree may slide only
+ * until its edge reaches the middle of the view, so some of it is always in
+ * sight. The pull is toward the nearest card, so at least `keep` px of a card
+ * always stays in view. `panX/panY` place the tree's top-left in the stage;
+ * the result is the nearest allowed pan (unchanged when already allowed).
+ */
+export function clampPan(
+  L: Level, t: TreeLayout, panX: number, panY: number, stageW: number, stageH: number, keep: number,
+): { x: number; y: number } {
+  // The stage's centre in tree coordinates, and how far from a card it may go
+  let cx = stageW / 2 - panX, cy = stageH / 2 - panY;
+  const hx = Math.max(0, stageW / 2 - keep), hy = Math.max(0, stageH / 2 - keep);
+  let best: { over: number; x0: number; y0: number } | null = null;
+  for (const p of t.cards.values()) {
+    const dx = Math.max(p.x - cx, 0, cx - (p.x + L.cardW));
+    const dy = Math.max(p.y - cy, 0, cy - (p.y + L.cardH));
+    const over = Math.max(dx - hx, 0) + Math.max(dy - hy, 0);
+    if (!best || over < best.over) best = { over, x0: p.x, y0: p.y };
+    if (!over) break;
+  }
+  if (!best || !best.over) return { x: panX, y: panY };
+  cx = Math.min(Math.max(cx, best.x0 - hx), best.x0 + L.cardW + hx);
+  cy = Math.min(Math.max(cy, best.y0 - hy), best.y0 + L.cardH + hy);
+  return { x: Math.round(stageW / 2 - cx), y: Math.round(stageH / 2 - cy) };
+}

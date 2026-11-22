@@ -148,3 +148,36 @@ mission SHALL show a short notice naming it and what it unlocked.
 
 - **WHEN** the player has 2 of 4 stone, reloads, and opens Missions
 - **THEN** the objective still reads 2 / 4
+
+### Requirement: The tree cannot be panned away from its cards
+
+Panning SHALL stop before the tree leaves the view: the tree MAY slide only
+until its edge reaches the middle of the view, pulled toward the nearest
+card, so that at least `MISSION_TREE_UI.PAN_KEEP_PX` (40 px) of some card
+always stays in view. The bound SHALL hold on a drag, after a zoom step,
+and on Fit or centring on a card, at every zoom level.
+
+#### Scenario: Dragging off into empty space
+
+- **WHEN** the player drags the tree far past any edge, at any zoom step, or zooms out and back in at a far corner
+- **THEN** the tree stops with part of a card still in view, and dragging back moves it at once
+
+### Requirement: The mission to do now is shown on the HUD
+
+During play a small tracker SHALL show the mission to do now (the
+tracker's next open mission): its icon, its title, and each objective with
+its icon and live count ("Logs 1 / 4"). It SHALL update as progress is made
+and show the next mission when one is done, hide while a game menu (the
+inventory or Missions panel) is open, and open the Missions tab when
+clicked. A "Show Mission on HUD" switch in Settings SHALL turn it on or
+off, saved per browser, on by default.
+
+#### Scenario: Following the next step
+
+- **WHEN** the player on a new world picks up a log, then finishes Chop a tree
+- **THEN** the tracker reads Chop a tree, Logs 1 / 4, then changes to Make planks with its objectives at 0
+
+#### Scenario: Turning it off
+
+- **WHEN** the player switches Show Mission on HUD off in Settings and reloads
+- **THEN** the tracker stays hidden until the switch is turned back on

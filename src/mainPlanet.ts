@@ -22,6 +22,7 @@ import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
+import { MissionHud } from './player/MissionHud';
 import { emitGameEvent, onGameEvent } from './engine/GameEvents';
 import { advanceGameTime, framePositionAt, gameTimeS, orbitOf, setLocalGameTime, useNetworkClock } from './world/Orbits';
 import { ORBIT_CONFIG } from './config/OrbitConfig';
@@ -116,6 +117,7 @@ class PlanetGame {
   private teleportInProgress: boolean = false;
   private releaseTimer = 0;
   private missions: MissionsPanel | null = null;
+  private missionHud: MissionHud | null = null;
   // Air and the space suit (openspec wool-air-and-reentry, design 4)
   private air: AirSystem | null = null;
   // Live orbits: the body whose frame the player is in (it never moves)
@@ -800,6 +802,7 @@ class PlanetGame {
       }
     }
     this.missions?.update(deltaTime);
+    this.missionHud?.update();
     this.updateAir(deltaTime);
     // Maps, compass and waypoints (built once the world is up)
     if (!this.navigation) {
@@ -1754,10 +1757,21 @@ class PlanetGame {
       rocketAssembled: pads().some(p => p.rocketParts.length >= 3),
     }));
     const missions = this.missions;
-    this.blockInteraction.getCraftingSystem().registerPanel('missions', {
+    const crafting = this.blockInteraction.getCraftingSystem();
+    crafting.registerPanel('missions', {
       show: (el) => missions.show(el),
       hide: () => missions.hide(),
     });
+    // The HUD tracker: the now mission during play; a click opens the tab
+    const hud = new MissionHud(missions.getTracker(), () => crafting.openPanel('missions'));
+    this.missionHud = hud;
+    missions.addChangeListener(() => hud.render());
+    // Settings: show it or not (saved per browser, on by default)
+    const hudToggle = document.getElementById('toggle-mission-hud') as HTMLInputElement | null;
+    if (hudToggle) {
+      hudToggle.checked = hud.isEnabled();
+      hudToggle.addEventListener('change', () => hud.setEnabled(hudToggle.checked));
+    }
   }
 
   private loadSavedGame(): void {
