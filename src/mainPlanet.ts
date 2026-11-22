@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
-import { InputManager } from './engine/InputManager';
+import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
@@ -478,13 +478,25 @@ class PlanetGame {
 
       // Set up exit flight callback
       this.rocketFlightManager.setOnExitFlightCallback((exitPosition) => {
+        // The walker takes the rocket camera's view, so climbing out does
+        // not snap the look (openspec player-heading; PBD drop_walker)
+        const cam = this.engine.camera;
+        const view = {
+          forward: cam.getWorldDirection(new THREE.Vector3()),
+          up: new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion),
+        };
         // If we landed somewhere (not at launch pad), move player to rocket position
         if (exitPosition) {
           // Position player slightly above the rocket position, on the surface
-          const surfaceNormal = exitPosition.clone().normalize();
+          // of the body it landed on (radial from that body's centre)
+          const bodyId = this.sphereOfInfluence(exitPosition);
+          const body = bodyId ? this.planets.get(bodyId) : undefined;
+          const surfaceNormal = body ? body.getSurfaceNormal(exitPosition) : exitPosition.clone().normalize();
           const playerSpawnPos = exitPosition.clone().addScaledVector(surfaceNormal, 3); // 3 units above rocket base
-          this.player.position.copy(playerSpawnPos);
+          this.player.placeAt(playerSpawnPos, view);
           console.log('Player spawned at landed rocket position:', playerSpawnPos);
+        } else {
+          this.player.placeAt(this.player.position, view);
         }
 
         // Re-enable player controls
@@ -499,8 +511,7 @@ class PlanetGame {
         if (hotbar) hotbar.style.display = 'flex';
 
         // Re-lock pointer
-        const container = document.getElementById('game-container');
-        if (container) container.requestPointerLock();
+        lockPointer();
       });
 
       // Refuelling burns fuel items - Rocket Fuel, Water Buckets (the empty
@@ -1423,7 +1434,7 @@ class PlanetGame {
     const container = document.getElementById('game-container');
     if (pauseCloseBtn && container) {
       pauseCloseBtn.addEventListener('click', () => {
-        container.requestPointerLock();
+        lockPointer(container);
       });
     }
   }
@@ -1712,8 +1723,8 @@ class PlanetGame {
       playerPos.x -= surfaceHeight + surfaceOffset;
     }
 
-    this.player.position.copy(playerPos);
-    this.player.velocity.set(0, 0, 0);
+    // One placement path: the heading is carried to the new up (player-heading)
+    this.player.placeAt(playerPos);
     this.player.setEnabled(wasEnabled);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);

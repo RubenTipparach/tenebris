@@ -5,7 +5,7 @@ import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
 import { ROCKET_INPUTS } from '../config/RocketConfig';
 import { PlacedLaunchPad } from '../planet/LaunchPad';
-import { InputManager } from '../engine/InputManager';
+import { InputManager, lockPointer } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
 import { LandedRocketUI } from './LandedRocketUI';
 import { InventorySlot, ItemType } from '../player/Inventory';
@@ -106,8 +106,7 @@ export class RocketFlightManager {
 
     this.landedRocketUI.setOnCloseCallback(() => {
       // Re-lock pointer when closing landed rocket UI
-      const container = document.getElementById('game-container');
-      if (container) container.requestPointerLock();
+      lockPointer();
     });
 
     // Set up UI button callbacks

@@ -4,6 +4,7 @@ import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../planet/HexBlock';
 import { baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { WalkerLook, newWalkerLook, transportUp, turnLook, lookAlong, lookQuaternion } from './WalkerLook';
 import { AudioManager } from '../engine/AudioManager';
 import {
   AUDIO_SETTINGS,
@@ -130,6 +131,9 @@ export interface CelestialBody {
   gravityStrength?: number;      // Gravity multiplier (defaults to 1.0)
 }
 
+/** The walker's pitch clamp in radians (PlayerConfig.PITCH_LIMIT_DEG). */
+const PITCH_LIMIT = THREE.MathUtils.degToRad(PlayerConfig.PITCH_LIMIT_DEG);
+
 export class PlanetPlayer {
   public camera: THREE.PerspectiveCamera;
   public position: THREE.Vector3;
@@ -148,10 +152,10 @@ export class PlanetPlayer {
   private orientation: THREE.Quaternion = new THREE.Quaternion();
   private isInSpace: boolean = false;
 
-  // Surface camera angles (stable tracking to avoid gimbal lock issues)
-  private surfacePitch: number = 0;
-  // Horizontal look direction in world space (for yaw persistence as player walks)
-  private surfaceForward: THREE.Vector3 = new THREE.Vector3(0, 0, -1);
+  // The walker's look on a planet: a tangent heading carried with up, and a
+  // clamped pitch (openspec player-heading; Pale Blue Dot's walker). The
+  // surface camera is built from it every frame.
+  private look: WalkerLook = newWalkerLook(new THREE.Vector3(0, 1, 0));
 
   // Gravity transition - timed roll correction
   private transitionTimer: number = 0; // Counts down during transition
@@ -221,6 +225,7 @@ export class PlanetPlayer {
     );
     this.updateLocalOrientation();
     this.updateOrientationFromLocal();
+    lookAlong(this.look, this.getForwardVector(), this.localUp, PITCH_LIMIT, this.localUp);
   }
 
   public addPlanet(
@@ -601,7 +606,7 @@ export class PlanetPlayer {
       const pitchDeg = (euler.x * 180 / Math.PI).toFixed(1);
       const yawDeg = (euler.y * 180 / Math.PI).toFixed(1);
       const rollDeg = (euler.z * 180 / Math.PI).toFixed(1);
-      console.log(`[${label}] pitch: ${pitchDeg}° yaw: ${yawDeg}° roll: ${rollDeg}° | surfacePitch: ${(this.surfacePitch * 180 / Math.PI).toFixed(1)}°`);
+      console.log(`[${label}] pitch: ${pitchDeg}° yaw: ${yawDeg}° roll: ${rollDeg}° | look pitch: ${(this.look.pitch * 180 / Math.PI).toFixed(1)}°`);
     };
 
     // Transitioning from space to gravity well
@@ -641,16 +646,16 @@ export class PlanetPlayer {
       if (this.transitionTimer > 0) {
         // During transition from space: slerp roll to level while allowing mouse look
         // Use space-style mouse look (modifies orientation directly) instead of
-        // planet-style (which rebuilds from surfaceForward/surfacePitch)
+        // planet-style (which rebuilds the camera from the walker look)
         this.handleTransitionMouseLook(input, deltaTime);
         this.slerpRollToLevel(deltaTime);
 
         this.transitionTimer -= deltaTime;
 
-        // When transition ends, sync surfaceForward from current orientation
+        // When the transition ends, the walker look takes the camera's view
         if (this.transitionTimer <= 0) {
           this.syncSurfaceStateFromOrientation();
-          console.log('[TRANSITION COMPLETE] Synced surfaceForward from orientation');
+          console.log('[TRANSITION COMPLETE] Walker look taken from the camera');
         }
       } else {
         // Planet mode - mouse look handles gravity alignment via pitch/yaw
@@ -1207,8 +1212,12 @@ export class PlanetPlayer {
     targetMatrix.makeBasis(targetRight, planetUp, correctedForward.clone().negate());
     const targetQuat = new THREE.Quaternion().setFromRotationMatrix(targetMatrix);
 
-    // Slerp current orientation toward target orientation
-    const slerpFactor = Math.min(1, PlayerConfig.ROLL_SLERP_SPEED * deltaTime);
+    // Slerp current orientation toward target orientation. Never slower than
+    // what is left over the time remaining, so the roll is exactly level when
+    // the transition hands over to the walker look - no leftover roll snaps
+    // away on that frame (openspec player-heading).
+    const remaining = Math.max(this.transitionTimer, deltaTime);
+    const slerpFactor = Math.min(1, Math.max(PlayerConfig.ROLL_SLERP_SPEED * deltaTime, deltaTime / remaining));
     this.orientation.slerp(targetQuat, slerpFactor);
 
     // Extract local vectors from the interpolated orientation
@@ -1242,29 +1251,15 @@ export class PlanetPlayer {
     this.updateLocalFromOrientation();
   }
 
-  // Sync surfaceForward and surfacePitch from current orientation
+  // Hand the camera's view to the walker look (PBD look_along)
   // Called when transition ends to ensure smooth handoff to planet controls
   private syncSurfaceStateFromOrientation(): void {
     if (!this.currentPlanet) return;
 
     const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
-
-    // Get current camera forward
     const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.orientation);
-
-    // Project onto horizon plane to get surfaceForward
-    this.surfaceForward.copy(camForward);
-    this.surfaceForward.sub(planetUp.clone().multiplyScalar(camForward.dot(planetUp)));
-    if (this.surfaceForward.lengthSq() < 0.001) {
-      // Looking straight up/down - use localForward as fallback
-      this.surfaceForward.copy(this.localForward).negate();
-      this.surfaceForward.sub(planetUp.clone().multiplyScalar(this.surfaceForward.dot(planetUp)));
-    }
-    this.surfaceForward.normalize();
-
-    // Calculate surfacePitch from camera forward's angle with horizon
-    const pitchAngle = Math.asin(Math.max(-1, Math.min(1, camForward.dot(planetUp))));
-    this.surfacePitch = pitchAngle;
+    // The camera's own up makes the heading exact even looking straight down
+    lookAlong(this.look, camForward, planetUp, PITCH_LIMIT, this.localUp);
   }
 
   private handleSpaceMouseLook(input: InputState, _deltaTime: number): void {
@@ -1274,54 +1269,13 @@ export class PlanetPlayer {
     let pitchDelta = input.mouseY * PlayerConfig.MOUSE_SENSITIVITY * yInvert;
     const yawDelta = -input.mouseX * PlayerConfig.MOUSE_SENSITIVITY;
 
-    // On planet surface, use planet-aligned axes to avoid gimbal lock
+    // On a planet: the transported heading + clamped pitch (openspec
+    // player-heading). Up is the radial at the feet; the heading is carried
+    // to it by the shortest arc, never re-derived from a world axis.
     if (!this.isInSpace && this.currentPlanet) {
-      const planetUp = this.currentPlanet.getSurfaceNormal(this.position);
-
-      // Use stored pitch angle (avoids gimbal lock issues)
-      const maxPitch = 89.9 * Math.PI / 180;
-
-      // Update stored pitch
-      this.surfacePitch = (this.surfacePitch || 0) + pitchDelta;
-      this.surfacePitch = Math.max(-maxPitch, Math.min(maxPitch, this.surfacePitch));
-
-      // Project stored forward direction onto current tangent plane
-      // This keeps the look direction consistent as the player walks around the planet
-      let horizonForward = this.surfaceForward.clone();
-      horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
-      if (horizonForward.lengthSq() < 0.001) {
-        // Forward is aligned with up, use fallback
-        horizonForward = new THREE.Vector3(0, 0, -1);
-        horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
-        if (horizonForward.lengthSq() < 0.001) {
-          horizonForward = new THREE.Vector3(1, 0, 0);
-          horizonForward.sub(planetUp.clone().multiplyScalar(horizonForward.dot(planetUp)));
-        }
-      }
-      horizonForward.normalize();
-
-      // Apply yaw delta to rotate the horizontal forward direction
-      if (yawDelta !== 0) {
-        const yawQuat = new THREE.Quaternion().setFromAxisAngle(planetUp, yawDelta);
-        horizonForward.applyQuaternion(yawQuat);
-      }
-
-      // Store the updated horizontal forward direction for next frame
-      this.surfaceForward.copy(horizonForward);
-
-      // Compute right vector as cross(planetUp, horizonForward)
-      const right = new THREE.Vector3().crossVectors(planetUp, horizonForward).normalize();
-
-      // Apply pitch to get the final look direction
-      const pitchQuat = new THREE.Quaternion().setFromAxisAngle(right, -this.surfacePitch);
-      const forward = horizonForward.clone().applyQuaternion(pitchQuat);
-
-      // Build camera orientation using lookAt-style matrix
-      // Keep up = planetUp (don't tilt with pitch) so camera stays level with ground
-      const eye = new THREE.Vector3(0, 0, 0);
-      const target = forward.clone();
-      const camMatrix = new THREE.Matrix4().lookAt(eye, target, planetUp);
-      this.orientation.setFromRotationMatrix(camMatrix);
+      transportUp(this.look, this.currentPlanet.getSurfaceNormal(this.position));
+      turnLook(this.look, yawDelta, pitchDelta, PITCH_LIMIT);
+      lookQuaternion(this.look, this.orientation);
     } else {
       // In space, use local axes freely (6DOF)
       const yawQuat = new THREE.Quaternion().setFromAxisAngle(this.localUp, yawDelta);
@@ -2624,5 +2578,38 @@ export class PlanetPlayer {
     this.velocity.set(data.velocity.x, data.velocity.y, data.velocity.z);
     // Update local axes from orientation
     this.updateLocalFromOrientation();
+    // The walker look takes the saved view, so the first frame after a load
+    // looks where the save did (openspec player-heading)
+    const { planet } = this.findClosestPlanetAndGravity();
+    if (planet) this.currentPlanet = planet;
+    if (this.currentPlanet) {
+      lookAlong(this.look, this.getForwardVector(), this.currentPlanet.getSurfaceNormal(this.position), PITCH_LIMIT, this.localUp);
+      lookQuaternion(this.look, this.orientation);
+      this.updateLocalFromOrientation();
+    }
+  }
+
+  /**
+   * Put the walker at `position` (a teleport, a respawn, climbing out of a
+   * rocket). The look goes through the one transport: with `view` (the
+   * camera being handed over, e.g. the rocket's) it looks along that view;
+   * without, the current heading is carried to the new up by the shortest
+   * arc (openspec player-heading; PBD place_walker / drop_walker).
+   */
+  public placeAt(position: THREE.Vector3, view?: { forward: THREE.Vector3; up: THREE.Vector3 }): void {
+    this.position.copy(position);
+    this.velocity.set(0, 0, 0);
+    const { planet } = this.findClosestPlanetAndGravity();
+    if (planet) {
+      this.currentPlanet = planet;
+      useColumnsOf(planet);
+    }
+    if (!this.currentPlanet) return;
+    const up = this.currentPlanet.getSurfaceNormal(this.position);
+    if (view) lookAlong(this.look, view.forward, up, PITCH_LIMIT, view.up);
+    else transportUp(this.look, up);
+    lookQuaternion(this.look, this.orientation);
+    this.updateLocalFromOrientation();
+    this.updateCamera();
   }
 }
