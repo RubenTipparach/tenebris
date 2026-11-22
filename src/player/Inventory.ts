@@ -148,6 +148,13 @@ export enum ItemType {
   // families, beside their block ids 70-89)
   BASALT = 170,
   SULFUR = 171,
+  // The jungle moons' fish (openspec ocean-life; FishRosters.ts says which moon)
+  FISH_TETRA = 190,
+  FISH_CATFISH = 191,
+  FISH_LEAFPIKE = 192,
+  FISH_PEATEEL = 193,
+  FISH_GOURAMI = 194,
+  FISH_GAR = 195,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -370,6 +377,12 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_REEF]: { name: 'Reef Fish', stackSize: 16, texture: '/textures/fish/reef.png', mineTime: 0.3 },
   [ItemType.FISH_DEEPBACK]: { name: 'Deepback', stackSize: 16, texture: '/textures/fish/deepback.png', mineTime: 0.3 },
   [ItemType.FISH_SERPENT]: { name: 'Sea Serpent', stackSize: 16, texture: '/textures/fish/serpent.png', mineTime: 0.3 },
+  [ItemType.FISH_TETRA]: { name: 'Emerald Tetra', stackSize: 16, texture: '/textures/fish/tetra.png', mineTime: 0.3 },
+  [ItemType.FISH_CATFISH]: { name: 'Laterite Catfish', stackSize: 16, texture: '/textures/fish/catfish.png', mineTime: 0.3 },
+  [ItemType.FISH_LEAFPIKE]: { name: 'Leaf Pike', stackSize: 16, texture: '/textures/fish/leaf_pike.png', mineTime: 0.3 },
+  [ItemType.FISH_PEATEEL]: { name: 'Peat Eel', stackSize: 16, texture: '/textures/fish/peat_eel.png', mineTime: 0.3 },
+  [ItemType.FISH_GOURAMI]: { name: 'Mire Gourami', stackSize: 16, texture: '/textures/fish/gourami.png', mineTime: 0.3 },
+  [ItemType.FISH_GAR]: { name: 'Violet Gar', stackSize: 16, texture: '/textures/fish/violet_gar.png', mineTime: 0.3 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)

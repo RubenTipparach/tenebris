@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { FaunaSpeciesId } from '../config/FaunaConfig';
+import { FAUNA_SPECIES, FaunaCreatureId, FaunaSpeciesId, FISH_FAUNA, fishDrawnLength } from '../config/FaunaConfig';
+import { FishSpecies } from '../config/FishRosters';
 
 /**
  * Procedural low-poly creature models, one per species.
@@ -10,8 +11,14 @@ import { FaunaSpeciesId } from '../config/FaunaConfig';
  * about its axis round its pivot and offset it, and a part follows its
  * parent (up the chain to the body), so legs and heads ride the body's bob.
  *
- * Model space: +Z forward, +Y up. Walkers stand on y = 0; flyers and
- * floaters are centred on the origin (the runtime lifts them by `hover`).
+ * Model space: +Z forward, +Y up. Walkers (and seabed crawlers) stand on
+ * y = 0; flyers, floaters and swimmers are centred on the origin (the
+ * runtime lifts fliers by `hover` and holds swimmers inside the water).
+ *
+ * The swimming fish share one parametric builder (buildFishModel), fed by
+ * each fishing-table fish's `look` (FishRosters.ts): body plan, length and
+ * the colours of its icon. Its parts are named for the shared clips
+ * swim_fish / swim_eel / swim_ray (scripts/gen-fauna-anims.py).
  */
 
 export interface FaunaPart {
@@ -120,7 +127,77 @@ function legs4(b: ModelBuilder, x: number, zf: number, zb: number, hipY: number,
   }
 }
 
-const MODELS: Record<FaunaSpeciesId, () => FaunaModel> = {
+/** A swimming fish from its look: parts match the swim_<shape> clip. */
+export function buildFishModel(f: FishSpecies): FaunaModel {
+  const k = f.look;
+  const L = fishDrawnLength(f);
+  const eye = 0x14161a;
+  if (k.shape === 'eel') {
+    // four segments head to tail, each following the one in front (a travelling wave)
+    const b = new ModelBuilder().part('body', [0, 0, L * 0.25], [0, 1, 0]);
+    const r = L * 0.055;
+    const seg = L / 4;
+    const names = ['body', 'seg1', 'seg2', 'seg3'];
+    for (let i = 0; i < 4; i++) {
+      const z = L / 2 - (i + 0.5) * seg;
+      if (i > 0) b.part(names[i], [0, 0, L / 2 - i * seg], [0, 1, 0], names[i - 1]);
+      const t = 1 - i * 0.18; // tapering to the tail
+      b.box(names[i], [2 * r * t, 2 * r * t, seg * 1.08], [0, 0, z], k.body);
+      b.box(names[i], [1.6 * r * t, 0.5 * r * t, seg * 1.04], [0, r * t, z], k.back);
+      b.box(names[i], [1.6 * r * t, 0.5 * r * t, seg * 1.04], [0, -r * t, z], k.belly);
+      b.box(names[i], [0.02 * L, r * 0.9 * t, seg], [0, r * 1.5 * t, z], k.fin); // the long dorsal fin
+    }
+    b.box('body', [2.1 * r, 1.6 * r, r * 1.8], [0, -r * 0.1, L / 2 + r * 0.6], k.body); // snout
+    b.box('body', [r * 0.5, r * 0.5, r * 0.4], [r * 0.95, r * 0.4, L / 2 - r * 0.2], eye);
+    b.box('body', [r * 0.5, r * 0.5, r * 0.4], [-r * 0.95, r * 0.4, L / 2 - r * 0.2], eye);
+    return b.build();
+  }
+  if (k.shape === 'ray') {
+    const b = new ModelBuilder().part('body', [0, 0, 0], [0, 1, 0]);
+    b.add('body', new THREE.IcosahedronGeometry(0.5, 1), k.back, { scale: [L * 0.42, L * 0.1, L * 0.55] });
+    b.box('body', [L * 0.36, L * 0.02, L * 0.46], [0, -L * 0.04, 0], k.belly);
+    b.box('body', [L * 0.05, L * 0.04, L * 0.05], [L * 0.08, L * 0.05, L * 0.18], eye);
+    b.box('body', [L * 0.05, L * 0.04, L * 0.05], [-L * 0.08, L * 0.05, L * 0.18], eye);
+    for (const [name, s] of [['wingL', 1], ['wingR', -1]] as [string, number][]) {
+      b.part(name, [0.16 * L * s, 0, 0], [0, 0, s]);
+      b.add(name, new THREE.OctahedronGeometry(0.5, 0), k.body, { at: [0.36 * L * s, 0, -0.02 * L], scale: [L * 0.5, L * 0.05, L * 0.5] });
+      b.box(name, [L * 0.06, L * 0.055, L * 0.06], [0.34 * L * s, 0.005 * L, 0.04 * L], k.back); // a spot
+    }
+    b.part('tail', [0, 0, -0.25 * L], [0, 1, 0]);
+    b.box('tail', [L * 0.025, L * 0.025, L * 0.7], [0, 0, -0.6 * L], k.fin);
+    return b.build();
+  }
+  // a fish: a fat spindle with back, belly, fins and a forked tail
+  const H = L * (k.height ?? FISH_FAUNA.height);
+  const W = H * 0.55;
+  const b = new ModelBuilder().part('body', [0, 0, 0], [0, 1, 0]);
+  b.add('body', new THREE.IcosahedronGeometry(0.5, 1), k.body, { at: [0, 0, 0.04 * L], scale: [W, H, L * 0.72] });
+  b.add('body', new THREE.IcosahedronGeometry(0.5, 1), k.back, { at: [0, H * 0.2, 0.04 * L], scale: [W * 0.82, H * 0.6, L * 0.62] });
+  b.add('body', new THREE.IcosahedronGeometry(0.5, 1), k.belly, { at: [0, -H * 0.2, 0.06 * L], scale: [W * 0.82, H * 0.55, L * 0.58] });
+  if (k.stripe !== undefined) b.box('body', [W * 1.02, H * 0.12, L * 0.5], [0, H * 0.02, 0.02 * L], k.stripe, { glow: 0.3 });
+  if (k.bands !== undefined) {
+    for (const z of [0.16, 0.02, -0.12]) b.box('body', [W * 1.03, H * 0.72, L * 0.045], [0, H * 0.05, z * L], k.bands);
+  }
+  b.box('body', [L * 0.02, H * 0.4, L * 0.24], [0, H * 0.58, -0.02 * L], k.fin, { rot: [-0.25, 0, 0] }); // dorsal
+  b.box('body', [L * 0.02, H * 0.2, L * 0.14], [0, -H * 0.5, -0.12 * L], k.fin); // anal fin
+  const eyeR = Math.max(L * 0.035, 0.02);
+  b.box('body', [eyeR, eyeR * 1.2, eyeR * 1.2], [W * 0.42, H * 0.12, L * 0.27], eye);
+  b.box('body', [eyeR, eyeR * 1.2, eyeR * 1.2], [-W * 0.42, H * 0.12, L * 0.27], eye);
+  if (k.barbels) {
+    for (const s of [1, -1]) b.box('body', [L * 0.015, L * 0.015, L * 0.2], [W * 0.3 * s, -H * 0.2, L * 0.44], k.fin, { rot: [0.3, 0.5 * s, 0] });
+  }
+  b.part('tail', [0, 0, -0.3 * L], [0, 1, 0]);
+  b.box('tail', [W * 0.45, H * 0.35, L * 0.16], [0, 0, -0.35 * L], k.body); // the stalk
+  b.box('tail', [L * 0.02, H * 0.5, L * 0.2], [0, H * 0.22, -0.48 * L], k.fin, { rot: [0.6, 0, 0] }); // forked fin
+  b.box('tail', [L * 0.02, H * 0.5, L * 0.2], [0, -H * 0.22, -0.48 * L], k.fin, { rot: [-0.6, 0, 0] });
+  for (const [name, s] of [['finL', 1], ['finR', -1]] as [string, number][]) {
+    b.part(name, [W * 0.45 * s, -H * 0.15, 0.12 * L], [0, 0, s]);
+    b.box(name, [L * 0.16, L * 0.015, L * 0.09], [(W * 0.45 + L * 0.07) * s, -H * 0.18, 0.1 * L], k.fin, { rot: [0, -0.4 * s, 0] });
+  }
+  return b.build();
+}
+
+const MODELS: Record<FaunaCreatureId, () => FaunaModel> = {
   // ---- Earth -------------------------------------------------------------
   deer: () => {
     const b = new ModelBuilder().part('body', [0, 0.95, 0]);
@@ -483,8 +560,171 @@ const MODELS: Record<FaunaSpeciesId, () => FaunaModel> = {
     b.box('legB', [0.6, 0.14, 0.26], [0, 0.08, -0.16], 0x2f4a2a);
     return b.build();
   },
+  // ==== Sea life (openspec ocean-life) ======================================
+  // ---- Earth -------------------------------------------------------------
+  // A shore crab built side-on (eyes and claws on +X), so it scuttles
+  // sideways along its heading like a real one
+  crab: () => {
+    const shell = 0xb04a2a, dark = 0x7a2e1a, claw = 0xd0603a;
+    const b = new ModelBuilder().part('body', [0, 0.14, 0], [0, 0, 1]);
+    b.add('body', new THREE.SphereGeometry(0.5, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2), shell, { at: [0, 0.11, 0], scale: [0.5, 0.26, 0.66] });
+    b.box('body', [0.46, 0.06, 0.6], [0, 0.11, 0], dark); // the rim of the shell
+    b.box('body', [0.1, 0.02, 0.22], [0.06, 0.24, 0], 0xd87a4a); // a pale mark on top
+    for (const s of [1, -1]) {
+      b.box('body', [0.03, 0.12, 0.03], [0.2, 0.26, 0.07 * s], dark); // eye stalks
+      b.box('body', [0.05, 0.05, 0.05], [0.2, 0.33, 0.07 * s], 0x14161a);
+    }
+    for (const [name, s] of [['clawL', 1], ['clawR', -1]] as [string, number][]) {
+      b.part(name, [0.2, 0.12, 0.22 * s], [0, 1, 0]);
+      b.box(name, [0.16, 0.06, 0.06], [0.28, 0.12, 0.26 * s], claw, { rot: [0, 0.5 * s, 0] });
+      b.box(name, [0.14, 0.09, 0.08], [0.4, 0.13, 0.32 * s], claw);
+      b.box(name, [0.08, 0.04, 0.05], [0.49, 0.11, 0.3 * s], dark); // the pincer tip
+    }
+    b.part('legsA', [0, 0.1, 0], [1, 0, 0]);
+    b.part('legsB', [0, 0.1, 0], [1, 0, 0]);
+    // three legs a side, alternate legs stepping together
+    const legs: [string, number, number][] = [
+      ['legsA', 1, 0.14], ['legsB', 1, 0], ['legsA', 1, -0.14], ['legsB', -1, 0.14], ['legsA', -1, 0], ['legsB', -1, -0.14]];
+    for (const [part, s, x] of legs) b.box(part, [0.04, 0.04, 0.3], [x, 0.06, 0.38 * s], shell, { rot: [-0.55 * s, 0, 0] });
+    return b.build();
+  },
+  jellyfish: () => {
+    const bell = 0xe8b4d8, inner = 0xffd8f0, frill = 0xc87ab8;
+    const b = new ModelBuilder();
+    b.add('body', new THREE.SphereGeometry(0.34, 8, 4, 0, Math.PI * 2, 0, Math.PI * 0.5), bell, { glow: 0.6, scale: [1, 0.75, 1] });
+    b.ball('body', 0.12, [0, 0.08, 0], inner, { glow: 1 });
+    for (const [x, z] of [[0.07, 0.07], [-0.07, 0.07], [0.07, -0.07], [-0.07, -0.07]]) b.ball('body', 0.04, [x, 0.06, z], 0xff9ad8, { glow: 1 });
+    // the skirt flaps in and out (the pulse), the oral arms trail and sway
+    b.part('skirtA', [0, 0, 0], [1, 0, 0]);
+    b.part('skirtB', [0, 0, 0], [0, 0, 1]);
+    for (const [part, x, z] of [['skirtA', 0, 0.32], ['skirtA', 0, -0.32], ['skirtB', 0.32, 0], ['skirtB', -0.32, 0]] as [string, number, number][]) {
+      b.box(part, [x ? 0.04 : 0.36, 0.1, z ? 0.04 : 0.36], [x, -0.04, z], bell, { glow: 0.6 });
+    }
+    b.part('arms', [0, -0.04, 0], [1, 0, 0]);
+    for (const [x, z] of [[0.05, 0], [-0.05, 0], [0, 0.05], [0, -0.05]]) b.box('arms', [0.05, 0.5, 0.05], [x, -0.3, z], frill, { glow: 0.5 });
+    b.part('tentacles', [0, -0.06, 0], [0, 0, 1]);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      b.box('tentacles', [0.015, 0.7, 0.015], [Math.cos(a) * 0.28, -0.4, Math.sin(a) * 0.28], inner, { glow: 0.7 });
+    }
+    return b.build();
+  },
+  seaTurtle: () => {
+    const shell = 0x5a6a3a, plate = 0x7a8a4a, under = 0xd8c890, skin = 0x8a9a6a;
+    const b = new ModelBuilder().part('body', [0, 0, 0], [1, 0, 0]);
+    b.add('body', new THREE.SphereGeometry(0.5, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2), shell, { at: [0, -0.02, 0], scale: [0.85, 0.42, 1.1] });
+    b.box('body', [0.8, 0.06, 1.0], [0, -0.04, 0], under);
+    for (const [x, z] of [[0, 0.15], [0, -0.15], [0.2, 0], [-0.2, 0], [0, 0.0]]) {
+      b.box('body', [0.16, 0.04, 0.16], [x, 0.19 - Math.abs(x) * 0.3 - Math.abs(z) * 0.2, z], plate, { rot: [z * 1.2, 0, -x * 1.2] });
+    }
+    b.part('head', [0, 0.0, 0.5], [1, 0, 0]);
+    b.box('head', [0.16, 0.14, 0.18], [0, 0.02, 0.6], skin);
+    b.box('head', [0.2, 0.15, 0.2], [0, 0.04, 0.74], skin);
+    b.box('head', [0.04, 0.04, 0.04], [0.1, 0.07, 0.8], 0x14161a);
+    b.box('head', [0.04, 0.04, 0.04], [-0.1, 0.07, 0.8], 0x14161a);
+    for (const [name, s, z, len] of [['flipFL', 1, 0.3, 0.62], ['flipFR', -1, 0.3, 0.62], ['flipBL', 1, -0.38, 0.3], ['flipBR', -1, -0.38, 0.3]] as [string, number, number, number][]) {
+      b.part(name, [0.36 * s, -0.02, z], [0, 0, s]);
+      b.box(name, [len, 0.04, len * 0.4], [(0.36 + len / 2) * s, -0.02, z - len * 0.15], skin, { rot: [0, 0.45 * s * (z > 0 ? 1 : -1), 0] });
+    }
+    b.part('tail', [0, 0, -0.52], [0, 1, 0]);
+    b.box('tail', [0.06, 0.05, 0.14], [0, -0.02, -0.58], skin);
+    return b.build();
+  },
+  // ---- Sequoia: beige / dry olive, warm glow -------------------------------
+  lanternSquid: () => {
+    const mantle = 0xcfaa81, back = 0x9bb675, glow = 0xffd36b;
+    const b = new ModelBuilder().part('body', [0, 0, 0], [0, 1, 0]);
+    // the mantle points back (tail at -Z), the head and arms forward
+    b.add('body', new THREE.ConeGeometry(0.16, 0.7, 6), mantle, { at: [0, 0, -0.2], rot: [-Math.PI / 2, 0, 0] });
+    b.box('body', [0.06, 0.06, 0.5], [0, 0.11, -0.15], back);
+    for (const z of [-0.05, -0.25]) b.ball('body', 0.035, [0, 0.13, z], glow, { glow: 1 });
+    b.ball('body', 0.13, [0, 0, 0.18], mantle); // the head
+    b.ball('body', 0.05, [0.11, 0.03, 0.22], glow, { glow: 1 }); // big lamp eyes
+    b.ball('body', 0.05, [-0.11, 0.03, 0.22], glow, { glow: 1 });
+    b.part('fins', [0, 0, -0.45], [0, 0, 1]);
+    b.box('fins', [0.42, 0.02, 0.16], [0, 0, -0.46], back);
+    b.part('arms', [0, 0, 0.26], [1, 0, 0]);
+    for (const [x, y] of [[0.06, 0.04], [-0.06, 0.04], [0.06, -0.04], [-0.06, -0.04], [0, 0.07], [0, -0.07]]) {
+      b.box('arms', [0.03, 0.03, 0.34], [x, y, 0.44], mantle);
+    }
+    b.ball('arms', 0.06, [0, 0, 0.66], glow, { glow: 1 }); // the lantern lure
+    return b.build();
+  },
+  // A hermit-like crawler in a spiral olive shell, its lamp eyes on stalks
+  shellCrawler: () => {
+    const shell = 0x9bb675, band = 0xc9b98a, soft = 0xd9a441, glow = 0xffd36b;
+    const b = new ModelBuilder().part('body', [0, 0.15, 0], [0, 0, 1]);
+    for (let i = 0; i < 4; i++) {
+      const r = 0.24 - i * 0.05;
+      b.ball('body', r, [0, 0.2 + i * 0.1, -0.05 - i * 0.07], i % 2 ? band : shell, { scale: [1, 0.85, 1] });
+    }
+    b.add('body', new THREE.ConeGeometry(0.05, 0.14, 5), band, { at: [0, 0.56, -0.3], rot: [-0.6, 0, 0] });
+    b.box('body', [0.2, 0.12, 0.2], [0, 0.1, 0.2], soft); // the soft front
+    for (const s of [1, -1]) {
+      b.box('body', [0.025, 0.16, 0.025], [0.06 * s, 0.24, 0.27], soft);
+      b.ball('body', 0.035, [0.06 * s, 0.33, 0.27], glow, { glow: 1 });
+    }
+    b.part('legsA', [0, 0.1, 0.15], [1, 0, 0]);
+    b.part('legsB', [0, 0.1, 0.15], [1, 0, 0]);
+    for (const [part, s, z] of [['legsA', 1, 0.24], ['legsB', -1, 0.24], ['legsB', 1, 0.12], ['legsA', -1, 0.12]] as [string, number, number][]) {
+      b.box(part, [0.24, 0.04, 0.04], [0.14 * s, 0.06, z], soft, { rot: [0, 0, 0.5 * s] });
+    }
+    return b.build();
+  },
+  // ---- Verdance: emerald and olive, a pale muzzle ---------------------------
+  mossOtter: () => {
+    const fur = 0x4a5a22, moss = 0x3f8f5a, pale = 0xb8d88a;
+    const b = new ModelBuilder().part('body', [0, 0, 0], [1, 0, 0]);
+    b.box('body', [0.26, 0.22, 0.7], [0, 0, 0], fur);
+    b.box('body', [0.2, 0.05, 0.5], [0, 0.12, -0.02], moss); // moss growing on its back
+    for (const z of [-0.15, 0.1]) b.box('body', [0.08, 0.06, 0.08], [0.06, 0.15, z], 0x00e436);
+    b.box('body', [0.2, 0.05, 0.55], [0, -0.1, 0.02], pale);
+    b.part('head', [0, 0.02, 0.34], [1, 0, 0]);
+    b.box('head', [0.22, 0.18, 0.2], [0, 0.05, 0.44], fur);
+    b.box('head', [0.14, 0.09, 0.08], [0, 0.0, 0.57], pale); // muzzle
+    b.box('head', [0.05, 0.04, 0.02], [0, 0.03, 0.615], 0x1a1410);
+    b.box('head', [0.04, 0.04, 0.02], [0.07, 0.1, 0.545], 0x1a1410);
+    b.box('head', [0.04, 0.04, 0.02], [-0.07, 0.1, 0.545], 0x1a1410);
+    b.box('head', [0.05, 0.05, 0.04], [0.1, 0.15, 0.4], fur);
+    b.box('head', [0.05, 0.05, 0.04], [-0.1, 0.15, 0.4], fur);
+    b.part('legF', [0, -0.08, 0.22], [1, 0, 0]);
+    b.box('legF', [0.38, 0.04, 0.1], [0, -0.12, 0.2], fur);
+    b.part('legB', [0, -0.06, -0.3], [1, 0, 0]);
+    b.box('legB', [0.4, 0.04, 0.16], [0, -0.1, -0.34], fur);
+    b.part('tail', [0, 0, -0.35], [1, 0, 0]);
+    b.box('tail', [0.14, 0.08, 0.3], [0, -0.01, -0.5], fur);
+    b.box('tail', [0.2, 0.04, 0.2], [0, -0.02, -0.72], moss); // a broad rudder
+    return b.build();
+  },
+  // ---- Mirewood: violet skin, lime glow -----------------------------------
+  bogNewt: () => {
+    const skin = 0x3a2e48, side = 0x5c4a6e, belly = 0xffa300, glow = 0x7dff9a;
+    const b = new ModelBuilder().part('body', [0, 0.1, 0]);
+    b.box('body', [0.2, 0.11, 0.46], [0, 0.11, 0], skin);
+    b.box('body', [0.22, 0.05, 0.4], [0, 0.07, 0], side);
+    b.box('body', [0.16, 0.02, 0.36], [0, 0.05, 0], belly);
+    for (const [x, z] of [[0.06, 0.12], [-0.05, 0.02], [0.05, -0.1], [-0.06, -0.18]]) b.box('body', [0.05, 0.03, 0.05], [x, 0.175, z], glow, { glow: 1 });
+    b.part('head', [0, 0.12, 0.22]);
+    b.box('head', [0.2, 0.09, 0.16], [0, 0.12, 0.3], skin);
+    b.box('head', [0.05, 0.05, 0.04], [0.08, 0.17, 0.32], 0xf0e060);
+    b.box('head', [0.05, 0.05, 0.04], [-0.08, 0.17, 0.32], 0xf0e060);
+    b.box('head', [0.28, 0.08, 0.02], [0, 0.13, 0.22], 0x9a6ad8, { glow: 0.5 }); // gill frills
+    for (const [name, x, z] of [['legFL', 0.12, 0.14], ['legFR', -0.12, 0.14], ['legBL', 0.12, -0.14], ['legBR', -0.12, -0.14]] as [string, number, number][]) {
+      b.part(name, [x, 0.08, z]);
+      b.box(name, [0.12, 0.04, 0.04], [x * 1.4, 0.05, z], skin, { rot: [0, 0, x > 0 ? -0.6 : 0.6] });
+      b.box(name, [0.05, 0.02, 0.06], [x * 1.85, 0.01, z + 0.02], side);
+    }
+    b.part('tail', [0, 0.1, -0.22], [0, 1, 0]);
+    b.box('tail', [0.07, 0.09, 0.4], [0, 0.1, -0.42], skin);
+    b.box('tail', [0.02, 0.06, 0.36], [0, 0.17, -0.42], 0x9a6ad8, { glow: 0.5 });
+    return b.build();
+  },
 };
 
 export function buildFaunaModel(id: FaunaSpeciesId): FaunaModel {
-  return MODELS[id]();
+  const fish = FAUNA_SPECIES[id]?.fish;
+  if (fish) return buildFishModel(fish);
+  const make = MODELS[id as FaunaCreatureId];
+  if (!make) throw new Error(`[Fauna] no model for ${id}`);
+  return make();
 }

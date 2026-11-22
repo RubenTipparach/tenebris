@@ -21,6 +21,8 @@ Writes, under public/textures/:
   wool, air and re-entry: icons/ (wool, leather, shears, wool clothing,
   empty and oxygen tanks, space suit), technology/gas_collector(_face),
   rocket_parts/parachute(_face)
+  ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
+  gourami, violet gar)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -506,6 +508,105 @@ def solar_face(wings=False):
     return px
 
 
+def _outline(px, line):
+    """Edge every drawn pixel that touches empty space (4-neighbour) in `line`."""
+    clear = (0, 0, 0, 0)
+    out = [row[:] for row in px]
+    for y in range(16):
+        for x in range(16):
+            if px[y][x] == clear:
+                continue
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < 16 and 0 <= ny < 16) or px[ny][nx] == clear:
+                    out[y][x] = line
+                    break
+    return out
+
+
+def fish_icon(shape, body, back, belly, fin, line="black", length=5.5, height=3.0,
+              stripe=None, bands=None, barbels=False):
+    """A fish side-on, head to the right like the shipped minnow: back on
+    top, belly below, a forked tail and fins, outlined; no anti-aliasing.
+    Colours are PICO-8 names (they match the swimming model's look in
+    src/config/FishRosters.ts). shape 'eel' draws a long wavy body."""
+    import math
+    px, c = _canvas()
+    cy = 7.5
+    if shape == "eel":
+        # a sine body from tail (left) to head (right), thickening to the head
+        for x in range(1, 15):
+            yc = cy + 1.6 * math.sin(x * 0.45)
+            half = 1.5 + 0.7 * x / 14
+            for y in range(16):
+                d = y - yc
+                if abs(d) <= half:
+                    px[y][x] = c[back] if d < -0.35 else c[belly] if d > 0.45 else c[body]
+        # the long fin along the back
+        for x in range(3, 13, 2):
+            yc = cy + 1.6 * math.sin(x * 0.45)
+            y = int(round(yc - 1.9))
+            if 0 <= y < 16 and px[y][x] == (0, 0, 0, 0):
+                px[y][x] = c[fin]
+        px = _outline(px, c[line])
+        yh = cy + 1.6 * math.sin(14 * 0.45)
+        px[int(round(yh - 0.6))][13] = c["black"] if line != "black" else c["white"]
+        return px
+    cx = 8.5 - length * 0.15
+    for y in range(16):
+        for x in range(16):
+            u, v = (x - cx) / length, (y - cy) / height
+            if u * u + v * v <= 1.0:
+                px[y][x] = c[back] if v < -0.3 else c[belly] if v > 0.35 else c[body]
+    if stripe:
+        for x in range(16):
+            if px[8][x] != (0, 0, 0, 0) and abs(x - cx) < length - 1.5:
+                px[8][x] = c[stripe]
+    if bands:
+        for k in (-0.35, 0.05, 0.45):
+            x = int(round(cx + k * length))
+            for y in range(16):
+                if px[y][x] != (0, 0, 0, 0):
+                    px[y][x] = c[bands]
+    # forked tail to the left, dorsal fin on top, a pectoral fin
+    tx = int(round(cx - length))
+    for k in range(1, 4):
+        for y in (int(cy - k + 0.5), int(cy + k - 0.5)):
+            if 0 <= tx - k + 1 < 16:
+                px[y][tx - k + 1] = c[fin]
+        px[int(cy)][tx] = c[fin]
+        px[int(cy) + 1][tx] = c[fin]
+    top = int(round(cy - height))
+    for x in range(int(cx - 1), int(cx + 2)):
+        px[top][x] = c[fin]
+    px[top - 1][int(cx)] = c[fin]
+    px[int(cy) + 1][int(cx + length * 0.35)] = c[fin]
+    px = _outline(px, c[line])
+    # the eye near the head, the mouth at the tip
+    ex = int(round(cx + length * 0.6))
+    px[int(cy) - 1][ex] = c["black"] if line != "black" else c["white"]
+    if barbels:
+        hx = int(round(cx + length))
+        for k in range(1, 3):
+            if hx + k < 16:
+                px[int(cy) + k][hx + k - 1] = c[fin]
+    return px
+
+
+# The jungle moons' fish (openspec ocean-life), drawn to match their swimming
+# models: (file, shape, body, back, belly, fin, outline, length, height, extras)
+JUNGLE_FISH = [
+    # Verdance
+    ("tetra", "fish", "green", "navy", "lime", "orange", "black", 5.0, 3.2, {"stripe": "yellow"}),
+    ("catfish", "fish", "brown", "plum", "peach", "dgrey", "black", 6.5, 3.0, {"barbels": True}),
+    ("leaf_pike", "fish", "lime", "green", "white", "orange", "navy", 7.0, 2.7, {}),
+    # Mirewood
+    ("peat_eel", "eel", "dgrey", "navy", "lgrey", "indigo", "black", 0, 0, {}),
+    ("gourami", "fish", "blue", "navy", "lgrey", "lime", "black", 5.5, 4.4, {}),
+    ("violet_gar", "fish", "indigo", "plum", "white", "pink", "black", 7.0, 2.6, {"bands": "plum"}),
+]
+
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -605,3 +706,6 @@ if __name__ == "__main__":
     write("technology/solar_panel_face.png", solar_face())
     write("rocket_parts/solar_array.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), sol))
     write("rocket_parts/solar_array_face.png", solar_face(True))
+    # ---- Ocean life: the jungle moons' fish (openspec ocean-life 1.2) ----
+    for name, shape, body, back, belly, fin, line, length, height, extra in JUNGLE_FISH:
+        write(f"fish/{name}.png", fish_icon(shape, body, back, belly, fin, line, length, height, **extra))
