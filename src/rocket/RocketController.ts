@@ -7,7 +7,13 @@ import { RocketCamera } from './RocketCamera';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode } from './RocketPerformance';
+import {
+  computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
+  drainCharge, chargeSecondsLeft, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, tryOpenChute, chuteDescentSpeed, chuteSideFactor,
+} from './RocketPerformance';
+import { ItemType } from '../player/Inventory';
+import { showToast } from '../utils/toast';
+import { createHeatGlow, setHeatGlow, createCanopy, disposeObject } from './RocketReentryVisuals';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -20,6 +26,7 @@ export interface PlanetGravitySource {
   gravityStrength: number;  // Multiplier (1.0 = Earth-like)
   name: string;
   getSurfaceHeight?: (direction: THREE.Vector3) => number;  // Optional callback for actual terrain height
+  hasAtmosphere?: boolean;  // air for re-entry heat and the parachute (CelestialBodyConfig.hasAtmosphere)
 }
 
 /**
@@ -59,6 +66,7 @@ export interface RocketInputState {
   fuel: boolean;          // F
   exit: boolean;          // V
   eject: boolean;         // J
+  parachute?: boolean;    // P (edge triggered)
 }
 
 /**
@@ -140,6 +148,24 @@ export class RocketController {
   // travels with the rocket and saves with the pad
   private cargo: InventorySlot[] | null = null;
 
+  // Power (openspec wool-air-and-reentry, design 2): the flight's charge,
+  // the stack's capacity and what it draws while flying
+  private chargeWh: number = 0;
+  private batteryCapacityWh: number = 0;
+  private powerDrawW: number = 0;
+  private lowPowerWarned: boolean = false;
+
+  // Re-entry heat and the parachute (design 3)
+  private heat: number = 0;
+  private leftAtmosphere: boolean = false;
+  private reentering: boolean = false;
+  private inAtmosphere: boolean = false;
+  private chuteOpen: boolean = false;
+  private chuteSpent: boolean = false;   // torn, or used for a landing: gone until a pad repacks it
+  private heatGlow: THREE.Mesh | null = null;
+  private canopy: THREE.Group | null = null;
+  private crashReason: 'impact' | 'burnedUp' = 'impact';
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.pivot = new THREE.Group();
@@ -188,6 +214,8 @@ export class RocketController {
     this.calculateMassProperties();
     // A pad's tanks hold what was fuelled into them (null = full: older saves)
     if (fuelUnits !== null) this.currentFuel = Math.max(0, Math.min(this.totalFuelCapacity, fuelUnits));
+    // The pad's crew charges the battery and packs the chute: full every launch
+    this.resetFlightState(this.batteryCapacityWh, false);
 
     // Set up pivot group
     this.pivot.position.copy(this.position);
@@ -498,6 +526,9 @@ export class RocketController {
     this.totalThrust = stats.thrust;
     this.totalFuelConsumption = stats.fuelFlow;
     this.exhaustVelocity = stats.exhaustVelocity;
+    this.batteryCapacityWh = stats.batteryWh;
+    this.powerDrawW = stats.powerDrawW;
+    this.chargeWh = Math.min(this.chargeWh, this.batteryCapacityWh);
 
     // Start with full fuel
     this.currentFuel = this.totalFuelCapacity;
@@ -552,7 +583,7 @@ export class RocketController {
     const weight = mass * gravity.magnitude;
     if (weight === 0) return Infinity;  // In space
 
-    return (this.totalThrust * this.throttle) / weight;
+    return (poweredThrust(this.totalThrust, this.chargeWh) * this.throttle) / weight;
   }
 
   /**
@@ -714,6 +745,11 @@ export class RocketController {
     // Run physics if active
     if (stateInfo.physicsActive) {
       this.updatePhysics(deltaTime);
+      this.updatePower(deltaTime);
+    }
+    if (state !== RocketState.CRASHED) {
+      this.updateParachute(input, stateInfo.physicsActive);
+      this.updateReentry(deltaTime, stateInfo.physicsActive);
     }
 
     // Update visual transform
@@ -729,7 +765,7 @@ export class RocketController {
     }
 
     // Update exhaust particles
-    const exhaustActive = this.isThrustActive && this.throttle > 0 && this.currentFuel > 0;
+    const exhaustActive = this.isExhaustActive();
     this.rocketExhaust.setActive(exhaustActive);
     this.rocketExhaust.setThrottle(this.throttle);
     this.rocketExhaust.update(deltaTime);
@@ -776,8 +812,9 @@ export class RocketController {
     }
     this.lastThrustToggle = input.thrustToggle;
 
-    // Rotation control (WASD + Q/E always controls rotation)
-    if (stateInfo.canSteer) {
+    // Rotation control (WASD + Q/E always controls rotation); a flat
+    // battery runs nothing - no turning, no strafe thrusters
+    if (stateInfo.canSteer && this.hasPower()) {
       const cfg = ROCKET_CONFIG.CONTROLS;
 
       // Full 6DOF rotation with WASD + Q/E
@@ -831,8 +868,9 @@ export class RocketController {
     }
 
     // === THRUST ===
-    if (this.isThrustActive && this.currentFuel > 0 && this.throttle > 0) {
-      const thrustMagnitude = this.totalThrust * this.throttle;
+    const thrust = poweredThrust(this.totalThrust, this.chargeWh);
+    if (this.isThrustActive && this.currentFuel > 0 && this.throttle > 0 && thrust > 0) {
+      const thrustMagnitude = thrust * this.throttle;
       const thrustAccel = thrustMagnitude / mass;
       const thrustDir = this.getLocalUp();  // Thrust always along rocket's "up"
 
@@ -863,6 +901,25 @@ export class RocketController {
     // === LINEAR DAMPING ===
     // Apply linear damping everywhere (prevents infinite drift)
     this.velocity.multiplyScalar(dampingFactor(ROCKET_CONFIG.PHYSICS.linearDamping, deltaTime));
+
+    // === PARACHUTE ===
+    // Open: the descent settles on the chute's terminal velocity, sideways
+    // motion bleeds off, and it swings the nose up away from the ground
+    if (this.chuteOpen && this.closestPlanet) {
+      const up = this.position.clone().sub(this.closestPlanet.center).normalize();
+      const fall = -this.velocity.dot(up);
+      const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime));
+      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime);
+      this.velocity.copy(side).addScaledVector(up, -newFall);
+      const rocketUp = this.getLocalUp();
+      const axis = new THREE.Vector3().crossVectors(rocketUp, up);
+      if (axis.lengthSq() > 1e-8) {
+        const angle = Math.acos(Math.max(-1, Math.min(1, rocketUp.dot(up))));
+        const turn = angle * (1 - Math.exp(-ROCKET_CONFIG.PARACHUTE.uprightRate * deltaTime));
+        this.orientation.premultiply(new THREE.Quaternion().setFromAxisAngle(axis.normalize(), turn)).normalize();
+        this.angularVelocity.multiplyScalar(chuteSideFactor(deltaTime));
+      }
+    }
 
     // === POSITION UPDATE ===
     this.position.addScaledVector(this.velocity, deltaTime);
@@ -919,7 +976,7 @@ export class RocketController {
     switch (state) {
       case RocketState.BOARDED_GROUNDED:
         // Check if we should transition to LAUNCHING
-        if (this.isThrustActive && this.throttle > 0) {
+        if (this.isThrustActive && this.throttle > 0 && this.hasPower()) {
           const twr = this.getThrustToWeightRatio();
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
@@ -970,7 +1027,7 @@ export class RocketController {
 
       case RocketState.LANDED:
         // Check if taking off again
-        if (this.isThrustActive && this.throttle > 0) {
+        if (this.isThrustActive && this.throttle > 0 && this.hasPower()) {
           const twr = this.getThrustToWeightRatio();
           if (twr > 1.0) {
             this.stateMachine.transitionTo(RocketState.LAUNCHING);
@@ -1030,6 +1087,14 @@ export class RocketController {
 
       this.stateMachine.transitionTo(RocketState.LANDED);
       console.log(`Landed safely at ${impactVelocity.toFixed(1)} m/s`);
+      // Down: no longer re-entering, and a chute that brought it down is spent
+      this.leftAtmosphere = false;
+      this.reentering = false;
+      if (this.chuteOpen) {
+        emitGameEvent('chuteLanded');
+        this.chuteSpent = true;
+        this.closeChute();
+      }
       if (this.closestPlanet) {
         // the gravity source is named by its display name; missions use body ids
         const name = this.closestPlanet.name;
@@ -1045,7 +1110,10 @@ export class RocketController {
   /**
    * Explode the rocket
    */
-  private explode(): void {
+  private explode(reason: 'impact' | 'burnedUp' = 'impact'): void {
+    this.crashReason = reason;
+    this.closeChute();
+    if (this.heatGlow) setHeatGlow(this.heatGlow, 0);
     this.stateMachine.transitionTo(RocketState.CRASHED);
     this.crashTime = performance.now();
     console.log('ROCKET EXPLODED!');
@@ -1275,7 +1343,8 @@ export class RocketController {
 
   /** Engines burning (thrust on, throttle open, fuel left) - what the exhaust shows */
   public isExhaustActive(): boolean {
-    return this.isThrustActive && this.throttle > 0 && this.currentFuel > 0;
+    return this.isThrustActive && this.throttle > 0 && this.currentFuel > 0
+      && poweredThrust(this.totalThrust, this.chargeWh) > 0;
   }
 
   public getThrottle(): number {
@@ -1297,6 +1366,182 @@ export class RocketController {
 
   public getHealth(): number {
     return this.health;
+  }
+
+  /**
+   * Whether the command module has power (openspec wool-air-and-reentry,
+   * design 2): with none, the engines and steering stop and the cabin air
+   * fails (the air system reads this).
+   */
+  public hasPower(): boolean {
+    return this.chargeWh > 0;
+  }
+
+  /** The flight's charge, Wh */
+  public getChargeWh(): number {
+    return this.chargeWh;
+  }
+
+  /** The stack's battery capacity, Wh */
+  public getChargeCapacityWh(): number {
+    return this.batteryCapacityWh;
+  }
+
+  public getChargePercent(): number {
+    return this.batteryCapacityWh > 0 ? (this.chargeWh / this.batteryCapacityWh) * 100 : 0;
+  }
+
+  /** Seconds of flight the charge has left */
+  public getChargeSecondsLeft(): number {
+    return chargeSecondsLeft(this.chargeWh, this.powerDrawW);
+  }
+
+  /** Re-entry heat as a share of the burn-up heat, 0-100 */
+  public getHeatPercent(): number {
+    return (this.heat / ROCKET_CONFIG.REENTRY.maxHeat) * 100;
+  }
+
+  public isReentering(): boolean {
+    return this.reentering;
+  }
+
+  public isChuteOpen(): boolean {
+    return this.chuteOpen;
+  }
+
+  /** The stack carries a parachute part */
+  public carriesChute(): boolean {
+    return this.parts.some(p => p.itemType === ItemType.PARACHUTE);
+  }
+
+  /** Torn or used for a landing this flight (a pad repacks it) */
+  public isChuteSpent(): boolean {
+    return this.chuteSpent;
+  }
+
+  /** Why it crashed: a hard landing or burning up on re-entry */
+  public getCrashReason(): 'impact' | 'burnedUp' {
+    return this.crashReason;
+  }
+
+  /** A new flight: its charge (clamped to the stack), the chute's state, cool */
+  private resetFlightState(chargeWh: number, chuteSpent: boolean): void {
+    this.chargeWh = Math.max(0, Math.min(this.batteryCapacityWh, chargeWh));
+    this.lowPowerWarned = this.getChargeSecondsLeft() <= ROCKET_CONFIG.POWER.LOW_WARN_S;
+    this.heat = 0;
+    this.leftAtmosphere = false;
+    this.reentering = false;
+    this.chuteSpent = chuteSpent;
+    this.closeChute();
+  }
+
+  /** Draw the command module's power while flying; warn when low, and when flat */
+  private updatePower(deltaTime: number): void {
+    if (this.chargeWh <= 0) return;
+    this.chargeWh = drainCharge(this.chargeWh, this.powerDrawW, deltaTime);
+    const left = this.getChargeSecondsLeft();
+    if (!this.lowPowerWarned && left <= ROCKET_CONFIG.POWER.LOW_WARN_S) {
+      this.lowPowerWarned = true;
+      showToast(`Battery low - ${Math.ceil(left / 60)} min left`, { duration: 4000 });
+    }
+    if (this.chargeWh <= 0) {
+      this.isThrustActive = false;
+      showToast('Battery flat', { duration: 4000 });
+      console.log('Rocket battery flat');
+    }
+  }
+
+  /** Is the rocket inside any body's air (REENTRY.shellRadiusMult)? */
+  private computeInAtmosphere(): boolean {
+    for (const planet of this.planets) {
+      if (inAtmosphereShell(this.position.distanceTo(planet.center), planet.radius, !!planet.hasAtmosphere)) return true;
+    }
+    return false;
+  }
+
+  /** Re-entry heat, its damage and burn-up, and the glow */
+  private updateReentry(deltaTime: number, flying: boolean): void {
+    const cfg = ROCKET_CONFIG.REENTRY;
+    const speed = flying ? this.velocity.length() : 0;
+    const step = reentryStep({ heat: this.heat, leftAtmosphere: this.leftAtmosphere }, this.inAtmosphere, speed, deltaTime);
+    this.heat = step.heat;
+    if (flying) {
+      this.leftAtmosphere = step.leftAtmosphere;
+      this.reentering = step.reentering;
+    }
+    const damage = heatDamage(this.heat, deltaTime);
+    if (damage > 0) this.health = Math.max(0, this.health - damage);
+
+    if (this.heat > 0 && !this.heatGlow) {
+      this.heatGlow = createHeatGlow(this.stackHeight(), this.stackCenterOffset);
+      this.pivot.add(this.heatGlow);
+    }
+    if (this.heatGlow) setHeatGlow(this.heatGlow, this.heat / cfg.maxHeat);
+
+    if (flying && (this.heat >= cfg.maxHeat || this.health <= ROCKET_CONFIG.HEALTH.explosionThreshold)) {
+      console.log('Rocket burned up on re-entry');
+      showToast('Burned up on re-entry', { duration: 4000 });
+      this.explode('burnedUp');
+    }
+  }
+
+  /** The stack's height in pivot units (each height unit is 2) */
+  private stackHeight(): number {
+    let heightUnits = 0;
+    for (const part of this.parts) heightUnits += part.getHeightUnits();
+    return heightUnits * 2;
+  }
+
+  /** The parachute: by key, or by itself when falling low inside the air */
+  private updateParachute(input: RocketInputState, flying: boolean): void {
+    this.inAtmosphere = this.computeInAtmosphere();
+    if (!flying || this.chuteOpen) {
+      if (input.parachute && !flying) showToast('The chute opens in flight', { duration: 2000 });
+      return;
+    }
+    const ready = this.carriesChute() && !this.chuteSpent;
+    const auto = ready && this.inAtmosphere && this.getVerticalVelocity() < 0
+      && this.getAltitude() < ROCKET_CONFIG.PARACHUTE.deployAltitude;
+    if (!input.parachute && !auto) return;
+    if (!ready) {
+      showToast(this.carriesChute() ? 'The chute is spent' : 'No parachute aboard', { duration: 2500 });
+      return;
+    }
+    const result = tryOpenChute(true, this.inAtmosphere, this.velocity.length());
+    if (result === 'open') {
+      this.chuteOpen = true;
+      const top = new THREE.Vector3(
+        PlayerConfig.ROCKET_STACK_OFFSET_X,
+        PlayerConfig.ROCKET_STACK_OFFSET_Y + this.stackHeight(),
+        PlayerConfig.ROCKET_STACK_OFFSET_Z,
+      );
+      this.canopy = createCanopy(top);
+      this.pivot.add(this.canopy);
+      showToast('Chute open', { duration: 2000 });
+    } else if (result === 'torn') {
+      this.chuteSpent = true;
+      showToast('Chute torn - too fast', { duration: 3000 });
+    } else {
+      showToast('No air for the chute', { duration: 2500 });
+    }
+  }
+
+  /** Stow the chute and take its canopy away */
+  private closeChute(): void {
+    this.chuteOpen = false;
+    if (this.canopy) {
+      disposeObject(this.canopy);
+      this.canopy = null;
+    }
+  }
+
+  /** Remove the re-entry visuals (landing, despawn) */
+  private disposeReentryVisuals(): void {
+    this.closeChute();
+    if (this.heatGlow) {
+      disposeObject(this.heatGlow);
+      this.heatGlow = null;
+    }
   }
 
   public getHealthPercent(): number {
@@ -1388,6 +1633,7 @@ export class RocketController {
   public dispose(): void {
     // Stop engine sound
     AudioManager.stopLoop('rocket_engine');
+    this.disposeReentryVisuals();
 
     // Remove pivot from scene
     if (this.pivot.parent) {
@@ -1425,6 +1671,8 @@ export class RocketController {
   public disposeNonVisual(): void {
     // Stop engine sound
     AudioManager.stopLoop('rocket_engine');
+    // The glow and canopy are not part of the rocket left standing
+    this.disposeReentryVisuals();
 
     // Dispose exhaust
     this.rocketExhaust.dispose();
@@ -1458,7 +1706,9 @@ export class RocketController {
     fuelPercent: number,
     planets: PlanetGravitySource[],
     cargo: InventorySlot[] | null = null,
-    engineMode: EngineMode = null
+    engineMode: EngineMode = null,
+    chargeWh: number | null = null,
+    chuteSpent: boolean = false
   ): void {
     this.engineMode = engineMode;
     // Reuse the existing pivot and parts
@@ -1485,6 +1735,9 @@ export class RocketController {
 
     // Set fuel level from saved state
     this.currentFuel = (fuelPercent / 100) * this.totalFuelCapacity;
+    // Its battery as it was left (null = full: older records), and its chute
+    // as it was (only a pad repacks it)
+    this.resetFlightState(chargeWh ?? this.batteryCapacityWh, chuteSpent);
 
     // Find closest planet for initial gravity calculation
     this.updateClosestPlanet();

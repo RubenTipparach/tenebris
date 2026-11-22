@@ -184,6 +184,24 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 60,
   },
+  // Parachute (openspec wool-air-and-reentry): a wool canopy, an iron pack
+  //  WWW
+  //  W.W
+  //  .I.
+  {
+    name: 'Parachute',
+    inputs: [
+      { itemType: ItemType.WOOL, quantity: 1, slot: 0 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 1 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 2 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 3 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+    ],
+    output: ItemType.PARACHUTE,
+    outputQuantity: 1,
+    printTime: 20,
+  },
 ];
 
 export class Printer3DUI {

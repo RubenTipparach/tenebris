@@ -12,6 +12,7 @@
 import { ItemType, ITEM_DATA, InventorySlot } from '../player/Inventory';
 import { ROCKET_CONFIG, GRAVITY_WELL, RocketPartStats } from '../config/RocketConfig';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { POWER_CONFIG } from '../config/PowerConfig';
 
 export interface RocketStats {
   dryMass: number;          // kg, empty tanks (cargo included)
@@ -22,6 +23,8 @@ export interface RocketStats {
   exhaustVelocity: number;  // m/s, thrust / mass flow
   deltaV: number;           // m/s with full tanks (Tsiolkovsky)
   cargoSlots: number;
+  batteryWh: number;        // charge the stack stores (command module cell + battery packs)
+  powerDrawW: number;       // what it draws in flight (the command module)
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
   mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
@@ -88,7 +91,7 @@ export function engineModeLabel(mode: EngineMode): string {
 export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0, mode: EngineMode = null): RocketStats {
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
-  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0;
+  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0;
   const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
@@ -96,6 +99,8 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
     dryMass += s.dryMass;
     fuelCapacity += s.fuelCapacity ?? 0;
     cargoSlots += s.cargoSlots ?? 0;
+    batteryWh += s.batteryWh ?? 0;
+    powerDrawW += s.powerDrawW ?? 0;
     tier = Math.max(tier, s.tier);
     const missing = (s.requires ?? []).filter(r => !itemTypes.includes(r));
     if (missing.length) {
@@ -112,7 +117,94 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, tier, problems, mode: firing };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, batteryWh, powerDrawW, tier, problems, mode: firing };
+}
+
+// ---- Power, re-entry heat and the parachute (openspec wool-air-and-reentry) ----
+
+/** Charge after drawing `drawW` for `dt` seconds (never below 0) */
+export function drainCharge(chargeWh: number, drawW: number, dt: number): number {
+  return Math.max(0, chargeWh - (drawW * dt) / 3600);
+}
+
+/** Seconds of flight a charge gives at `drawW` (Infinity with no draw) */
+export function chargeSecondsLeft(chargeWh: number, drawW: number): number {
+  return drawW > 0 ? (chargeWh * 3600) / drawW : Infinity;
+}
+
+/** Thrust the engines give: none when the battery is flat */
+export function poweredThrust(thrust: number, chargeWh: number): number {
+  return chargeWh > 0 ? thrust : 0;
+}
+
+/** Wh one swapped-in battery adds (ROCKET_CONFIG.POWER.SWAP_ITEM, as POWER_CONFIG stores it) */
+export function swapBatteryWh(): number {
+  return POWER_CONFIG.BATTERIES[ROCKET_CONFIG.POWER.SWAP_ITEM]?.capacityWh ?? 0;
+}
+
+/** Charge after adding `addWh`, up to the stack's capacity */
+export function addCharge(chargeWh: number, capacityWh: number, addWh: number): number {
+  return Math.min(capacityWh, Math.max(0, chargeWh) + addWh);
+}
+
+/** Inside a body's air (for heat and the parachute): within REENTRY.shellRadiusMult of its radius */
+export function inAtmosphereShell(distance: number, radius: number, hasAtmosphere: boolean): boolean {
+  return hasAtmosphere && distance < radius * ROCKET_CONFIG.REENTRY.shellRadiusMult;
+}
+
+export interface ReentryState {
+  heat: number;              // 0..maxHeat
+  leftAtmosphere: boolean;   // been outside every atmosphere since launch
+}
+
+/**
+ * One step of re-entry heat: a flight that has left every atmosphere and is
+ * back inside one heats while faster than safeSpeed, and cools otherwise.
+ * Returns the new state and whether it is re-entering.
+ */
+export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: number, dt: number): ReentryState & { reentering: boolean } {
+  const cfg = ROCKET_CONFIG.REENTRY;
+  const leftAtmosphere = state.leftAtmosphere || !inAtmosphere;
+  const reentering = leftAtmosphere && inAtmosphere;
+  const heat = reentering && speed > cfg.safeSpeed
+    ? Math.min(cfg.maxHeat, state.heat + (speed - cfg.safeSpeed) * cfg.heatPerMs * dt)
+    : Math.max(0, state.heat - cfg.coolPerS * dt);
+  return { heat, leftAtmosphere, reentering };
+}
+
+/** Health heat takes off in `dt` (0 at or under damageFrom, damagePerS at maxHeat) */
+export function heatDamage(heat: number, dt: number): number {
+  const cfg = ROCKET_CONFIG.REENTRY;
+  if (heat <= cfg.damageFrom) return 0;
+  return cfg.damagePerS * ((heat - cfg.damageFrom) / (cfg.maxHeat - cfg.damageFrom)) * dt;
+}
+
+export type ChuteOpen = 'open' | 'noChute' | 'noAir' | 'torn';
+
+/** What happens when the parachute is asked to open */
+export function tryOpenChute(hasChute: boolean, inAtmosphere: boolean, speed: number): ChuteOpen {
+  if (!hasChute) return 'noChute';
+  if (!inAtmosphere) return 'noAir';
+  if (speed > ROCKET_CONFIG.PARACHUTE.maxOpenSpeed) return 'torn';
+  return 'open';
+}
+
+/**
+ * Descent speed (m/s, + = falling) under an open chute, given the speed after
+ * this step's gravity (`g` m/s^2 of it): over terminalVelocity the excess
+ * bleeds at dragRate and the chute also holds this step's gravity, so it
+ * settles on terminalVelocity exactly; under it, it falls freely.
+ */
+export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number): number {
+  const cfg = ROCKET_CONFIG.PARACHUTE;
+  const t = cfg.terminalVelocity;
+  if (fallSpeed <= t) return fallSpeed;
+  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * dt) - g * dt);
+}
+
+/** Sideways speed kept per step under an open chute */
+export function chuteSideFactor(dt: number): number {
+  return Math.exp(-ROCKET_CONFIG.PARACHUTE.dragRate * dt);
 }
 
 /** Delta-v left with `fuelUnits` in the tanks */

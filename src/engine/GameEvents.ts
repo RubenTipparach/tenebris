@@ -23,6 +23,11 @@
  *   fueled      key = ItemType burnt to refuel a rocket, n = count
  *   launchedWith key = ItemType of a part in the stack of a rocket that
  *               just launched (one per part type, after 'launched')
+ *   sheared     a sheep was shorn (openspec wool-air-and-reentry)
+ *   chuteLanded a rocket landed under an open parachute
+ *   bottled     a gas collector filled an oxygen tank
+ *   suited      n = seconds breathed from tank air while exposed
+ *   recharged   a battery was swapped into a landed rocket
  *
  * Items gained are not an event: they are read off the inventory itself
  * (src/player/MissionTracker.ts), since they arrive by many paths.
@@ -30,7 +35,8 @@
 export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' | 'launched' | 'landed'
   | 'smelted' | 'caught' | 'caughtOn' | 'reached' | 'cooked' | 'ate'
   | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
-  | 'onBattery' | 'fueled' | 'launchedWith';
+  | 'onBattery' | 'fueled' | 'launchedWith'
+  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

@@ -384,7 +384,8 @@ function rockWorld(w: RockWorld): CelestialBodyConfig {
       volcanoes: w.volcanoes,
       iceCover: w.iceCover,
       metalRich: w.metalRich,
-      extraOres: w.extraOres,
+      // every rock world is airless, so each holds rich lithium
+      extraOres: [...(w.extraOres ?? []), DEPOSITS.LITHIUM],
     },
     tileset,
     flora: life?.flora,
@@ -395,6 +396,7 @@ function rockWorld(w: RockWorld): CelestialBodyConfig {
     },
     landable: true,
     hasAtmosphere: false,
+    breathable: false,
     ...(tiny ? {
       intermediateLODAltitude: SMALL_INTERMEDIATE_ALT,
       highLODAltitude: SMALL_HIGH_ALT,
@@ -478,6 +480,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     spawn: { ...daySideSpawn(w.position), altitudeAboveSurface: 3 },
     landable: true,
     hasAtmosphere: true,
+    breathable: true,
     flora: w.flora,
     floraDensity: w.floraDensity,
   };
@@ -613,6 +616,9 @@ export interface CelestialBodyConfig {
   landable: boolean;
   /** Whether this body has an atmosphere (affects re-entry, sound, etc.) */
   hasAtmosphere: boolean;
+  /** Whether its air can be breathed without a suit, and bottled by a gas
+   *  collector (openspec wool-air-and-reentry). Never true without an atmosphere. */
+  breathable: boolean;
   /** Trees / alien plants per biome ground (none = no flora) */
   flora?: FloraTable;
   /** How thick the flora grows: scatter attempts per unit of surface area
@@ -686,6 +692,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: false,
       hasAtmosphere: false,
+      breathable: false,
     },
 
     // =========================================================================
@@ -723,6 +730,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
+      breathable: true,
     },
 
     // =========================================================================
@@ -753,7 +761,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         falloffRadiusMultiplier: 2.4, // 120 units at radius 50
       },
       terrain: {
-        extraOres: [DEPOSITS.URANIUM],   // uranium under the Moon's titanium
+        extraOres: [DEPOSITS.URANIUM, DEPOSITS.LITHIUM],   // uranium under the Moon's titanium; rich lithium (airless)
         hasWater: false,
         // The Moon's minerals in its own rock: iron, aluminium, cobalt,
         // lithium - and titanium (ilmenite) where Earth would have coal,
@@ -777,6 +785,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: false,
+      breathable: false,
     },
 
     // =========================================================================
@@ -845,6 +854,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
+      breathable: true,
       intermediateLODAltitude: 50,  // DETAILED -> INTERMEDIATE at altitude 50
       highLODAltitude: 100,  // INTERMEDIATE -> HIGH (chunked) at altitude 100
       distantLODAltitude: 150,  // HIGH -> DISTANT at altitude 200
@@ -930,6 +940,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
+      breathable: false,
       intermediateLODAltitude: 70,
       highLODAltitude: 120,
       distantLODAltitude: 170,

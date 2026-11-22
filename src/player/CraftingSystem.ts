@@ -363,6 +363,93 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.STEEL_GLASS, quantity: 2 },
   },
+  // ---- Wool, air and re-entry (openspec wool-air-and-reentry) ----
+  // Shears: two iron ingots, offset
+  //  .I.
+  //  I..
+  {
+    name: 'Shears',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+    ],
+    output: { itemType: ItemType.SHEARS, quantity: 1 },
+  },
+  // Carpet: 4 wool in a square
+  {
+    name: 'Carpet',
+    inputs: [
+      { itemType: ItemType.WOOL, quantity: 1, slot: 0 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 1 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 3 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 4 },
+    ],
+    output: { itemType: ItemType.CARPET, quantity: 4 },
+  },
+  // Wool clothing: a shirt
+  //  W.W
+  //  WWW
+  {
+    name: 'Wool Clothing',
+    inputs: [
+      { itemType: ItemType.WOOL, quantity: 1, slot: 0 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 2 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 3 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 4 },
+      { itemType: ItemType.WOOL, quantity: 1, slot: 5 },
+    ],
+    output: { itemType: ItemType.WOOL_CLOTHING, quantity: 1 },
+  },
+  // Empty tank: iron round a glass gauge
+  //  .I.
+  //  IGI
+  //  .I.
+  {
+    name: 'Empty Tank',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.EMPTY_TANK, quantity: 2 },
+  },
+  // Gas collector: an iron box, copper vents, a cable in the middle
+  //  ICI
+  //  .K.
+  //  ICI
+  {
+    name: 'Gas Collector',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.CABLE, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.GAS_COLLECTOR, quantity: 1 },
+  },
+  // Space suit: clothing under leather, a glass visor, iron fittings
+  //  IGI
+  //  LCL
+  //  L.L
+  {
+    name: 'Space Suit',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.LEATHER, quantity: 1, slot: 3 },
+      { itemType: ItemType.WOOL_CLOTHING, quantity: 1, slot: 4 },
+      { itemType: ItemType.LEATHER, quantity: 1, slot: 5 },
+      { itemType: ItemType.LEATHER, quantity: 1, slot: 6 },
+      { itemType: ItemType.LEATHER, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.SPACE_SUIT, quantity: 1 },
+  },
 ];
 
 export class CraftingSystem {
@@ -374,6 +461,9 @@ export class CraftingSystem {
   private craftBtnElement: HTMLButtonElement | null = null;
   private inventoryGridElement: HTMLElement | null = null;
   private inventoryHotbarElement: HTMLElement | null = null;
+  // The suit slot (equipment): whether a suit is worn, and taking it off
+  private suitSlotElement: HTMLElement | null = null;
+  private suit: { worn: () => boolean; takeOff: () => void } | null = null;
   private isOpen: boolean = false;
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
@@ -429,6 +519,12 @@ export class CraftingSystem {
     this.craftBtnElement = document.getElementById('craft-btn') as HTMLButtonElement;
     this.inventoryGridElement = document.getElementById('inventory-grid');
     this.inventoryHotbarElement = document.getElementById('inventory-hotbar');
+    this.suitSlotElement = document.getElementById('suit-slot');
+    this.suitSlotElement?.addEventListener('click', () => {
+      if (!this.suit?.worn()) return;
+      this.suit.takeOff();
+      this.updateInventorySlots();
+    });
 
     // Disable browser context menu on inventory
     if (this.menuElement) {
@@ -914,8 +1010,21 @@ export class CraftingSystem {
     this.updateCraftingGrid();
   }
 
+  /** The suit slot reads and takes off the worn suit (src/player/AirSystem.ts). */
+  public setSuitSlot(suit: { worn: () => boolean; takeOff: () => void }): void {
+    this.suit = suit;
+    this.updateInventorySlots();
+  }
+
   public updateInventorySlots(): void {
     const allSlots = this.inventory.getAllSlots();
+
+    // The suit slot: the suit's icon while it is worn
+    if (this.suitSlotElement) {
+      const worn = this.suit?.worn() ?? false;
+      this.updateSlotElement(this.suitSlotElement, { itemType: worn ? ItemType.SPACE_SUIT : ItemType.NONE, quantity: worn ? 1 : 0 });
+      this.suitSlotElement.title = worn ? 'Suit - click to take it off' : 'Suit - right click a space suit in hand to put it on';
+    }
 
     // Update storage slots
     const storageSlots = this.inventoryGridElement?.querySelectorAll('.inventory-slot');

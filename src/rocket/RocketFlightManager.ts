@@ -9,7 +9,9 @@ import { InputManager } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
 import { LandedRocketUI } from './LandedRocketUI';
 import { InventorySlot } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes } from './RocketPerformance';
+import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh } from './RocketPerformance';
+import { emitGameEvent } from '../engine/GameEvents';
+import { showToast } from '../utils/toast';
 
 /**
  * Manages the rocket flight mode
@@ -67,6 +69,7 @@ export class RocketFlightManager {
     fuel: false,
     exit: false,
     eject: false,
+    parachute: false,
   };
   private keysPressed: Set<string> = new Set();
 
@@ -139,7 +142,8 @@ export class RocketFlightManager {
     center: THREE.Vector3,
     radius: number,
     gravityStrength: number = 1.0,
-    getSurfaceHeight?: (direction: THREE.Vector3) => number
+    getSurfaceHeight?: (direction: THREE.Vector3) => number,
+    hasAtmosphere: boolean = false
   ): void {
     this.planets.push({
       name,
@@ -147,6 +151,7 @@ export class RocketFlightManager {
       radius,
       gravityStrength,
       getSurfaceHeight,
+      hasAtmosphere,
     });
     // Also update landed rocket manager
     this.landedRocketManager.setPlanets(this.planets);
@@ -194,6 +199,27 @@ export class RocketFlightManager {
     rocket.fuelPercent = stats.fuelCapacity > 0 ? (fuel / stats.fuelCapacity) * 100 : 0;
     if (rocket.pad) rocket.pad.fuel = fuel;
     this.onRocketChangedCallback?.(rocket.pad);
+  }
+
+  /**
+   * Swap a battery into a landed rocket (openspec wool-air-and-reentry,
+   * design 2): `take` uses up one ROCKET_CONFIG.POWER.SWAP_ITEM from the
+   * player and says whether it could. Its stored Wh is added up to the
+   * stack's capacity. False (nothing used) when the rocket is already full.
+   */
+  public rechargeLanded(rocket: LandedRocket, take: () => boolean): boolean {
+    const capacity = computeRocketStats(stackItemTypes(rocket.parts)).batteryWh;
+    const have = rocket.chargeWh ?? capacity;
+    if (have >= capacity) {
+      showToast('Battery is full', { duration: 2000 });
+      return false;
+    }
+    if (!take()) return false;
+    rocket.chargeWh = addCharge(have, capacity, swapBatteryWh());
+    showToast(`Battery swapped in - ${Math.round((rocket.chargeWh / capacity) * 100)}% charge`, { duration: 3000 });
+    emitGameEvent('recharged');
+    this.onRocketChangedCallback?.(rocket.pad);
+    return true;
   }
 
   /**
@@ -308,15 +334,20 @@ export class RocketFlightManager {
    * Exit flight mode - returns player to normal play
    * If rocket has launched (left initial position), it persists in the world
    * If rocket never launched (still at launch pad), it returns to docked state
+   *
+   * `force` leaves the rocket even where the player may not climb out (the
+   * pilot ran out of air in a cabin with no power, openspec
+   * wool-air-and-reentry design 4): the ship is parked where it is, as on any
+   * exit, so it never vanishes.
    */
-  public exitFlightMode(): void {
+  public exitFlightMode(force = false): void {
     if (!this.isInFlightMode || !this.rocketController) {
       return;
     }
 
     // Check if we can exit
     const stateInfo = this.rocketController.getStateMachine().getStateInfo();
-    if (!stateInfo.canExit) {
+    if (!stateInfo.canExit && !force) {
       console.log('Cannot exit rocket in current state');
       return;
     }
@@ -347,7 +378,10 @@ export class RocketFlightManager {
         this.rocketController.getPosition().clone().normalize(), // Ground normal (away from origin)
         this.rocketController.getFuelPercent(),
         this.rocketController.getCargo(),
-        this.activePad
+        this.activePad,
+        undefined,
+        this.rocketController.getChargeWh(),
+        this.rocketController.isChuteSpent()
       ).engineMode = this.rocketController.getEngineMode();
 
       // Don't dispose - the rocket stays in the world
@@ -396,7 +430,9 @@ export class RocketFlightManager {
       landedRocket.fuelPercent,
       this.planets,
       landedRocket.cargo,
-      landedRocket.engineMode ?? null
+      landedRocket.engineMode ?? null,
+      landedRocket.chargeWh ?? null,
+      landedRocket.chuteSpent ?? false
     );
     this.activePad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -413,7 +449,10 @@ export class RocketFlightManager {
         landedRocket.groundNormal,
         landedRocket.fuelPercent,
         landedRocket.cargo,
-        landedRocket.pad
+        landedRocket.pad,
+        landedRocket.netKey,
+        landedRocket.chargeWh ?? null,
+        landedRocket.chuteSpent ?? false
       );
       this.rocketController = null;
       this.activePad = null;
@@ -486,6 +525,7 @@ export class RocketFlightManager {
 
     // Reset edge-triggered inputs
     this.inputState.thrustToggle = false;
+    this.inputState.parachute = false;
   }
 
   /**
@@ -518,6 +558,11 @@ export class RocketFlightManager {
       // Handle edge-triggered inputs
       if (e.code === ROCKET_INPUTS.THRUST_TOGGLE) {
         this.inputState.thrustToggle = true;
+      }
+
+      // Open the parachute (Shift+P is the screenshot key)
+      if (e.code === ROCKET_INPUTS.PARACHUTE && !e.shiftKey && !e.repeat) {
+        this.inputState.parachute = true;
       }
 
       // Cycle which engines fire (design 6b)

@@ -18,6 +18,9 @@ Writes, under public/textures/:
   tier 3-4 rocket parts
   building materials: icons/steel_ingot.png, icons/cement.png (the blocks'
   icons are their own textures, public/textures/building/)
+  wool, air and re-entry: icons/ (wool, leather, shears, wool clothing,
+  empty and oxygen tanks, space suit), technology/gas_collector(_face),
+  rocket_parts/parachute(_face)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -361,6 +364,130 @@ def cement():
     return px
 
 
+# ---- Wool, air and re-entry (openspec wool-air-and-reentry) ---------------
+
+def wool():
+    """A tuft of fleece: cream curls lit top-left, shaded under"""
+    px, c = _canvas()
+    blobs = [(5, 6, 3), (10, 6, 3), (7, 9, 4), (4, 10, 3), (11, 10, 3)]
+    for cx, cy, r in blobs:
+        for y in range(cy - r, cy + r + 1):
+            for x in range(cx - r, cx + r + 1):
+                if 0 <= x < 16 and 0 <= y < 16 and (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                    d = (x - cx) + (y - cy)
+                    px[y][x] = c["white"] if d < -1 else c["peach"] if d < 2 else c["lgrey"]
+    for y in range(16):
+        for x in range(16):
+            if px[y][x][3] and any(not (0 <= x + dx < 16 and 0 <= y + dy < 16) or px[y + dy][x + dx][3] == 0
+                                   for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1))):
+                px[y][x] = c["indigo"]
+    return px
+
+
+def leather():
+    """A tanned hide: brown, stretched, ragged edge"""
+    px, c = _canvas()
+    rows = {2: (5, 10), 3: (3, 12), 4: (2, 13), 5: (2, 13), 6: (3, 12), 7: (3, 12), 8: (3, 12),
+            9: (3, 12), 10: (2, 13), 11: (2, 13), 12: (3, 12), 13: (5, 10)}
+    for y, (x0, x1) in rows.items():
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y in (2, 13)
+            lit = (x == x0 + 1 or y == 3) and not edge
+            px[y][x] = c["plum"] if edge else c["orange"] if lit else c["brown"]
+    for y, x in ((6, 6), (8, 9), (10, 6), (5, 10)):
+        px[y][x] = c["plum"]
+    return px
+
+
+def shears():
+    """Iron shears: two blades crossed at a rivet, brown grips"""
+    px, c = _canvas()
+    for i in range(7):
+        px[2 + i][3 + i] = c["lgrey"]; px[3 + i][3 + i] = c["dgrey"]
+        px[2 + i][12 - i] = c["white"]; px[3 + i][12 - i] = c["lgrey"]
+    px[9][7] = px[9][8] = c["navy"]
+    for y in range(10, 15):
+        for x in (5, 6):
+            px[y][x - (y - 10) // 2] = c["brown"]
+        for x in (9, 10):
+            px[y][x + (y - 10) // 2] = c["plum"]
+    return px
+
+
+def clothing():
+    """A wool tunic: sleeves, body, collar"""
+    px, c = _canvas()
+    for y in range(3, 15):
+        x0, x1 = (1, 14) if y < 7 else (4, 11)
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y in (3, 14)
+            px[y][x] = c["navy"] if edge else c["peach"] if (x == x0 + 1 or y == 4) else c["white"]
+    for x in range(6, 10):
+        px[3][x] = c["indigo"]          # collar
+    for y in range(8, 14):
+        px[y][7] = c["lgrey"]
+    return px
+
+
+def tank(full):
+    """An air tank: valve on top, body lit top-left; cyan when full"""
+    px, c = _canvas()
+    body, lit = (c["blue"], c["white"]) if full else (c["dgrey"], c["lgrey"])
+    px[1][7] = px[1][8] = c["dgrey"]
+    for x in (6, 7, 8, 9):
+        px[2][x] = c["lgrey"]
+    for y in range(3, 15):
+        x0, x1 = (5, 10) if y in (3, 14) else (4, 11)
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y in (3, 14)
+            px[y][x] = c["navy"] if edge else lit if x == x0 + 1 else body
+    if full:
+        for x in range(6, 10):
+            px[8][x] = c["white"]; px[9][x] = c["navy"]
+        px[8][6] = c["navy"]
+    return px
+
+
+def space_suit():
+    """A suit: white body, orange chest panel, a glass visor helmet"""
+    px, c = _canvas()
+    for y in range(1, 6):
+        for x in range(5, 11):
+            edge = x in (5, 10) or y in (1, 5)
+            px[y][x] = c["navy"] if edge else c["blue"] if 2 <= y <= 4 and 6 <= x <= 9 else c["lgrey"]
+    px[2][7] = c["white"]
+    for y in range(6, 15):
+        x0, x1 = (2, 13) if y < 10 else (4, 11)
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y == 14
+            px[y][x] = c["navy"] if edge else c["lgrey"] if x in (x0 + 1, x1 - 1) else c["white"]
+    for y in range(7, 10):
+        for x in range(6, 10):
+            px[y][x] = c["orange"]
+    for y in range(11, 15):
+        px[y][7] = px[y][8] = c["navy"]
+    return px
+
+
+def chute_face():
+    """A parachute pack's face: a canopy over its lines"""
+    px, c = _canvas()
+    for y in range(2, 7):
+        half = 2 + (y - 2) * 2 if y < 5 else 7
+        for x in range(8 - half, 8 + half):
+            if 0 <= x < 16:
+                stripe = (x // 3) % 2 == 0
+                px[y][x] = c["navy"] if y == 2 and abs(x - 7.5) > half - 1 else c["red"] if stripe else c["white"]
+    for x in range(1, 15):
+        px[6][x] = c["plum"]
+    for k in range(6):
+        px[7 + k][2 + k] = c["lgrey"]; px[7 + k][13 - k] = c["lgrey"]; px[7 + k][7] = c["lgrey"]
+    for y in range(12, 15):
+        for x in range(6, 10):
+            px[y][x] = c["dgrey"] if y > 12 else c["lgrey"]
+    return px
+
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -440,3 +567,17 @@ if __name__ == "__main__":
     steel = [P8[k] for k in ("black", "navy", "indigo", "lgrey", "white")]
     write("icons/steel_ingot.png", recolour(read_png(os.path.join(tex, "minerals/earth/iron.png")), steel))
     write("icons/cement.png", cement())
+    # ---- Wool, air and re-entry (openspec wool-air-and-reentry) ----------
+    write("icons/wool.png", wool())
+    write("icons/leather.png", leather())
+    write("icons/shears.png", shears())
+    write("icons/wool_clothing.png", clothing())
+    write("icons/empty_tank.png", tank(False))
+    write("icons/oxygen_tank.png", tank(True))
+    write("icons/space_suit.png", space_suit())
+    gas = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
+    write("technology/gas_collector.png", recolour(read_png(os.path.join(techd, "hydro_generator.png")), gas))
+    write("technology/gas_collector_face.png", recolour(read_png(os.path.join(techd, "hydro_generator_face.png")), gas))
+    chute = [P8[k] for k in ("plum", "red", "orange", "peach", "white")]
+    write("rocket_parts/parachute.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), chute))
+    write("rocket_parts/parachute_face.png", chute_face())

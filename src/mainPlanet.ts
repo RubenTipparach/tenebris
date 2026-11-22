@@ -15,7 +15,7 @@ import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
 import { MenuManager } from './player/MenuManager';
 import { initScreenshotHandler } from './utils/screenshot';
-import { RocketFlightManager, RocketController, ROCKET_CONFIG } from './rocket';
+import { RocketFlightManager, RocketController, RocketState, ROCKET_CONFIG } from './rocket';
 import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
 import { ItemType, ITEM_DATA } from './player/Inventory';
@@ -41,6 +41,8 @@ import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
 import { showToast } from './utils/toast';
+import { AirSystem } from './player/AirSystem';
+import type { ExposureInput } from './player/Survival';
 
 // Setting: new games start with a ready-to-fly rocket on a launch pad
 const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
@@ -90,6 +92,8 @@ class PlanetGame {
 
   // Fishing (rod in hand)
   private fishing: FishingSystem | null = null;
+  // The interact button was down last frame (a battery swap fires once per press)
+  private rightClickHeld = false;
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
@@ -112,6 +116,8 @@ class PlanetGame {
   private teleportInProgress: boolean = false;
   private releaseTimer = 0;
   private missions: MissionsPanel | null = null;
+  // Air and the space suit (openspec wool-air-and-reentry, design 4)
+  private air: AirSystem | null = null;
   // Live orbits: the body whose frame the player is in (it never moves)
   private referenceBody = SOLAR_SYSTEM.startingBody;
   private atmosphereById = new Map<string, Atmosphere>();
@@ -418,7 +424,8 @@ class PlanetGame {
             planet.center,
             planet.radius,
             bodyConfig.gravity.strength,
-            (direction) => planet.getSurfaceHeightInDirection(direction)
+            (direction) => planet.getSurfaceHeightInDirection(direction),
+            bodyConfig.hasAtmosphere
           );
         }
       }
@@ -609,6 +616,7 @@ class PlanetGame {
       const existingWorld = !!gameStorage.load();
       this.loadSavedGame();
       this.setupMissions(existingWorld);
+      this.setupAir();
 
       // Setup auto-save for player position (every 5 seconds)
       gameStorage.setPlayerSaveCallback(() => this.player.exportForSave());
@@ -792,6 +800,7 @@ class PlanetGame {
       }
     }
     this.missions?.update(deltaTime);
+    this.updateAir(deltaTime);
     // Maps, compass and waypoints (built once the world is up)
     if (!this.navigation) {
       this.navigation = new Navigation({
@@ -832,6 +841,7 @@ class PlanetGame {
     if (!this.fauna) {
       validateFaunaRosters(this.planets.keys());
       this.fauna = new Fauna(this.engine.scene);
+      this.blockInteraction.setFauna(this.fauna); // shearing and hitting animals
     }
     {
       const pos = this.player.position;
@@ -879,8 +889,9 @@ class PlanetGame {
       let handledRocketInteraction = false;
 
       if (isGameActive && input.rightClick && this.rocketFlightManager) {
-        handledRocketInteraction = this.checkLandedRocketInteraction();
+        handledRocketInteraction = this.checkLandedRocketInteraction(!this.rightClickHeld);
       }
+      this.rightClickHeld = input.rightClick;
 
       // Fishing takes the mouse buttons while the rod is in hand
       const holdingRod = isGameActive &&
@@ -1083,7 +1094,7 @@ class PlanetGame {
    * Check if player is looking at and can interact with a landed rocket
    * Returns true if interaction was handled
    */
-  private checkLandedRocketInteraction(): boolean {
+  private checkLandedRocketInteraction(pressed: boolean): boolean {
     if (!this.rocketFlightManager) return false;
 
     const landedRocketManager = this.rocketFlightManager.getLandedRocketManager();
@@ -1100,6 +1111,19 @@ class PlanetGame {
     const result = landedRocketManager.raycast(raycaster, maxReach);
 
     if (result) {
+      // Holding a lithium-ion battery: swap it into the rocket (openspec
+      // wool-air-and-reentry, design 2) - it is used up from the hand
+      const inventory = this.blockInteraction.getInventory();
+      const held = inventory.getSelectedItem();
+      if (held.itemType === ROCKET_CONFIG.POWER.SWAP_ITEM && held.quantity > 0) {
+        if (!pressed) return true;   // still held from the press that swapped
+        this.rocketFlightManager.rechargeLanded(result.rocket, () => {
+          if (inventory.removeItem(ROCKET_CONFIG.POWER.SWAP_ITEM, 1) !== 1) return false;
+          this.blockInteraction.onInventoryChanged();
+          return true;
+        });
+        return true;
+      }
       // Player is looking at a landed rocket - open the boarding UI
       this.rocketFlightManager.openLandedRocketUI(result.rocket);
       return true;
@@ -1648,6 +1672,59 @@ class PlanetGame {
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
   }
 
+  // Air: the suit slot, the AIR chip, dying of exposure (openspec
+  // wool-air-and-reentry, design 4)
+  private setupAir(): void {
+    const air = new AirSystem(this.blockInteraction.getInventory(), () => this.blockInteraction.onInventoryChanged());
+    this.air = air;
+    this.blockInteraction.setAirSystem(air);
+    const crafting = this.blockInteraction.getCraftingSystem();
+    crafting.setSuitSlot({ worn: () => air.isSuitWorn(), takeOff: () => air.takeOffSuit() });
+    // The suit rides the synced look, so other players see it
+    this.multiplayer?.setSuit(air.isSuitWorn());
+    air.onSuitChanged((worn) => {
+      crafting.updateInventorySlots();
+      this.multiplayer?.setSuit(worn);
+    });
+  }
+
+  /** Where the player is, for the exposure rule; null while it can't be judged. */
+  private airExposure(): ExposureInput | null {
+    if (this.teleportInProgress) return null;
+    // The pause menu holds the clock: nobody suffocates behind it
+    if (document.getElementById('instructions')?.style.display === 'block') return null;
+    const rocket = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+    // A crash has its own screen and respawn
+    if (rocket?.getState() === RocketState.CRASHED) return null;
+    if (rocket) return { inRocket: true, rocketPowered: rocket.hasPower(), inGravityWell: true, bodyBreathable: true };
+    if (!this.player.getEnabled()) return null;
+    const well = this.player.getGravityWellPlanet();
+    let bodyId: string | null = null;
+    for (const [id, planet] of this.planets) if (planet === well) bodyId = id;
+    return {
+      inRocket: false,
+      rocketPowered: false,
+      inGravityWell: well !== null,
+      bodyBreathable: bodyId !== null && getBodyConfig(bodyId)?.breathable === true,
+    };
+  }
+
+  private updateAir(dt: number): void {
+    if (!this.air?.update(dt, this.airExposure())) return;
+    // Out of air: the death screen, then the world's spawn on Earth with
+    // everything carried
+    this.player.setEnabled(false);
+    this.air.showDeath(() => {
+      const flight = this.rocketFlightManager;
+      if (flight?.isInFlight()) {
+        // Climb out first; the ship stays parked where it is
+        flight.exitFlightMode(true);
+      }
+      this.player.setEnabled(true);
+      void this.teleportToPlanet(SOLAR_SYSTEM.startingBody);
+    });
+  }
+
   // Missions: the Missions tab of the E panel, counted from play
   private setupMissions(existingWorld: boolean): void {
     const inventory = this.blockInteraction.getInventory();
@@ -1665,7 +1742,7 @@ class PlanetGame {
       [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
     };
     // The industry machines and batteries share one record list
-    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR,
+    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR, ItemType.GAS_COLLECTOR,
       ItemType.BATTERY_LEAD_ACID, ItemType.BATTERY_LITHIUM, ItemType.BATTERY_SOLID_STATE]) {
       machineLists[item] = () => gameStorage.getMachines().filter(m => m.itemType === item);
     }

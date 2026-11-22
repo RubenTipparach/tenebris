@@ -21,6 +21,10 @@ export const DEPOSITS = {
   URANIUM: { type: HexBlockType.ORE_URANIUM, minDepth: 0, maxDepth: 8, veinChance: 0.0035, veinSize: 5, spreadFactor: 0.62 },
   // Oil: big, deep pockets of oil sand (Earth, the jungle moons)
   OIL: { type: HexBlockType.OIL_SAND, minDepth: 2, maxDepth: 12, veinChance: 0.0025, veinSize: 24, spreadFactor: 0.9 },
+  // Lithium: rich, shallow veins on every airless body (openspec
+  // wool-air-and-reentry). Earth keeps only the thin common veins in
+  // Planet.ts ORE_CONFIGS.
+  LITHIUM: { type: HexBlockType.ORE_LITHIUM, minDepth: 0, maxDepth: 10, veinChance: 0.012, veinSize: 9, spreadFactor: 0.75 },
 } satisfies Record<string, Deposit>;
 
 /**

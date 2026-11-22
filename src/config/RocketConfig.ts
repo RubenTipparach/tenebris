@@ -2,6 +2,16 @@
 // All constants for rocket physics, controls, and behavior
 
 import { ItemType } from '../player/Inventory';
+import { POWER_CONFIG } from './PowerConfig';
+
+// The command module's own cell (openspec wool-air-and-reentry, design 2):
+// it runs the cabin for CELL_MINUTES of flight, so its draw is derived from
+// the two - change either and the other follows
+const CELL_WH = 20000;
+const CELL_MINUTES = 15;
+// A battery pack is built from one lithium-ion battery (POWER_CONFIG
+// fabricator recipe) and holds what that battery holds - one source
+const LITHIUM_WH = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LITHIUM].capacityWh;
 
 /**
  * What one rocket part brings to the stack. A rocket's mass, thrust, fuel
@@ -18,6 +28,8 @@ export interface RocketPartStats {
                          // the delta-v the physics delivers
   fuelCapacity?: number; // fuel units, tanks only (FUEL_KG_PER_UNIT kg each)
   cargoSlots?: number;   // cargo hold slots this part adds
+  batteryWh?: number;    // charge this part stores (the command module's cell, battery packs)
+  powerDrawW?: number;   // what this part draws while the rocket flies (the command module)
   // Parts that must also be in the stack for this one to work (the ion
   // drive needs a reactor core). Unmet: the part gives no thrust, and the
   // stack's stats carry the reason (RocketStats.problems)
@@ -72,17 +84,21 @@ export const ROCKET_CONFIG = {
     [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },
     [ItemType.FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },   // legacy tank
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
-    [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4 },
+    [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, batteryWh: CELL_WH, powerDrawW: CELL_WH * 60 / CELL_MINUTES },
     [ItemType.CARGO_BAY]: { tier: 1, dryMass: 80, cargoSlots: 8 },
     // Tier 3 (uranium, built off-world): the nuclear thermal engine - the
     // same tank fuel at more than twice the vacuum engine's efficiency - and
-    // the battery pack (cargo space now, ion power later)
+    // the battery pack (cargo space, and a lithium-ion battery's charge for
+    // the command module: twice its own cell, +30 minutes of flight)
     [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
-    [ItemType.BATTERY_PACK]: { tier: 3, dryMass: 60, cargoSlots: 2 },
+    [ItemType.BATTERY_PACK]: { tier: 3, dryMass: 60, cargoSlots: 2, batteryWh: LITHIUM_WH },
     // Tier 4: the ion drive, the most efficient engine and the gentlest -
     // an in-space engine that only fires with a reactor core aboard
     [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },
     [ItemType.REACTOR_CORE]: { tier: 4, dryMass: 400 },
+    // Tier 1 (wool + iron, openspec wool-air-and-reentry): the parachute -
+    // mass only; ROCKET_CONFIG.PARACHUTE says how it flies
+    [ItemType.PARACHUTE]: { tier: 1, dryMass: 40 },
   } as Partial<Record<ItemType, RocketPartStats>>,
 
   // === CARGO HOLD ===
@@ -92,9 +108,74 @@ export const ROCKET_CONFIG = {
 
   // === COMMAND MODULE ===
   COMMAND_MODULE: {
-    hasParachute: true,
-    parachuteDeployAltitude: 50, // meters above surface
     maxSurvivableImpact: 10,      // m/s
+  },
+
+  // === POWER (openspec wool-air-and-reentry, design 2) ===
+  // A flight's charge is the stack's batteryWh (PARTS), drawn at its
+  // powerDrawW whenever the rocket flies (launching, in flight, landing - not
+  // on the pad or landed). Flat: no thrust, no steering, no cabin air.
+  POWER: {
+    CELL_MINUTES,                 // the command module's cell alone lasts this long
+    LOW_WARN_S: 120,              // toast when this much flight time is left
+    // Interact at a landed rocket holding this item swaps it in: it is used
+    // up and adds its stored Wh (POWER_CONFIG.BATTERIES), up to the capacity
+    SWAP_ITEM: ItemType.BATTERY_LITHIUM,
+  },
+
+  // === RE-ENTRY HEAT (openspec wool-air-and-reentry, design 3) ===
+  // A flight that has been outside every atmosphere since launch and then
+  // enters one is re-entering until it lands. Faster than safeSpeed it heats
+  // by (speed - safeSpeed) * heatPerMs per second, else it cools at coolPerS.
+  // Above damageFrom heat wears health (damagePerS at maxHeat, scaled
+  // linearly from damageFrom); at maxHeat it burns up.
+  REENTRY: {
+    // Where the air is, for heat and the parachute, as a multiple of the
+    // body's radius. NOT PlayerConfig.ATMOSPHERE_RADIUS_MULT (1.1): the sky
+    // shell is 10 m thick on Earth, crossed in a fraction of a second at
+    // re-entry speeds, so heat could never build. This is the gravity well's
+    // edge (GRAVITY_WELL.FALLOFF_RADIUS_MULT), 80 m deep on Earth: the
+    // whole descent through a body's pull is "in the air".
+    shellRadiusMult: 1.8,
+    // Earth's free-fall speed with the flight damping is ~33 m/s, so a
+    // passive fall stays cool; only a powered dive heats
+    safeSpeed: 40,                // m/s
+    heatPerMs: 1.5,               // heat per second per m/s over safeSpeed (80 m/s: maxHeat in under 2 s)
+    coolPerS: 25,                 // heat lost per second otherwise
+    damageFrom: 50,               // heat above this wears health
+    damagePerS: 60,               // health per second at maxHeat
+    maxHeat: 100,                 // burns up here
+    // The glow: an additive shell round the stack, opacity = heat share * maxOpacity
+    glow: {
+      color: 0xff7a1a,
+      maxOpacity: 0.85,
+      radius: 2.5,                // m, past the stack's widest part
+      lengthPad: 2,               // m added to the stack's height
+    },
+  },
+
+  // === PARACHUTE (openspec wool-air-and-reentry, design 3) ===
+  // Opens by ROCKET_INPUTS.PARACHUTE or by itself when falling below
+  // deployAltitude - only with a PARACHUTE part in the stack, only inside an
+  // atmosphere (REENTRY.shellRadiusMult) and only below maxOpenSpeed (faster,
+  // it tears and is gone for the flight). Open, the descent's excess over
+  // terminalVelocity bleeds at dragRate (1/s) and the chute holds gravity
+  // there; sideways motion bleeds at the same rate; it rights the rocket.
+  PARACHUTE: {
+    deployAltitude: 50,           // m above the surface (auto-open while falling)
+    maxOpenSpeed: 45,             // m/s (above a passive fall's ~33 m/s)
+    terminalVelocity: 3,          // m/s, under HEALTH.impactDamageThreshold
+    dragRate: 1.5,                // 1/s
+    uprightRate: 1.5,             // 1/s, how fast it swings the nose up
+    // The canopy drawn above the stack (procedural)
+    canopy: {
+      radius: 3.5,                // m
+      height: 2.2,                // m, the dome's depth
+      lift: 4,                    // m above the top of the stack
+      gores: 12,                  // stripes round the dome
+      colors: [0xff4a2a, 0xf2f0e9] as const,
+      lineColor: 0xdddddd,
+    },
   },
 
   // === PHYSICS ===
@@ -153,8 +234,7 @@ export const ROCKET_CONFIG = {
   // === EJECTION ===
   EJECTION: {
     separationVelocity: 20,       // m/s upward impulse when ejecting
-    parachuteDrag: 0.95,          // Drag coefficient with parachute deployed
-    terminalVelocity: 5,          // m/s with parachute
+    // (the parachute's numbers live in PARACHUTE)
   },
 
   // === VISUAL ===
@@ -201,4 +281,5 @@ export const ROCKET_INPUTS = {
   EXIT_ROCKET: 'KeyV',            // V - exit rocket
   EJECT_CAPSULE: 'KeyJ',          // J - emergency eject (hold)
   RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
+  PARACHUTE: 'KeyP',              // P - open the parachute (Shift+P stays the screenshot key)
 };

@@ -105,7 +105,7 @@ export class RocketSync {
     this.landedTimer -= dt;
     if (this.landedTimer <= 0) {
       this.landedTimer = LANDED_CHECK_S;
-      // Fuel or cargo changed (refuelled, cargo moved): republish
+      // Fuel, cargo or charge changed (refuelled, cargo moved, battery swapped): republish
       for (const rocket of this.flight.getLandedRocketManager().getAllLandedRockets()) {
         if (this.landedSig.has(rocket.netKey) && this.landedSig.get(rocket.netKey) !== this.landedState(rocket)) {
           this.publishLanded(rocket);
@@ -234,7 +234,8 @@ export class RocketSync {
   // ---- landed ---------------------------------------------------------
 
   private landedState(rocket: LandedRocket): string {
-    return JSON.stringify([r3(rocket.fuelPercent), (rocket.cargo ?? []).map(s => [s.itemType, s.quantity]), rocket.engineMode ?? null]);
+    return JSON.stringify([r3(rocket.fuelPercent), (rocket.cargo ?? []).map(s => [s.itemType, s.quantity]), rocket.engineMode ?? null,
+      rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh), !!rocket.chuteSpent]);
   }
 
   private publishLanded(rocket: LandedRocket): void {
@@ -249,6 +250,8 @@ export class RocketSync {
       fuel: r3(rocket.fuelPercent),
       cargo: rocket.cargo ? rocket.cargo.map(s => [s.itemType, s.quantity]) : null,
       mode: rocket.engineMode ?? null,
+      wh: rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh),  // battery charge (null = full)
+      cs: !!rocket.chuteSpent,                                                  // parachute spent
     });
   }
 
@@ -267,10 +270,14 @@ export class RocketSync {
     if (!isVec(data.p, 3) || !isVec(data.q, 4) || !isVec(data.n, 3) || !isWire(data.parts)) return;
     const fuel = typeof data.fuel === 'number' ? Math.max(0, Math.min(100, data.fuel)) : 100;
     const cargo = toCargo(data.cargo);
+    const chargeWh = typeof data.wh === 'number' && Number.isFinite(data.wh) ? Math.max(0, data.wh) : null;
+    const chuteSpent = data.cs === true;
     if (existing) {
       // Same rocket, new fuel / cargo: update in place (the hold may be a
       // pad's shared array, so fill it rather than replace it)
       existing.fuelPercent = fuel;
+      existing.chargeWh = chargeWh ?? undefined;
+      existing.chuteSpent = chuteSpent;
       existing.engineMode = typeof data.mode === 'number' ? data.mode : null;
       if (existing.cargo && cargo) {
         for (let i = 0; i < existing.cargo.length; i++) {
@@ -293,7 +300,7 @@ export class RocketSync {
         }
         const rocket = manager.createLandedRocket(
           pivot, parts, pivot.position, pivot.quaternion,
-          new THREE.Vector3().fromArray(data.n), fuel, cargo, null, key,
+          new THREE.Vector3().fromArray(data.n), fuel, cargo, null, key, chargeWh, chuteSpent,
         );
         rocket.engineMode = typeof data.mode === 'number' ? data.mode : null;
         this.landedSig.set(key, this.landedState(rocket));

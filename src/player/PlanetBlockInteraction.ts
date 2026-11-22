@@ -5,8 +5,11 @@ import { HexBlockType } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
 import { emitGameEvent } from '../engine/GameEvents';
+import type { Fauna } from '../planet/Fauna';
+import { RANCHING } from '../config/SurvivalConfig';
 import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
+import type { AirSystem } from './AirSystem';
 import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
 
 // An engine, a fuel tank and a command module on the pad: a rocket that flies
@@ -148,6 +151,7 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.OIL_SAND: return ItemType.NONE;
     // Building materials come back as themselves
     case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
+    case HexBlockType.CARPET: return ItemType.CARPET;
     case HexBlockType.CONCRETE_BLOCK: return ItemType.CONCRETE_BLOCK;
     case HexBlockType.STEEL_GIRDER: return ItemType.STEEL_GIRDER;
     case HexBlockType.STEEL_GLASS: return ItemType.STEEL_GLASS;
@@ -188,6 +192,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.CLAY: return HexBlockType.CLAY;
     case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
     case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
+    case ItemType.CARPET: return HexBlockType.CARPET;
     case ItemType.CONCRETE_BLOCK: return HexBlockType.CONCRETE_BLOCK;
     case ItemType.STEEL_GIRDER: return HexBlockType.STEEL_GIRDER;
     case ItemType.STEEL_GLASS: return HexBlockType.STEEL_GLASS;
@@ -262,6 +267,8 @@ export class PlanetBlockInteraction {
   private wellFedLoaded = false;
   private wellFedSaveTimer = 0;
   private wellFedChip: HTMLElement | null = null;
+  // Air and the space suit (src/player/AirSystem.ts), set by the game
+  private airSystem: AirSystem | null = null;
   private garbagePileManager: GarbagePileManager;
   private storageUI: StorageUI;
   private miningStorageTarget: { chest: PlacedStorageChest } | null = null;
@@ -329,6 +336,9 @@ export class PlanetBlockInteraction {
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
+  // Ranching: the animals round the player (set by the game once it has them)
+  private fauna: Fauna | null = null;
+  private animalHitCooldown = 0;
   private readonly MAX_REACH = 8;
 
   // Mining state
@@ -1525,10 +1535,20 @@ export class PlanetBlockInteraction {
     const machineDistance = machineIntersects.length > 0 ? machineIntersects[0].distance : Infinity;
     const closestObjectDistance = Math.min(machineDistance, treeDistance, torchDistance, furnaceDistance, storageChestDistance, cookerDistance, garbagePileDistance, steamEngineDistance, hydroGeneratorDistance, copperPipeDistance, cableDistance, electricFurnaceDistance, electronicsWorkbenchDistance, computerDistance, printer3DDistance, launchPadDistance);
 
+    // An animal in front of everything else takes the clicks (shear / hit)
+    if (this.handleAnimal(deltaTime, origin, direction, leftClick, rightClick, selectedItem.itemType,
+      Math.min(closestBlockDistance, closestObjectDistance))) return;
+
     // A dish in hand and no machine in reach: right click eats it
     if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity) {
       this.eatSelected();
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      return;
+    }
+    // A space suit in hand: right click puts it on (the suit slot takes it)
+    if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.SPACE_SUIT && selectedItem.quantity > 0 &&
+        closestObjectDistance === Infinity && this.airSystem?.wearSuitInHand()) {
       this.rightClickCooldown = this.CLICK_COOLDOWN;
       return;
     }
@@ -4061,6 +4081,53 @@ export class PlanetBlockInteraction {
     return this.inventory;
   }
 
+  /**
+   * The animals round the player, for shearing and hitting. Their rewards
+   * (wool, leather - including leather the MP host sends back for a cow this
+   * player felled) land in the inventory through the normal give path.
+   */
+  public setFauna(fauna: Fauna | null): void {
+    this.fauna = fauna;
+    fauna?.setRewardHandler((kind, count) => {
+      this.inventory.addItem(kind === 'wool' ? ItemType.WOOL : ItemType.LEATHER, count);
+      this.updateHotbarUI();
+      this.saveInventory();
+    });
+  }
+
+  /**
+   * An animal under the crosshair, nearer than any block or object
+   * (`nearestOther`): right click (the interact button) with shears shears a
+   * sheep; the break button hits it (a cow falls after its hits; anything
+   * else runs). Returns true when the animal took the crosshair, so the
+   * block behind it is neither mined nor built on.
+   */
+  private handleAnimal(dt: number, origin: THREE.Vector3, direction: THREE.Vector3, leftClick: boolean, rightClick: boolean,
+    held: ItemType, nearestOther: number): boolean {
+    this.animalHitCooldown = Math.max(0, this.animalHitCooldown - dt);
+    if (!this.fauna) return false;
+    const pick = this.fauna.pick(origin, direction, RANCHING.REACH_M);
+    if (!pick || pick.distance >= nearestOther) return false;
+    if (this.blockWireframe) {
+      this.blockWireframe.visible = false;
+      this.wireframeCache = null;
+    }
+    this.resetMining();
+    if (rightClick && this.rightClickCooldown === 0 && held === ItemType.SHEARS) {
+      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      if (this.fauna.shear(pick.uid) > 0) emitGameEvent('sheared');
+    } else if (leftClick && this.animalHitCooldown === 0) {
+      this.animalHitCooldown = RANCHING.HIT_COOLDOWN_S;
+      this.fauna.hit(pick.uid, this.player.position);
+    }
+    return true;
+  }
+
+  /** The air system: using a space suit in hand puts it on. */
+  public setAirSystem(air: AirSystem): void {
+    this.airSystem = air;
+  }
+
   /** Sunlight on the machines and the launch pads (live orbits: day and night). */
   public setSunDirection(dir: THREE.Vector3): void {
     for (const m of [this.furnaceManager, this.storageChestManager, this.cookerManager, this.garbagePileManager, this.steamEngineManager,
@@ -4401,6 +4468,11 @@ export class PlanetBlockInteraction {
     // A reactor goes only on an airless body (the Moon, moons, asteroids, barren worlds)
     if (kind === 'reactor' && getBodyConfig(planetId)?.hasAtmosphere !== false) {
       showToast('Reactors can only be built off-world', { duration: 3000 });
+      return;
+    }
+    // A gas collector bottles the air, so only where it can be breathed
+    if (kind === 'gasCollector' && getBodyConfig(planetId)?.breathable !== true) {
+      showToast('No air to collect here', { duration: 3000 });
       return;
     }
     const tile = planet.getTileByIndex(tileIndex);

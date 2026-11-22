@@ -136,7 +136,7 @@ t4.event('reached', undefined, 1, h);
 ok(t4.isDone('map'), 'reaching a far waypoint completes Read the map');
 t4.event('smelted', ItemType.INGOT_IRON, 3, h);
 ok(!t4.isDone('ingots'), 'smelting before its mission opens does not count');
-const lateIds = ['moon', 'moonmetal', 'titanium', 'vacuum', 'icefuel', 'sequoia', 'explorer', 'alienfish'];
+const lateIds = ['moon', 'moonmetal', 'titanium', 'vacuum', 'icefuel', 'sequoia', 'explorer', 'alienfish', 'recharge', 'spacewalk'];
 const t9 = new MissionTracker({ v: 2, done: MISSIONS.filter(m => !lateIds.includes(m.id) && m.branch !== 'nuclear').map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [] });
 t9.event('landed', 'earth', 1, h);
 ok(!t9.isDone('moon'), 'landing on Earth does not count for the Moon');

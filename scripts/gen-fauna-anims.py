@@ -102,6 +102,22 @@ SPECIES = {
             'ears': track(rot=arc(0.35)),
         }),
     },
+    'sheep': {
+        'idle': (4.2, {
+            'head': track(rot=seq([1.1, 1.2, 1.1, 1.2, 1.1, 0.5, 0.0, 0.5])),
+            'tail': track(rot=wave(0.3, mult=3)),
+            'body': track(dy=wave(0.008)),
+        }),
+        'move': (0.9, {**quad_walk(0.45, 0.03, 0.06), 'tail': track(rot=wave(0.2, mult=2))}),
+    },
+    'cow': {
+        'idle': (5.0, {
+            'head': track(rot=seq([0.9, 1.0, 0.9, 1.0, 0.9, 1.0, 0.4, 0.0])),
+            'tail': track(rot=wave(0.35)),
+            'body': track(dy=wave(0.008)),
+        }),
+        'move': (1.2, {**quad_walk(0.4, 0.03, 0.05), 'tail': track(rot=wave(0.15, mult=2))}),
+    },
     'swallow': {
         'idle': (1.6, {
             'wingL': track(rot=wave(0.18, off=0.05)), 'wingR': track(rot=wave(0.18, off=0.05)),

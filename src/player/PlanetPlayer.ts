@@ -2541,6 +2541,16 @@ export class PlanetPlayer {
     return this.currentPlanet;
   }
 
+  /**
+   * The body whose gravity well the player is in, from where they are now
+   * (the same query that decides space flight), or null in open space. The
+   * air system reads it (openspec wool-air-and-reentry, design 4).
+   */
+  public getGravityWellPlanet(): Planet | null {
+    const { planet, gravityMultiplier } = this.findClosestPlanetAndGravity();
+    return gravityMultiplier > 0 ? planet : null;
+  }
+
   public getForwardVector(): THREE.Vector3 {
     // Camera looks along -localForward
     return this.localForward.clone().negate();

@@ -36,7 +36,7 @@ const BIOME_TEXTURES: [string, string][] = [
   // Industry resources (scripts/gen-biome-textures.py)
   ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
   // Building materials (scripts/gen-biome-textures.py)
-  ['brickBlock', 'building/brick_block'], ['concrete', 'building/concrete'],
+  ['brickBlock', 'building/brick_block'], ['carpet', 'building/carpet'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)
   ['cityRoad', 'city/road'], ['citySidewalk', 'city/sidewalk'], ['cityCurb', 'city/curb'],
   ['cityPlaza', 'city/plaza'], ['citySlab', 'city/slab'], ['cityFacade', 'city/facade'],

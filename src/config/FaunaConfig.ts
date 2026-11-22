@@ -45,6 +45,12 @@ export interface FaunaSpecies {
   weight: number;
   /** Multiplier on the model's emissive parts (0 = none glow). */
   glow: number;
+  /**
+   * Ranching (src/planet/Ranching.ts, numbers in SurvivalConfig RANCHING):
+   * 'wool' = shears shear it (needs a model part named 'fleece'), 'hide' =
+   * hits bring it down for leather. Omitted = neither.
+   */
+  ranch?: 'wool' | 'hide';
 }
 
 export const FAUNA_CONFIG = {
@@ -116,6 +122,17 @@ export const FAUNA_SPECIES = {
     planet: 'earth', name: 'Rabbit', motion: 'hop',
     walkSpeed: 1.8, fleeSpeed: 6, fleeRadius: 8, idleTime: [1.5, 5], wanderTime: [1, 3],
     herd: [2, 5], scale: [1.2, 1.5], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 3, glow: 0,
+  },
+  // Calm grazers: slow, and they only shuffle off when crowded (or hit)
+  sheep: {
+    planet: 'earth', name: 'Sheep', motion: 'walk',
+    walkSpeed: 0.8, fleeSpeed: 3, fleeRadius: 2, idleTime: [4, 10], wanderTime: [2, 4],
+    herd: [2, 5], scale: [0.9, 1.1], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 2.5, glow: 0, ranch: 'wool',
+  },
+  cow: {
+    planet: 'earth', name: 'Cow', motion: 'walk',
+    walkSpeed: 0.7, fleeSpeed: 2.8, fleeRadius: 2, idleTime: [5, 12], wanderTime: [2, 4],
+    herd: [2, 5], scale: [0.95, 1.1], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 2, glow: 0, ranch: 'hide',
   },
   swallow: {
     planet: 'earth', name: 'Swallow', motion: 'fly',

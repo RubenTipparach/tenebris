@@ -8,6 +8,8 @@ import { buildFaunaModel, FaunaModel } from './FaunaModels';
 import { surfaceTop, tileHash } from './SurfaceTiles';
 import { getAssetPath } from '../utils/assetPath';
 import { netSync } from '../net/NetSync';
+import { RANCHING } from '../config/SurvivalConfig';
+import { RanchState, newRanchState, isShorn, shear as shearRule, hit as hitRule, pickNearest } from './Ranching';
 
 /**
  * Fauna: herds of creatures round the player, on the planet they stand on.
@@ -32,6 +34,18 @@ import { netSync } from '../net/NetSync';
  *   latest snapshot and draw them through the same path. When the host
  *   leaves, the next one takes over the creatures it was drawing, so
  *   nobody sees the herds pop.
+ * - Ranching (src/planet/Ranching.ts has the rules): `pick` finds the animal
+ *   under the crosshair, `shear` / `hit` act on it. The host (and single
+ *   player) applies them at once; anyone else sends them to the host on the
+ *   live channel 'faunaAct' and the host's next snapshot carries the result
+ *   (the shorn flag, or the animal gone). Rewards all leave through ONE
+ *   handler (`setRewardHandler`), so the inventory code is the same either
+ *   way: wool is given by the shearing client itself when it believes the
+ *   sheep is unshorn (instant; two players shearing the same sheep in the
+ *   same instant both get wool - harmless); leather is given by the host,
+ *   which alone counts a cow's hits, and comes back to the hitter as a
+ *   'drop' action. Nothing here is saved: animals respawn lazily, so a
+ *   shorn flag lives as long as the animal does.
  */
 
 const CLIP_IDLE = 0;
@@ -47,8 +61,14 @@ const enum State { Idle, Wander, Flee }
 // Species are sent as an index into this list (same build on every client)
 const SPECIES_IDS = Object.keys(FAUNA_SPECIES) as FaunaSpeciesId[];
 
-/** One creature in a snapshot: [id, species, site, dir xyz, groundR, face xyz, scale, tint, hover, moveW, speed, state] */
-type SnapCreature = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+/** One creature in a snapshot: [id, species, site, dir xyz, groundR, face xyz, scale, tint, hover, moveW, speed, state, shorn (0/1)] */
+type SnapCreature = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+/** An animal action on the live channel 'faunaAct': a shear / hit sent to the host, or the host's drop back to a hitter. */
+interface FaunaAction { planet: string; act: 'shear' | 'hit' | 'drop'; id?: number; from?: [number, number, number]; to?: number; leather?: number }
+
+/** The animal under the crosshair (Fauna.pick). */
+export interface AnimalPick { uid: number; species: FaunaSpeciesId; distance: number; shearable: boolean; ranch: FaunaSpecies['ranch'] }
+export type FaunaReward = (kind: 'wool' | 'leather', count: number) => void;
 interface FaunaSnapshot { planet: string; animals: SnapCreature[] }
 
 interface AnimFile {
@@ -63,6 +83,10 @@ class SpeciesRender {
   readonly anim: THREE.InstancedBufferAttribute;
   readonly material: THREE.ShaderMaterial;
   readonly durations: number[];
+  /** Per-instance fleece size, for a species with a 'fleece' part (else null). */
+  readonly fleece: THREE.InstancedBufferAttribute | null;
+  /** The model's bounding sphere (model space), for picking. */
+  readonly bounds: THREE.Sphere;
   count = 0;
 
   constructor(readonly id: FaunaSpeciesId, readonly cfg: FaunaSpecies, model: FaunaModel, file: AnimFile, scene: THREE.Scene) {
@@ -88,11 +112,20 @@ class SpeciesRender {
       pt.axis.toArray(axis, i * 3);
       parent[i] = pt.parent;
     });
-    this.material = makeMaterial(F, P, keys, pivot, axis, parent, cfg.glow);
+    const fleecePart = model.parts.findIndex(pt => pt.name === 'fleece');
+    if (cfg.ranch === 'wool' && fleecePart < 0) console.error(`[Fauna] ${id}: a wool species needs a 'fleece' part`);
+    this.material = makeMaterial(F, P, keys, pivot, axis, parent, cfg.glow, fleecePart);
     const geometry = model.geometry;
+    this.bounds = geometry.boundingSphere?.clone() ?? new THREE.Sphere(new THREE.Vector3(), 1);
     this.anim = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies * 3), 3);
     this.anim.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('aAnim', this.anim);
+    this.fleece = null;
+    if (fleecePart >= 0) {
+      this.fleece = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies).fill(1), 1);
+      this.fleece.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('aFleece', this.fleece);
+    }
     this.mesh = new THREE.InstancedMesh(geometry, this.material, C.maxPerSpecies);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies * 3), 3);
@@ -123,6 +156,10 @@ interface Creature {
   scale: number;
   tint: number;
   bobPhase: number;
+  ranch: RanchState;
+  panic: number;             // seconds left running from a hit
+  fleeFrom: THREE.Vector3;   // ...from whoever hit it
+  shove: THREE.Vector3;      // knock-back velocity (tangent), dies away
   // Drawn from a host's snapshot: where it should be
   target?: { dir: THREE.Vector3; face: THREE.Vector3; groundR: number; moveW: number; speed: number };
 }
@@ -145,16 +182,19 @@ export class Fauna {
   private hosting = true;
   private sinceSnapshot = 0;
   private remoteSnap: FaunaSnapshot | null = null; // latest from the host, not yet applied
+  private reward: FaunaReward | null = null;
   // scratch
   private m = new THREE.Matrix4();
   private v = new THREE.Vector3();
   private x = new THREE.Vector3();
   private col = new THREE.Color();
+  private y = new THREE.Vector3();
 
   constructor(private scene: THREE.Scene) {
     netSync.onLive('fauna', (_from, data: FaunaSnapshot) => {
       if (data && typeof data.planet === 'string' && Array.isArray(data.animals)) this.remoteSnap = data;
     });
+    netSync.onLive('faunaAct', (from, data: FaunaAction) => this.remoteAction(from, data));
   }
 
   /** planet: the world the player stands on (null in space). */
@@ -224,7 +264,8 @@ export class Fauna {
         animals.push([c.id, SPECIES_IDS.indexOf(c.render.id), h.site,
           r(c.dir.x, d), r(c.dir.y, d), r(c.dir.z, d), r(c.groundR, l),
           r(c.face.x, d), r(c.face.y, d), r(c.face.z, d),
-          r(c.scale, l), r(c.tint, l), r(c.hover, l), r(c.moveW, l), r(c.speed, l), c.state]);
+          r(c.scale, l), r(c.tint, l), r(c.hover, l), r(c.moveW, l), r(c.speed, l), c.state,
+          isShorn(c.ranch, this.time) ? 1 : 0]);
       }
     }
     return { planet: planet.getName(), animals };
@@ -238,7 +279,7 @@ export class Fauna {
     const herds = new Map<number, Herd>();
     for (const a of snap.animals) {
       if (!Array.isArray(a) || a.length < 16) continue;
-      const [id, sp, site, dx, dy, dz, g, fx, fy, fz, scale, tint, hover, moveW, speed, state] = a;
+      const [id, sp, site, dx, dy, dz, g, fx, fy, fz, scale, tint, hover, moveW, speed, state, shorn] = a;
       const render = this.renders.get(SPECIES_IDS[sp]);
       if (!render) { if (SPECIES_IDS[sp]) this.load(SPECIES_IDS[sp]); continue; }
       const target = { dir: new THREE.Vector3(dx, dy, dz).normalize(), face: new THREE.Vector3(fx, fy, fz).normalize(), groundR: g, moveW, speed };
@@ -250,11 +291,14 @@ export class Fauna {
           id, render, cfg: render.cfg, dir: target.dir.clone(), pos: new THREE.Vector3(), heading: target.face.clone(), face: target.face.clone(),
           tile, tileR: g, groundR: g, hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
           phase: [Math.random(), Math.random()], moveW, scale, tint, bobPhase: Math.random() * Math.PI * 2,
+          ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
         };
         this.place(c, planet);
       }
       c.target = target;
       c.state = state as State;
+      // a drawn animal's fleece is whatever the host says (it alone regrows it)
+      c.ranch.shornUntil = shorn ? Infinity : 0;
       let herd = herds.get(site);
       if (!herd) herds.set(site, herd = { site, members: [] });
       herd.members.push(c);
@@ -288,6 +332,7 @@ export class Fauna {
       for (const c of h.members) {
         maxId = Math.max(maxId, c.id);
         c.target = undefined;
+        if (c.ranch.shornUntil === Infinity) c.ranch.shornUntil = this.time + RANCHING.REGROW_S;
         c.tile = poly.getTileAtPointFromHint(this.v.copy(c.dir).multiplyScalar(planet.radius), c.tile);
         const { top } = surfaceTop(planet, c.tile.index);
         c.tileR = top >= 0 ? planet.depthToRadius(top) : c.groundR;
@@ -296,6 +341,120 @@ export class Fauna {
     }
     this.nextId = Math.max(this.nextId, maxId + 1);
     this.sinceScan = Infinity;
+  }
+
+  // ---- ranching ----------------------------------------------------------
+
+  /** Where rewards go (the player's inventory): wool when shearing, leather when a cow falls. */
+  public setRewardHandler(fn: FaunaReward | null): void {
+    this.reward = fn;
+  }
+
+  /** The nearest live animal whose bounding sphere the ray enters within `reach` (dir: unit). */
+  public pick(origin: THREE.Vector3, dir: THREE.Vector3, reach: number): AnimalPick | null {
+    const all: Creature[] = [];
+    const spheres: { center: THREE.Vector3; radius: number }[] = [];
+    for (const h of this.herds) {
+      for (const c of h.members) {
+        all.push(c);
+        spheres.push(this.boundsOf(c));
+      }
+    }
+    const { index, distance } = pickNearest(origin, dir, reach, spheres);
+    if (index < 0) return null;
+    const c = all[index];
+    return {
+      uid: c.id, species: c.render.id, distance, ranch: c.cfg.ranch,
+      shearable: c.cfg.ranch === 'wool' && !isShorn(c.ranch, this.time),
+    };
+  }
+
+  /** Shear an animal: wool goes to the reward handler. Returns the wool given (0 = nothing to shear). */
+  public shear(uid: number): number {
+    const c = this.find(uid);
+    if (!c || !this.planet) return 0;
+    const wool = shearRule(c.cfg, c.ranch, this.time, Math.random());
+    if (wool <= 0) return 0;
+    if (!this.hosting) this.send({ planet: this.planet.getName(), act: 'shear', id: uid });
+    this.reward?.('wool', wool);
+    return wool;
+  }
+
+  /** Hit an animal from `from` (the hitter's position): it's shoved back and runs; a cow falls after its hits. */
+  public hit(uid: number, from: THREE.Vector3): void {
+    const c = this.find(uid);
+    if (!c || !this.planet) return;
+    if (!this.hosting) {
+      const k = 10 ** RANCHING.ACTION_DECIMALS;
+      const r = (v: number) => Math.round(v * k) / k;
+      this.send({ planet: this.planet.getName(), act: 'hit', id: uid, from: [r(from.x), r(from.y), r(from.z)] });
+      return;
+    }
+    const leather = this.applyHit(c, from);
+    if (leather > 0) this.reward?.('leather', leather);
+  }
+
+  /** Host side of a hit. Returns the leather dropped (0 = it's still standing). */
+  private applyHit(c: Creature, from: THREE.Vector3): number {
+    const { fallen, leather } = hitRule(c.cfg, c.ranch, Math.random());
+    if (fallen) {
+      this.remove(c);
+      return leather;
+    }
+    c.panic = RANCHING.HIT_FLEE_S;
+    c.fleeFrom.copy(from);
+    c.state = State.Flee;
+    c.shove.copy(c.pos).sub(from);
+    tangent(c.shove, c.dir).multiplyScalar(RANCHING.HIT_SHOVE);
+    return 0;
+  }
+
+  /** An action from another player: the host applies shears and hits; a hitter gets its drop. */
+  private remoteAction(from: number, a: FaunaAction): void {
+    if (!a || typeof a.planet !== 'string' || !this.planet || a.planet !== this.planet.getName()) return;
+    if (a.act === 'drop') {
+      if (a.to === netSync.myId() && typeof a.leather === 'number' && a.leather > 0) this.reward?.('leather', a.leather);
+      return;
+    }
+    if (!this.hosting || typeof a.id !== 'number') return;
+    const c = this.find(a.id);
+    if (!c) return;
+    if (a.act === 'shear') {
+      shearRule(c.cfg, c.ranch, this.time, Math.random()); // the shearer gave itself the wool
+    } else if (a.act === 'hit' && Array.isArray(a.from) && a.from.length === 3) {
+      const leather = this.applyHit(c, new THREE.Vector3(a.from[0], a.from[1], a.from[2]));
+      if (leather > 0) this.send({ planet: a.planet, act: 'drop', to: from, leather });
+    }
+  }
+
+  private send(a: FaunaAction): void {
+    netSync.live('faunaAct', a);
+  }
+
+  private find(uid: number): Creature | undefined {
+    for (const h of this.herds) for (const c of h.members) if (c.id === uid) return c;
+    return undefined;
+  }
+
+  /** Take a creature out of the world; an emptied herd frees its site (the spawner refills it as usual). */
+  private remove(c: Creature): void {
+    this.herds = this.herds.filter(h => {
+      h.members = h.members.filter(m => m !== c);
+      if (h.members.length) return true;
+      this.sites.delete(h.site);
+      return false;
+    });
+  }
+
+  /** A creature's bounding sphere in the world (the model's, posed and scaled like the drawn instance). */
+  private boundsOf(c: Creature): { center: THREE.Vector3; radius: number } {
+    const b = c.render.bounds;
+    this.x.crossVectors(c.dir, c.face).normalize();
+    const center = c.pos.clone()
+      .addScaledVector(this.x, b.center.x * c.scale)
+      .addScaledVector(c.dir, b.center.y * c.scale)
+      .addScaledVector(c.face, b.center.z * c.scale);
+    return { center, radius: b.radius * c.scale };
   }
 
   /** Counts for debugging / perf checks. */
@@ -419,6 +578,7 @@ export class Fauna {
       state: State.Idle, timer: lerp(cfg.idleTime, Math.random()), speed: 0,
       phase: [Math.random(), Math.random()], moveW: 0,
       scale: lerp(cfg.scale, Math.random()), tint: lerp(C.tint, Math.random()), bobPhase: Math.random() * Math.PI * 2,
+      ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
     };
     this.place(c, planet);
     return c;
@@ -429,7 +589,14 @@ export class Fauna {
     const up = c.dir;
     const dist = c.pos.distanceTo(player);
     if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) c.state = State.Flee;
-    if (c.state === State.Flee) {
+    if (c.panic > 0) {
+      // hit: run from the hitter until the panic wears off
+      c.panic -= dt;
+      c.state = State.Flee;
+      c.heading.copy(c.pos).sub(c.fleeFrom);
+      tangent(c.heading, up);
+      if (c.panic <= 0) { c.state = State.Wander; c.timer = lerp(cfg.wanderTime, Math.random()); }
+    } else if (c.state === State.Flee) {
       if (dist > cfg.fleeRadius * C.fleeRelease) {
         c.state = State.Wander;
         c.timer = lerp(cfg.wanderTime, Math.random());
@@ -458,8 +625,10 @@ export class Fauna {
     c.face.lerp(c.heading, Math.min(1, dt * C.turnRate));
     tangent(c.face, up);
 
-    if (c.speed > 0.01) {
-      const next = this.v.copy(c.dir).multiplyScalar(c.groundR).addScaledVector(c.face, c.speed * dt).normalize();
+    const vel = this.y.copy(c.face).multiplyScalar(c.speed).add(c.shove);
+    c.shove.multiplyScalar(Math.max(0, 1 - dt * RANCHING.SHOVE_DECAY));
+    if (vel.lengthSq() > 1e-4) {
+      const next = this.v.copy(c.dir).multiplyScalar(c.groundR).addScaledVector(vel, dt).normalize();
       const tile = planet.getPolyhedron().getTileAtPointFromHint(this.x.copy(next).multiplyScalar(planet.radius), c.tile);
       let ok = true;
       if (tile !== c.tile) {
@@ -475,6 +644,7 @@ export class Fauna {
         c.dir.copy(next);
       } else {
         // turn back from water / cliffs
+        c.shove.set(0, 0, 0);
         c.heading.negate();
         c.face.copy(c.heading);
         if (c.state === State.Idle) c.state = State.Wander;
@@ -526,6 +696,7 @@ export class Fauna {
         r.mesh.setMatrixAt(i, this.m);
         r.mesh.setColorAt(i, this.col.setScalar(c.tint));
         r.anim.setXYZ(i, c.moveW, c.phase[CLIP_IDLE], c.phase[CLIP_MOVE]);
+        r.fleece?.setX(i, isShorn(c.ranch, this.time) ? RANCHING.SHORN_FLEECE_SCALE : 1);
       }
     }
     for (const r of this.renders.values()) {
@@ -534,6 +705,7 @@ export class Fauna {
       r.mesh.instanceMatrix.needsUpdate = true;
       if (r.mesh.instanceColor) r.mesh.instanceColor.needsUpdate = true;
       r.anim.needsUpdate = true;
+      if (r.fleece) r.fleece.needsUpdate = true;
     }
   }
 }
@@ -567,7 +739,7 @@ function randomTangent(up: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
 }
 
 function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Array, axis: Float32Array,
-  parent: Float32Array, glow: number): THREE.ShaderMaterial {
+  parent: Float32Array, glow: number, fleecePart: number): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       uKeys: { value: keys },
@@ -581,7 +753,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
     },
-    defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length },
+    defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
     vertexShader: `
       uniform vec4 uKeys[CLIPS * FRAMES * PARTS];
       uniform vec3 uPivot[PARTS];
@@ -591,6 +763,9 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       attribute float aGlow;
       attribute float aPart;
       attribute vec3 aAnim; // move weight, idle phase, move phase
+      #if FLEECE_PART >= 0
+        attribute float aFleece; // fleece size: 1 = full, shorn = smaller / gone
+      #endif
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
@@ -610,6 +785,9 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
         vec3 pos = position;
         vec3 nrm = normal;
         int p = int(aPart + 0.5);
+        #if FLEECE_PART >= 0
+          if (p == FLEECE_PART) pos = uPivot[FLEECE_PART] + (pos - uPivot[FLEECE_PART]) * aFleece;
+        #endif
         // the part's own pose, then each parent's, up to the body
         for (int i = 0; i < PARTS; i++) {
           if (p < 0) break;
