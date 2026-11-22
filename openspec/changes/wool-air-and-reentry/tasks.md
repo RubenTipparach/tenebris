@@ -35,3 +35,8 @@
   - Verified: headless right-click wear, suit slot shown and clicked off (hotbar first), worn state back after a reload; avatar suit mesh tested in scripts/air.test.ts (not seen in MP).
 - [x] 5.3 Gas collector machine. Verify: power test; headless bottling.
   - Verified: scripts/power.test.ts; headless: placed on Earth, refused on the Moon ("No air to collect here"), fills on (forced) grid power.
+
+## 6. Solar power
+
+- [x] 6.1 Solar panel machine: sunlight from the tile's up and the sun direction, open sky, airless boost; recipe, mission, UI. Verify: power test (noon, 45 degrees, night, roof, airless, feeds a network).
+- [x] 6.2 Solar array rocket part: inSunlight shadow test, charging in flight and landed, HUD SUN, flat toast once. Verify: rocket-survival test (stats, shadow, charge, cap).

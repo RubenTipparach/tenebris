@@ -488,6 +488,24 @@ def chute_face():
     return px
 
 
+def solar_face(wings=False):
+    """A solar panel: a grid of blue cells in a grey frame, lit top-left;
+    the rocket array adds a mast and a second wing"""
+    px, c = _canvas()
+    boxes = [(1, 3, 6, 12), (9, 3, 14, 12)] if wings else [(2, 2, 13, 13)]
+    for x0, y0, x1, y1 in boxes:
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                edge = x in (x0, x1) or y in (y0, y1)
+                seam = (x - x0) % 3 == 0 or (y - y0) % 3 == 0
+                lit = x - x0 + y - y0 < 4
+                px[y][x] = c["lgrey"] if edge else c["navy"] if seam else c["white"] if lit and (x + y) % 2 == 0 else c["blue"]
+    if wings:
+        for y in range(5, 11):
+            px[y][7] = c["dgrey"]; px[y][8] = c["lgrey"]
+    return px
+
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -581,3 +599,9 @@ if __name__ == "__main__":
     chute = [P8[k] for k in ("plum", "red", "orange", "peach", "white")]
     write("rocket_parts/parachute.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), chute))
     write("rocket_parts/parachute_face.png", chute_face())
+    # ---- Solar power (wool-air-and-reentry, design 6) ----
+    sol = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
+    write("technology/solar_panel.png", recolour(read_png(os.path.join(techd, "computer.png")), sol))
+    write("technology/solar_panel_face.png", solar_face())
+    write("rocket_parts/solar_array.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), sol))
+    write("rocket_parts/solar_array_face.png", solar_face(True))

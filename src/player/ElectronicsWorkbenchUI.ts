@@ -151,6 +151,23 @@ export const ELECTRONICS_RECIPES: ElectronicsRecipe[] = [
     ],
     output: { itemType: ItemType.BATTERY_LEAD_ACID, quantity: 1 },
   },
+  // Solar panel (openspec wool-air-and-reentry, design 6): glass cells over
+  // a chip, on an aluminum frame - G G G / Cu C Cu / Al Al Al
+  {
+    name: 'Solar Panel',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 0 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 1 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.SOLAR_PANEL, quantity: 1 },
+  },
   // Lithium-ion battery: Li Co Li / Cu Cu Cu / Li Co Li
   {
     name: 'Lithium-Ion Battery',

@@ -24,6 +24,7 @@ export interface MachineState {
   rodLifeS: number[];         // reactor: life left in each rod slot
   job: ItemType | null;       // fabricator: what it is making
   powered: boolean;           // from the grid this step
+  sunlight: number;           // solar panel: 0..1 (x AIRLESS_BOOST off-world), set each grid step
   status: string;             // one short line for the UI
 }
 
@@ -42,7 +43,7 @@ export function newMachineState(itemType: ItemType, tileIndex: number, depth: nu
     outputs: Array.from({ length: slots.outputs }, empty),
     tank: 0, progressS: 0, chargeWh: 0,
     rodLifeS: kind === 'reactor' ? Array(MACHINE_CONFIG.REACTOR_ROD_SLOTS).fill(0) : [],
-    job: null, powered: false, status: '',
+    job: null, powered: false, status: '', sunlight: 0,
   };
 }
 
@@ -209,13 +210,31 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
     case 'battery':
       m.status = '';
       break;
+    case 'solarPanel':
+      m.status = m.sunlight > 0 ? `Sun ${Math.round(m.sunlight * 100)}%` : 'No sun';
+      break;
   }
   return fx;
 }
 
 /** The watts a machine produces (generators) right now. */
 export function machineSupplyW(m: MachineState): number {
+  if (m.kind === 'solarPanel') return (POWER_CONFIG.SUPPLY_W.solarPanel ?? 0) * m.sunlight;
   return m.kind === 'reactor' && m.rodLifeS.some(l => l > 0) ? (POWER_CONFIG.SUPPLY_W.reactor ?? 0) : 0;
+}
+
+/**
+ * How much sun a solar panel gets (openspec wool-air-and-reentry, design 6):
+ * the sun's height over it (dot of its up and the sun direction), nothing
+ * when the sun is down or anything solid is over it, times AIRLESS_BOOST on
+ * a world with no air.
+ */
+export function panelSunlight(up: { x: number; y: number; z: number }, sunDir: { x: number; y: number; z: number },
+  skyOpen: boolean, airless: boolean): number {
+  if (!skyOpen) return 0;
+  const len = Math.hypot(up.x, up.y, up.z) * Math.hypot(sunDir.x, sunDir.y, sunDir.z) || 1;
+  const height = (up.x * sunDir.x + up.y * sunDir.y + up.z * sunDir.z) / len;
+  return Math.max(0, height) * (airless ? POWER_CONFIG.SOLAR.AIRLESS_BOOST : 1);
 }
 
 /** What a machine saves (its record). */

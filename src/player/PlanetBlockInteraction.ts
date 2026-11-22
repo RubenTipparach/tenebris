@@ -56,7 +56,8 @@ import { gameStorage, torchKey, SavedCooker, SavedTorch, SavedFurnace, SavedStor
 import { netSync } from '../net/NetSync';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
-import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine } from '../planet/Machines';
+import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine, panelSunlight } from '../planet/Machines';
+import { passesLight } from '../shared/voxelLight';
 import { MACHINE_CONFIG, MACHINE_KIND_OF, POWER_CONFIG } from '../config/PowerConfig';
 import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } from '../power/PowerGrid';
 import { MachineUI } from './MachineUI';
@@ -4325,7 +4326,10 @@ export class PlanetBlockInteraction {
 
     const machines = this.machineManager.getAll();
     const oil = new Map<PlacedMachine, boolean>();
-    for (const m of machines) if (m.kind === 'pumpJack') oil.set(m, this.oilBelow(m));
+    for (const m of machines) {
+      if (m.kind === 'pumpJack') oil.set(m, this.oilBelow(m));
+      if (m.kind === 'solarPanel') m.sunlight = this.sunOnPanel(m);
+    }
     const demandW = (k: keyof typeof POWER_CONFIG.DEMAND_W) => POWER_CONFIG.DEMAND_W[k] ?? 0;
 
     const grid = new Map<number, GridResult>();
@@ -4441,6 +4445,22 @@ export class PlanetBlockInteraction {
       if (planet.getBlock(m.tileIndex, d) === HexBlockType.OIL_SAND) return d;
     }
     return -1;
+  }
+
+  /**
+   * The sun on a solar panel (0..1, more off-world): its tile's up against
+   * the planet's sun direction, and nothing solid in the column over it.
+   */
+  private sunOnPanel(m: PlacedMachine): number {
+    const planet = this.planetOf(m.position);
+    const tile = planet?.getTileByIndex(m.tileIndex);
+    if (!planet || !tile) return 0;
+    let skyOpen = true;
+    for (let d = m.depth + 1; d < planet.getMaxDepth() && skyOpen; d++) {
+      if (!passesLight(planet.getBlock(m.tileIndex, d))) skyOpen = false;
+    }
+    const airless = getBodyConfig(this.getPlanetId(planet))?.hasAtmosphere === false;
+    return panelSunlight(tile.center, planet.getSunDirection(), skyOpen, airless);
   }
 
   private oilBelow(m: PlacedMachine): boolean {

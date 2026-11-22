@@ -141,6 +141,9 @@ export enum ItemType {
   OXYGEN_TANK = 112,
   GAS_COLLECTOR = 113,
   SPACE_SUIT = 114,
+  // Solar power, after batteries (openspec wool-air-and-reentry, design 6)
+  SOLAR_PANEL = 115,
+  SOLAR_ARRAY = 116,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -482,6 +485,19 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
   [ItemType.GAS_COLLECTOR]: { name: 'Gas Collector', stackSize: 8, texture: '/textures/technology/gas_collector_face.png', mineTime: 2.0 },
   [ItemType.SPACE_SUIT]: { name: 'Space Suit', stackSize: 1, texture: '/textures/icons/space_suit.png', mineTime: 0.5 },
+  [ItemType.SOLAR_PANEL]: { name: 'Solar Panel', stackSize: 16, texture: '/textures/technology/solar_panel_face.png', mineTime: 1.5 },
+  [ItemType.SOLAR_ARRAY]: {
+    name: 'Solar Array',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/solar_array_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/solar_array.png',
+      heightUnits: 1,
+    },
+  },
 };
 
 // Inventory slot

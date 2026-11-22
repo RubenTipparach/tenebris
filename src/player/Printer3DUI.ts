@@ -202,6 +202,20 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 20,
   },
+  // Solar array (design 6): two panels on an aluminum mast - . Al . / P Al P / . Al .
+  {
+    name: 'Solar Array',
+    inputs: [
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 1 },
+      { itemType: ItemType.SOLAR_PANEL, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.SOLAR_PANEL, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_ALUMINUM, quantity: 1, slot: 7 },
+    ],
+    output: ItemType.SOLAR_ARRAY,
+    outputQuantity: 1,
+    printTime: 25,
+  },
 ];
 
 export class Printer3DUI {

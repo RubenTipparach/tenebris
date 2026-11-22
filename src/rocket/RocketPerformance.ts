@@ -25,6 +25,7 @@ export interface RocketStats {
   cargoSlots: number;
   batteryWh: number;        // charge the stack stores (command module cell + battery packs)
   powerDrawW: number;       // what it draws in flight (the command module)
+  solarW: number;           // what its solar arrays charge in full sun
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
   mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
@@ -91,7 +92,7 @@ export function engineModeLabel(mode: EngineMode): string {
 export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0, mode: EngineMode = null): RocketStats {
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
-  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0;
+  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0;
   const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
@@ -101,6 +102,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
     cargoSlots += s.cargoSlots ?? 0;
     batteryWh += s.batteryWh ?? 0;
     powerDrawW += s.powerDrawW ?? 0;
+    solarW += s.solarW ?? 0;
     tier = Math.max(tier, s.tier);
     const missing = (s.requires ?? []).filter(r => !itemTypes.includes(r));
     if (missing.length) {
@@ -117,7 +119,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, batteryWh, powerDrawW, tier, problems, mode: firing };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, batteryWh, powerDrawW, solarW, tier, problems, mode: firing };
 }
 
 // ---- Power, re-entry heat and the parachute (openspec wool-air-and-reentry) ----
@@ -145,6 +147,30 @@ export function swapBatteryWh(): number {
 /** Charge after adding `addWh`, up to the stack's capacity */
 export function addCharge(chargeWh: number, capacityWh: number, addWh: number): number {
   return Math.min(capacityWh, Math.max(0, chargeWh) + addWh);
+}
+
+type V3 = { x: number; y: number; z: number };
+
+/**
+ * Is a point in sunlight (design 6): the straight line from it to the sun
+ * misses every body (each a sphere of `radius` round `center`).
+ */
+export function inSunlight(pos: V3, sun: V3, bodies: readonly { center: V3; radius: number }[]): boolean {
+  const dx = sun.x - pos.x, dy = sun.y - pos.y, dz = sun.z - pos.z;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  if (len2 === 0) return true;
+  for (const b of bodies) {
+    // nearest point of the segment to the body's centre
+    const t = Math.max(0, Math.min(1, ((b.center.x - pos.x) * dx + (b.center.y - pos.y) * dy + (b.center.z - pos.z) * dz) / len2));
+    const cx = pos.x + dx * t - b.center.x, cy = pos.y + dy * t - b.center.y, cz = pos.z + dz * t - b.center.z;
+    if (cx * cx + cy * cy + cz * cz < b.radius * b.radius) return false;
+  }
+  return true;
+}
+
+/** Charge after `dt` s of solar arrays giving `solarW` (in sunlight), up to capacity */
+export function solarCharge(chargeWh: number, capacityWh: number, solarW: number, sunlit: boolean, dt: number): number {
+  return sunlit ? addCharge(chargeWh, capacityWh, (solarW * dt) / 3600) : chargeWh;
 }
 
 /** Inside a body's air (for heat and the parachute): within REENTRY.shellRadiusMult of its radius */

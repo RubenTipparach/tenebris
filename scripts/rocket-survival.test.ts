@@ -111,3 +111,23 @@ const withChute = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FU
 ok(withChute.dryMass === basic.dryMass + (chute?.dryMass ?? 0) && withChute.thrust === basic.thrust, 'it only adds mass');
 
 if (process.exitCode) console.log('FAILED'); else console.log('all passed');
+
+// ---- the solar array (design 6)
+{
+  const { computeRocketStats, inSunlight, solarCharge } = await import('../src/rocket/RocketPerformance');
+  const bare = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]);
+  const one = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE, ItemType.SOLAR_ARRAY]);
+  const two = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE, ItemType.SOLAR_ARRAY, ItemType.SOLAR_ARRAY]);
+  ok(bare.solarW === 0 && one.solarW > 0, 'a solar array gives the stack solar watts');
+  ok(Math.abs(two.solarW - two.powerDrawW) < 1e-6, 'two arrays match the command module draw in full sun');
+  ok(one.thrust === bare.thrust && one.dryMass > bare.dryMass, 'an array adds mass, no thrust');
+  const sun = { x: 1000, y: 0, z: 0 };
+  const planet = { center: { x: 0, y: 0, z: 0 }, radius: 100 };
+  ok(inSunlight({ x: 150, y: 0, z: 0 }, sun, [planet]), 'the day side is sunlit');
+  ok(!inSunlight({ x: -150, y: 0, z: 0 }, sun, [planet]), 'behind the planet is in shadow');
+  ok(inSunlight({ x: -150, y: 200, z: 0 }, sun, [planet]), 'above the shadow is sunlit');
+  const cap = one.batteryWh;
+  ok(solarCharge(0, cap, one.solarW, true, 3600) === Math.min(cap, one.solarW), 'an hour of sun adds solarW Wh');
+  ok(solarCharge(0, cap, one.solarW, false, 3600) === 0, 'no charge in shadow');
+  ok(solarCharge(cap, cap, one.solarW, true, 60) === cap, 'charge stops at capacity');
+}

@@ -733,7 +733,8 @@ export class RocketFlightUI {
       this.powerBarEl.classList.toggle('warning', rocket.hasPower() && left <= ROCKET_CONFIG.POWER.LOW_WARN_S);
     }
     if (this.powerValueEl) {
-      this.powerValueEl.textContent = rocket.hasPower() ? this.formatTime(rocket.getChargeSecondsLeft()) : 'FLAT';
+      const time = rocket.hasPower() ? this.formatTime(rocket.getChargeSecondsLeft()) : 'FLAT';
+      this.powerValueEl.textContent = rocket.isSolarCharging() ? `${time} SUN` : time;
     }
 
     // Re-entry heat (design 3)

@@ -30,6 +30,7 @@ export interface RocketPartStats {
   cargoSlots?: number;   // cargo hold slots this part adds
   batteryWh?: number;    // charge this part stores (the command module's cell, battery packs)
   powerDrawW?: number;   // what this part draws while the rocket flies (the command module)
+  solarW?: number;       // what this part charges in full sun (the solar array)
   // Parts that must also be in the stack for this one to work (the ion
   // drive needs a reactor core). Unmet: the part gives no thrust, and the
   // stack's stats carry the reason (RocketStats.problems)
@@ -92,6 +93,10 @@ export const ROCKET_CONFIG = {
     // the command module: twice its own cell, +30 minutes of flight)
     [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
     [ItemType.BATTERY_PACK]: { tier: 3, dryMass: 60, cargoSlots: 2, batteryWh: LITHIUM_WH },
+    // Tier 1 (after batteries, design 6): the solar array - charges the
+    // battery in sunlight, half the command module's draw, so two arrays keep
+    // it running in full sun; nothing in a planet's shadow
+    [ItemType.SOLAR_ARRAY]: { tier: 1, dryMass: 50, solarW: (CELL_WH * 60 / CELL_MINUTES) / 2 },
     // Tier 4: the ion drive, the most efficient engine and the gentlest -
     // an in-space engine that only fires with a reactor core aboard
     [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },

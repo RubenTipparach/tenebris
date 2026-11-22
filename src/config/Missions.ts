@@ -491,12 +491,17 @@ export const MISSIONS: Mission[] = [
   {
     id: 'leadacid', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'raremetals', after: ['workbench'], title: 'Store power', help: 'Make a lead-acid battery and place it on a network.',
     objectives: [{ kind: 'placed', item: I.BATTERY_LEAD_ACID, count: 1, label: 'Lead-acid battery' }],
-    unlocks: [],
+    unlocks: [I.SOLAR_PANEL],
   },
   {
     id: 'onbattery', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'leadacid', title: 'Run on battery', help: 'Keep a machine running when the generators fall short.',
     objectives: [{ kind: 'onBattery', count: 1, label: 'On battery' }],
     unlocks: [I.BATTERY_LITHIUM],
+  },
+  {
+    id: 'solar', branch: 'storage', icon: I.SOLAR_PANEL, parent: 'leadacid', title: 'Solar power', help: 'Make a solar panel at the workbench and set it in the open sun.',
+    objectives: [{ kind: 'placed', item: I.SOLAR_PANEL, count: 2, label: 'Solar panels' }],
+    unlocks: [I.SOLAR_ARRAY],
   },
   {
     id: 'lithium', branch: 'storage', icon: I.BATTERY_LITHIUM, parent: 'onbattery', title: 'Lithium-ion', help: 'A denser cell from lithium and cobalt.',

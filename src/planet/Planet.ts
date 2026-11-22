@@ -5898,6 +5898,11 @@ export class Planet {
   }
 
   // Get block height (BLOCK_HEIGHT constant)
+  /** Direction to the sun (world space; planets don't spin, so it is also planet-local). */
+  public getSunDirection(): THREE.Vector3 {
+    return this.sunDirection;
+  }
+
   public getBlockHeight(): number {
     return this.BLOCK_HEIGHT;
   }

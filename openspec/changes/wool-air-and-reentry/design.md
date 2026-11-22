@@ -158,6 +158,37 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
 - **New objective kinds:** `sheared`, `chuteLanded`, `bottled`, `suited`,
   `recharged`.
 
+## 6. Solar power
+
+The owner, 2026-11-22: "oh yea, after batteries reseached, solar panels".
+
+- **Solar panel (`SOLAR_PANEL`):** a machine kind `solarPanel` on the
+  generic machine path, with no slots.
+  - **Recipe:** the electronics workbench, from glass, copper, a chip and
+    aluminum.
+  - **Unlock:** the lead-acid mission (Store power) unlocks it.
+  - **Output:** each grid step it supplies `SUPPLY_W.solarPanel` x
+    `sunlight`. The panel's tile up (`HexTile.center`) is dotted with the
+    planet's sun direction, giving the cosine of the sun's height.
+    - It is 0 when the sun is down, or when any cell in the column above
+      the panel stops light (`passesLight`, the voxel light rule).
+    - It is x `SOLAR.AIRLESS_BOOST` on a body without an atmosphere.
+  - **Where the maths lives:** `panelSunlight` in MachineLogic, which is
+    pure and tested.
+  - **UI:** the machine panel shows watts now, and peak watts, over a
+    sunlight bar.
+- **Solar array (`SOLAR_ARRAY`):** a rocket part, printed from two panels
+  and aluminum.
+  - **Unlock:** the Solar power mission (2 panels placed) unlocks it.
+  - **Output:** `solarW` is half the command module's draw, so two arrays
+    hold a flight's charge steady in full sun.
+  - **Sunlight:** a rocket is sunlit when the straight line from it to the
+    sun misses every body's sphere (`inSunlight`). Sunlit, its battery
+    charges at `solarW`, in flight or landed, up to capacity.
+  - **HUD:** the POWER gauge reads "SUN" while it charges.
+- **"Battery flat" toast:** it now warns once, until the charge is back past
+  the low mark, so an array slower than the draw can't repeat it.
+
 ## Decisions taken without asking (owner may redirect)
 
 - Earth keeps thin lithium veins, so earlier batteries stay craftable.

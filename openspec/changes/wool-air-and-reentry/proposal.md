@@ -56,6 +56,12 @@ be touched at all.
     dies and respawns.
   - A HUD shows the air left. The suit is worn in its own slot and shows on
     the avatar.
+- **Solar power, after batteries** (owner, 2026-11-22: "oh yea, after
+  batteries reseached, solar panels"):
+  - a solar panel machine makes power on a cable network by day, in the
+    open sun, and more on an airless world;
+  - a solar array rocket part charges the command module's battery while
+    the rocket is in sunlight.
 - **Missions:** a Wool and leather branch, an Air and suits branch, a
   parachute landing, and a battery swap, each unlocking its recipes.
 
@@ -67,6 +73,7 @@ be touched at all.
 - reentry-and-parachutes (new): re-entry heat, the parachute part.
 - air-and-suits (new): gas collector, oxygen tanks, the space suit,
   exposure and death.
+- solar-power (new): the solar panel and the rocket's solar array.
 
 ## Impact
 

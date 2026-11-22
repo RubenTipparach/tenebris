@@ -1,5 +1,8 @@
 import { emitGameEvent } from '../engine/GameEvents';
 import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
+
+// The sun stands still at its configured place (planets orbit it)
+const SUN_POSITION = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.position ?? { x: 0, y: 0, z: 0 };
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
@@ -9,7 +12,7 @@ import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot } from '../player/Inventory';
 import {
   computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
-  drainCharge, chargeSecondsLeft, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, tryOpenChute, chuteDescentSpeed, chuteSideFactor,
+  drainCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, tryOpenChute, chuteDescentSpeed, chuteSideFactor,
 } from './RocketPerformance';
 import { ItemType } from '../player/Inventory';
 import { showToast } from '../utils/toast';
@@ -153,6 +156,9 @@ export class RocketController {
   private chargeWh: number = 0;
   private batteryCapacityWh: number = 0;
   private powerDrawW: number = 0;
+  private solarW: number = 0;          // the stack's solar arrays, full sun
+  private sunlit: boolean = true;
+  private flatWarned: boolean = false;
   private lowPowerWarned: boolean = false;
 
   // Re-entry heat and the parachute (design 3)
@@ -528,6 +534,7 @@ export class RocketController {
     this.exhaustVelocity = stats.exhaustVelocity;
     this.batteryCapacityWh = stats.batteryWh;
     this.powerDrawW = stats.powerDrawW;
+    this.solarW = stats.solarW;
     this.chargeWh = Math.min(this.chargeWh, this.batteryCapacityWh);
 
     // Start with full fuel
@@ -748,6 +755,7 @@ export class RocketController {
       this.updatePower(deltaTime);
     }
     if (state !== RocketState.CRASHED) {
+      this.updateSolar(deltaTime);
       this.updateParachute(input, stateInfo.physicsActive);
       this.updateReentry(deltaTime, stateInfo.physicsActive);
     }
@@ -1428,6 +1436,7 @@ export class RocketController {
   private resetFlightState(chargeWh: number, chuteSpent: boolean): void {
     this.chargeWh = Math.max(0, Math.min(this.batteryCapacityWh, chargeWh));
     this.lowPowerWarned = this.getChargeSecondsLeft() <= ROCKET_CONFIG.POWER.LOW_WARN_S;
+    this.flatWarned = this.chargeWh <= 0;
     this.heat = 0;
     this.leftAtmosphere = false;
     this.reentering = false;
@@ -1446,9 +1455,30 @@ export class RocketController {
     }
     if (this.chargeWh <= 0) {
       this.isThrustActive = false;
-      showToast('Battery flat', { duration: 4000 });
-      console.log('Rocket battery flat');
+      // once until it is charged back past the low mark (solar arrays
+      // slower than the draw would flicker it on and off)
+      if (!this.flatWarned) {
+        this.flatWarned = true;
+        showToast('Battery flat', { duration: 4000 });
+        console.log('Rocket battery flat');
+      }
     }
+  }
+
+  /**
+   * Solar arrays charge the battery whenever the rocket is in sunlight - in
+   * flight or landed (design 6): the line to the sun must miss every body.
+   */
+  private updateSolar(deltaTime: number): void {
+    if (this.solarW <= 0) return;
+    this.sunlit = inSunlight(this.position, SUN_POSITION, this.planets);
+    this.chargeWh = solarCharge(this.chargeWh, this.batteryCapacityWh, this.solarW, this.sunlit, deltaTime);
+    if (this.getChargeSecondsLeft() > ROCKET_CONFIG.POWER.LOW_WARN_S) { this.flatWarned = false; this.lowPowerWarned = false; }
+  }
+
+  /** Is the stack charging from the sun right now (it has arrays and is sunlit)? */
+  public isSolarCharging(): boolean {
+    return this.solarW > 0 && this.sunlit && this.chargeWh < this.batteryCapacityWh;
   }
 
   /** Is the rocket inside any body's air (REENTRY.shellRadiusMult)? */

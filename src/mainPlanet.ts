@@ -9,6 +9,7 @@ import { HexBlockType } from './shared/blockTypes';
 import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
+import { MACHINE_KIND_OF } from './config/PowerConfig';
 import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
@@ -1742,8 +1743,7 @@ class PlanetGame {
       [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
     };
     // The industry machines and batteries share one record list
-    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR, ItemType.GAS_COLLECTOR,
-      ItemType.BATTERY_LEAD_ACID, ItemType.BATTERY_LITHIUM, ItemType.BATTERY_SOLID_STATE]) {
+    for (const item of Object.keys(MACHINE_KIND_OF).map(Number) as ItemType[]) {
       machineLists[item] = () => gameStorage.getMachines().filter(m => m.itemType === item);
     }
     const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
