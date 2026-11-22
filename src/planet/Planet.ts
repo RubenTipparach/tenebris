@@ -1056,6 +1056,25 @@ export class Planet {
   private handleWorkerResult(data: Record<string, unknown>): void {
     if (!this.batchedMeshGroup) return;
 
+    // A flat build is a snapshot of the blocks from when it was posted, and
+    // it is only posted in flat mode. If per-chunk meshes have taken over
+    // since, a block edit happened while it was in flight and the chunk
+    // meshes were built from the newer blocks: this result is stale. Applying
+    // it put the dug block back in the mesh while the world had it as air -
+    // step into it and every face round it was culled, a hole straight
+    // through the ground ("I mined some dirt and holes appeared"). Drop it;
+    // the chunk path builds any chunk that came into range meanwhile.
+    if (this.hasTransitionedToChunkMeshes) {
+      this.pendingWorkerTiles.clear();
+      this.isWorkerBuildActive = false;
+      this.needsRebatch = true;
+      if (!this.initialTerrainBuilt) {
+        this.initialTerrainBuilt = true;
+        this.checkInitialBuildComplete();
+      }
+      return;
+    }
+
     profiler.begin('Planet.workerResult');
 
     // Create new meshes FIRST (before removing old ones) to avoid holes
@@ -1124,18 +1143,8 @@ export class Planet {
       }
     }
 
-    // A full (flat) build replaces every per-chunk detail group, so go back
-    // to flat mode. Staying in chunk mode here left the next chunk rebuild
-    // adding its chunk on top of these flat meshes: the same terrain drawn
-    // twice, z-fighting into flickering see-through triangles.
-    if (this.hasTransitionedToChunkMeshes) {
-      for (const waterMesh of this.chunkDetailWaterMeshes.values()) {
-        this.waterMeshCallback?.(waterMesh, false);
-      }
-      this.chunkDetailWaterMeshes.clear();
-      this.chunkDetailMeshes.clear();
-      this.hasTransitionedToChunkMeshes = false;
-    }
+    // (A flat result never lands in chunk mode - see the stale check above -
+    // so there are no per-chunk groups to give up here.)
 
     profiler.end('Planet.workerResult.swap');
 
@@ -5487,6 +5496,10 @@ export class Planet {
       // Schedule a rebuild after debounce period (allows batching rapid changes)
       this.dirtyRebuildDebounceTimer = window.setTimeout(() => {
         this.dirtyRebuildDebounceTimer = null;
+        // Back in flat mode meanwhile (terrain released): one chunk built on
+        // top of the flat meshes would draw that ground twice. Leave the
+        // chunks queued; the next update does the full switch to chunks.
+        if (!this.hasTransitionedToChunkMeshes) return;
         if (this.deferredRebuildChunks.size > 0) {
           const chunksToRebuild = new Set(this.deferredRebuildChunks);
           this.deferredRebuildChunks.clear();
