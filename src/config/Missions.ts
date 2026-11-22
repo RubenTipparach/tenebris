@@ -649,4 +649,13 @@ export const MISSION_TREE_UI = {
   PLAQUE_CHAR_W: 0.75,  // a branch plaque's width per character, in font sizes (packing)
   SIDE_W: 300,          // side panel width, px
   DRAG_SLOP_PX: 4,      // a click under this much movement opens a card
+  PAN_KEEP_PX: 40,      // panning stops with at least this much of a card in view
+};
+
+/** The HUD mission tracker: the mission to do now, shown during play. */
+export const MISSION_HUD = {
+  WIDTH: 230,           // px
+  ICON: 24,             // the mission's icon, px
+  OBJ_ICON: 16,         // an objective's icon, px
+  STORAGE_KEY: 'tenebris_mission_hud',  // '0' hides it; shown by default
 };

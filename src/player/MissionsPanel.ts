@@ -6,7 +6,7 @@ import { showToast } from '../utils/toast';
 import { Inventory, ITEM_DATA, ItemType } from './Inventory';
 import { MissionSave, MissionTracker, WorldState } from './MissionTracker';
 import { setRecipeGate } from './RecipeGate';
-import { packTree, TreeLayout } from './MissionTreeLayout';
+import { clampPan, packTree, TreeLayout } from './MissionTreeLayout';
 
 /**
  * Missions (openspec navigation-and-orbits, missions): the tracker fed from
@@ -28,6 +28,11 @@ const KIND_ICON: Record<string, string> = {
   reached: '/textures/grass.png',
 };
 
+/** An objective's icon: its item's texture, else its kind's. */
+export function objectiveTexture(o: MissionObjective): string | undefined {
+  return o.item !== undefined ? ITEM_DATA[o.item]?.texture : KIND_ICON[o.kind];
+}
+
 const BY_ID = new Map(MISSIONS.map(m => [m.id, m]));
 const BRANCH_NAME = new Map(MISSION_BRANCHES.map(b => [b.id, b.name]));
 
@@ -42,6 +47,8 @@ export class MissionsPanel {
   private panY = 0;
   private placed = false;
   private selected: string | null = null;
+  // Others drawn from the tracker (the HUD tracker) redraw on its changes
+  private listeners: Array<() => void> = [];
 
   constructor(private inventory: Inventory, existingWorld: boolean, world: () => WorldState) {
     const saved = gameStorage.getMissionState<MissionSave>();
@@ -59,6 +66,7 @@ export class MissionsPanel {
     this.tracker.onChange = () => {
       gameStorage.saveMissionState(this.tracker.save());
       if (this.el) this.render(this.el);
+      for (const fn of this.listeners) fn();
     };
     gameStorage.saveMissionState(this.tracker.save());
     setRecipeGate(this.tracker);
@@ -67,6 +75,11 @@ export class MissionsPanel {
 
   public getTracker(): MissionTracker {
     return this.tracker;
+  }
+
+  /** Call `fn` whenever the tracker changes (progress, a mission done). */
+  public addChangeListener(fn: () => void): void {
+    this.listeners.push(fn);
   }
 
   /** Read the inventory for "gained" objectives now and then. */
@@ -134,6 +147,7 @@ export class MissionsPanel {
     const t = this.treeSize();
     this.panX = Math.round((stage.w - t.w) / 2);
     this.panY = Math.round((stage.h - t.h) / 2);
+    this.clamp();
     this.redraw();
   }
 
@@ -142,6 +156,7 @@ export class MissionsPanel {
     const p = this.cardPos(id);
     this.panX = Math.round(stage.w / 2 - p.x - this.L.cardW / 2);
     this.panY = Math.round(stage.h / 2 - p.y - this.L.cardH / 2);
+    this.clamp();
     this.redraw();
   }
 
@@ -156,7 +171,16 @@ export class MissionsPanel {
     const after = this.treeSize();
     this.panX = Math.round(sx - fx * after.w);
     this.panY = Math.round(sy - fy * after.h);
+    this.clamp();
     this.redraw();
+  }
+
+  /** Keep some of the tree in sight: a card stays at least PAN_KEEP_PX in view. */
+  private clamp(): void {
+    const stage = this.stageSize();
+    const c = clampPan(this.L, this.packed(), this.panX, this.panY, stage.w, stage.h, UI.PAN_KEEP_PX);
+    this.panX = c.x;
+    this.panY = c.y;
   }
 
   private redraw(): void {
@@ -397,6 +421,10 @@ export class MissionsPanel {
       down.moved = true;
       this.panX = Math.round(down.px + dx);
       this.panY = Math.round(down.py + dy);
+      this.clamp();
+      // Held at the bounds: dragging back moves at once, with no slack to take up
+      down.px = this.panX - dx;
+      down.py = this.panY - dy;
       const content = stage.querySelector<HTMLElement>('.mt-content');
       if (content) { content.style.left = `${this.panX}px`; content.style.top = `${this.panY}px`; }
     });
@@ -439,7 +467,7 @@ function objectiveRow(o: MissionObjective, have: number): HTMLElement {
   row.className = 'mt-side-obj' + (have >= o.count ? ' mt-met' : '');
   const top = document.createElement('div');
   top.className = 'mt-side-obj-top';
-  top.appendChild(icon(o.item !== undefined ? ITEM_DATA[o.item]?.texture : KIND_ICON[o.kind], 20));
+  top.appendChild(icon(objectiveTexture(o), 20));
   const label = document.createElement('span');
   label.textContent = o.label;
   const count = document.createElement('span');

@@ -10,7 +10,7 @@ import { SMELTING_RECIPES, ELECTRIC_SMELTING_RECIPES } from '../src/config/Smelt
 import { COOKERS } from '../src/config/CookingConfig';
 import { FABRICATOR_RECIPES } from '../src/config/PowerConfig';
 import { MISSION_TREE_UI } from '../src/config/Missions';
-import { packTree, linkProblems } from '../src/player/MissionTreeLayout';
+import { packTree, linkProblems, clampPan } from '../src/player/MissionTreeLayout';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 const byId = new Map(MISSIONS.map(m => [m.id, m]));
@@ -188,3 +188,28 @@ MISSION_TREE_UI.LEVELS.forEach((L, i) => {
   ok(probs.length === 0, `zoom ${i}: no overlapping lines${probs.length ? ' - ' + probs.slice(0, 3).map(p => `${p.link.parent}->${p.link.child} ${p.what}`).join('; ') : ''}`);
   ok(t.links.length === MISSIONS.filter(m => m.parent).length, `zoom ${i}: a line to every mission with a parent`);
 });
+
+// ---- pan bounds (the owner: "make sure the player cant pan too far away
+// from mission content area"): however far the tree is dragged, at any zoom
+// level, at least PAN_KEEP_PX of some card stays inside the view, and a pan
+// that already shows a card is left alone
+{
+  const W = 900, H = 520, keep = MISSION_TREE_UI.PAN_KEEP_PX;
+  const far = 1e5;
+  MISSION_TREE_UI.LEVELS.forEach((L, i) => {
+    const t = packTree(L);
+    const inView = (px: number, py: number) => [...t.cards.values()].some(p => {
+      const vx = Math.min(W, px + p.x + L.cardW) - Math.max(0, px + p.x);
+      const vy = Math.min(H, py + p.y + L.cardH) - Math.max(0, py + p.y);
+      return vx >= Math.min(keep, L.cardW) && vy >= Math.min(keep, L.cardH);
+    });
+    let all = true;
+    for (const [dx, dy] of [[far, 0], [-far, 0], [0, far], [0, -far], [far, far], [-far, -far], [far, -far], [-far, far]]) {
+      const c = clampPan(L, t, dx, dy, W, H, keep);
+      if (!inView(c.x, c.y)) all = false;
+    }
+    ok(all, `zoom ${i}: a drag far off any side stops with a card in view`);
+    const centred = clampPan(L, t, Math.round((W - t.w) / 2), Math.round((H - t.h) / 2), W, H, keep);
+    ok(centred.x === Math.round((W - t.w) / 2) && centred.y === Math.round((H - t.h) / 2), `zoom ${i}: a centred tree is not moved`);
+  });
+}
