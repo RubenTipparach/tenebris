@@ -1,7 +1,8 @@
 import { LandedRocket } from './LandedRocket';
 import { MenuManager } from '../player/MenuManager';
-import { computeRocketStats, stackItemTypes } from './RocketPerformance';
-import { ITEM_DATA } from '../player/Inventory';
+import { computeRocketStats, stackItemTypes, equipmentLabel, equipmentSummary } from './RocketPerformance';
+import { ITEM_DATA, ItemType } from '../player/Inventory';
+import { getAssetPath } from '../utils/assetPath';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 
 /**
@@ -13,6 +14,8 @@ export class LandedRocketUI {
   private fuelDisplay: HTMLDivElement;
   private fuelBar: HTMLDivElement;
   private chargeLine: HTMLDivElement;
+  private equipRow: HTMLDivElement;
+  private equipSummary: HTMLDivElement;
   private boardButton: HTMLButtonElement;
   private closeButton: HTMLButtonElement;
 
@@ -24,6 +27,12 @@ export class LandedRocketUI {
   private onCloseCallback: (() => void) | null = null;
   private onRefuelCallback: ((rocket: LandedRocket) => void) | null = null;
   private onCargoCallback: ((rocket: LandedRocket) => void) | null = null;
+  private onEquipmentCallback: ((rocket: LandedRocket) => void) | null = null;
+
+  /** How the Equipment row opens the equipment slots beside the hotbar + bag */
+  public setOnEquipmentCallback(callback: (rocket: LandedRocket) => void): void {
+    this.onEquipmentCallback = callback;
+  }
 
   public setOnRefuelCallback(callback: (rocket: LandedRocket) => void): void {
     this.onRefuelCallback = callback;
@@ -51,6 +60,11 @@ export class LandedRocketUI {
             <span class="fuel-percent">0%</span>
             <div class="charge-line"></div>
           </div>
+          <div class="equip-section">
+            <label>Equipment</label>
+            <div class="equip-row" title="Click to fit or take out equipment"></div>
+            <div class="equip-summary"></div>
+          </div>
           <div class="button-section">
             <button class="board-btn">Board Rocket</button>
           </div>
@@ -68,6 +82,8 @@ export class LandedRocketUI {
     this.fuelDisplay = this.container.querySelector('.fuel-percent') as HTMLDivElement;
     this.fuelBar = this.container.querySelector('.fuel-bar') as HTMLDivElement;
     this.chargeLine = this.container.querySelector('.charge-line') as HTMLDivElement;
+    this.equipRow = this.container.querySelector('.equip-row') as HTMLDivElement;
+    this.equipSummary = this.container.querySelector('.equip-summary') as HTMLDivElement;
     this.boardButton = this.container.querySelector('.board-btn') as HTMLButtonElement;
     this.closeButton = this.container.querySelector('.close-btn') as HTMLButtonElement;
 
@@ -79,15 +95,11 @@ export class LandedRocketUI {
       this.updateDisplay();
     });
     (this.container.querySelector('.cargo-btn') as HTMLButtonElement).addEventListener('click', () => {
-      if (!this.currentRocket || !this.onCargoCallback) return;
-      const rocket = this.currentRocket;
-      // Hand over to the inventory + cargo panels
-      this.isOpen = false;
-      this.container.style.display = 'none';
-      this.currentRocket = null;
-      MenuManager.unregisterMenu('landed-rocket-ui');
-      this.onCargoCallback(rocket);
+      this.handOver(this.onCargoCallback);
     });
+    // The equipment row opens the equipment slots beside the hotbar + bag,
+    // where items are fitted and taken out (the cargo hold's panel, filtered)
+    this.equipRow.addEventListener('click', () => this.handOver(this.onEquipmentCallback));
     this.closeButton.addEventListener('click', () => this.close());
 
     // Handle keyboard
@@ -170,6 +182,61 @@ export class LandedRocketUI {
 
       .fuel-section {
         margin-bottom: 20px;
+      }
+
+      .equip-section {
+        margin-bottom: 16px;
+      }
+
+      .equip-section label {
+        display: block;
+        color: #aaa;
+        font-size: 12px;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+
+      .equip-row {
+        display: flex;
+        gap: 4px;
+        cursor: pointer;
+      }
+
+      .equip-cell {
+        width: 40px;
+        height: 40px;
+        background: #1a1a1a;
+        border: 2px solid #333;
+        border-radius: 4px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .equip-row:hover .equip-cell {
+        border-color: #29ADFF;
+      }
+
+      .equip-cell img {
+        width: 32px;
+        height: 32px;
+        image-rendering: pixelated;
+      }
+
+      .equip-cell .slot-count {
+        position: absolute;
+        bottom: 1px;
+        right: 3px;
+        font-size: 11px;
+        color: #FFF1E8;
+        text-shadow: 1px 1px 0 #000;
+      }
+
+      .equip-summary {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #3ee0ff;
       }
 
       .fuel-section label {
@@ -342,12 +409,14 @@ export class LandedRocketUI {
 
     // Battery charge (openspec wool-air-and-reentry, design 2): a flat one
     // says how to swap a fresh battery in
-    const capacity = computeRocketStats(stackItemTypes(this.currentRocket.parts)).batteryWh;
+    const capacity = computeRocketStats(stackItemTypes(this.currentRocket.parts), 0, null, this.currentRocket.equipment).batteryWh;
     const charge = this.currentRocket.chargeWh ?? capacity;
     const pct = capacity > 0 ? Math.round((charge / capacity) * 100) : 0;
     const swap = ITEM_DATA[ROCKET_CONFIG.POWER.SWAP_ITEM]?.name ?? 'battery';
     this.chargeLine.textContent = charge > 0 ? `Battery ${pct}%` : `Battery flat - use a ${swap} on the rocket`;
     this.chargeLine.style.color = charge > 0 ? '#3ee0ff' : '#ff6666';
+
+    this.updateEquipment();
 
     // Update fuel bar color class
     this.fuelBar.classList.remove('low', 'high');
@@ -356,6 +425,43 @@ export class LandedRocketUI {
     } else if (fuel > 75) {
       this.fuelBar.classList.add('high');
     }
+  }
+
+  /** The equipment slots: an icon cell per slot, and what it all gives */
+  private updateEquipment(): void {
+    const slots = this.currentRocket?.equipment ?? [];
+    this.equipRow.innerHTML = '';
+    for (const slot of slots) {
+      const cell = document.createElement('div');
+      cell.className = 'equip-cell';
+      if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
+        const data = ITEM_DATA[slot.itemType];
+        cell.title = `${data.name}: ${equipmentLabel(slot.itemType, slot.quantity)}`;
+        const img = document.createElement('img');
+        img.src = getAssetPath(data.texture);
+        img.draggable = false;
+        cell.appendChild(img);
+        if (slot.quantity > 1) {
+          const count = document.createElement('span');
+          count.className = 'slot-count';
+          count.textContent = String(slot.quantity);
+          cell.appendChild(count);
+        }
+      }
+      this.equipRow.appendChild(cell);
+    }
+    this.equipSummary.textContent = slots.length === 0 ? 'No equipment slots' : equipmentSummary(slots);
+  }
+
+  /** Close this panel and hand over to the inventory + a slot panel (cargo, equipment) */
+  private handOver(callback: ((rocket: LandedRocket) => void) | null): void {
+    if (!this.currentRocket || !callback) return;
+    const rocket = this.currentRocket;
+    this.isOpen = false;
+    this.container.style.display = 'none';
+    this.currentRocket = null;
+    MenuManager.unregisterMenu('landed-rocket-ui');
+    callback(rocket);
   }
 
   /**

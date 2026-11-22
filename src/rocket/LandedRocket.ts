@@ -31,18 +31,18 @@ export interface LandedRocket {
   // For raycasting/interaction detection
   boundingRadius: number;
 
-  // Its cargo hold (the home pad's slots, shared) and the pad it flew from
+  // Its cargo hold and equipment slots (the home pad's slots, shared) and
+  // the pad it flew from
   cargo: InventorySlot[] | null;
+  equipment: InventorySlot[] | null;
   pad: PlacedLaunchPad | null;
 
   // Which engines fire when it flies again (design 6b; undefined = all)
   engineMode?: import('./RocketPerformance').EngineMode;
 
-  // Its battery charge, Wh (undefined = full: older records), and whether
-  // its parachute is torn or used (only a launch pad repacks it) - openspec
-  // wool-air-and-reentry, design 2 and 3
+  // Its battery charge, Wh (undefined = full: older records) - openspec
+  // wool-air-and-reentry, design 2
   chargeWh?: number;
-  chuteSpent?: boolean;
 
   // Its address in a multiplayer world (the 'landedRocket' record key):
   // the same on every client that sees it
@@ -104,7 +104,7 @@ export class LandedRocketManager {
     pad: PlacedLaunchPad | null = null,
     netKey: string = newNetKey(),
     chargeWh: number | null = null,
-    chuteSpent: boolean = false
+    equipment: InventorySlot[] | null = null
   ): LandedRocket {
     const id = `landed_rocket_${this.nextId++}`;
 
@@ -126,10 +126,10 @@ export class LandedRocketManager {
       fuelPercent,
       boundingRadius: maxRadius,
       cargo,
+      equipment,
       pad,
       netKey,
       chargeWh: chargeWh ?? undefined,
-      chuteSpent,
     };
 
     this.landedRockets.set(id, landedRocket);

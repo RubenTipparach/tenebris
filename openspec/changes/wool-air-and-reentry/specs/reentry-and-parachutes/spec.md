@@ -18,15 +18,21 @@ glow with it.
 
 ### Requirement: A parachute lands a rocket safely
 
-A rocket with a parachute part SHALL be able to open it inside an
-atmosphere, by key or by itself below a set height while falling. Open, it
-SHALL slow the rocket to a landing speed under the damage threshold. It
-SHALL NOT open in vacuum, and SHALL tear if opened too fast. It SHALL be
-packed again on the next launch from a pad.
+A rocket with a parachute fitted in its equipment SHALL be able to open it
+inside an atmosphere, by key or by itself below a set height while falling
+(by itself only at a speed it survives). Open, it SHALL slow the rocket to a
+landing speed under the damage threshold. It SHALL NOT open in vacuum, and
+SHALL tear if opened too fast. Opening or tearing SHALL use one parachute up
+from the equipment; with none fitted nothing opens. The HUD SHALL show the
+parachutes fitted.
 
 #### Scenario: A chute landing
-- **WHEN** a falling rocket with a parachute drops below the deploy height in Earth's atmosphere
-- **THEN** the canopy opens, the rocket slows and lands without damage
+- **WHEN** a falling rocket with a parachute fitted drops below the deploy height in Earth's atmosphere
+- **THEN** the canopy opens, one parachute is used from the equipment, the rocket slows and lands without damage
+
+#### Scenario: Torn
+- **WHEN** the player opens the chute faster than the tear speed
+- **THEN** it tears and that parachute is used up
 
 #### Scenario: Vacuum
 - **WHEN** the player presses the parachute key above the Moon

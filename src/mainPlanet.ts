@@ -521,12 +521,14 @@ class PlanetGame {
         return draw.supplied;
       };
 
-      // A launch names the parts in its stack (missions: launch on a
-      // nuclear engine, fly the ion drive)
+      // A launch names the parts in its stack and the equipment fitted
+      // (missions: launch on a nuclear engine, fly the ion drive)
       onGameEvent((type) => {
         if (type !== 'launched') return;
-        const parts = this.rocketFlightManager?.getRocketController()?.getParts() ?? [];
-        for (const t of new Set(stackItemTypes(parts))) emitGameEvent('launchedWith', t);
+        const rocket = this.rocketFlightManager?.getRocketController();
+        const parts = stackItemTypes(rocket?.getParts() ?? []);
+        const fitted = (rocket?.getEquipment() ?? []).filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).map(s => s.itemType);
+        for (const t of new Set([...parts, ...fitted])) emitGameEvent('launchedWith', t);
       });
 
       // A rocket's fuel / cargo changed (refuelled, landed, exited): its pad
@@ -534,8 +536,8 @@ class PlanetGame {
       this.rocketFlightManager.setOnRocketChangedCallback(() => {
         this.blockInteraction.saveLaunchPadStates();
       });
-      this.rocketFlightManager.setOnOpenCargoCallback((cargo) => {
-        this.blockInteraction.openRocketCargo(cargo);
+      this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
+        this.blockInteraction.openRocketCargo(slots, title, accepts);
       });
 
       // Other players' rockets, flying and landed (multiplayer; idle offline)

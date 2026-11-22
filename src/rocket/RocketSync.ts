@@ -5,6 +5,7 @@ import { ITEM_DATA, InventorySlot, ItemType } from '../player/Inventory';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketFlightManager } from './RocketFlightManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
+import { equipmentSlotsFor } from './RocketPerformance';
 
 /**
  * Other players' rockets, over NetSync.
@@ -14,7 +15,7 @@ import { LandedRocket, LandedRocketManager } from './LandedRocket';
  *   from the same part models the launch pad uses. A final { gone: true }
  *   frame (or SHIP_TIMEOUT_S of silence, e.g. the pilot left) removes it.
  * - Landed: a rocket left standing somewhere is world state - a
- *   'landedRocket' record (pose, parts, fuel, cargo) keyed by its netKey.
+ *   'landedRocket' record (pose, parts, fuel, cargo, equipment) keyed by its netKey.
  *   Every client's LandedRocketManager holds it, so anyone can walk up,
  *   open its cargo and board it; boarding removes the record (null) for
  *   everyone. Remote records go through the same createLandedRocket /
@@ -234,8 +235,8 @@ export class RocketSync {
   // ---- landed ---------------------------------------------------------
 
   private landedState(rocket: LandedRocket): string {
-    return JSON.stringify([r3(rocket.fuelPercent), (rocket.cargo ?? []).map(s => [s.itemType, s.quantity]), rocket.engineMode ?? null,
-      rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh), !!rocket.chuteSpent]);
+    return JSON.stringify([r3(rocket.fuelPercent), slotsToWire(rocket.cargo), rocket.engineMode ?? null,
+      rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh), slotsToWire(rocket.equipment)]);
   }
 
   private publishLanded(rocket: LandedRocket): void {
@@ -248,10 +249,10 @@ export class RocketSync {
       n: [n.x, n.y, n.z],
       parts: partsToWire(rocket.parts),
       fuel: r3(rocket.fuelPercent),
-      cargo: rocket.cargo ? rocket.cargo.map(s => [s.itemType, s.quantity]) : null,
+      cargo: slotsToWire(rocket.cargo),
+      eq: slotsToWire(rocket.equipment),                                        // equipment slots (chutes, arrays, packs)
       mode: rocket.engineMode ?? null,
       wh: rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh),  // battery charge (null = full)
-      cs: !!rocket.chuteSpent,                                                  // parachute spent
     });
   }
 
@@ -271,17 +272,18 @@ export class RocketSync {
     const fuel = typeof data.fuel === 'number' ? Math.max(0, Math.min(100, data.fuel)) : 100;
     const cargo = toCargo(data.cargo);
     const chargeWh = typeof data.wh === 'number' && Number.isFinite(data.wh) ? Math.max(0, data.wh) : null;
-    const chuteSpent = data.cs === true;
+    // Its equipment slots (older records have none: empty, as many as its parts give)
+    const equipment = toCargo(data.eq);
     if (existing) {
-      // Same rocket, new fuel / cargo: update in place (the hold may be a
-      // pad's shared array, so fill it rather than replace it)
+      // Same rocket, new fuel / cargo / equipment: update in place (the
+      // slots may be a pad's shared arrays, so fill them rather than replace)
       existing.fuelPercent = fuel;
       existing.chargeWh = chargeWh ?? undefined;
-      existing.chuteSpent = chuteSpent;
       existing.engineMode = typeof data.mode === 'number' ? data.mode : null;
-      if (existing.cargo && cargo) {
-        for (let i = 0; i < existing.cargo.length; i++) {
-          existing.cargo[i] = cargo[i] ?? { itemType: ItemType.NONE, quantity: 0 };
+      for (const [mine, theirs] of [[existing.cargo, cargo], [existing.equipment, equipment]] as const) {
+        if (!mine || !theirs) continue;
+        for (let i = 0; i < mine.length; i++) {
+          mine[i] = theirs[i] ?? { itemType: ItemType.NONE, quantity: 0 };
         }
       }
       this.landedSig.set(key, this.landedState(existing));
@@ -300,7 +302,8 @@ export class RocketSync {
         }
         const rocket = manager.createLandedRocket(
           pivot, parts, pivot.position, pivot.quaternion,
-          new THREE.Vector3().fromArray(data.n), fuel, cargo, null, key, chargeWh, chuteSpent,
+          new THREE.Vector3().fromArray(data.n), fuel, cargo, null, key, chargeWh,
+          equipment ?? emptySlots(equipmentSlotsFor(parts.map(p => p.itemType))),
         );
         rocket.engineMode = typeof data.mode === 'number' ? data.mode : null;
         this.landedSig.set(key, this.landedState(rocket));
@@ -314,6 +317,14 @@ export class RocketSync {
 function engineOffsets(parts: RocketPart[]): THREE.Vector3[] {
   const out = parts.filter(p => p.isEngine()).map(p => p.mesh.position.clone().setY(p.mesh.position.y - EXHAUST_DROP));
   return out.length ? out : [new THREE.Vector3(0, -1, 0)];
+}
+
+function slotsToWire(slots: InventorySlot[] | null | undefined): [number, number][] | null {
+  return slots ? slots.map(s => [s.itemType, s.quantity]) : null;
+}
+
+function emptySlots(n: number): InventorySlot[] {
+  return Array.from({ length: n }, () => ({ itemType: ItemType.NONE, quantity: 0 }));
 }
 
 function toCargo(v: unknown): InventorySlot[] | null {

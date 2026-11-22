@@ -4,7 +4,7 @@ import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { ItemType, ITEM_DATA, RocketPartType, InventorySlot } from '../player/Inventory';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
-import { cargoSlotsFor, compactCargo, computeRocketStats } from '../rocket/RocketPerformance';
+import { cargoSlotsFor, equipmentSlotsFor, compactCargo, computeRocketStats } from '../rocket/RocketPerformance';
 import { RocketPart } from './RocketPart';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
@@ -71,6 +71,11 @@ export interface PlacedLaunchPad {
   // (ROCKET_CONFIG.PARTS cargoSlots). The flying / landed rocket shares this
   // array, so the cargo travels with it and saves with the pad
   cargo: InventorySlot[];
+  // The rocket's equipment slots: parachutes, solar arrays, battery packs
+  // (ROCKET_CONFIG.EQUIPMENT), as many as its parts give (PARTS
+  // equipmentSlots). Shared with the flying / landed rocket the same way
+  // as the cargo hold, and saved with the pad
+  equipment: InventorySlot[];
   // Fuel units in the rocket's tanks; null = full (pads from older saves)
   fuel: number | null;
   engineMode?: ItemType | null;  // which engines fire (design 6b); null/undefined = all
@@ -667,6 +672,7 @@ export class LaunchPadManager {
       rocketMeshes: [],
       rocketParts: [],
       cargo: [],
+      equipment: [],
       fuel: ROCKET_CONFIG.NEW_PAD_FUEL,
       hasRocketEngine: false,
       rocketEngineMesh: null,
@@ -1132,11 +1138,12 @@ export class LaunchPadManager {
       return null;
     }
 
-    // The hold shrinks with the part: its items must fit in what is left
-    const remaining = cargoSlotsFor(launchPad.rocketParts.slice(0, -1).map(p => p.itemType));
-    if (!compactCargo(launchPad.cargo, remaining)) {
-      return null;
-    }
+    // The hold and the equipment slots shrink with the part: their items
+    // must fit in what is left
+    if (this.topPartHoldsCargo(launchPad)) return null;
+    const rest = launchPad.rocketParts.slice(0, -1).map(p => p.itemType);
+    compactCargo(launchPad.cargo, cargoSlotsFor(rest));
+    compactCargo(launchPad.equipment, equipmentSlotsFor(rest));
 
     const removedPart = launchPad.rocketParts.pop()!;
     launchPad.mesh.remove(removedPart.mesh);
@@ -1155,22 +1162,29 @@ export class LaunchPadManager {
   }
 
   /**
-   * Size the pad's cargo hold to its parts and clamp its fuel to the tanks
+   * Size the pad's cargo hold and equipment slots to its parts and clamp its
+   * fuel to the tanks
    */
   private syncRocketHold(launchPad: PlacedLaunchPad): void {
     const types = launchPad.rocketParts.map(p => p.itemType);
-    const slots = cargoSlotsFor(types);
-    while (launchPad.cargo.length < slots) launchPad.cargo.push({ itemType: ItemType.NONE, quantity: 0 });
-    if (launchPad.cargo.length > slots) launchPad.cargo.length = slots;
+    const stats = computeRocketStats(types);
+    for (const [slots, size] of [[launchPad.cargo, stats.cargoSlots], [launchPad.equipment, stats.equipmentSlots]] as const) {
+      while (slots.length < size) slots.push({ itemType: ItemType.NONE, quantity: 0 });
+      if (slots.length > size) slots.length = size;
+    }
     if (launchPad.fuel !== null) {
-      launchPad.fuel = Math.min(launchPad.fuel, computeRocketStats(types).fuelCapacity);
+      launchPad.fuel = Math.min(launchPad.fuel, stats.fuelCapacity);
     }
   }
 
-  /** Would removing the top part spill cargo that can't fit in the rest of the hold? */
+  /**
+   * Would removing the top part spill cargo or equipment that can't fit in
+   * what the rest of the stack gives?
+   */
   public topPartHoldsCargo(launchPad: PlacedLaunchPad): boolean {
-    const remaining = cargoSlotsFor(launchPad.rocketParts.slice(0, -1).map(p => p.itemType));
-    return launchPad.cargo.filter(s => s.itemType !== ItemType.NONE).length > remaining;
+    const rest = launchPad.rocketParts.slice(0, -1).map(p => p.itemType);
+    const used = (slots: InventorySlot[]) => slots.filter(s => s.itemType !== ItemType.NONE).length;
+    return used(launchPad.cargo) > cargoSlotsFor(rest) || used(launchPad.equipment) > equipmentSlotsFor(rest);
   }
 
   /**

@@ -742,12 +742,12 @@ export class RocketFlightUI {
     if (this.heatBarEl) this.heatBarEl.style.width = `${heatPercent}%`;
     if (this.heatValueEl) this.heatValueEl.textContent = `${heatPercent.toFixed(0)}%`;
 
-    // The parachute, when the stack carries one
+    // The parachutes fitted in the equipment slots (hidden with none)
     if (this.chuteEl) {
-      this.chuteEl.hidden = !rocket.carriesChute();
+      const chutes = rocket.chutesFitted();
+      this.chuteEl.hidden = !rocket.isChuteOpen() && chutes <= 0;
       this.chuteEl.textContent = rocket.isChuteOpen() ? 'CHUTE OPEN'
-        : rocket.isChuteSpent() ? 'CHUTE SPENT'
-        : `CHUTE READY [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]`;
+        : `CHUTES ${chutes} [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]`;
     }
 
     // Update throttle bar

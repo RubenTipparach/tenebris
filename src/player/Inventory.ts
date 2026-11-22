@@ -447,12 +447,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     stackSize: 8,
     texture: '/textures/rocket_parts/battery_pack_face.png',
     mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.CARGO,
-      modelPath: '/models/medium_fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/battery_pack.png',
-      heightUnits: 1,
-    },
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
   // Building materials. Mining time rises dirt < clay < brick < glass <
   // concrete = steel glass = steel girder (the block items' own textures
@@ -474,12 +469,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     stackSize: 8,
     texture: '/textures/rocket_parts/parachute_face.png',
     mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.CARGO,
-      modelPath: '/models/medium_fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/parachute.png',
-      heightUnits: 1,
-    },
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
   [ItemType.EMPTY_TANK]: { name: 'Empty Tank', stackSize: 16, texture: '/textures/icons/empty_tank.png', mineTime: 0.5 },
   [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
@@ -491,12 +481,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     stackSize: 8,
     texture: '/textures/rocket_parts/solar_array_face.png',
     mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.CARGO,
-      modelPath: '/models/medium_fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/solar_array.png',
-      heightUnits: 1,
-    },
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
 };
 
