@@ -581,6 +581,11 @@ export class Planet {
     return this.config.name ?? 'earth';
   }
 
+  /** The terrain seed (world seed + this body's offset): seed-derived decoration (sea flora) keys on it */
+  public getSeed(): number {
+    return this.seed;
+  }
+
   // Check if detailed terrain is enabled for this planet
   public isDetailedTerrainEnabled(): boolean {
     return this.detailedTerrainEnabled;
