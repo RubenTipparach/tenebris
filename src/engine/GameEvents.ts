@@ -21,8 +21,9 @@
  *   onBattery   a cable network went from running on its generators to
  *               running on battery charge (src/power/PowerGrid.ts)
  *   fueled      key = ItemType burnt to refuel a rocket, n = count
- *   launchedWith key = ItemType of a part in the stack of a rocket that
- *               just launched (one per part type, after 'launched')
+ *   launchedWith key = ItemType of a part in the stack, or an item in the
+ *               equipment slots, of a rocket that just launched (one per
+ *               type, after 'launched')
  *   sheared     a sheep was shorn (openspec wool-air-and-reentry)
  *   chuteLanded a rocket landed under an open parachute
  *   bottled     a gas collector filled an oxygen tank

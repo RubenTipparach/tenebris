@@ -1,6 +1,6 @@
 // Rocket power, re-entry heat and the parachute (openspec wool-air-and-reentry,
 // tasks 3.1, 4.1, 4.2). Run: npx tsx scripts/rocket-survival.test.ts
-import { ItemType } from '../src/player/Inventory';
+import { ItemType, ITEM_DATA, InventorySlot } from '../src/player/Inventory';
 import { ROCKET_CONFIG, GRAVITY_WELL } from '../src/config/RocketConfig';
 import { POWER_CONFIG } from '../src/config/PowerConfig';
 import { PlayerConfig } from '../src/config/PlayerConfig';
@@ -8,14 +8,19 @@ import {
   computeRocketStats, drainCharge, chargeSecondsLeft, poweredThrust, addCharge, swapBatteryWh,
   inAtmosphereShell, reentryStep, heatDamage, tryOpenChute, chuteDescentSpeed,
   gravityAccel, dampingFactor, ReentryState,
+  isEquipment, fitEquipment, chutesFitted, openChuteFrom, splitLegacyStack, stowLegacyEquipment, equipmentSlotsFor, cargoMass,
 } from '../src/rocket/RocketPerformance';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 
 const DT = 1 / 60;
 const cm = ItemType.COMMAND_MODULE;
-const basic = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, cm]);
-const packed = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.BATTERY_PACK, cm]);
+const STACK = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, cm];
+/** An equipment row of `size` slots holding these stacks */
+const row = (stacks: [ItemType, number][], size = 3): InventorySlot[] =>
+  Array.from({ length: size }, (_, i) => stacks[i] ? { itemType: stacks[i][0], quantity: stacks[i][1] } : { itemType: ItemType.NONE, quantity: 0 });
+const basic = computeRocketStats(STACK);
+const packed = computeRocketStats(STACK, 0, null, row([[ItemType.BATTERY_PACK, 1]]));
 
 /** Seconds a charge lasts drained a frame at a time */
 const flightSeconds = (wh: number, drawW: number): number => {
@@ -29,7 +34,10 @@ const cmMinutes = flightSeconds(basic.batteryWh, basic.powerDrawW) / 60;
 ok(cmMinutes >= 14 && cmMinutes <= 16, `the command module alone lasts ~15 minutes (${cmMinutes.toFixed(2)})`);
 ok(Math.abs(chargeSecondsLeft(basic.batteryWh, basic.powerDrawW) / 60 - ROCKET_CONFIG.POWER.CELL_MINUTES) < 1e-9, 'its cell is CELL_MINUTES of flight');
 const packMinutes = flightSeconds(packed.batteryWh, packed.powerDrawW) / 60;
-ok(packed.batteryWh > basic.batteryWh && packMinutes > cmMinutes * 2, `a battery pack extends it (${packMinutes.toFixed(1)} min)`);
+ok(packed.batteryWh > basic.batteryWh && packMinutes > cmMinutes * 2, `an equipped battery pack extends it (${packMinutes.toFixed(1)} min)`);
+const twoPacks = computeRocketStats(STACK, 0, null, row([[ItemType.BATTERY_PACK, 2]]));
+ok(twoPacks.batteryWh - basic.batteryWh === 2 * (packed.batteryWh - basic.batteryWh), 'a slot of 2 packs stores twice one pack');
+ok(packed.dryMass === basic.dryMass + ROCKET_CONFIG.EQUIPMENT[ItemType.BATTERY_PACK]!.mass, 'a pack adds its mass');
 ok(packed.powerDrawW === basic.powerDrawW, 'a pack stores charge, it draws none');
 ok(poweredThrust(basic.thrust, 0) === 0, 'no thrust when the battery is flat');
 ok(poweredThrust(basic.thrust, 1) === basic.thrust, 'full thrust with charge');
@@ -95,7 +103,7 @@ const P = ROCKET_CONFIG.PARACHUTE;
 ok(tryOpenChute(true, false, 10) === 'noAir', 'the chute will not open in vacuum');
 ok(tryOpenChute(true, true, P.maxOpenSpeed + 1) === 'torn', 'it tears above maxOpenSpeed');
 ok(tryOpenChute(true, true, P.maxOpenSpeed - 1) === 'open', 'it opens in the air below maxOpenSpeed');
-ok(tryOpenChute(false, true, 10) === 'noChute', 'no parachute part, no chute');
+ok(tryOpenChute(false, true, 10) === 'noChute', 'no parachute fitted, no chute');
 ok(fall.maxSpeed < P.maxOpenSpeed, 'a passive fall is slow enough to open it');
 ok(P.terminalVelocity < ROCKET_CONFIG.HEALTH.impactDamageThreshold, 'its terminal velocity is under the landing damage threshold');
 const g = PlayerConfig.BASE_GRAVITY;
@@ -105,20 +113,65 @@ ok(Math.abs(down - P.terminalVelocity) < 0.01, `it holds the descent at terminal
 let slow = 0;
 for (let i = 0; i < 5 / DT; i++) { slow += g * DT; slow = chuteDescentSpeed(slow, g, DT); }
 ok(slow <= P.terminalVelocity + 1e-9 && slow > P.terminalVelocity - 0.5, 'from rest it falls to terminalVelocity, no faster');
-const chute = ROCKET_CONFIG.PARTS[ItemType.PARACHUTE];
-ok(!!chute && chute.tier === 1 && !chute.thrust, 'the parachute is a tier 1 part with no thrust');
-const withChute = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.PARACHUTE, cm]);
-ok(withChute.dryMass === basic.dryMass + (chute?.dryMass ?? 0) && withChute.thrust === basic.thrust, 'it only adds mass');
+const chute = ROCKET_CONFIG.EQUIPMENT[ItemType.PARACHUTE];
+ok(!!chute && chute.chutes === 1 && !ROCKET_CONFIG.PARTS[ItemType.PARACHUTE], 'the parachute is equipment (one chute each), not a stack part');
+const withChute = computeRocketStats(STACK, 0, null, row([[ItemType.PARACHUTE, 1]]));
+ok(withChute.dryMass === basic.dryMass + (chute?.mass ?? 0) && withChute.thrust === basic.thrust && withChute.chutes === 1, 'a fitted parachute adds mass and a chute, no thrust');
 
-if (process.exitCode) console.log('FAILED'); else console.log('all passed');
+// opening uses one up; a tear uses one up; vacuum and none fitted use none
+const eq = row([[ItemType.PARACHUTE, 2]]);
+ok(openChuteFrom(eq, true, P.maxOpenSpeed - 1) === 'open' && chutesFitted(eq) === 1, 'opening a chute uses one up (2 -> 1)');
+ok(openChuteFrom(eq, true, P.maxOpenSpeed + 1) === 'torn' && chutesFitted(eq) === 0 && eq[0].itemType === ItemType.NONE, 'a tear uses one up too, and empties the slot');
+ok(openChuteFrom(eq, true, 10) === 'noChute', 'none left: no chute');
+const vac = row([[ItemType.PARACHUTE, 1]]);
+ok(openChuteFrom(vac, false, 10) === 'noAir' && chutesFitted(vac) === 1, 'in vacuum nothing opens and nothing is used');
+ok(openChuteFrom(null, true, 10) === 'noChute', 'a rocket with no equipment has no chute');
+const heavier = computeRocketStats(STACK, 0, null, row([[ItemType.PARACHUTE, 2]]));
+ok(heavier.dryMass - computeRocketStats(STACK, 0, null, row([[ItemType.PARACHUTE, 1]])).dryMass === chute!.mass, 'a used chute no longer weighs (re-weighed from the slot)');
+
+// ---- equipment slots
+ok(equipmentSlotsFor(STACK) === ROCKET_CONFIG.PARTS[cm]!.equipmentSlots && equipmentSlotsFor([ItemType.ROCKET_ENGINE]) === 0, 'the command module gives the equipment slots');
+const onlyThree = Object.keys(ROCKET_CONFIG.EQUIPMENT).map(Number).sort();
+ok(JSON.stringify(onlyThree) === JSON.stringify([ItemType.PARACHUTE, ItemType.SOLAR_ARRAY, ItemType.BATTERY_PACK].sort()), 'equipment is the parachute, solar array and battery pack');
+for (const t of [ItemType.PARACHUTE, ItemType.SOLAR_ARRAY, ItemType.BATTERY_PACK]) {
+  ok(isEquipment(t) && !ITEM_DATA[t].rocketPart && !ROCKET_CONFIG.PARTS[t], `${ITEM_DATA[t].name} is equipment, not a stack part`);
+}
+const fitRow = row([], 3);
+const rock: InventorySlot = { itemType: ItemType.STONE, quantity: 5 };
+ok(fitEquipment(fitRow, rock) === 0 && rock.quantity === 5, 'a non-equipment item does not fit');
+const engine: InventorySlot = { itemType: ItemType.ROCKET_ENGINE, quantity: 1 };
+ok(fitEquipment(fitRow, engine) === 0, 'a rocket part does not fit either');
+const chutes: InventorySlot = { itemType: ItemType.PARACHUTE, quantity: 3 };
+ok(fitEquipment(fitRow, chutes) === 3 && chutes.itemType === ItemType.NONE && fitRow[0].quantity === 3, 'parachutes fit, stacked in one slot');
+const tooMany: InventorySlot = { itemType: ItemType.BATTERY_PACK, quantity: ITEM_DATA[ItemType.BATTERY_PACK].stackSize * 3 };
+const moved = fitEquipment(fitRow, tooMany);
+ok(moved === ITEM_DATA[ItemType.BATTERY_PACK].stackSize * 2 && tooMany.quantity === ITEM_DATA[ItemType.BATTERY_PACK].stackSize, 'fitting stops when the slots are full (the rest stays with the player)');
+ok(cargoMass([]) === 0, 'equipment is not cargo (cargoMass ignores it)');
+
+// ---- migration: an older stack with these items as parts
+const oldStack = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.PARACHUTE, ItemType.BATTERY_PACK, ItemType.SOLAR_ARRAY, cm]
+  .map((itemType, heightIndex) => ({ itemType, heightIndex }));
+const split = splitLegacyStack(oldStack);
+ok(JSON.stringify(split.parts.map(p => p.itemType)) === JSON.stringify(STACK), 'migration keeps the real parts in the stack');
+ok(split.equipment.length === 3, 'and lifts the three equipment items out');
+const migEq = row([], equipmentSlotsFor(STACK));
+const migCargo = row([], computeRocketStats(STACK).cargoSlots);
+ok(stowLegacyEquipment(split.equipment, migEq, migCargo).length === 0 && chutesFitted(migEq) === 1
+  && computeRocketStats(STACK, 0, null, migEq).batteryWh === packed.batteryWh, 'they go into the equipment slots and work there');
+const fullEq = row([[ItemType.STONE, 1], [ItemType.STONE, 1], [ItemType.STONE, 1]]);
+const spill = row([], 2);
+ok(stowLegacyEquipment([ItemType.PARACHUTE], fullEq, spill).length === 0 && spill[0].itemType === ItemType.PARACHUTE, 'with the equipment slots full they go to the cargo hold');
+ok(stowLegacyEquipment([ItemType.PARACHUTE], row([], 0), row([], 0)).length === 1, 'with nowhere to go they are handed back (the caller gives them to the player)');
 
 // ---- the solar array (design 6)
 {
   const { computeRocketStats, inSunlight, solarCharge } = await import('../src/rocket/RocketPerformance');
-  const bare = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]);
-  const one = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE, ItemType.SOLAR_ARRAY]);
-  const two = computeRocketStats([ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE, ItemType.SOLAR_ARRAY, ItemType.SOLAR_ARRAY]);
-  ok(bare.solarW === 0 && one.solarW > 0, 'a solar array gives the stack solar watts');
+  const bare = computeRocketStats(STACK);
+  const one = computeRocketStats(STACK, 0, null, row([[ItemType.SOLAR_ARRAY, 1]]));
+  const two = computeRocketStats(STACK, 0, null, row([[ItemType.SOLAR_ARRAY, 1], [ItemType.SOLAR_ARRAY, 1]]));
+  const twoStacked = computeRocketStats(STACK, 0, null, row([[ItemType.SOLAR_ARRAY, 2]]));
+  ok(bare.solarW === 0 && one.solarW > 0, 'an equipped solar array gives solar watts');
+  ok(twoStacked.solarW === two.solarW, 'two arrays in one slot give the same as two slots');
   ok(Math.abs(two.solarW - two.powerDrawW) < 1e-6, 'two arrays match the command module draw in full sun');
   ok(one.thrust === bare.thrust && one.dryMass > bare.dryMass, 'an array adds mass, no thrust');
   const sun = { x: 1000, y: 0, z: 0 };
@@ -131,3 +184,5 @@ if (process.exitCode) console.log('FAILED'); else console.log('all passed');
   ok(solarCharge(0, cap, one.solarW, false, 3600) === 0, 'no charge in shadow');
   ok(solarCharge(cap, cap, one.solarW, true, 60) === cap, 'charge stops at capacity');
 }
+
+if (process.exitCode) console.log('FAILED'); else console.log('all passed');

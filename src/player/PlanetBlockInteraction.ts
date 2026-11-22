@@ -20,7 +20,7 @@ function hasFlyableRocket(pad: { rocketParts: { itemType: ItemType }[] }): boole
   return types.some(t => ENGINES.has(t)) && types.some(t => TANKS.has(t)) && types.includes(ItemType.COMMAND_MODULE);
 }
 import { RocketController } from '../rocket/RocketController';
-import { computeRocketStats, slotStore } from '../rocket/RocketPerformance';
+import { computeRocketStats, slotStore, splitLegacyStack, stowLegacyEquipment } from '../rocket/RocketPerformance';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
@@ -602,7 +602,7 @@ export class PlanetBlockInteraction {
     });
     this.launchPadUI.setOnRemoveRocketPartCallback((pad) => {
       if (this.launchPadManager.topPartHoldsCargo(pad)) {
-        showToast('Empty the cargo hold first - that part holds cargo', { duration: 3000 });
+        showToast('Empty the cargo / equipment first - that part holds it', { duration: 3000 });
         return null;
       }
       const removedPart = this.launchPadManager.removeRocketPart(pad);
@@ -632,6 +632,11 @@ export class PlanetBlockInteraction {
     this.launchPadUI.setOnOpenCargoCallback((pad) => {
       this.launchPadUI.close();
       this.openRocketCargo(pad.cargo);
+    });
+    // Equipment fitted or taken out: the pad and the inventory save now
+    this.launchPadUI.setOnEquipmentChangedCallback(() => {
+      this.saveLaunchPadStates();
+      this.saveInventory();
     });
     this.launchPadUI.setGravityLookup((pad) => {
       let best = this.planets[0], bestD = Infinity;
@@ -4150,8 +4155,8 @@ export class PlanetBlockInteraction {
    * Open a rocket's cargo hold beside the hotbar + bag (from its launch pad
    * or a landed rocket's panel)
    */
-  public openRocketCargo(cargo: InventorySlot[], title = 'Rocket Cargo'): void {
-    this.storageUI.openCargo({ slots: cargo }, title);
+  public openRocketCargo(cargo: InventorySlot[], title = 'Rocket Cargo', accepts?: (itemType: ItemType) => boolean): void {
+    this.storageUI.openCargo({ slots: cargo, accepts }, title);
   }
 
   /**
@@ -4277,6 +4282,7 @@ export class PlanetBlockInteraction {
         })),
         fuel: pad.fuel ?? undefined,
         cargo: pad.cargo.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
+        equipment: pad.equipment.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
         engineMode: pad.engineMode ?? null,
       });
     }
@@ -4997,6 +5003,9 @@ export class PlanetBlockInteraction {
         // without touching blocks
         const hexes = tileIndices.map(i => this.padHex(planet, i, 0, innerRadius, false)).filter((t): t is PlatformTile => t !== null);
         if (hexes.length === 0) return Promise.resolve();
+        // Older saves stacked parachutes, solar arrays and battery packs as
+        // parts: they are equipment now, fitted below once the slots exist
+        const legacy = splitLegacyStack(savedPad.rocketParts ?? []);
         pending = this.launchPadManager.restorePad(
           planet.center,
           hexes,
@@ -5006,7 +5015,7 @@ export class PlanetBlockInteraction {
           savedPad.towerTile ?? savedPad.surroundingTileIndices[0] ?? -1,
           savedPad.segmentCount,
           savedPad.rocketBlocks,
-          savedPad.rocketParts,
+          legacy.parts,
         ).then(pad => {
           // The rocket's tanks and cargo hold (absent in older saves: full, empty)
           if (!pad) return Promise.resolve();
@@ -5017,6 +5026,19 @@ export class PlanetBlockInteraction {
               pad.cargo[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };
             }
           });
+          // Its equipment slots (absent in older saves: empty)
+          savedPad.equipment?.forEach((slot, i) => {
+            if (i < pad.equipment.length && ITEM_DATA[slot.itemType as ItemType]) {
+              pad.equipment[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };
+            }
+          });
+          if (legacy.equipment.length > 0) {
+            // equipment slots first, then the cargo hold, then the player
+            const lost = stowLegacyEquipment(legacy.equipment, pad.equipment, pad.cargo);
+            for (const t of lost) this.inventory.addItem(t, 1);
+            if (lost.length > 0) this.saveInventory();
+            this.saveLaunchPadStates();
+          }
         });
         break;
       }

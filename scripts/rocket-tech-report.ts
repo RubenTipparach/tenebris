@@ -83,7 +83,6 @@ const STACKS: [string, ItemType[]][] = [
   ['Both engines: Rocket Engine (lift) + Vacuum Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Rocket Engine + Large Tank (mixed)', [ItemType.ROCKET_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 3: Nuclear Thermal Engine + Large Tank + Command Module', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
-  ['Tier 3 + Battery Pack', [ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.BATTERY_PACK, ItemType.COMMAND_MODULE]],
   ['Tier 3: Rocket Engine (lift) + Nuclear Thermal Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 3: two Rocket Engines (lift) + Nuclear Thermal Engine + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 4: Rocket Engine (lift) + Ion Drive + Reactor Core + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],

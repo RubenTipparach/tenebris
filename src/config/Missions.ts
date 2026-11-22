@@ -38,7 +38,7 @@ import { ItemType } from '../player/Inventory';
  *   reactorBuilt place a fission reactor (off-world only)
  *   onBattery   a network keeps its machines running on battery charge
  *   fueled      refuel a rocket with `item`
- *   launchedWith take off in a rocket whose stack holds `item`
+ *   launchedWith take off in a rocket whose stack or equipment holds `item`
  *   sheared     shear a sheep
  *   chuteLanded land a rocket under an open parachute
  *   bottled     a gas collector fills an oxygen tank
@@ -614,7 +614,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- rocketry, returning: a parachute landing and a fresh battery
   {
-    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: 'Add a parachute to the stack and land under it (P opens it).',
+    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: "Fit a parachute in the rocket's equipment and land under it (P opens it).",
     objectives: [{ kind: 'chuteLanded', count: 1, label: 'Landed under a chute' }],
     unlocks: [],
   },

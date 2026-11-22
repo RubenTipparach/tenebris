@@ -20,7 +20,9 @@ Writes, under public/textures/:
   icons are their own textures, public/textures/building/)
   wool, air and re-entry: icons/ (wool, leather, shears, wool clothing,
   empty and oxygen tanks, space suit), technology/gas_collector(_face),
-  rocket_parts/parachute(_face)
+  rocket_parts/parachute_face (an item icon: the parachute, solar array and
+  battery pack are rocket equipment, not stack parts, so they have no part
+  texture)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -577,10 +579,12 @@ if __name__ == "__main__":
     core = [P8[k] for k in ("navy", "dgrey", "lgrey", "lime", "white")]
     pack = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     for name, src, ramp in [("nuclear_thermal_engine", "medium_engine", nte), ("ion_drive", "medium_engine", ion),
-                            ("reactor_core", "medium_fuel_tank", core), ("battery_pack", "medium_fuel_tank", pack)]:
+                            ("reactor_core", "medium_fuel_tank", core)]:
         write(f"rocket_parts/{name}.png", recolour(read_png(os.path.join(parts, src + ".png")), ramp))
         face = recolour(read_png(os.path.join(parts, src + "_face.png")), ramp)
         write(f"rocket_parts/{name}_face.png", trefoil(face) if name in ("nuclear_thermal_engine", "reactor_core") else face)
+    # The battery pack is rocket equipment (an icon only, no part texture)
+    write("rocket_parts/battery_pack_face.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank_face.png")), pack))
     # ---- Building materials (openspec industry-and-nuclear, decision 9) ---
     steel = [P8[k] for k in ("black", "navy", "indigo", "lgrey", "white")]
     write("icons/steel_ingot.png", recolour(read_png(os.path.join(tex, "minerals/earth/iron.png")), steel))
@@ -596,12 +600,9 @@ if __name__ == "__main__":
     gas = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/gas_collector.png", recolour(read_png(os.path.join(techd, "hydro_generator.png")), gas))
     write("technology/gas_collector_face.png", recolour(read_png(os.path.join(techd, "hydro_generator_face.png")), gas))
-    chute = [P8[k] for k in ("plum", "red", "orange", "peach", "white")]
-    write("rocket_parts/parachute.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), chute))
     write("rocket_parts/parachute_face.png", chute_face())
     # ---- Solar power (wool-air-and-reentry, design 6) ----
     sol = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/solar_panel.png", recolour(read_png(os.path.join(techd, "computer.png")), sol))
     write("technology/solar_panel_face.png", solar_face())
-    write("rocket_parts/solar_array.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), sol))
     write("rocket_parts/solar_array_face.png", solar_face(True))

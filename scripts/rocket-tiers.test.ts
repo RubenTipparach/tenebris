@@ -26,7 +26,8 @@ check('ion drive TWR below 1 on Earth', surfaceTWR(ion, 1) < 1, surfaceTWR(ion, 
 check('ion drive without a reactor core gives no thrust', ionBare.thrust === 0 && ionBare.deltaV === 0);
 check('ion drive without a reactor core says why', ionBare.problems.length === 1 && /Reactor Core/.test(ionBare.problems[0]), ionBare.problems.join('; '));
 check('stacks that work have no problems', [chem, vac, ntr, ion].every(s => s.problems.length === 0));
-check('battery pack adds 2 cargo slots', computeRocketStats([ItemType.NUCLEAR_THERMAL_ENGINE, tank, ItemType.BATTERY_PACK, cm]).cargoSlots === ntr.cargoSlots + 2);
+// The battery pack is rocket equipment now (an equipment slot, not the stack): cargo space comes from cargo bays
+check('a battery pack in the equipment adds no cargo slots', computeRocketStats([ItemType.NUCLEAR_THERMAL_ENGINE, tank, cm], 0, null, [{ itemType: ItemType.BATTERY_PACK, quantity: 1 }]).cargoSlots === ntr.cargoSlots);
 check('tiers', ntr.tier === 3 && ion.tier === 4);
 
 // Engine modes (design 6b): one mode per engine type plus All

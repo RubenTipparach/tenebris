@@ -13,9 +13,9 @@ import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot } from '../player/Inventory';
 import {
   computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
-  drainCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, tryOpenChute, chuteDescentSpeed, chuteSideFactor,
+  drainCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
+  chutesFitted,
 } from './RocketPerformance';
-import { ItemType } from '../player/Inventory';
 import { showToast } from '../utils/toast';
 import { createHeatGlow, setHeatGlow, createCanopy, disposeObject } from './RocketReentryVisuals';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -151,13 +151,16 @@ export class RocketController {
   // The cargo hold: the launch pad's slots, shared by reference, so it
   // travels with the rocket and saves with the pad
   private cargo: InventorySlot[] | null = null;
+  // The equipment slots (parachutes, solar arrays, battery packs), shared
+  // the same way: what is fitted is the state (a chute used is gone)
+  private equipment: InventorySlot[] | null = null;
 
   // Power (openspec wool-air-and-reentry, design 2): the flight's charge,
   // the stack's capacity and what it draws while flying
   private chargeWh: number = 0;
   private batteryCapacityWh: number = 0;
   private powerDrawW: number = 0;
-  private solarW: number = 0;          // the stack's solar arrays, full sun
+  private solarW: number = 0;          // the equipped solar arrays, full sun
   private sunlit: boolean = true;
   private flatWarned: boolean = false;
   private sunPosition: { x: number; y: number; z: number } = SUN_CONFIG_POSITION;
@@ -169,7 +172,6 @@ export class RocketController {
   private reentering: boolean = false;
   private inAtmosphere: boolean = false;
   private chuteOpen: boolean = false;
-  private chuteSpent: boolean = false;   // torn, or used for a landing: gone until a pad repacks it
   private heatGlow: THREE.Mesh | null = null;
   private canopy: THREE.Group | null = null;
   private crashReason: 'impact' | 'burnedUp' = 'impact';
@@ -195,12 +197,14 @@ export class RocketController {
     planets: PlanetGravitySource[],
     fuelUnits: number | null = null,
     cargo: InventorySlot[] | null = null,
-    engineMode: EngineMode = null
+    engineMode: EngineMode = null,
+    equipment: InventorySlot[] | null = null
   ): void {
     this.engineMode = engineMode;
     this.parts = [...parts];
     this.planets = planets;
     this.cargo = cargo;
+    this.equipment = equipment;
 
     // Calculate rocket stack center (for future offset calculations)
     this.calculateStackCenter();
@@ -222,8 +226,8 @@ export class RocketController {
     this.calculateMassProperties();
     // A pad's tanks hold what was fuelled into them (null = full: older saves)
     if (fuelUnits !== null) this.currentFuel = Math.max(0, Math.min(this.totalFuelCapacity, fuelUnits));
-    // The pad's crew charges the battery and packs the chute: full every launch
-    this.resetFlightState(this.batteryCapacityWh, false);
+    // The pad's crew charges the battery: full every launch
+    this.resetFlightState(this.batteryCapacityWh);
 
     // Set up pivot group
     this.pivot.position.copy(this.position);
@@ -522,12 +526,13 @@ export class RocketController {
 
   /**
    * Calculate mass and propulsion properties from parts (and what the cargo
-   * hold carries) - summed in RocketPerformance, the one source of the numbers
+   * hold carries and the equipment slots hold) - summed in RocketPerformance,
+   * the one source of the numbers
    */
   private calculateMassProperties(): void {
     const types = stackItemTypes(this.parts);
     this.engineMode = validEngineMode(types, this.engineMode);
-    const stats = computeRocketStats(types, cargoMass(this.cargo), this.engineMode);
+    const stats = computeRocketStats(types, cargoMass(this.cargo), this.engineMode, this.equipment);
     this.totalDryMass = stats.dryMass;
     this.totalWetMass = stats.wetMass;
     this.totalFuelCapacity = stats.fuelCapacity;
@@ -565,7 +570,7 @@ export class RocketController {
     return true;
   }
 
-  /** Re-weigh the rocket after its cargo changed (fuel level kept) */
+  /** Re-weigh the rocket after its cargo or equipment changed (fuel and charge kept) */
   public refreshCargoMass(): void {
     const fuel = this.currentFuel;
     this.calculateMassProperties();
@@ -1097,12 +1102,12 @@ export class RocketController {
 
       this.stateMachine.transitionTo(RocketState.LANDED);
       console.log(`Landed safely at ${impactVelocity.toFixed(1)} m/s`);
-      // Down: no longer re-entering, and a chute that brought it down is spent
+      // Down: no longer re-entering, and a chute that brought it down closes
+      // (it was used up as it opened)
       this.leftAtmosphere = false;
       this.reentering = false;
       if (this.chuteOpen) {
         emitGameEvent('chuteLanded');
-        this.chuteSpent = true;
         this.closeChute();
       }
       if (this.closestPlanet) {
@@ -1308,6 +1313,11 @@ export class RocketController {
     return this.cargo;
   }
 
+  /** The equipment slots (shared with the launch pad the same way) */
+  public getEquipment(): InventorySlot[] | null {
+    return this.equipment;
+  }
+
   public getFuelUnits(): number {
     return this.currentFuel;
   }
@@ -1419,14 +1429,9 @@ export class RocketController {
     return this.chuteOpen;
   }
 
-  /** The stack carries a parachute part */
-  public carriesChute(): boolean {
-    return this.parts.some(p => p.itemType === ItemType.PARACHUTE);
-  }
-
-  /** Torn or used for a landing this flight (a pad repacks it) */
-  public isChuteSpent(): boolean {
-    return this.chuteSpent;
+  /** Parachutes fitted in the equipment slots (each opens once) */
+  public chutesFitted(): number {
+    return chutesFitted(this.equipment);
   }
 
   /** Why it crashed: a hard landing or burning up on re-entry */
@@ -1434,15 +1439,14 @@ export class RocketController {
     return this.crashReason;
   }
 
-  /** A new flight: its charge (clamped to the stack), the chute's state, cool */
-  private resetFlightState(chargeWh: number, chuteSpent: boolean): void {
+  /** A new flight: its charge (clamped to the capacity), cool, chute closed */
+  private resetFlightState(chargeWh: number): void {
     this.chargeWh = Math.max(0, Math.min(this.batteryCapacityWh, chargeWh));
     this.lowPowerWarned = this.getChargeSecondsLeft() <= ROCKET_CONFIG.POWER.LOW_WARN_S;
     this.flatWarned = this.chargeWh <= 0;
     this.heat = 0;
     this.leftAtmosphere = false;
     this.reentering = false;
-    this.chuteSpent = chuteSpent;
     this.closeChute();
   }
 
@@ -1536,15 +1540,23 @@ export class RocketController {
       if (input.parachute && !flying) showToast('The chute opens in flight', { duration: 2000 });
       return;
     }
-    const ready = this.carriesChute() && !this.chuteSpent;
+    const ready = this.chutesFitted() > 0;
+    // By itself it waits for a speed it survives (it would tear chute after
+    // chute otherwise); only the key can tear one
     const auto = ready && this.inAtmosphere && this.getVerticalVelocity() < 0
-      && this.getAltitude() < ROCKET_CONFIG.PARACHUTE.deployAltitude;
+      && this.getAltitude() < ROCKET_CONFIG.PARACHUTE.deployAltitude
+      && this.velocity.length() <= ROCKET_CONFIG.PARACHUTE.maxOpenSpeed;
     if (!input.parachute && !auto) return;
     if (!ready) {
-      showToast(this.carriesChute() ? 'The chute is spent' : 'No parachute aboard', { duration: 2500 });
+      if (input.parachute) showToast('No parachute fitted', { duration: 2500 });
       return;
     }
-    const result = tryOpenChute(true, this.inAtmosphere, this.velocity.length());
+    const result = openChuteFrom(this.equipment, this.inAtmosphere, this.velocity.length());
+    // Opening or tearing used one up: re-weigh, and save the slot now
+    if (result === 'open' || result === 'torn') {
+      this.refreshCargoMass();
+      this.onChanged?.();
+    }
     if (result === 'open') {
       this.chuteOpen = true;
       const top = new THREE.Vector3(
@@ -1556,7 +1568,6 @@ export class RocketController {
       this.pivot.add(this.canopy);
       showToast('Chute open', { duration: 2000 });
     } else if (result === 'torn') {
-      this.chuteSpent = true;
       showToast('Chute torn - too fast', { duration: 3000 });
     } else {
       showToast('No air for the chute', { duration: 2500 });
@@ -1745,7 +1756,7 @@ export class RocketController {
     cargo: InventorySlot[] | null = null,
     engineMode: EngineMode = null,
     chargeWh: number | null = null,
-    chuteSpent: boolean = false
+    equipment: InventorySlot[] | null = null
   ): void {
     this.engineMode = engineMode;
     // Reuse the existing pivot and parts
@@ -1753,6 +1764,7 @@ export class RocketController {
     this.parts = parts;
     this.planets = planets;
     this.cargo = cargo;
+    this.equipment = equipment;
 
     // Calculate rocket stack center
     this.calculateStackCenter();
@@ -1772,9 +1784,8 @@ export class RocketController {
 
     // Set fuel level from saved state
     this.currentFuel = (fuelPercent / 100) * this.totalFuelCapacity;
-    // Its battery as it was left (null = full: older records), and its chute
-    // as it was (only a pad repacks it)
-    this.resetFlightState(chargeWh ?? this.batteryCapacityWh, chuteSpent);
+    // Its battery as it was left (null = full: older records)
+    this.resetFlightState(chargeWh ?? this.batteryCapacityWh);
 
     // Find closest planet for initial gravity calculation
     this.updateClosestPlanet();

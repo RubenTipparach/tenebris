@@ -2,7 +2,7 @@
 
 ## 1. Foundation
 
-- [x] 1.1 Items: WOOL, LEATHER, SHEARS, CARPET (block), WOOL_CLOTHING, PARACHUTE (rocket part), EMPTY_TANK, OXYGEN_TANK, GAS_COLLECTOR, SPACE_SUIT, each with ITEM_DATA and a drawn icon; CARPET block with its own texture. Verify: industry test (every item has an icon).
+- [x] 1.1 Items: WOOL, LEATHER, SHEARS, CARPET (block), WOOL_CLOTHING, PARACHUTE (rocket equipment, task 7.1), EMPTY_TANK, OXYGEN_TANK, GAS_COLLECTOR, SPACE_SUIT, each with ITEM_DATA and a drawn icon; CARPET block with its own texture. Verify: industry test (every item has an icon).
 - [x] 1.2 Recipes for all of them and the missions of design 5, with new objective kinds. Verify: missions test (every recipe reached once, no overlapping lines).
 - [x] 1.3 Lithium deposit on airless bodies; `breathable` per body; SurvivalConfig. Verify: deposit test.
 
@@ -40,3 +40,12 @@
 
 - [x] 6.1 Solar panel machine: sunlight from the tile's up and the sun direction, open sky, airless boost; recipe, mission, UI. Verify: power test (noon, 45 degrees, night, roof, airless, feeds a network).
 - [x] 6.2 Solar array rocket part: inSunlight shadow test, charging in flight and landed, HUD SUN, flat toast once. Verify: rocket-survival test (stats, shadow, charge, cap).
+
+## 7. Rocket equipment (owner, 2026-11-22)
+
+- [x] 7.1 Parachute, solar array and battery pack as EQUIPMENT: `equipment` slots beside the cargo hold (PARTS equipmentSlots, the command module's 3), ROCKET_CONFIG.EQUIPMENT (mass, batteryWh, solarW, chutes; stacking counts), out of PARTS / rocketPart and their part textures; stats from stack + equipment in computeRocketStats. Verify: rocket-survival test (packs extend flight time, two arrays match the draw, a chute adds mass, only the three fit).
+  - Verified: scripts/rocket-survival.test.ts; industry test (every rocket part has its model/texture) still passes.
+- [x] 7.2 Parachute from the equipment: opening or tearing uses one up, landing closes it, no `chuteSpent` anywhere (controller, landed record, MP `cs`); HUD "CHUTES n [P]" / "CHUTE OPEN"; auto-open only at a survivable speed. Verify: test (consumed on open and on tear, none fitted opens nothing, vacuum uses none).
+  - Verified: scripts/rocket-survival.test.ts; headless HUD read "CHUTES 1 [P]" after boarding with one fitted.
+- [x] 7.3 Equipment rows in the launch pad panel (drag in from hotbar + bag, click out hotbar first, what it gives) and the landed-rocket panel (icons, opens the filtered cargo panel); saves and MP (pad record, landed record `eq`); migration of older stacks; `launchedWith` for fitted items. Verify: headless.
+  - Verified: headless SP with the starter rocket: stone refused, chute + array + pack dropped in, readout "Power 60 kWh, Solar 40 kW, Chutes 1, Mass 508 kg", saved, back after a reload; flight HUD POWER 45:00 and CHUTES 1. Migration and the landed-record path are covered by the unit test only (no old save or second client was loaded).

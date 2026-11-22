@@ -8,8 +8,8 @@ import { PlacedLaunchPad } from '../planet/LaunchPad';
 import { InputManager } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
 import { LandedRocketUI } from './LandedRocketUI';
-import { InventorySlot } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh } from './RocketPerformance';
+import { InventorySlot, ItemType } from '../player/Inventory';
+import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh, isEquipment } from './RocketPerformance';
 import { emitGameEvent } from '../engine/GameEvents';
 import { showToast } from '../utils/toast';
 
@@ -37,10 +37,10 @@ export class RocketFlightManager {
   // cargo record, saved through onRocketChangedCallback
   private activePad: PlacedLaunchPad | null = null;
   private onRocketChangedCallback: ((pad: PlacedLaunchPad | null) => void) | null = null;
-  private onOpenCargoCallback: ((cargo: InventorySlot[]) => void) | null = null;
+  private onOpenCargoCallback: ((slots: InventorySlot[], title?: string, accepts?: (t: ItemType) => boolean) => void) | null = null;
 
   /** How a landed rocket's Cargo button opens the hold (beside the inventory) */
-  public setOnOpenCargoCallback(callback: (cargo: InventorySlot[]) => void): void {
+  public setOnOpenCargoCallback(callback: (slots: InventorySlot[], title?: string, accepts?: (t: ItemType) => boolean) => void): void {
     this.onOpenCargoCallback = callback;
   }
 
@@ -98,6 +98,10 @@ export class RocketFlightManager {
     this.landedRocketUI.setOnRefuelCallback((rocket) => this.refuelLanded(rocket));
     this.landedRocketUI.setOnCargoCallback((rocket) => {
       if (rocket.cargo) this.onOpenCargoCallback?.(rocket.cargo);
+    });
+    // Its equipment slots: the same panel, taking only equipment items
+    this.landedRocketUI.setOnEquipmentCallback((rocket) => {
+      if (rocket.equipment) this.onOpenCargoCallback?.(rocket.equipment, 'Rocket Equipment', isEquipment);
     });
 
     this.landedRocketUI.setOnCloseCallback(() => {
@@ -196,7 +200,7 @@ export class RocketFlightManager {
    * fuel source as refuelling on board
    */
   public refuelLanded(rocket: LandedRocket): void {
-    const stats = computeRocketStats(stackItemTypes(rocket.parts));
+    const stats = computeRocketStats(stackItemTypes(rocket.parts), 0, null, rocket.equipment);
     const have = (rocket.fuelPercent / 100) * stats.fuelCapacity;
     const wanted = stats.fuelCapacity - have;
     if (wanted <= 0) return;
@@ -215,7 +219,7 @@ export class RocketFlightManager {
    * stack's capacity. False (nothing used) when the rocket is already full.
    */
   public rechargeLanded(rocket: LandedRocket, take: () => boolean): boolean {
-    const capacity = computeRocketStats(stackItemTypes(rocket.parts)).batteryWh;
+    const capacity = computeRocketStats(stackItemTypes(rocket.parts), 0, null, rocket.equipment).batteryWh;
     const have = rocket.chargeWh ?? capacity;
     if (have >= capacity) {
       showToast('Battery is full', { duration: 2000 });
@@ -309,7 +313,8 @@ export class RocketFlightManager {
       this.planets,
       launchPad.fuel,
       launchPad.cargo,
-      launchPad.engineMode ?? null
+      launchPad.engineMode ?? null,
+      launchPad.equipment
     );
     this.activePad = launchPad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -389,7 +394,7 @@ export class RocketFlightManager {
         this.activePad,
         undefined,
         this.rocketController.getChargeWh(),
-        this.rocketController.isChuteSpent()
+        this.rocketController.getEquipment()
       ).engineMode = this.rocketController.getEngineMode();
 
       // Don't dispose - the rocket stays in the world
@@ -441,7 +446,7 @@ export class RocketFlightManager {
       landedRocket.cargo,
       landedRocket.engineMode ?? null,
       landedRocket.chargeWh ?? null,
-      landedRocket.chuteSpent ?? false
+      landedRocket.equipment
     );
     this.activePad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
@@ -461,7 +466,7 @@ export class RocketFlightManager {
         landedRocket.pad,
         landedRocket.netKey,
         landedRocket.chargeWh ?? null,
-        landedRocket.chuteSpent ?? false
+        landedRocket.equipment
       );
       this.rocketController = null;
       this.activePad = null;

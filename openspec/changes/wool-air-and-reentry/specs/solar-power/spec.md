@@ -17,7 +17,7 @@ unlocked once batteries are researched.
 
 ### Requirement: A solar array charges a rocket in sunlight
 
-A rocket whose stack holds solar arrays SHALL charge its battery while the
+A rocket with solar arrays fitted in its equipment SHALL charge its battery while the
 line from it to the sun misses every body, in flight or landed, up to the
 stack's capacity, and SHALL NOT charge in a planet's shadow. Two arrays
 SHALL match the command module's draw in full sun.
