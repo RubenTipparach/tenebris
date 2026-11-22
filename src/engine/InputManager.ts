@@ -21,6 +21,31 @@ export function isMobileDevice(): boolean {
     (navigator.maxTouchPoints > 0 && /Macintosh/.test(navigator.userAgent)); // iPad detection
 }
 
+/**
+ * Lock the pointer for mouse look - the one way the game asks for it
+ * (openspec player-heading). Asks for unadjusted (raw) movement where the
+ * browser supports it: Chrome's accelerated pointer-lock movement throws
+ * occasional huge movementX spikes, a snap turn the player did not make.
+ * Pale Blue Dot reads raw device motion the same way. Falls back to a plain
+ * lock where the option is not supported.
+ */
+export function lockPointer(target?: Element | null): void {
+  const el = target ?? document.getElementById('game-container') ?? document.body;
+  const plain = () => {
+    try {
+      const r = el.requestPointerLock() as unknown;
+      if (r instanceof Promise) r.catch(() => { /* lock refused (e.g. too soon after Esc) */ });
+    } catch { /* lock refused */ }
+  };
+  try {
+    const request = el.requestPointerLock as (options?: { unadjustedMovement?: boolean }) => unknown;
+    const r = request.call(el, { unadjustedMovement: true });
+    if (r instanceof Promise) r.catch(plain);
+  } catch {
+    plain();
+  }
+}
+
 export class InputManager {
   private keys: Set<string> = new Set();
   private keysJustPressed: Set<string> = new Set(); // Keys pressed this frame
@@ -28,6 +53,9 @@ export class InputManager {
   private mouseButtons: { left: boolean; right: boolean } = { left: false, right: false };
   private mouseWheelDelta: number = 0; // Accumulated wheel delta
   private isPointerLocked: boolean = false;
+  // The first mousemove after the lock is taken carries the jump from the
+  // free cursor to the lock in some browsers - dropped (player-heading)
+  private skipNextMouseMove: boolean = false;
   private onPointerLockChange?: (locked: boolean) => void;
   private onInventoryToggle?: () => void;
   private onPauseToggle?: () => void;
@@ -92,10 +120,12 @@ export class InputManager {
 
     // Mouse movement
     document.addEventListener('mousemove', (e) => {
-      if (this.isPointerLocked) {
-        this.mouseMovement.x += e.movementX;
-        this.mouseMovement.y += e.movementY;
-      }
+      if (!this.isPointerLocked) return;
+      if (this.skipNextMouseMove) { this.skipNextMouseMove = false; return; }
+      // Raw and in full, but never a NaN (openspec player-heading)
+      if (!Number.isFinite(e.movementX) || !Number.isFinite(e.movementY)) return;
+      this.mouseMovement.x += e.movementX;
+      this.mouseMovement.y += e.movementY;
     });
 
     // Mouse buttons
@@ -127,6 +157,11 @@ export class InputManager {
     // Pointer lock
     document.addEventListener('pointerlockchange', () => {
       this.isPointerLocked = document.pointerLockElement !== null;
+      // Motion from either side of a lock change is not a look the player
+      // made in the game: throw it away (openspec player-heading)
+      this.mouseMovement.x = 0;
+      this.mouseMovement.y = 0;
+      this.skipNextMouseMove = this.isPointerLocked;
       if (this.onPointerLockChange) {
         this.onPointerLockChange(this.isPointerLocked);
       }
@@ -139,7 +174,7 @@ export class InputManager {
         if (this.isMobile) {
           this.startMobileGame();
         } else if (!this.isPointerLocked) {
-          document.body.requestPointerLock();
+          lockPointer(document.body);
         }
       });
     }

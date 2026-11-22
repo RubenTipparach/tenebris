@@ -8,6 +8,8 @@
  * - Preventing pause menu from showing when game UIs are open
  */
 
+import { lockPointer } from '../engine/InputManager';
+
 type MenuCloseHandler = () => void;
 
 interface RegisteredMenu {
@@ -81,10 +83,7 @@ class MenuManagerSingleton {
    * Request pointer lock on the game container
    */
   public requestPointerLock(): void {
-    const container = document.getElementById('game-container');
-    if (container) {
-      container.requestPointerLock();
-    }
+    lockPointer();
   }
 
   /**

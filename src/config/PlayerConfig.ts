@@ -31,6 +31,7 @@ export const PlayerConfig = {
   // Camera
   MOUSE_SENSITIVITY: 0.002,
   INVERT_Y_AXIS: false,        // Invert vertical mouse look (true = pull down to look up)
+  PITCH_LIMIT_DEG: 89.9,       // Walker look pitch clamp, degrees off the horizon (openspec player-heading)
   ROLL_SPEED: 2, // Roll speed in space (Q/E)
   CAMERA_NEAR: 0.1,            // Near clipping plane
   CAMERA_FAR: 20000,           // Far clipping plane (10x increased for space travel)
