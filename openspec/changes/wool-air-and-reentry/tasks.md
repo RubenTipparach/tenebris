@@ -15,13 +15,17 @@
 
 ## 3. Rocket power
 
-- [ ] 3.1 Flight charge, drain, flat-battery effects, POWER gauge, saved charge. Verify: tests of the drain (15 minutes) and packs.
-- [ ] 3.2 Swapping a lithium-ion battery into a landed rocket. Verify: headless.
+- [x] 3.1 Flight charge, drain, flat-battery effects, POWER gauge, saved charge. Verify: tests of the drain (15 minutes) and packs.
+  Verified: `scripts/rocket-survival.test.ts` (15.00 min cell, 45 min with a pack, no thrust when flat); headless POWER gauge drains in flight, flat battery stops the engines.
+- [x] 3.2 Swapping a lithium-ion battery into a landed rocket. Verify: headless.
+  Verified: headless - right-click path (`rechargeLanded`) used one battery, filled a flat rocket, and re-boarding kept the charge; swap math in the test.
 
 ## 4. Re-entry and parachutes
 
-- [ ] 4.1 Re-entry heat, damage, burn-up, HEAT gauge, glow. Verify: tests of the heat model.
-- [ ] 4.2 Parachute part: key and auto open, tear speed, no vacuum, canopy, repack, chuteLanded. Verify: tests; headless descent.
+- [x] 4.1 Re-entry heat, damage, burn-up, HEAT gauge, glow. Verify: tests of the heat model.
+  Verified: test (no heat leaving only or in a passive fall, heats on a powered dive back in, burns up at maxHeat); headless dive heated and drew the glow.
+- [x] 4.2 Parachute part: key and auto open, tear speed, no vacuum, canopy, repack, chuteLanded. Verify: tests; headless descent.
+  Verified: test (no vacuum, tears above maxOpenSpeed, holds terminalVelocity); headless auto-open at 45 m, canopy drawn, landed under it.
 
 ## 5. Air and suits
 

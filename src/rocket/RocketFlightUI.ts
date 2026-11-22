@@ -1,7 +1,7 @@
 import { RocketController } from './RocketController';
 import { RocketState, STATE_INFO } from './RocketState';
 import { engineModeLabel } from './RocketPerformance';
-import { ROCKET_INPUTS } from '../config/RocketConfig';
+import { ROCKET_CONFIG, ROCKET_INPUTS } from '../config/RocketConfig';
 
 /**
  * Flight HUD for rocket control
@@ -18,6 +18,13 @@ export class RocketFlightUI {
   private gravityEl: HTMLElement | null = null;
   private fuelBarEl: HTMLElement | null = null;
   private fuelPercentEl: HTMLElement | null = null;
+  private powerBarEl: HTMLElement | null = null;
+  private powerValueEl: HTMLElement | null = null;
+  private heatBarEl: HTMLElement | null = null;
+  private heatValueEl: HTMLElement | null = null;
+  private chuteEl: HTMLElement | null = null;
+  private crashTitleEl: HTMLElement | null = null;
+  private crashTextEl: HTMLElement | null = null;
   private throttleBarEl: HTMLElement | null = null;
   private throttlePercentEl: HTMLElement | null = null;
   private twrEl: HTMLElement | null = null;
@@ -91,6 +98,14 @@ export class RocketFlightUI {
           </div>
 
           <div class="gauge-row">
+            <span class="gauge-label">POWER</span>
+            <div class="gauge-bar-container">
+              <div class="gauge-bar power-bar" id="flight-power-bar"></div>
+            </div>
+            <span class="gauge-value" id="flight-power-value">15:00</span>
+          </div>
+
+          <div class="gauge-row">
             <span class="gauge-label">THROTTLE</span>
             <div class="gauge-bar-container">
               <div class="gauge-bar throttle-bar" id="flight-throttle-bar"></div>
@@ -105,6 +120,15 @@ export class RocketFlightUI {
             </div>
             <span class="gauge-value" id="flight-health-percent">100%</span>
           </div>
+
+          <div class="gauge-row">
+            <span class="gauge-label">HEAT</span>
+            <div class="gauge-bar-container">
+              <div class="gauge-bar heat-bar" id="flight-heat-bar"></div>
+            </div>
+            <span class="gauge-value" id="flight-heat-value">0%</span>
+          </div>
+          <div class="chute-status" id="flight-chute" hidden></div>
         </div>
 
         <div class="flight-stats-panel">
@@ -135,13 +159,13 @@ export class RocketFlightUI {
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">
         <div class="crash-message">
-          <h1>YOU CRASHED</h1>
-          <p>Your rocket was destroyed.</p>
+          <h1 id="crash-title">YOU CRASHED</h1>
+          <p id="crash-text">Your rocket was destroyed.</p>
           <button class="respawn-btn" id="respawn-btn">RESPAWN</button>
         </div>
       </div>
@@ -159,6 +183,13 @@ export class RocketFlightUI {
     this.gravityEl = document.getElementById('flight-gravity');
     this.fuelBarEl = document.getElementById('flight-fuel-bar');
     this.fuelPercentEl = document.getElementById('flight-fuel-percent');
+    this.powerBarEl = document.getElementById('flight-power-bar');
+    this.powerValueEl = document.getElementById('flight-power-value');
+    this.heatBarEl = document.getElementById('flight-heat-bar');
+    this.heatValueEl = document.getElementById('flight-heat-value');
+    this.chuteEl = document.getElementById('flight-chute');
+    this.crashTitleEl = document.getElementById('crash-title');
+    this.crashTextEl = document.getElementById('crash-text');
     this.throttleBarEl = document.getElementById('flight-throttle-bar');
     this.throttlePercentEl = document.getElementById('flight-throttle-percent');
     this.healthBarEl = document.getElementById('flight-health-bar');
@@ -339,6 +370,31 @@ export class RocketFlightUI {
       .fuel-bar {
         background: linear-gradient(90deg, #44aa44, #66cc66);
         width: 100%;
+      }
+
+      .power-bar {
+        background: linear-gradient(90deg, #3aa0c8, #3ee0ff);
+        width: 100%;
+      }
+
+      .power-bar.warning {
+        background: linear-gradient(90deg, #aa8844, #ccaa66);
+      }
+
+      .power-bar.critical {
+        background: linear-gradient(90deg, #aa4444, #cc6666);
+      }
+
+      .heat-bar {
+        background: linear-gradient(90deg, #ffa300, #ff004d);
+        width: 0%;
+      }
+
+      .chute-status {
+        font-size: 11px;
+        color: #ffec27;
+        text-align: right;
+        letter-spacing: 1px;
       }
 
       .throttle-bar {
@@ -591,6 +647,11 @@ export class RocketFlightUI {
       const timeSinceCrash = rocket.getTimeSinceCrash();
       // Show crash overlay after 2 seconds to let player watch explosion
       if (timeSinceCrash > 2.0 && this.crashOverlay) {
+        const burned = rocket.getCrashReason() === 'burnedUp';
+        if (this.crashTitleEl) this.crashTitleEl.textContent = burned ? 'BURNED UP' : 'YOU CRASHED';
+        if (this.crashTextEl) this.crashTextEl.textContent = burned
+          ? 'Your rocket burned up on re-entry. Slow down before the air.'
+          : 'Your rocket was destroyed.';
         this.crashOverlay.style.display = 'flex';
       }
       return; // Don't update other UI elements when crashed
@@ -660,6 +721,32 @@ export class RocketFlightUI {
     }
     if (this.fuelPercentEl) {
       this.fuelPercentEl.textContent = `${fuelPercent.toFixed(0)}%`;
+    }
+
+    // Battery (openspec wool-air-and-reentry, design 2): charge share and
+    // the flight time it has left
+    const powerPercent = rocket.getChargePercent();
+    if (this.powerBarEl) {
+      this.powerBarEl.style.width = `${powerPercent}%`;
+      const left = rocket.getChargeSecondsLeft();
+      this.powerBarEl.classList.toggle('critical', !rocket.hasPower());
+      this.powerBarEl.classList.toggle('warning', rocket.hasPower() && left <= ROCKET_CONFIG.POWER.LOW_WARN_S);
+    }
+    if (this.powerValueEl) {
+      this.powerValueEl.textContent = rocket.hasPower() ? this.formatTime(rocket.getChargeSecondsLeft()) : 'FLAT';
+    }
+
+    // Re-entry heat (design 3)
+    const heatPercent = rocket.getHeatPercent();
+    if (this.heatBarEl) this.heatBarEl.style.width = `${heatPercent}%`;
+    if (this.heatValueEl) this.heatValueEl.textContent = `${heatPercent.toFixed(0)}%`;
+
+    // The parachute, when the stack carries one
+    if (this.chuteEl) {
+      this.chuteEl.hidden = !rocket.carriesChute();
+      this.chuteEl.textContent = rocket.isChuteOpen() ? 'CHUTE OPEN'
+        : rocket.isChuteSpent() ? 'CHUTE SPENT'
+        : `CHUTE READY [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]`;
     }
 
     // Update throttle bar

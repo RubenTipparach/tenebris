@@ -609,12 +609,12 @@ export const MISSIONS: Mission[] = [
 
   // ---- rocketry, returning: a parachute landing and a fresh battery
   {
-    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: 'Add a parachute to the stack and land under it.',
+    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: 'Add a parachute to the stack and land under it (P opens it).',
     objectives: [{ kind: 'chuteLanded', count: 1, label: 'Landed under a chute' }],
     unlocks: [],
   },
   {
-    id: 'recharge', branch: 'rocketry', icon: I.BATTERY_LITHIUM, parent: 'moon', after: ['lithium'], title: 'Fresh battery', help: 'Press F at a landed rocket with a lithium-ion battery.',
+    id: 'recharge', branch: 'rocketry', icon: I.BATTERY_LITHIUM, parent: 'moon', after: ['lithium'], title: 'Fresh battery', help: 'Right-click a landed rocket holding a lithium-ion battery.',
     objectives: [{ kind: 'recharged', count: 1, label: 'Battery swapped' }],
     unlocks: [],
   },
