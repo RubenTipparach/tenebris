@@ -90,6 +90,8 @@ class PlanetGame {
 
   // Fishing (rod in hand)
   private fishing: FishingSystem | null = null;
+  // The interact button was down last frame (a battery swap fires once per press)
+  private rightClickHeld = false;
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
@@ -418,7 +420,8 @@ class PlanetGame {
             planet.center,
             planet.radius,
             bodyConfig.gravity.strength,
-            (direction) => planet.getSurfaceHeightInDirection(direction)
+            (direction) => planet.getSurfaceHeightInDirection(direction),
+            bodyConfig.hasAtmosphere
           );
         }
       }
@@ -879,8 +882,9 @@ class PlanetGame {
       let handledRocketInteraction = false;
 
       if (isGameActive && input.rightClick && this.rocketFlightManager) {
-        handledRocketInteraction = this.checkLandedRocketInteraction();
+        handledRocketInteraction = this.checkLandedRocketInteraction(!this.rightClickHeld);
       }
+      this.rightClickHeld = input.rightClick;
 
       // Fishing takes the mouse buttons while the rod is in hand
       const holdingRod = isGameActive &&
@@ -1083,7 +1087,7 @@ class PlanetGame {
    * Check if player is looking at and can interact with a landed rocket
    * Returns true if interaction was handled
    */
-  private checkLandedRocketInteraction(): boolean {
+  private checkLandedRocketInteraction(pressed: boolean): boolean {
     if (!this.rocketFlightManager) return false;
 
     const landedRocketManager = this.rocketFlightManager.getLandedRocketManager();
@@ -1100,6 +1104,19 @@ class PlanetGame {
     const result = landedRocketManager.raycast(raycaster, maxReach);
 
     if (result) {
+      // Holding a lithium-ion battery: swap it into the rocket (openspec
+      // wool-air-and-reentry, design 2) - it is used up from the hand
+      const inventory = this.blockInteraction.getInventory();
+      const held = inventory.getSelectedItem();
+      if (held.itemType === ROCKET_CONFIG.POWER.SWAP_ITEM && held.quantity > 0) {
+        if (!pressed) return true;   // still held from the press that swapped
+        this.rocketFlightManager.rechargeLanded(result.rocket, () => {
+          if (inventory.removeItem(ROCKET_CONFIG.POWER.SWAP_ITEM, 1) !== 1) return false;
+          this.blockInteraction.onInventoryChanged();
+          return true;
+        });
+        return true;
+      }
       // Player is looking at a landed rocket - open the boarding UI
       this.rocketFlightManager.openLandedRocketUI(result.rocket);
       return true;

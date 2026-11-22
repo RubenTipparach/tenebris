@@ -1,5 +1,8 @@
 import { LandedRocket } from './LandedRocket';
 import { MenuManager } from '../player/MenuManager';
+import { computeRocketStats, stackItemTypes } from './RocketPerformance';
+import { ITEM_DATA } from '../player/Inventory';
+import { ROCKET_CONFIG } from '../config/RocketConfig';
 
 /**
  * Simple UI for interacting with a landed rocket
@@ -9,6 +12,7 @@ export class LandedRocketUI {
   private container: HTMLDivElement;
   private fuelDisplay: HTMLDivElement;
   private fuelBar: HTMLDivElement;
+  private chargeLine: HTMLDivElement;
   private boardButton: HTMLButtonElement;
   private closeButton: HTMLButtonElement;
 
@@ -45,6 +49,7 @@ export class LandedRocketUI {
               <div class="fuel-bar"></div>
             </div>
             <span class="fuel-percent">0%</span>
+            <div class="charge-line"></div>
           </div>
           <div class="button-section">
             <button class="board-btn">Board Rocket</button>
@@ -62,6 +67,7 @@ export class LandedRocketUI {
     // Get element references
     this.fuelDisplay = this.container.querySelector('.fuel-percent') as HTMLDivElement;
     this.fuelBar = this.container.querySelector('.fuel-bar') as HTMLDivElement;
+    this.chargeLine = this.container.querySelector('.charge-line') as HTMLDivElement;
     this.boardButton = this.container.querySelector('.board-btn') as HTMLButtonElement;
     this.closeButton = this.container.querySelector('.close-btn') as HTMLButtonElement;
 
@@ -204,6 +210,11 @@ export class LandedRocketUI {
         font-weight: bold;
       }
 
+      .charge-line {
+        margin-top: 6px;
+        font-size: 12px;
+      }
+
       .button-section {
         display: flex;
         flex-direction: column;
@@ -328,6 +339,15 @@ export class LandedRocketUI {
     // Update fuel bar
     this.fuelBar.style.width = `${fuel}%`;
     this.fuelDisplay.textContent = `${Math.round(fuel)}%`;
+
+    // Battery charge (openspec wool-air-and-reentry, design 2): a flat one
+    // says how to swap a fresh battery in
+    const capacity = computeRocketStats(stackItemTypes(this.currentRocket.parts)).batteryWh;
+    const charge = this.currentRocket.chargeWh ?? capacity;
+    const pct = capacity > 0 ? Math.round((charge / capacity) * 100) : 0;
+    const swap = ITEM_DATA[ROCKET_CONFIG.POWER.SWAP_ITEM]?.name ?? 'battery';
+    this.chargeLine.textContent = charge > 0 ? `Battery ${pct}%` : `Battery flat - use a ${swap} on the rocket`;
+    this.chargeLine.style.color = charge > 0 ? '#3ee0ff' : '#ff6666';
 
     // Update fuel bar color class
     this.fuelBar.classList.remove('low', 'high');
