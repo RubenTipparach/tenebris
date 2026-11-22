@@ -30,20 +30,25 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
 
 ## 2. Rocket power (rocket-power)
 
-- **Charge:** a flight carries `chargeWh`, the command module's own cell
-  (`COMMAND_MODULE.batteryWh`) plus `BATTERY_PACK.batteryWh` for each pack in
-  the stack.
-- **Drain:** the command module draws `COMMAND_MODULE.drawW` whenever the
-  rocket is out of the launching and landed states. The default cell lasts
-  `CELL_MINUTES` = 15 minutes.
+- **Charge:** a flight carries `chargeWh`, the stack's `batteryWh` from the
+  parts table (`ROCKET_CONFIG.PARTS`): the command module's own cell
+  (20 kWh) plus a lithium-ion battery's 40 kWh for each battery pack.
+- **Drain:** the command module draws its `powerDrawW` whenever the rocket
+  flies (launching, in flight, landing - not on the pad or landed). The draw
+  is derived so the cell alone lasts `POWER.CELL_MINUTES` = 15 minutes; a
+  pack adds 30.
 - **Flat battery:**
   - engines don't fire and the rocket can't turn;
   - the cabin air fails, which is exposure (design 4);
   - gravity and the parachute still work.
-- **HUD:** a POWER gauge beside FUEL, with a toast at 2 minutes left.
-- **Swapping in a battery:** pressing F at a landed rocket with a lithium-ion
-  battery in hand uses up the battery and adds its stored Wh, up to the
-  stack's capacity. Charge is saved with the flight and the landed rocket.
+- **HUD:** a POWER gauge beside FUEL (flight time left), with a toast at
+  `POWER.LOW_WARN_S` = 2 minutes left and "Battery flat" when it dies.
+- **Swapping in a battery:** interacting (right-click) at a landed rocket
+  with a lithium-ion battery in hand uses up the battery and adds its stored
+  Wh (`POWER_CONFIG.BATTERIES`), up to the stack's capacity. Charge is saved
+  with the landed rocket (its multiplayer record). Single player keeps no
+  landed-rocket save - a reload puts the rocket back on its pad, which
+  charges it on launch.
 - **Recharging on the pad:** a rocket back on a launch pad is topped up for
   free when it's next launched. The pad's crew charges it.
 - **Lithium:**
@@ -54,11 +59,14 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
 
 ## 3. Re-entry heat and parachutes (reentry-and-parachutes)
 
-- **Atmosphere shell:** a body with `hasAtmosphere` has one at
-  `radius * ATMOSPHERE_RADIUS_MULT`, the same shell the sky draws.
+- **Atmosphere shell:** a body with `hasAtmosphere` has air out to
+  `radius * REENTRY.shellRadiusMult` (1.8, the gravity well's edge). Not the
+  sky's `ATMOSPHERE_RADIUS_MULT` (1.1): that shell is 10 m deep on Earth,
+  crossed in a fraction of a second, so heat could never build in it.
 - **When heat applies:** a flight that has been outside every atmosphere
   since launch, and then enters one, is "re-entering" until it lands.
-- **Heating:** while re-entering, faster than `REENTRY.safeSpeed`,
+- **Heating:** while re-entering, faster than `REENTRY.safeSpeed` (40 m/s,
+  above Earth's ~33 m/s free fall, so only a powered dive heats),
   `heat += (speed - safeSpeed) * REENTRY.heatPerMs * dt`. Otherwise it cools
   at `REENTRY.coolPerS`.
 - **Overheating:**
@@ -72,13 +80,14 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
   - `PARACHUTE` is a rocket part (partType CARGO) printed from wool and
     iron;
   - it opens with `ROCKET_INPUTS.PARACHUTE` (P), or by itself when falling
-    below `COMMAND_MODULE.parachuteDeployAltitude`;
+    below `PARACHUTE.deployAltitude` (50 m);
   - it opens only inside an atmosphere and below `PARACHUTE.maxOpenSpeed`;
     faster, it tears and is gone for the flight;
   - open, it pulls the speed toward `PARACHUTE.terminalVelocity`, which is
     under the landing damage threshold;
   - it draws a canopy above the rocket;
-  - it is packed again when the rocket is launched from a pad;
+  - torn, or used for a landing, it is spent until the rocket is launched
+    from a pad again, which packs it;
   - a landing under an open chute fires a `chuteLanded` mission event.
 
 ## 4. Air and suits (air-and-suits)
