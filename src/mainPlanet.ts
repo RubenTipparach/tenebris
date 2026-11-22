@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
-import { InputManager } from './engine/InputManager';
+import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
 import { PlanetTreeManager, FloraTreeManager, FloraSpecies, EarthTreeSpecies, standSpecies } from './planet/Tree';
 import { HexBlockType } from './shared/blockTypes';
-import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
+import { Atmosphere, createEarthAtmosphere, createAtmosphere, skyParamsFor } from './planet/Atmosphere';
+import { skyLightTexture } from './planet/SkyLightTexture';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
+import { MACHINE_KIND_OF } from './config/PowerConfig';
 import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
@@ -22,8 +24,9 @@ import { ItemType, ITEM_DATA } from './player/Inventory';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
+import { MissionHud } from './player/MissionHud';
 import { emitGameEvent, onGameEvent } from './engine/GameEvents';
-import { advanceGameTime, framePositionAt, gameTimeS, orbitOf, setLocalGameTime, useNetworkClock } from './world/Orbits';
+import { advanceGameTime, Frame, framePositionAt, frameVelocityAt, frameYawAt, gameTimeS, nextFrame, orbitOf, setLocalGameTime, spinOf, spinYawAt, useNetworkClock } from './world/Orbits';
 import { ORBIT_CONFIG } from './config/OrbitConfig';
 import { PlanetObjectRouter, planetObjectScene, setPlanetObjectRouter } from './world/PlanetFrames';
 import { showTitleScreen, titleWanted } from './net/TitleScreen';
@@ -58,6 +61,11 @@ function startWithRocket(): boolean {
  * Calculate the sun direction for a given planet position.
  * Returns a normalized vector pointing FROM the planet center TO the sun.
  */
+/** Sea level: where people stand, and what the sun sets behind */
+function groundRadiusOf(planet: Planet): number {
+  return planet.depthToRadius(planet.getSeaLevelDepth());
+}
+
 function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition: THREE.Vector3): THREE.Vector3 {
   return sunPosition.clone().sub(planetCenter).normalize();
 }
@@ -116,10 +124,12 @@ class PlanetGame {
   private teleportInProgress: boolean = false;
   private releaseTimer = 0;
   private missions: MissionsPanel | null = null;
+  private missionHud: MissionHud | null = null;
   // Air and the space suit (openspec wool-air-and-reentry, design 4)
   private air: AirSystem | null = null;
-  // Live orbits: the body whose frame the player is in (it never moves)
-  private referenceBody = SOLAR_SYSTEM.startingBody;
+  // Live orbits: the body whose frame the player is in (it never moves),
+  // turning with it near it, held still out in space (openspec day-night)
+  private frame: Frame = { body: SOLAR_SYSTEM.startingBody };
   private atmosphereById = new Map<string, Atmosphere>();
   private lastSunDir = new Map<string, THREE.Vector3>();
 
@@ -178,6 +188,10 @@ class PlanetGame {
         }
       );
       this.planets.set(bodyConfig.id, planet);
+      // Its sky light: sun and fill from its own atmosphere, or none (openspec sky-lighting)
+      planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
+        ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
+        : null));
     }
 
     // Things placed on a planet ride it round its orbit: the object
@@ -241,7 +255,10 @@ class PlanetGame {
     if (import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')) {
       (window as unknown as { __tenebris: PlanetGame; __THREE: typeof THREE }).__tenebris = this;
       (window as unknown as { __THREE: typeof THREE }).__THREE = THREE;
-      (window as unknown as { __orbits: unknown }).__orbits = { setLocalGameTime, gameTimeS, framePositionAt, orbitOf };
+      (window as unknown as { __orbits: unknown }).__orbits = {
+        setLocalGameTime, gameTimeS, framePositionAt, orbitOf, spinOf, spinYawAt,
+        frame: () => ({ ...this.frame }),
+      };
     }
 
     this.init();
@@ -297,7 +314,7 @@ class PlanetGame {
       loadingManager.setStatus('Building terrain around spawn...');
       const startPlanet = this.findSavedStartPlanet();
       // The body the player starts on is the fixed frame (orbits)
-      if (startPlanet) this.referenceBody = startPlanet.planet.getName();
+      if (startPlanet) this.frame = { body: startPlanet.planet.getName() };
       if (startPlanet && startPlanet.planet !== this.earth) {
         loadingManager.setStatus(`Loading ${startPlanet.planet.getName()}...`);
         await startPlanet.planet.initialize();
@@ -352,6 +369,7 @@ class PlanetGame {
       // Pass sun direction calculated from Earth's position to the sun
       const earthSunDirForTrees = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
       this.treeManager = new PlanetTreeManager(planetObjectScene(this.engine.scene), earthSunDirForTrees);
+      this.treeManager.setSkyLight(this.earth.getSkyLight());
 
       // Load saved game data early so removed trees are available
       // (full load happens later but we need planet data now for tree generation)
@@ -460,13 +478,25 @@ class PlanetGame {
 
       // Set up exit flight callback
       this.rocketFlightManager.setOnExitFlightCallback((exitPosition) => {
+        // The walker takes the rocket camera's view, so climbing out does
+        // not snap the look (openspec player-heading; PBD drop_walker)
+        const cam = this.engine.camera;
+        const view = {
+          forward: cam.getWorldDirection(new THREE.Vector3()),
+          up: new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion),
+        };
         // If we landed somewhere (not at launch pad), move player to rocket position
         if (exitPosition) {
           // Position player slightly above the rocket position, on the surface
-          const surfaceNormal = exitPosition.clone().normalize();
+          // of the body it landed on (radial from that body's centre)
+          const bodyId = this.sphereOfInfluence(exitPosition);
+          const body = bodyId ? this.planets.get(bodyId) : undefined;
+          const surfaceNormal = body ? body.getSurfaceNormal(exitPosition) : exitPosition.clone().normalize();
           const playerSpawnPos = exitPosition.clone().addScaledVector(surfaceNormal, 3); // 3 units above rocket base
-          this.player.position.copy(playerSpawnPos);
+          this.player.placeAt(playerSpawnPos, view);
           console.log('Player spawned at landed rocket position:', playerSpawnPos);
+        } else {
+          this.player.placeAt(this.player.position, view);
         }
 
         // Re-enable player controls
@@ -481,8 +511,7 @@ class PlanetGame {
         if (hotbar) hotbar.style.display = 'flex';
 
         // Re-lock pointer
-        const container = document.getElementById('game-container');
-        if (container) container.requestPointerLock();
+        lockPointer();
       });
 
       // Refuelling burns fuel items - Rocket Fuel, Water Buckets (the empty
@@ -503,12 +532,14 @@ class PlanetGame {
         return draw.supplied;
       };
 
-      // A launch names the parts in its stack (missions: launch on a
-      // nuclear engine, fly the ion drive)
+      // A launch names the parts in its stack and the equipment fitted
+      // (missions: launch on a nuclear engine, fly the ion drive)
       onGameEvent((type) => {
         if (type !== 'launched') return;
-        const parts = this.rocketFlightManager?.getRocketController()?.getParts() ?? [];
-        for (const t of new Set(stackItemTypes(parts))) emitGameEvent('launchedWith', t);
+        const rocket = this.rocketFlightManager?.getRocketController();
+        const parts = stackItemTypes(rocket?.getParts() ?? []);
+        const fitted = (rocket?.getEquipment() ?? []).filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).map(s => s.itemType);
+        for (const t of new Set([...parts, ...fitted])) emitGameEvent('launchedWith', t);
       });
 
       // A rocket's fuel / cargo changed (refuelled, landed, exited): its pad
@@ -516,8 +547,8 @@ class PlanetGame {
       this.rocketFlightManager.setOnRocketChangedCallback(() => {
         this.blockInteraction.saveLaunchPadStates();
       });
-      this.rocketFlightManager.setOnOpenCargoCallback((cargo) => {
-        this.blockInteraction.openRocketCargo(cargo);
+      this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
+        this.blockInteraction.openRocketCargo(slots, title, accepts);
       });
 
       // Other players' rockets, flying and landed (multiplayer; idle offline)
@@ -574,13 +605,14 @@ class PlanetGame {
       // Create atmosphere for Earth (if enabled)
       loadingManager.setStatus('Creating environment...');
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
-        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, earthSunDir);
+        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, groundRadiusOf(this.earth), earthSunDir);
         this.earthAtmosphere.setPosition(this.earth.center);
         this.engine.scene.add(this.earthAtmosphere.getMesh());
       }
 
       // Create clouds for Earth
       this.earthClouds = createEarthClouds(this.earth.radius, earthSunDir);
+      this.earthClouds.setSkyLight(this.earth.getSkyLight());
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
 
@@ -800,6 +832,7 @@ class PlanetGame {
       }
     }
     this.missions?.update(deltaTime);
+    this.missionHud?.update();
     this.updateAir(deltaTime);
     // Maps, compass and waypoints (built once the world is up)
     if (!this.navigation) {
@@ -830,16 +863,20 @@ class PlanetGame {
       // (clutterFor has no plants for their blocks)
       const pos = this.player.position;
       let on: Planet | null = null;
-      for (const planet of this.planets.values()) {
-        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
+      let onId: string | null = null;
+      for (const [id, planet] of this.planets) {
+        if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; onId = id; break; }
       }
+      // Its body config carries the sea flora table (openspec ocean-life)
       this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition),
+        onId ? getBodyConfig(onId) : undefined, this.player.getIsInWater());
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)
     if (!this.fauna) {
-      validateFaunaRosters(this.planets.keys());
+      // (water life only on worlds with water: openspec ocean-life)
+      validateFaunaRosters(this.planets.keys(), [...this.planets.keys()].filter(id => getBodyConfig(id)?.terrain.hasWater));
       this.fauna = new Fauna(this.engine.scene);
       this.blockInteraction.setFauna(this.fauna); // shearing and hitting animals
     }
@@ -1021,8 +1058,21 @@ class PlanetGame {
     const t = gameTimeS();
     // In another body's sphere of influence: it becomes the fixed frame
     const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
-    const soi = this.sphereOfInfluence(flying ? flying.getPosition() : this.player.position);
-    if (soi && soi !== this.referenceBody && !this.teleportInProgress) this.setReferenceBody(soi, t);
+    const where = flying ? flying.getPosition() : this.player.position;
+    const soi = this.sphereOfInfluence(where);
+    if (soi && soi !== this.frame.body && !this.teleportInProgress) this.setReferenceBody(soi, t);
+    // Near the reference body the frame turns with it (its day); out in
+    // space it is held still (openspec day-night, design 2)
+    const ref = this.frame.body ? this.planets.get(this.frame.body) : undefined;
+    if (ref && !this.teleportInProgress) {
+      const soiReach = ref.radius * (getBodyConfig(this.frame.body!)?.gravity.falloffRadiusMultiplier ?? 1);
+      const reach = Math.max(ref.radius * ORBIT_CONFIG.SPIN_FRAME_RADII, soiReach);
+      const next = nextFrame(this.frame, where.distanceTo(ref.center), reach, t);
+      if (next !== this.frame) {
+        this.frame = next;
+        console.log(`[Orbits] frame ${this.frame.body}: ${next.yaw === undefined ? 'turning with it' : 'held'}`);
+      }
+    }
     this.applyOrbitPositions(t);
   }
 
@@ -1033,33 +1083,41 @@ class PlanetGame {
    * (task 8.2: no jump).
    */
   private setReferenceBody(id: string, t: number = gameTimeS()): void {
-    if (id === this.referenceBody || !orbitOf(id)) return;
-    const old = this.referenceBody;
+    if (id === this.frame.body || !orbitOf(id)) return;
+    const old = this.frame;
+    // Translation only, with the body's velocity in the old frame (its
+    // wheel round a turning frame included): the traveller keeps their pose
+    // relative to the body they arrive at, and the sky takes any change in
+    // the frames' turn (openspec day-night, design 3)
     const was = framePositionAt(id, old, t);
-    const now = framePositionAt(id, id, t);
+    const now = orbitOf(id)!.configured;
     const offset = new THREE.Vector3(now.x - was.x, now.y - was.y, now.z - was.z);
-    // The body's velocity in the old frame (central difference)
-    const h = ORBIT_CONFIG.VELOCITY_DT_S;
-    const a = framePositionAt(id, old, t + h), b = framePositionAt(id, old, t - h);
-    const frameVelocity = new THREE.Vector3((a.x - b.x) / (2 * h), (a.y - b.y) / (2 * h), (a.z - b.z) / (2 * h));
-    this.referenceBody = id;
+    const v = frameVelocityAt(id, old, t);
+    const frameVelocity = new THREE.Vector3(v.x, v.y, v.z);
+    this.frame = { body: id };
     this.player.position.add(offset);
     this.engine.camera.position.add(offset);
     const rocket = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
     rocket?.rebase(offset, frameVelocity);
     this.applyOrbitPositions(t);
-    console.log(`[Orbits] frame: ${old} -> ${id}`);
+    console.log(`[Orbits] frame: ${old.body} -> ${id}`);
   }
 
   private applyOrbitPositions(t: number): void {
-    const ref = this.referenceBody;
+    const ref = this.frame.body;
+    const frame = this.frame;
     const p = { x: 0, y: 0, z: 0 };
-    framePositionAt('sun', ref, t, p);
+    framePositionAt('sun', frame, t, p);
     this.sunPosition.set(p.x, p.y, p.z);
     this.engine.setSunPosition(this.sunPosition);
+    this.rocketFlightManager?.setSunPosition(this.sunPosition);
+    // The stars wheel with the Sun: the same turn of the frame
+    const yaw = frameYawAt(frame, t);
+    this.engine.setSkyYaw(yaw);
+    this.solarSystemMockup?.setFrameYaw(yaw);
     const center = new THREE.Vector3();
     for (const [id, planet] of this.planets) {
-      framePositionAt(id, ref, t, p);
+      framePositionAt(id, frame, t, p);
       center.set(p.x, p.y, p.z);
       planet.setCenter(center);
       this.rocketFlightManager?.setPlanetCenter(id, planet.center);
@@ -1086,7 +1144,7 @@ class PlanetGame {
       if (id === ref) this.blockInteraction?.setSunDirection(dir);
     }
     for (const g of GAS_GIANTS) {
-      this.solarSystemMockup?.setBodyPosition(g.id, framePositionAt(g.id, ref, t, p));
+      this.solarSystemMockup?.setBodyPosition(g.id, framePositionAt(g.id, frame, t, p));
     }
   }
 
@@ -1136,7 +1194,7 @@ class PlanetGame {
   private addAtmosphere(id: string, planet: Planet): void {
     const body = getBodyConfig(id);
     if (!body?.hasAtmosphere || !PlayerConfig.ATMOSPHERE_ENABLED) return;
-    const atmosphere = createAtmosphere(planet.radius, calculateSunDirectionForPlanet(planet.center, this.sunPosition), body.visual.atmosphereTint);
+    const atmosphere = createAtmosphere(planet.radius, groundRadiusOf(planet), calculateSunDirectionForPlanet(planet.center, this.sunPosition), body.visual.atmosphereTint);
     atmosphere.setPosition(planet.center);
     this.engine.scene.add(atmosphere.getMesh());
     this.atmospheres.push(atmosphere);
@@ -1153,6 +1211,7 @@ class PlanetGame {
     const t0 = performance.now();
     const roster = [...new Set(Object.values(table).map(f => f!.species))] as FloraSpecies[];
     const manager = new FloraTreeManager(planetObjectScene(this.engine.scene), roster, calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    manager.setSkyLight(planet.getSkyLight());
     this.floraManagers.set(id, manager);
     const removed = new Set(gameStorage.getRemovedTrees(id).map(t => t.tileIndex));
     manager.setChunkLookup((tileIndex) => planet.getTileChunkIndex(tileIndex));
@@ -1376,7 +1435,7 @@ class PlanetGame {
     const container = document.getElementById('game-container');
     if (pauseCloseBtn && container) {
       pauseCloseBtn.addEventListener('click', () => {
-        container.requestPointerLock();
+        lockPointer(container);
       });
     }
   }
@@ -1561,7 +1620,7 @@ class PlanetGame {
     this.multiplayer.setFrameOffset((planetId) => {
       const o = orbitOf(planetId);
       if (!o) return new THREE.Vector3();
-      const p = framePositionAt(planetId, this.referenceBody, gameTimeS());
+      const p = framePositionAt(planetId, this.frame, gameTimeS());
       return new THREE.Vector3(p.x - o.configured.x, p.y - o.configured.y, p.z - o.configured.z);
     });
     this.multiplayer.connect(worldSocketUrl(world.id));
@@ -1665,8 +1724,8 @@ class PlanetGame {
       playerPos.x -= surfaceHeight + surfaceOffset;
     }
 
-    this.player.position.copy(playerPos);
-    this.player.velocity.set(0, 0, 0);
+    // One placement path: the heading is carried to the new up (player-heading)
+    this.player.placeAt(playerPos);
     this.player.setEnabled(wasEnabled);
 
     console.log(`Teleported to ${planetName} at position: ${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)}`);
@@ -1742,8 +1801,7 @@ class PlanetGame {
       [ItemType.COPPER_PIPE]: () => gameStorage.getCopperPipes(),
     };
     // The industry machines and batteries share one record list
-    for (const item of [ItemType.PUMP_JACK, ItemType.REFINERY, ItemType.CENTRIFUGE, ItemType.REACTOR, ItemType.NUCLEAR_FABRICATOR, ItemType.GAS_COLLECTOR,
-      ItemType.BATTERY_LEAD_ACID, ItemType.BATTERY_LITHIUM, ItemType.BATTERY_SOLID_STATE]) {
+    for (const item of Object.keys(MACHINE_KIND_OF).map(Number) as ItemType[]) {
       machineLists[item] = () => gameStorage.getMachines().filter(m => m.itemType === item);
     }
     const pads = () => this.blockInteraction.getLaunchPadManager().getLaunchPads();
@@ -1754,10 +1812,21 @@ class PlanetGame {
       rocketAssembled: pads().some(p => p.rocketParts.length >= 3),
     }));
     const missions = this.missions;
-    this.blockInteraction.getCraftingSystem().registerPanel('missions', {
+    const crafting = this.blockInteraction.getCraftingSystem();
+    crafting.registerPanel('missions', {
       show: (el) => missions.show(el),
       hide: () => missions.hide(),
     });
+    // The HUD tracker: the now mission during play; a click opens the tab
+    const hud = new MissionHud(missions.getTracker(), () => crafting.openPanel('missions'));
+    this.missionHud = hud;
+    missions.addChangeListener(() => hud.render());
+    // Settings: show it or not (saved per browser, on by default)
+    const hudToggle = document.getElementById('toggle-mission-hud') as HTMLInputElement | null;
+    if (hudToggle) {
+      hudToggle.checked = hud.isEnabled();
+      hudToggle.addEventListener('change', () => hud.setEnabled(hudToggle.checked));
+    }
   }
 
   private loadSavedGame(): void {

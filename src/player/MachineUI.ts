@@ -2,7 +2,7 @@ import { BaseModalMenu } from './BaseModalMenu';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { recipeLockedBy, recipeOpen } from './RecipeGate';
-import { PlacedMachine, loadInput, acceptsInput } from '../power/MachineLogic';
+import { PlacedMachine, loadInput, acceptsInput, machineSupplyW } from '../power/MachineLogic';
 import { FABRICATOR_RECIPES, MACHINE_CONFIG, POWER_CONFIG } from '../config/PowerConfig';
 import { GridResult, formatWatts, formatWh } from '../power/PowerGrid';
 
@@ -90,6 +90,10 @@ export class MachineUI extends BaseModalMenu {
     } else if (m.kind === 'reactor') {
       const lives = m.rodLifeS.map(l => l > 0 ? `${Math.ceil(l / 60)} min` : 'spent').join(', ');
       el.appendChild(this.line(`Rods burning: ${lives}  -  ${formatWatts(POWER_CONFIG.SUPPLY_W.reactor ?? 0)} while fuelled`));
+    }
+    if (m.kind === 'solarPanel') {
+      el.appendChild(this.line(`Makes ${formatWatts(machineSupplyW(m))} now - up to ${formatWatts(POWER_CONFIG.SUPPLY_W.solarPanel ?? 0)} with the sun overhead`));
+      el.appendChild(this.bar(Math.min(1, m.sunlight), '#FFEC27'));
     }
     if (m.kind === 'gasCollector') {
       el.appendChild(this.line(`Put empty tanks in - one fills with air every ${MACHINE_CONFIG.gasCollector.fillS} s`));

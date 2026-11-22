@@ -195,3 +195,28 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   const back = machineFromRecord(JSON.parse(JSON.stringify(machineRecord(g))));
   ok(back.kind === 'gasCollector' && back.inputs[0].quantity === 1 && back.outputs[0].itemType === ItemType.OXYGEN_TANK, 'its slots survive the saved record');
 }
+
+// ---- solar panels (openspec wool-air-and-reentry, design 6)
+{
+  const { panelSunlight } = await import('../src/power/MachineLogic');
+  const peak = POWER_CONFIG.SUPPLY_W.solarPanel ?? 0;
+  const up = { x: 0, y: 1, z: 0 };
+  const panel = newMachineState(ItemType.SOLAR_PANEL, 7, 10, new THREE.Vector3(), 0);
+  ok(panel.kind === 'solarPanel' && panel.inputs.length === 0 && panel.outputs.length === 0, 'a solar panel is a machine with no slots');
+  panel.sunlight = panelSunlight(up, { x: 0, y: 1, z: 0 }, true, false);
+  ok(Math.abs(machineSupplyW(panel) - peak) < 1e-6, `sun overhead: full output (${peak} W)`);
+  panel.sunlight = panelSunlight(up, { x: 1, y: 1, z: 0 }, true, false);
+  ok(Math.abs(machineSupplyW(panel) - peak * Math.SQRT1_2) < 1e-6, 'sun at 45 degrees: cos 45 of full output');
+  panel.sunlight = panelSunlight(up, { x: 0, y: -1, z: 0 }, true, false);
+  ok(machineSupplyW(panel) === 0, 'night: no output');
+  panel.sunlight = panelSunlight(up, { x: 0, y: 1, z: 0 }, false, false);
+  ok(machineSupplyW(panel) === 0, 'under a roof: no output');
+  panel.sunlight = panelSunlight(up, { x: 0, y: 1, z: 0 }, true, true);
+  ok(machineSupplyW(panel) > peak, 'airless world: more than full output');
+  tickMachine(panel, 1, { oilBelow: false, reactorPower: false });
+  ok(panel.status.startsWith('Sun '), 'status shows the sun');
+  const net = solveNetwork([{ id: 'sun', watts: machineSupplyW(panel) }], [{ id: 'gas', watts: POWER_CONFIG.DEMAND_W.gasCollector ?? 0 }], [], 1);
+  ok(net.supplyW > 0 && net.demandW > 0, 'a panel feeds a network');
+  const panelRecipe = ELECTRONICS_RECIPES.find(r => r.output.itemType === ItemType.SOLAR_PANEL);
+  ok(!!panelRecipe, 'the electronics workbench makes solar panels');
+}

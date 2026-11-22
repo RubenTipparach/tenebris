@@ -5,9 +5,12 @@ import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 import { COOKERS, CookerKind } from '../config/CookingConfig';
 import { recipeLockedLabel } from './RecipeGate';
+import { showToast } from '../utils/toast';
 
-// A rocket's cargo hold: the launch pad's slot array (any size)
-export interface RocketCargoHold { slots: InventorySlot[]; }
+// A rocket's cargo hold or equipment slots: the launch pad's slot array (any
+// size). `accepts` limits what goes in (the equipment slots take only
+// ROCKET_CONFIG.EQUIPMENT items); absent, anything does
+export interface RocketCargoHold { slots: InventorySlot[]; accepts?: (itemType: ItemType) => boolean; }
 
 // Union type for storage containers
 type StorageContainer = PlacedStorageChest | PlacedGarbagePile | RocketCargoHold;
@@ -341,6 +344,7 @@ export class StorageUI {
     const invSlot = this.inventory.getSlot(inventorySlotIndex);
     if (!invSlot || invSlot.itemType === ItemType.NONE) return;
 
+    if (!this.accepts(invSlot.itemType)) return;
     const storageSlot = this.currentStorage.slots[storageSlotIndex];
     const itemData = ITEM_DATA[invSlot.itemType];
 
@@ -495,7 +499,8 @@ export class StorageUI {
         }
       }
     } else {
-      // Swap
+      // Swap (only when what comes back in may go there)
+      if (!this.accepts(targetSlot.itemType)) return false;
       const tempType = targetSlot.itemType;
       const tempQty = targetSlot.quantity;
       this.inventory.setSlot(targetSlotIndex, storageSlot.itemType, storageSlot.quantity);
@@ -506,6 +511,14 @@ export class StorageUI {
     this.updateUI();
     this.notifyChanges();
     return true;
+  }
+
+  /** May this item go into the open storage? (A filtered hold says so; toast if not) */
+  private accepts(itemType: ItemType): boolean {
+    const hold = this.currentStorage as RocketCargoHold | null;
+    if (!hold || !('accepts' in hold) || !hold.accepts || hold.accepts(itemType)) return true;
+    showToast(`${ITEM_DATA[itemType]?.name ?? 'That'} does not fit here`, { duration: 2000 });
+    return false;
   }
 
   private notifyChanges(): void {

@@ -1,11 +1,15 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from './SkyLightTexture';
 import { Planet } from './Planet';
 import { HexTile } from './GoldbergPolyhedron';
 import { HexBlockType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
-import { FAUNA_CONFIG as C, FAUNA_SPECIES, FaunaSpecies, FaunaSpeciesId, faunaRoster } from '../config/FaunaConfig';
+import {
+  FAUNA_CONFIG as C, FAUNA_SPECIES, FaunaSpecies, FaunaSpeciesId, faunaRoster, habitatOf, isWaterLife, waterLife, WaterLifeConfig,
+} from '../config/FaunaConfig';
 import { buildFaunaModel, FaunaModel } from './FaunaModels';
-import { surfaceTop, tileHash } from './SurfaceTiles';
+import { surfaceTop, tileHash, waterColumn } from './SurfaceTiles';
+import { swimRadius, columnRadius, clearsSeabed } from './SwimRules';
 import { getAssetPath } from '../utils/assetPath';
 import { netSync } from '../net/NetSync';
 import { RANCHING } from '../config/SurvivalConfig';
@@ -46,6 +50,17 @@ import { RanchState, newRanchState, isShorn, shear as shearRule, hit as hitRule,
  *   which alone counts a cow's hits, and comes back to the hitter as a
  *   'drop' action. Nothing here is saved: animals respawn lazily, so a
  *   shorn flag lives as long as the animal does.
+ * - Sea life (openspec ocean-life): the same spawner, branched by habitat
+ *   (FaunaConfig `habitat`). A site on water spawns the planet's water and
+ *   seabed species; on dry land, its land ones. Swimmers ('swim' / 'drift')
+ *   keep a depth inside the water column of the tile they are over - eased
+ *   towards a per-individual fraction of the column, then hard-clamped by
+ *   SwimRules.swimRadius so they never leave the water or enter the seabed -
+ *   and turn smoothly back from the shore. A school's first member leads;
+ *   the rest hold an offset round it and alarm it when they see the player.
+ *   Seabed crawlers walk the submerged ground like walkers walk land. The
+ *   swimming fish are the fishing table's own species (FaunaConfig derives
+ *   them from FISH_ROSTERS). Water life rides the same live frames.
  */
 
 const CLIP_IDLE = 0;
@@ -145,8 +160,11 @@ interface Creature {
   heading: THREE.Vector3; // where it wants to go (tangent)
   face: THREE.Vector3;    // where it faces (tangent, eases to heading)
   tile: HexTile;
-  tileR: number;          // terrain radius of its tile
-  groundR: number;        // smoothed height it stands at
+  tileR: number;          // terrain radius of its tile (the seabed, for water life)
+  groundR: number;        // smoothed height it stands at (a swimmer's body centre)
+  surfR: number;          // water life: its tile's water surface radius
+  depthT: number;         // swimmers: the fraction of the water column it keeps to
+  off: THREE.Vector3;     // school followers: station round the leader (right, up, forward)
   hover: number;
   state: State;
   timer: number;
@@ -165,7 +183,11 @@ interface Creature {
 }
 
 interface Herd { site: number; members: Creature[] }
-interface Site { tile: HexTile; dir: THREE.Vector3 }
+interface Site { tile: HexTile; dir: THREE.Vector3; h: number }
+/** Where a creature may be on a tile: the radius it rests on (ground / seabed) and, for water life, the surface. */
+interface Floor { r: number; surf: number }
+
+const swims = (cfg: FaunaSpecies) => cfg.motion === 'swim' || cfg.motion === 'drift';
 
 export class Fauna {
   private planet: Planet | null = null;
@@ -212,6 +234,7 @@ export class Fauna {
       if (planet && r.mesh.visible) {
         r.material.uniforms.sunDirection.value.copy(sunDirection);
         r.material.uniforms.planetCenter.value.copy(planet.center);
+        r.material.uniforms.skyLight.value = planet.getSkyLight();
       }
     }
     if (!planet || roster.length === 0) return;
@@ -238,10 +261,9 @@ export class Fauna {
     if (this.sinceScan >= C.rescanEverySeconds || player.distanceTo(this.lastScan) >= C.rescanMove) {
       this.sinceScan = 0;
       this.lastScan.copy(player);
-      const cap = C.maxCreatures * viewers.length;
-      viewers.forEach((v, i) => this.scan(planet, v, roster, cap, i === 0));
+      viewers.forEach((v, i) => this.scan(planet, v, roster, viewers.length, i === 0));
     }
-    for (const herd of this.herds) for (const c of herd.members) this.step(c, planet, nearest(c.pos, viewers), dt);
+    for (const herd of this.herds) for (const c of herd.members) this.step(c, herd, planet, nearest(c.pos, viewers), dt);
     this.despawn(viewers);
     this.draw();
 
@@ -289,7 +311,8 @@ export class Fauna {
         const tile = poly.getTileAtPointFromHint(target.dir.clone().multiplyScalar(planet.radius), hint);
         c = {
           id, render, cfg: render.cfg, dir: target.dir.clone(), pos: new THREE.Vector3(), heading: target.face.clone(), face: target.face.clone(),
-          tile, tileR: g, groundR: g, hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
+          tile, tileR: g, groundR: g, surfR: g, depthT: 0.5, off: new THREE.Vector3(),
+        hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
           phase: [Math.random(), Math.random()], moveW, scale, tint, bobPhase: Math.random() * Math.PI * 2,
           ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
         };
@@ -334,8 +357,10 @@ export class Fauna {
         c.target = undefined;
         if (c.ranch.shornUntil === Infinity) c.ranch.shornUntil = this.time + RANCHING.REGROW_S;
         c.tile = poly.getTileAtPointFromHint(this.v.copy(c.dir).multiplyScalar(planet.radius), c.tile);
-        const { top } = surfaceTop(planet, c.tile.index);
-        c.tileR = top >= 0 ? planet.depthToRadius(top) : c.groundR;
+        const floor = this.floorAt(c.cfg, planet, c.tile.index);
+        c.tileR = floor ? floor.r : c.groundR;
+        c.surfR = floor ? floor.surf : c.groundR;
+        if (swims(c.cfg)) c.depthT = lerp(c.cfg.swimBand ?? [0.5, 0.5], Math.random());
         if (c.state !== State.Idle) c.timer = lerp(c.cfg.wanderTime, Math.random());
       }
     }
@@ -482,35 +507,75 @@ export class Fauna {
   private load(id: FaunaSpeciesId): void {
     if (this.renders.has(id) || this.loading.has(id)) return;
     this.loading.add(id);
-    fetch(getAssetPath(`/animations/${id}.anim.json`))
+    fetch(getAssetPath(`/animations/${FAUNA_SPECIES[id].anim ?? id}.anim.json`))
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() as Promise<AnimFile>; })
       .then(file => { this.renders.set(id, new SpeciesRender(id, FAUNA_SPECIES[id], buildFaunaModel(id), file, this.scene)); })
       .catch(e => console.error(`[Fauna] could not load ${id} animation:`, e));
   }
 
   /**
+   * Where a species may be on a tile (null = not here): land walkers on dry
+   * ground, land fliers over any ground, crawlers on submerged seabed and
+   * swimmers in water deep enough for them.
+   */
+  private floorAt(cfg: FaunaSpecies, planet: Planet, tileIndex: number): Floor | null {
+    const habitat = habitatOf(cfg);
+    if (habitat === 'land') {
+      const { top, block } = surfaceTop(planet, tileIndex);
+      if (top < 0) return null;
+      const grounded = cfg.motion === 'walk' || cfg.motion === 'hop';
+      if (grounded && (block === HexBlockType.WATER || block === HexBlockType.ICE)) return null;
+      const r = planet.depthToRadius(top);
+      return { r, surf: r };
+    }
+    const col = waterColumn(planet, tileIndex);
+    if (!col) return null;
+    const W = waterLife(planet.getName());
+    if (col.depth < (habitat === 'seabed' ? W.minCrawlDepth : W.minSwimDepth)) return null;
+    return { r: col.seabed, surf: col.surface };
+  }
+
+  /** Half a swimmer's height plus its bob: what the margins add to (so its body stays in the water). */
+  private halfHeight(c: Creature, W: WaterLifeConfig): number {
+    return c.render.bounds.radius * c.scale * W.bodyHalf + c.cfg.bob[0];
+  }
+
+  /** The radius a swimmer wants (leader / solo: its column fraction; follower: its station), clamped into the water. */
+  private swimTarget(c: Creature, lead: Creature | null, W: WaterLifeConfig): number {
+    const half = this.halfHeight(c, W);
+    const want = lead ? lead.groundR + c.off.y : columnRadius(c.tileR, c.surfR, c.depthT);
+    return swimRadius(want, c.tileR, c.surfR, W.bedMargin + half, W.surfaceMargin + half);
+  }
+
+  /**
    * Herd sites: a fixed sparse set of tiles (by tile hash, like ground
    * clutter's placement), listed once per planet so a scan only tests a few
-   * hundred directions instead of walking every tile round the player.
+   * hundred directions instead of walking every tile round the player. A
+   * site's hash is kept: land uses the sites under C.siteChance, water those
+   * under its body's water siteChance, so each habitat has its own density.
    */
   private sitesOf(planet: Planet): Site[] {
     let list = this.siteLists.get(planet);
     if (!list) {
       list = [];
+      const chance = Math.max(C.siteChance, waterLife(planet.getName()).siteChance);
       for (const tile of planet.getPolyhedron().tiles) {
-        if (tileHash(tile.index ^ SITE_SALT) * HASH_SCALE < C.siteChance) {
-          list.push({ tile, dir: tile.center.clone().normalize() });
-        }
+        const h = tileHash(tile.index ^ SITE_SALT) * HASH_SCALE;
+        if (h < chance) list.push({ tile, dir: tile.center.clone().normalize(), h });
       }
       this.siteLists.set(planet, list);
     }
     return list;
   }
 
-  /** Spawn herds at the sites round one viewer (self: this client's player). */
-  private scan(planet: Planet, player: THREE.Vector3, roster: FaunaSpeciesId[], maxCreatures: number, self: boolean): void {
-    const totalWeight = roster.reduce((s, id) => s + FAUNA_SPECIES[id].weight, 0);
-    let live = this.herds.reduce((s, h) => s + h.members.length, 0);
+  /** Spawn herds at the sites round one viewer (self: this client's player; viewers: how many share the caps). */
+  private scan(planet: Planet, player: THREE.Vector3, roster: FaunaSpeciesId[], viewers: number, self: boolean): void {
+    const W = waterLife(planet.getName());
+    const landRoster = roster.filter(id => !isWaterLife(FAUNA_SPECIES[id]));
+    const waterRoster = roster.filter(id => isWaterLife(FAUNA_SPECIES[id]));
+    let live = 0, liveWater = 0;
+    for (const h of this.herds) for (const c of h.members) { live++; if (isWaterLife(c.cfg)) liveWater++; }
+    const maxAll = C.maxCreatures * viewers, maxLand = C.maxLand * viewers, maxWater = C.maxWater * viewers;
     const minDist = self && this.arrived ? C.arrivalMinSpawnDistance : C.minSpawnDistance;
     const playerDir = player.clone().sub(planet.center);
     const playerR = playerDir.length();
@@ -518,36 +583,53 @@ export class Fauna {
     // angular radius of the spawn ring, measured at the player's height
     const cosMax = Math.cos(Math.min(Math.PI, C.spawnRadius / playerR));
     let sawGround = false;
-    for (const { tile, dir } of this.sitesOf(planet)) {
-      if (live >= maxCreatures) break;
+    for (const { tile, dir, h } of this.sitesOf(planet)) {
+      if (live >= maxAll) break;
       if (dir.dot(playerDir) < cosMax || this.sites.has(tile.index)) continue;
       const { top, block } = surfaceTop(planet, tile.index);
       if (top >= 0) sawGround = true;
-      if (!isDryLand(top, block)) continue;
-      const ground = planet.depthToRadius(top);
+      // the habitat branch: water sites spawn water / seabed life, dry land the land roster
+      let pool: FaunaSpeciesId[];
+      let ground: number;
+      if (block === HexBlockType.WATER && top >= 0) {
+        if (h >= W.siteChance || liveWater >= maxWater) continue;
+        const col = waterColumn(planet, tile.index);
+        if (!col) continue;
+        pool = waterRoster.filter(id => col.depth >= (habitatOf(FAUNA_SPECIES[id]) === 'seabed' ? W.minCrawlDepth : W.minSwimDepth));
+        ground = col.seabed;
+      } else {
+        if (h >= C.siteChance || live - liveWater >= maxLand || !isDryLand(top, block)) continue;
+        pool = landRoster;
+        ground = planet.depthToRadius(top);
+      }
+      if (!pool.length) continue;
       this.v.copy(planet.center).addScaledVector(dir, ground);
       const d = this.v.distanceTo(player);
       if (d < minDist || d > C.spawnRadius) continue;
       // species by weight, herd size from the same hash: stable per site
+      const totalWeight = pool.reduce((s, id) => s + FAUNA_SPECIES[id].weight, 0);
       const pick = tileHash(Math.imul(tile.index, SPECIES_MUL) ^ SPECIES_SALT);
       let rnd = pick * HASH_SCALE * totalWeight;
-      let id = roster[roster.length - 1];
-      for (const s of roster) { rnd -= FAUNA_SPECIES[s].weight; if (rnd < 0) { id = s; break; } }
+      let id = pool[pool.length - 1];
+      for (const s of pool) { rnd -= FAUNA_SPECIES[s].weight; if (rnd < 0) { id = s; break; } }
       const render = this.renders.get(id);
       if (!render) continue; // still loading: the site is tried again next scan
       const cfg = FAUNA_SPECIES[id];
+      const water = isWaterLife(cfg);
       const want = cfg.herd[0] + (tileHash(pick) % (cfg.herd[1] - cfg.herd[0] + 1));
-      const room = Math.min(want, maxCreatures - live, C.maxPerSpecies - this.speciesCount(render));
+      const room = Math.min(want, maxAll - live, (water ? maxWater - liveWater : maxLand - (live - liveWater)),
+        C.maxPerSpecies - this.speciesCount(render));
       if (room <= 0) continue;
       const members: Creature[] = [];
       for (let i = 0; i < room; i++) {
-        const c = this.spawn(planet, render, tile, dir, ground);
+        const c = this.spawn(planet, render, tile, dir, ground, members[0] ?? null);
         if (c) members.push(c);
       }
       if (!members.length) continue;
       this.sites.add(tile.index);
       this.herds.push({ site: tile.index, members });
       live += members.length;
+      if (water) liveWater += members.length;
     }
     // the first scan that finds generated terrain counts as the arrival one
     if (self && sawGround) this.arrived = false;
@@ -559,42 +641,84 @@ export class Fauna {
     return n;
   }
 
-  private spawn(planet: Planet, render: SpeciesRender, site: HexTile, siteDir: THREE.Vector3, siteGround: number): Creature | null {
+  /** One new member of a herd at a site (lead: the herd's first member, for a school's stations). */
+  private spawn(planet: Planet, render: SpeciesRender, site: HexTile, siteDir: THREE.Vector3, siteGround: number,
+    lead: Creature | null): Creature | null {
     const cfg = render.cfg;
+    const land = !isWaterLife(cfg);
+    const fits = (ti: number) => {
+      if (land) { const { top, block } = surfaceTop(planet, ti); return isDryLand(top, block) ? this.floorAt(cfg, planet, ti) : null; }
+      return this.floorAt(cfg, planet, ti);
+    };
     // scatter round the site: a random tangent offset within about a tile
     const up = siteDir;
     const t = randomTangent(up, new THREE.Vector3());
     const spread = (planet.getBlockHeight() + 1) * Math.random();
     const dir = up.clone().multiplyScalar(siteGround).addScaledVector(t, spread).normalize();
     let tile = planet.getPolyhedron().getTileAtPointFromHint(dir.clone().multiplyScalar(planet.radius), site);
-    let { top, block } = surfaceTop(planet, tile.index);
-    if (!isDryLand(top, block)) { tile = site; dir.copy(siteDir); ({ top, block } = surfaceTop(planet, tile.index)); }
-    if (!isDryLand(top, block)) return null;
-    const tileR = planet.depthToRadius(top);
-    const heading = randomTangent(dir, new THREE.Vector3());
+    let floor = fits(tile.index);
+    if (!floor) { tile = site; dir.copy(siteDir); floor = fits(tile.index); }
+    if (!floor) return null;
+    const heading = lead ? lead.heading.clone() : randomTangent(dir, new THREE.Vector3());
     const c: Creature = {
-      id: this.nextId++, render, cfg, dir, pos: new THREE.Vector3(), heading, face: heading.clone(), tile, tileR, groundR: tileR,
+      id: this.nextId++, render, cfg, dir, pos: new THREE.Vector3(), heading, face: heading.clone(), tile,
+      tileR: floor.r, groundR: floor.r, surfR: floor.surf, depthT: lerp(cfg.swimBand ?? [0.5, 0.5], Math.random()),
+      off: new THREE.Vector3(),
       hover: lerp(cfg.hover, Math.random()),
       state: State.Idle, timer: lerp(cfg.idleTime, Math.random()), speed: 0,
       phase: [Math.random(), Math.random()], moveW: 0,
       scale: lerp(cfg.scale, Math.random()), tint: lerp(C.tint, Math.random()), bobPhase: Math.random() * Math.PI * 2,
       ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
     };
+    if (swims(cfg)) {
+      const W = waterLife(planet.getName());
+      if (cfg.school && lead) {
+        // a station round the leader: beside / above / behind it, never on it
+        const s = cfg.school;
+        c.off.set((Math.random() * 2 - 1) * s, (Math.random() * 2 - 1) * s * 0.4, -Math.random() * s);
+      }
+      c.groundR = this.swimTarget(c, null, W);
+    }
     this.place(c, planet);
     return c;
   }
 
-  private step(c: Creature, planet: Planet, player: THREE.Vector3, dt: number): void {
+  private step(c: Creature, herd: Herd, planet: Planet, player: THREE.Vector3, dt: number): void {
     const cfg = c.cfg;
     const up = c.dir;
+    const swimmer = swims(cfg);
+    const W = swimmer ? waterLife(planet.getName()) : null;
+    const lead = swimmer && cfg.school && herd.members[0] !== c ? herd.members[0] : null;
     const dist = c.pos.distanceTo(player);
-    if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) c.state = State.Flee;
-    if (c.panic > 0) {
-      // hit: run from the hitter until the panic wears off
+    let gap = 0, ahead = 0; // a school member: how far (along the ground) it is off its station, and which way
+    if (lead) {
+      // a school member: sees the player for the whole school, else holds its station
+      if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) {
+        lead.panic = Math.max(lead.panic, W!.schoolAlarmS);
+        lead.fleeFrom.copy(player);
+      }
+      this.x.crossVectors(lead.dir, lead.face).normalize();
+      const station = this.v.copy(lead.pos).addScaledVector(this.x, c.off.x).addScaledVector(lead.face, c.off.z).sub(c.pos);
+      station.addScaledVector(up, -station.dot(up));
+      gap = station.length();
+      if (gap > 1e-6) station.divideScalar(gap);
+      // ahead of its station (> 0: the station is in front): slow down rather than turn round
+      ahead = station.dot(lead.face);
+      c.heading.copy(lead.face).addScaledVector(station, Math.min(1, gap * W!.schoolGain) * Math.max(0, ahead + 1) / 2);
+      tangent(c.heading, up);
+      c.state = lead.state;
+    } else if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) {
+      c.state = State.Flee;
+    }
+    if (lead) {
+      // stations are steered above
+    } else if (c.panic > 0) {
+      // hit (or alarmed by its school): run from there until the panic wears off
       c.panic -= dt;
       c.state = State.Flee;
       c.heading.copy(c.pos).sub(c.fleeFrom);
       tangent(c.heading, up);
+      if (swimmer) c.depthT = W!.fleeDepth;
       if (c.panic <= 0) { c.state = State.Wander; c.timer = lerp(cfg.wanderTime, Math.random()); }
     } else if (c.state === State.Flee) {
       if (dist > cfg.fleeRadius * C.fleeRelease) {
@@ -603,6 +727,7 @@ export class Fauna {
       } else {
         c.heading.copy(c.pos).sub(player);
         tangent(c.heading, up);
+        if (swimmer) c.depthT = W!.fleeDepth;
       }
     } else {
       c.timer -= dt;
@@ -613,13 +738,20 @@ export class Fauna {
           // a new heading: a turn of up to about 90 degrees either way
           c.heading.copy(c.face).applyAxisAngle(up, (Math.random() - 0.5) * Math.PI);
           tangent(c.heading, up);
+          // swimmers pick a new depth to cruise at
+          if (swimmer) c.depthT = lerp(cfg.swimBand ?? [0.5, 0.5], Math.random());
         } else {
           c.state = State.Idle;
           c.timer = lerp(cfg.idleTime, Math.random());
         }
       }
     }
-    const target = c.state === State.Idle ? 0 : c.state === State.Wander ? cfg.walkSpeed : cfg.fleeSpeed;
+    let target = c.state === State.Idle ? 0 : c.state === State.Wander ? cfg.walkSpeed : cfg.fleeSpeed;
+    if (lead) {
+      // keep up: the leader's pace, plus a little to close on the station
+      const close = Math.max(-lead.speed, Math.min(cfg.walkSpeed * W!.schoolCatchUp, ahead * gap * W!.schoolGain));
+      target = Math.max(0, Math.min(cfg.fleeSpeed, lead.speed + close));
+    }
     const blend = Math.min(1, dt * C.blendRate);
     c.speed += (target - c.speed) * blend;
     c.face.lerp(c.heading, Math.min(1, dt * C.turnRate));
@@ -632,16 +764,26 @@ export class Fauna {
       const tile = planet.getPolyhedron().getTileAtPointFromHint(this.x.copy(next).multiplyScalar(planet.radius), c.tile);
       let ok = true;
       if (tile !== c.tile) {
-        const { top, block } = surfaceTop(planet, tile.index);
-        const grounded = cfg.motion === 'walk' || cfg.motion === 'hop';
-        const r = top >= 0 ? planet.depthToRadius(top) : 0;
-        if (top < 0 || block === HexBlockType.ICE && grounded) ok = false;
-        else if (grounded && (block === HexBlockType.WATER
-          || Math.abs(r - c.tileR) > cfg.maxStep * planet.getBlockHeight() + 1e-3)) ok = false;
-        if (ok) { c.tile = tile; c.tileR = r; }
+        const floor = this.floorAt(cfg, planet, tile.index);
+        const stepping = !swimmer && cfg.motion !== 'fly' && cfg.motion !== 'float';
+        if (!floor) ok = false;
+        else if (stepping && Math.abs(floor.r - c.tileR) > cfg.maxStep * planet.getBlockHeight() + 1e-3) ok = false;
+        else if (swimmer && !clearsSeabed(c.groundR, floor.r, floor.surf, W!.bedMargin + this.halfHeight(c, W!))) {
+          // a seabed rising ahead: swim up before going on
+          ok = false;
+          c.depthT = Math.min(1, c.depthT + W!.riseOnBlock);
+        }
+        if (ok) { c.tile = tile; c.tileR = floor!.r; c.surfR = floor!.surf; }
       }
       if (ok) {
         c.dir.copy(next);
+      } else if (swimmer) {
+        // the shore (or a rising bed): turn round smoothly, slowing, instead of snapping
+        c.shove.set(0, 0, 0);
+        c.heading.copy(c.face).negate().applyAxisAngle(up, (Math.random() - 0.5) * W!.turnJitter);
+        tangent(c.heading, up);
+        c.speed *= W!.blockedSpeedKeep;
+        if (c.state === State.Idle) c.state = State.Wander;
       } else {
         // turn back from water / cliffs
         c.shove.set(0, 0, 0);
@@ -650,7 +792,15 @@ export class Fauna {
         if (c.state === State.Idle) c.state = State.Wander;
       }
     }
-    c.groundR += (c.tileR - c.groundR) * Math.min(1, dt * C.heightFollowRate);
+    if (swimmer) {
+      // ease to the depth it wants, then hold it inside this tile's water
+      const want = this.swimTarget(c, lead, W!);
+      c.groundR += (want - c.groundR) * Math.min(1, dt * W!.depthFollowRate);
+      const half = this.halfHeight(c, W!);
+      c.groundR = swimRadius(c.groundR, c.tileR, c.surfR, W!.bedMargin + half, W!.surfaceMargin + half);
+    } else {
+      c.groundR += (c.tileR - c.groundR) * Math.min(1, dt * C.heightFollowRate);
+    }
     this.animate(c, dt);
     this.place(c, planet);
   }
@@ -659,9 +809,10 @@ export class Fauna {
   private animate(c: Creature, dt: number): void {
     const cfg = c.cfg;
     const blend = Math.min(1, dt * C.blendRate);
-    // clip phases: the move cycle quickens with speed
+    // clip phases: the move cycle quickens with speed (fliers and swimmers never stop flapping / finning)
     c.phase[CLIP_IDLE] = (c.phase[CLIP_IDLE] + dt / c.render.durations[CLIP_IDLE]) % 1;
-    const rate = Math.max(c.speed / cfg.walkSpeed, cfg.motion === 'fly' || cfg.motion === 'float' ? 1 : 0);
+    const always = cfg.motion === 'fly' || cfg.motion === 'float' || swims(cfg);
+    const rate = Math.max(c.speed / cfg.walkSpeed, always ? 1 : 0);
     c.phase[CLIP_MOVE] = (c.phase[CLIP_MOVE] + dt / c.render.durations[CLIP_MOVE] * rate) % 1;
     if (c.target) return; // drawn: the host's move weight is followed instead
     const moving = c.speed > cfg.walkSpeed * 0.2 ? 1 : 0;
@@ -670,9 +821,10 @@ export class Fauna {
 
   private place(c: Creature, planet: Planet): void {
     let lift = 0;
-    if (c.cfg.motion === 'fly' || c.cfg.motion === 'float') {
-      lift = c.hover + Math.sin(this.time * Math.PI * 2 * c.cfg.bob[1] + c.bobPhase) * c.cfg.bob[0];
-    }
+    const bob = Math.sin(this.time * Math.PI * 2 * c.cfg.bob[1] + c.bobPhase) * c.cfg.bob[0];
+    if (c.cfg.motion === 'fly' || c.cfg.motion === 'float') lift = c.hover + bob;
+    // swimmers bob about their depth (halfHeight counts the bob, so it stays in the water)
+    else if (swims(c.cfg)) lift = bob;
     c.pos.copy(planet.center).addScaledVector(c.dir, c.groundR + lift);
   }
 
@@ -752,6 +904,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uDiffuse: { value: C.sunDiffuse },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
+      ...skyLightUniforms(),
     },
     defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
     vertexShader: `
@@ -814,20 +967,20 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uniform float uAmbient;
       uniform float uNight;
       uniform float uDiffuse;
+      #include <tenebris_sky_light>
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
       varying vec3 vWorld;
       void main() {
         vec3 up = normalize(vWorld - planetCenter);
-        // Same day/night curve as the terrain and ground clutter: ambient
-        // falls to uNight on the night side, so creatures don't glow (unless
-        // they really do: aGlow * uGlow)
+        // The terrain's sky light (openspec sky-lighting): sun and fill by
+        // this spot's sun height, so creatures sit in the same light (and
+        // don't glow at night unless they really do: aGlow * uGlow)
         float facing = dot(up, sunDirection);
-        float day = smoothstep(-0.1, 0.2, facing);
-        float ambient = uAmbient * mix(uNight, 1.0, smoothstep(-0.1, 0.3, facing));
+        vec3 ambient = uAmbient * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        vec3 lit = vColor * (ambient + uDiffuse * diff * day);
+        vec3 lit = vColor * (ambient + uDiffuse * diff * skySun(facing));
         gl_FragColor = vec4(lit + vColor * vGlow * uGlow, 1.0);
       }
     `,

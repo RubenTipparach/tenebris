@@ -141,10 +141,20 @@ export enum ItemType {
   OXYGEN_TANK = 112,
   GAS_COLLECTOR = 113,
   SPACE_SUIT = 114,
+  // Solar power, after batteries (openspec wool-air-and-reentry, design 6)
+  SOLAR_PANEL = 115,
+  SOLAR_ARRAY = 116,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
   SULFUR = 171,
+  // The jungle moons' fish (openspec ocean-life; FishRosters.ts says which moon)
+  FISH_TETRA = 190,
+  FISH_CATFISH = 191,
+  FISH_LEAFPIKE = 192,
+  FISH_PEATEEL = 193,
+  FISH_GOURAMI = 194,
+  FISH_GAR = 195,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -367,6 +377,12 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_REEF]: { name: 'Reef Fish', stackSize: 16, texture: '/textures/fish/reef.png', mineTime: 0.3 },
   [ItemType.FISH_DEEPBACK]: { name: 'Deepback', stackSize: 16, texture: '/textures/fish/deepback.png', mineTime: 0.3 },
   [ItemType.FISH_SERPENT]: { name: 'Sea Serpent', stackSize: 16, texture: '/textures/fish/serpent.png', mineTime: 0.3 },
+  [ItemType.FISH_TETRA]: { name: 'Emerald Tetra', stackSize: 16, texture: '/textures/fish/tetra.png', mineTime: 0.3 },
+  [ItemType.FISH_CATFISH]: { name: 'Laterite Catfish', stackSize: 16, texture: '/textures/fish/catfish.png', mineTime: 0.3 },
+  [ItemType.FISH_LEAFPIKE]: { name: 'Leaf Pike', stackSize: 16, texture: '/textures/fish/leaf_pike.png', mineTime: 0.3 },
+  [ItemType.FISH_PEATEEL]: { name: 'Peat Eel', stackSize: 16, texture: '/textures/fish/peat_eel.png', mineTime: 0.3 },
+  [ItemType.FISH_GOURAMI]: { name: 'Mire Gourami', stackSize: 16, texture: '/textures/fish/gourami.png', mineTime: 0.3 },
+  [ItemType.FISH_GAR]: { name: 'Violet Gar', stackSize: 16, texture: '/textures/fish/violet_gar.png', mineTime: 0.3 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)
@@ -444,12 +460,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     stackSize: 8,
     texture: '/textures/rocket_parts/battery_pack_face.png',
     mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.CARGO,
-      modelPath: '/models/medium_fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/battery_pack.png',
-      heightUnits: 1,
-    },
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
   // Building materials. Mining time rises dirt < clay < brick < glass <
   // concrete = steel glass = steel girder (the block items' own textures
@@ -471,17 +482,20 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     stackSize: 8,
     texture: '/textures/rocket_parts/parachute_face.png',
     mineTime: 3.0,
-    rocketPart: {
-      partType: RocketPartType.CARGO,
-      modelPath: '/models/medium_fuel_tank.obj',
-      texturePath: '/textures/rocket_parts/parachute.png',
-      heightUnits: 1,
-    },
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
   [ItemType.EMPTY_TANK]: { name: 'Empty Tank', stackSize: 16, texture: '/textures/icons/empty_tank.png', mineTime: 0.5 },
   [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
   [ItemType.GAS_COLLECTOR]: { name: 'Gas Collector', stackSize: 8, texture: '/textures/technology/gas_collector_face.png', mineTime: 2.0 },
   [ItemType.SPACE_SUIT]: { name: 'Space Suit', stackSize: 1, texture: '/textures/icons/space_suit.png', mineTime: 0.5 },
+  [ItemType.SOLAR_PANEL]: { name: 'Solar Panel', stackSize: 16, texture: '/textures/technology/solar_panel_face.png', mineTime: 1.5 },
+  [ItemType.SOLAR_ARRAY]: {
+    name: 'Solar Array',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/solar_array_face.png',
+    mineTime: 3.0,
+    // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
+  },
 };
 
 // Inventory slot

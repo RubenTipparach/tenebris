@@ -8,16 +8,18 @@ uniform float ambientIntensity;
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec3 vUp;
+#include <tenebris_sky_light>
 
 void main() {
   // Simple Lambert shading
   float diffuse = max(0.0, dot(normalize(vNormal), sunDirection));
   vec3 color = mix(shadowColor, cloudColor, diffuse * (1.0 - ambientIntensity) + ambientIntensity);
 
-  // Night side: dim to the same 10% the terrain's ambient falls to
-  // (terrain.vert/.frag), so clouds don't glow over a dark planet
-  float day = smoothstep(-0.1, 0.3, dot(vUp, sunDirection));
-  color *= mix(0.1, 1.0, day);
+  // Lit as the ground under them is (openspec sky-lighting): the sun through
+  // the air plus the sky's fill at this cloud's sun height - white by day,
+  // grey-blue at dusk, dark (not black) at night
+  float e = dot(vUp, sunDirection);
+  color *= 0.4 * skyFill(e) + 0.6 * skySun(e);
 
   // Slight transparency for soft edges
   float alpha = 0.9;

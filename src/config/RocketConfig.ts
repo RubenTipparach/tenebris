@@ -12,6 +12,8 @@ const CELL_MINUTES = 15;
 // A battery pack is built from one lithium-ion battery (POWER_CONFIG
 // fabricator recipe) and holds what that battery holds - one source
 const LITHIUM_WH = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LITHIUM].capacityWh;
+// The command module's draw, W (its cell over CELL_MINUTES)
+const CELL_DRAW_W = CELL_WH * 60 / CELL_MINUTES;
 
 /**
  * What one rocket part brings to the stack. A rocket's mass, thrust, fuel
@@ -28,12 +30,26 @@ export interface RocketPartStats {
                          // the delta-v the physics delivers
   fuelCapacity?: number; // fuel units, tanks only (FUEL_KG_PER_UNIT kg each)
   cargoSlots?: number;   // cargo hold slots this part adds
-  batteryWh?: number;    // charge this part stores (the command module's cell, battery packs)
+  equipmentSlots?: number; // equipment slots this part adds (ROCKET_CONFIG.EQUIPMENT)
+  batteryWh?: number;    // charge this part stores (the command module's cell)
   powerDrawW?: number;   // what this part draws while the rocket flies (the command module)
   // Parts that must also be in the stack for this one to work (the ion
   // drive needs a reactor core). Unmet: the part gives no thrust, and the
   // stack's stats carry the reason (RocketStats.problems)
   requires?: ItemType[];
+}
+
+/**
+ * What one piece of rocket equipment gives, per item (openspec
+ * wool-air-and-reentry, design 2/3/6). Equipment is not a part in the stack:
+ * it is fitted into the rocket's equipment slots (the command module gives
+ * them), and a slot of N items gives N times this.
+ */
+export interface RocketEquipmentStats {
+  mass: number;          // kg each item adds to the rocket
+  batteryWh?: number;    // charge each stores (battery pack)
+  solarW?: number;       // what each charges in full sun (solar array)
+  chutes?: number;       // parachutes each gives (one opens per descent and is used up)
 }
 
 export const ROCKET_CONFIG = {
@@ -84,27 +100,40 @@ export const ROCKET_CONFIG = {
     [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },
     [ItemType.FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },   // legacy tank
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
-    [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, batteryWh: CELL_WH, powerDrawW: CELL_WH * 60 / CELL_MINUTES },
+    // 3 equipment slots: a parachute, a solar array and a battery pack at once
+    [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, equipmentSlots: 3, batteryWh: CELL_WH, powerDrawW: CELL_DRAW_W },
     [ItemType.CARGO_BAY]: { tier: 1, dryMass: 80, cargoSlots: 8 },
     // Tier 3 (uranium, built off-world): the nuclear thermal engine - the
-    // same tank fuel at more than twice the vacuum engine's efficiency - and
-    // the battery pack (cargo space, and a lithium-ion battery's charge for
-    // the command module: twice its own cell, +30 minutes of flight)
+    // same tank fuel at more than twice the vacuum engine's efficiency
     [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
-    [ItemType.BATTERY_PACK]: { tier: 3, dryMass: 60, cargoSlots: 2, batteryWh: LITHIUM_WH },
     // Tier 4: the ion drive, the most efficient engine and the gentlest -
     // an in-space engine that only fires with a reactor core aboard
     [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },
     [ItemType.REACTOR_CORE]: { tier: 4, dryMass: 400 },
-    // Tier 1 (wool + iron, openspec wool-air-and-reentry): the parachute -
-    // mass only; ROCKET_CONFIG.PARACHUTE says how it flies
-    [ItemType.PARACHUTE]: { tier: 1, dryMass: 40 },
   } as Partial<Record<ItemType, RocketPartStats>>,
 
   // === CARGO HOLD ===
+  // Carries stuff (fuel for the trip home, ore, anything): each item weighs
   CARGO: {
     massPerItem: 2,               // kg each carried item adds to the rocket
   },
+
+  // === EQUIPMENT (openspec wool-air-and-reentry, design 2/3/6) ===
+  // Items fitted into the rocket's equipment slots (PARTS equipmentSlots,
+  // the command module's 3) - not parts of the stack. Only these items fit.
+  // They stack in a slot (up to the item's stackSize) and every item counts:
+  // N battery packs store N x batteryWh, N parachutes open N times (one per
+  // descent, used up as it opens or tears), and each adds its mass.
+  EQUIPMENT: {
+    // the parachute (wool + iron) - ROCKET_CONFIG.PARACHUTE says how it flies
+    [ItemType.PARACHUTE]: { mass: 40, chutes: 1 },
+    // the solar array (after batteries, design 6): half the command module's
+    // draw, so two keep it running in full sun; nothing in a planet's shadow
+    [ItemType.SOLAR_ARRAY]: { mass: 50, solarW: CELL_DRAW_W / 2 },
+    // the battery pack (tier 3): a lithium-ion battery's charge, twice the
+    // command module's own cell - +30 minutes of flight each
+    [ItemType.BATTERY_PACK]: { mass: 60, batteryWh: LITHIUM_WH },
+  } as Partial<Record<ItemType, RocketEquipmentStats>>,
 
   // === COMMAND MODULE ===
   COMMAND_MODULE: {
@@ -112,7 +141,8 @@ export const ROCKET_CONFIG = {
   },
 
   // === POWER (openspec wool-air-and-reentry, design 2) ===
-  // A flight's charge is the stack's batteryWh (PARTS), drawn at its
+  // A flight's charge is the stack's batteryWh (PARTS) plus its equipped
+  // battery packs (EQUIPMENT), drawn at its
   // powerDrawW whenever the rocket flies (launching, in flight, landing - not
   // on the pad or landed). Flat: no thrust, no steering, no cabin air.
   POWER: {
@@ -156,9 +186,9 @@ export const ROCKET_CONFIG = {
 
   // === PARACHUTE (openspec wool-air-and-reentry, design 3) ===
   // Opens by ROCKET_INPUTS.PARACHUTE or by itself when falling below
-  // deployAltitude - only with a PARACHUTE part in the stack, only inside an
-  // atmosphere (REENTRY.shellRadiusMult) and only below maxOpenSpeed (faster,
-  // it tears and is gone for the flight). Open, the descent's excess over
+  // deployAltitude - only with a PARACHUTE fitted in the equipment slots,
+  // only inside an atmosphere (REENTRY.shellRadiusMult) and only below
+  // maxOpenSpeed (faster, it tears). Opening or tearing uses one up. Open, the descent's excess over
   // terminalVelocity bleeds at dragRate (1/s) and the chute holds gravity
   // there; sideways motion bleeds at the same rate; it rights the rocket.
   PARACHUTE: {

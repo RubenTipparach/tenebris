@@ -1,10 +1,14 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from '../planet/SkyLightTexture';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { forEachSurfaceTile, tileHash } from '../planet/SurfaceTiles';
+import type { CelestialBodyConfig } from '../config/SolarSystemConfig';
+import { NEAR_PLAYER_SCATTER } from '../config/SeaFloraConfig';
+import { SeaFlora } from './SeaFlora';
 
 /**
  * Ground clutter around the player (Sequoia; Earth with the biome mockup), after Pale Blue Dot's
@@ -17,14 +21,17 @@ import { forEachSurfaceTile, tileHash } from '../planet/SurfaceTiles';
  * - Rocks and pebbles: lumpy flat-shaded stones in the stone texture's
  *   colour, on bare rock and in the tundra, the odd pebble in the desert.
  *
+ * - Sea flora (openspec ocean-life): the same walk hands each water tile to
+ *   the seabed layer (SeaFlora), which grows the planet's own sea plants.
+ *
  * Instanced (one draw call each), placed per tile from a hash of the tile
  * index so it never changes as you walk, and rebuilt around the player
  * when they move or the ground under it is edited.
  */
 
-const RADIUS = 30;              // how far round the player clutter grows
-const REBUILD_MOVE = 4;         // rebuild after moving this far...
-const REBUILD_EVERY_S = 1.5;    // ...or this often (picks up block edits)
+const RADIUS = NEAR_PLAYER_SCATTER.RADIUS;
+const REBUILD_MOVE = NEAR_PLAYER_SCATTER.REBUILD_MOVE;
+const REBUILD_EVERY_S = NEAR_PLAYER_SCATTER.REBUILD_EVERY_S;
 const MAX_TUFTS = 9000;
 const MAX_ROCKS = 1500;
 const TUFT_WIDTH = 0.55;
@@ -55,8 +62,11 @@ export class GroundClutter {
   private sinceBuild = 0;
   private time = 0;
   private enabled = false;
+  private sea: SeaFlora;
+  private seaBody: CelestialBodyConfig | undefined;
 
   constructor(scene: THREE.Scene) {
+    this.sea = new SeaFlora(scene);
     this.tuftMaterial = makeMaterial(true);
     this.rockMaterial = makeMaterial(false);
     this.tufts = new THREE.InstancedMesh(tuftGeometry(), this.tuftMaterial, MAX_TUFTS);
@@ -82,16 +92,28 @@ export class GroundClutter {
     this.lastPlanet = null;
   }
 
-  /** planet: the world the player stands on (null in space). */
-  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3): void {
+  /** Sea plants drawn per species (debug / headless checks) */
+  public seaFloraCounts(): Record<string, number> {
+    return this.sea.counts();
+  }
+
+  /**
+   * planet: the world the player stands on (null in space); body: its config
+   * (its sea flora table); cameraUnderwater: fogs the sea plants like the terrain.
+   */
+  public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3,
+    body?: CelestialBodyConfig, cameraUnderwater = false): void {
     if (!this.enabled) return;
+    if (body !== this.seaBody) { this.seaBody = body; this.lastPlanet = null; }
     this.time += dt;
     this.sinceBuild += dt;
     for (const mat of [this.tuftMaterial, this.rockMaterial]) {
       mat.uniforms.time.value = this.time;
       mat.uniforms.sunDirection.value.copy(sunDirection);
       if (planet) mat.uniforms.planetCenter.value.copy(planet.center);
+      if (planet) mat.uniforms.skyLight.value = planet.getSkyLight();
     }
+    this.sea.setFrame(this.time, planet, sunDirection, cameraUnderwater);
     const show = !!planet;
     this.tufts.visible = show;
     this.rocks.visible = show;
@@ -129,9 +151,11 @@ export class GroundClutter {
     const pos = new THREE.Vector3();
     const scale = new THREE.Vector3();
     const col = new THREE.Color();
+    this.sea.begin(planet, this.seaBody);
     forEachSurfaceTile(planet, player, RADIUS, (tile, dir, top, block, ground) => {
       const ti = tile.index;
       if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) return;
+      if (block === HexBlockType.WATER) { this.sea.addTile(tile, dir); return; }
       const alien = ALIEN_CLUTTER[block];
       const plan = alien ?? clutterFor(block);
       if (!plan) return;
@@ -181,6 +205,7 @@ export class GroundClutter {
         nRocks++;
       }
     });
+    this.sea.end();
     this.tufts.count = nTufts;
     this.rocks.count = nRocks;
     this.tufts.instanceMatrix.needsUpdate = true;
@@ -374,6 +399,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       time: { value: 0 },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
+      ...skyLightUniforms(),
     },
     defines: tuft ? { TUFT: 1 } : {},
     side: tuft ? THREE.DoubleSide : THREE.FrontSide,
@@ -408,6 +434,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vWorld;
+      #include <tenebris_sky_light>
       void main() {
         vec3 c = vColor;
         #ifdef TUFT
@@ -416,13 +443,12 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
           c *= t.rgb;
         #endif
         vec3 up = normalize(vWorld - planetCenter);
-        // Same day/night curve as the terrain (terrain.vert/.frag): ambient
-        // falls to 10% on the night side, so tufts and rocks don't glow
+        // The terrain's sky light (openspec sky-lighting): sun and fill by
+        // this spot's sun height, so tufts and rocks sit in the same light
         float facing = dot(up, sunDirection);
-        float day = smoothstep(-0.1, 0.2, facing);
-        float ambient = ${AMBIENT.toFixed(3)} * mix(0.1, 1.0, smoothstep(-0.1, 0.3, facing));
+        vec3 ambient = ${AMBIENT.toFixed(3)} * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        gl_FragColor = vec4(c * (ambient + 0.6 * diff * day), 1.0);
+        gl_FragColor = vec4(c * (ambient + 0.6 * diff * skySun(facing)), 1.0);
       }
     `,
   });

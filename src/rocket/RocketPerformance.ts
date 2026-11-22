@@ -1,7 +1,8 @@
 // Rocket performance: the one place a rocket's numbers come from.
 //
 // A rocket's mass, thrust, fuel flow, delta-v and cargo space are summed from
-// its parts (ROCKET_CONFIG.PARTS). The flight physics (RocketController), the
+// its parts (ROCKET_CONFIG.PARTS) and what its equipment slots hold
+// (ROCKET_CONFIG.EQUIPMENT). The flight physics (RocketController), the
 // launch pad readout (LaunchPadUI) and scripts/rocket-tech-report.ts all read
 // them from here, and the gravity / damping helpers below are the ones the
 // flight physics integrates with - so a delta-v the pad shows is the delta-v
@@ -10,12 +11,12 @@
 // No three.js here: the report script runs this file under plain node.
 
 import { ItemType, ITEM_DATA, InventorySlot } from '../player/Inventory';
-import { ROCKET_CONFIG, GRAVITY_WELL, RocketPartStats } from '../config/RocketConfig';
+import { ROCKET_CONFIG, GRAVITY_WELL, RocketPartStats, RocketEquipmentStats } from '../config/RocketConfig';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { POWER_CONFIG } from '../config/PowerConfig';
 
 export interface RocketStats {
-  dryMass: number;          // kg, empty tanks (cargo included)
+  dryMass: number;          // kg, empty tanks (cargo and equipment included)
   fuelCapacity: number;     // fuel units
   wetMass: number;          // kg, full tanks
   thrust: number;           // N, all engines
@@ -23,8 +24,11 @@ export interface RocketStats {
   exhaustVelocity: number;  // m/s, thrust / mass flow
   deltaV: number;           // m/s with full tanks (Tsiolkovsky)
   cargoSlots: number;
-  batteryWh: number;        // charge the stack stores (command module cell + battery packs)
+  equipmentSlots: number;   // slots for ROCKET_CONFIG.EQUIPMENT items
+  batteryWh: number;        // charge it stores (command module cell + equipped battery packs)
   powerDrawW: number;       // what it draws in flight (the command module)
+  solarW: number;           // what its equipped solar arrays charge in full sun
+  chutes: number;           // parachutes fitted (each opens once)
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
   mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
@@ -32,6 +36,16 @@ export interface RocketStats {
 
 export function partStats(itemType: ItemType): RocketPartStats | undefined {
   return ROCKET_CONFIG.PARTS[itemType];
+}
+
+/** What one equipment item gives, or undefined if the item is not equipment */
+export function equipmentStats(itemType: ItemType): RocketEquipmentStats | undefined {
+  return ROCKET_CONFIG.EQUIPMENT[itemType];
+}
+
+/** Can this item go in a rocket's equipment slots? */
+export function isEquipment(itemType: ItemType): boolean {
+  return !!equipmentStats(itemType);
 }
 
 /** Mass of the items in a cargo hold, kg */
@@ -84,14 +98,28 @@ export function engineModeLabel(mode: EngineMode): string {
 }
 
 /**
- * Sum a stack of parts (bottom to top) into the rocket's numbers. With a
- * `mode`, only engines of that type fire (thrust and fuel flow); mass,
- * tanks and cargo are the whole stack's either way.
+ * Sum a stack of parts (bottom to top) and its equipment slots into the
+ * rocket's numbers. With a `mode`, only engines of that type fire (thrust and
+ * fuel flow); mass, tanks, cargo and equipment are the whole rocket's either
+ * way. `extraDryMass` is what the cargo hold carries (cargoMass).
  */
-export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass = 0, mode: EngineMode = null): RocketStats {
+export function computeRocketStats(
+  itemTypes: readonly ItemType[],
+  extraDryMass = 0,
+  mode: EngineMode = null,
+  equipment: readonly InventorySlot[] | null = null,
+): RocketStats {
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
-  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0;
+  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
+  for (const slot of equipment ?? []) {
+    const e = equipmentStats(slot.itemType);
+    if (!e || slot.quantity <= 0) continue;
+    dryMass += e.mass * slot.quantity;
+    batteryWh += (e.batteryWh ?? 0) * slot.quantity;
+    solarW += (e.solarW ?? 0) * slot.quantity;
+    chutes += (e.chutes ?? 0) * slot.quantity;
+  }
   const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
@@ -99,6 +127,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
     dryMass += s.dryMass;
     fuelCapacity += s.fuelCapacity ?? 0;
     cargoSlots += s.cargoSlots ?? 0;
+    equipmentSlots += s.equipmentSlots ?? 0;
     batteryWh += s.batteryWh ?? 0;
     powerDrawW += s.powerDrawW ?? 0;
     tier = Math.max(tier, s.tier);
@@ -117,7 +146,7 @@ export function computeRocketStats(itemTypes: readonly ItemType[], extraDryMass 
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, batteryWh, powerDrawW, tier, problems, mode: firing };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, tier, problems, mode: firing };
 }
 
 // ---- Power, re-entry heat and the parachute (openspec wool-air-and-reentry) ----
@@ -145,6 +174,30 @@ export function swapBatteryWh(): number {
 /** Charge after adding `addWh`, up to the stack's capacity */
 export function addCharge(chargeWh: number, capacityWh: number, addWh: number): number {
   return Math.min(capacityWh, Math.max(0, chargeWh) + addWh);
+}
+
+type V3 = { x: number; y: number; z: number };
+
+/**
+ * Is a point in sunlight (design 6): the straight line from it to the sun
+ * misses every body (each a sphere of `radius` round `center`).
+ */
+export function inSunlight(pos: V3, sun: V3, bodies: readonly { center: V3; radius: number }[]): boolean {
+  const dx = sun.x - pos.x, dy = sun.y - pos.y, dz = sun.z - pos.z;
+  const len2 = dx * dx + dy * dy + dz * dz;
+  if (len2 === 0) return true;
+  for (const b of bodies) {
+    // nearest point of the segment to the body's centre
+    const t = Math.max(0, Math.min(1, ((b.center.x - pos.x) * dx + (b.center.y - pos.y) * dy + (b.center.z - pos.z) * dz) / len2));
+    const cx = pos.x + dx * t - b.center.x, cy = pos.y + dy * t - b.center.y, cz = pos.z + dz * t - b.center.z;
+    if (cx * cx + cy * cy + cz * cz < b.radius * b.radius) return false;
+  }
+  return true;
+}
+
+/** Charge after `dt` s of solar arrays giving `solarW` (in sunlight), up to capacity */
+export function solarCharge(chargeWh: number, capacityWh: number, solarW: number, sunlit: boolean, dt: number): number {
+  return sunlit ? addCharge(chargeWh, capacityWh, (solarW * dt) / 3600) : chargeWh;
 }
 
 /** Inside a body's air (for heat and the parachute): within REENTRY.shellRadiusMult of its radius */
@@ -190,6 +243,17 @@ export function tryOpenChute(hasChute: boolean, inAtmosphere: boolean, speed: nu
 }
 
 /**
+ * Ask the parachutes fitted in an equipment row to open: opening or tearing
+ * uses one up (the slot's count is the state - there is no "spent" flag);
+ * no air, or none fitted, leaves the row as it was.
+ */
+export function openChuteFrom(equipment: InventorySlot[] | null | undefined, inAtmosphere: boolean, speed: number): ChuteOpen {
+  const result = tryOpenChute(chutesFitted(equipment) > 0, inAtmosphere, speed);
+  if (result === 'open' || result === 'torn') useChute(equipment);
+  return result;
+}
+
+/**
  * Descent speed (m/s, + = falling) under an open chute, given the speed after
  * this step's gravity (`g` m/s^2 of it): over terminalVelocity the excess
  * bleeds at dragRate and the chute also holds this step's gravity, so it
@@ -216,6 +280,88 @@ export function deltaVWith(stats: RocketStats, fuelUnits: number): number {
 /** Cargo hold slots a stack provides */
 export function cargoSlotsFor(itemTypes: readonly ItemType[]): number {
   return computeRocketStats(itemTypes).cargoSlots;
+}
+
+/** Equipment slots a stack provides */
+export function equipmentSlotsFor(itemTypes: readonly ItemType[]): number {
+  return computeRocketStats(itemTypes).equipmentSlots;
+}
+
+/** Parachutes fitted in an equipment row */
+export function chutesFitted(equipment: readonly InventorySlot[] | null | undefined): number {
+  return computeRocketStats([], 0, null, equipment ?? null).chutes;
+}
+
+/** Use up one fitted parachute (it opened, or tore). False if none was fitted. */
+export function useChute(equipment: InventorySlot[] | null | undefined): boolean {
+  if (!equipment) return false;
+  const chute = equipment.find(s => (equipmentStats(s.itemType)?.chutes ?? 0) > 0 && s.quantity > 0);
+  if (!chute) return false;
+  return slotStore(equipment).removeItem(chute.itemType, 1) === 1;
+}
+
+/**
+ * Fit equipment from a slot of the player's (hotbar or bag) into an
+ * equipment row: stacks onto the same item, then fills empty slots, up to the
+ * item's stackSize. Only ROCKET_CONFIG.EQUIPMENT items fit. Returns how many
+ * moved (taken out of `from`).
+ */
+export function fitEquipment(equipment: InventorySlot[], from: InventorySlot): number {
+  if (from.itemType === ItemType.NONE || from.quantity <= 0 || !isEquipment(from.itemType)) return 0;
+  const left = slotStore(equipment).addItem(from.itemType, from.quantity);
+  const moved = from.quantity - left;
+  from.quantity = left;
+  if (left <= 0) { from.itemType = ItemType.NONE; from.quantity = 0; }
+  return moved;
+}
+
+/** What one equipment item gives, short, for the slot panels ("+40 kWh") */
+export function equipmentLabel(itemType: ItemType, quantity = 1): string {
+  const e = equipmentStats(itemType);
+  if (!e) return '';
+  const out: string[] = [];
+  if (e.batteryWh) out.push(`+${Math.round((e.batteryWh * quantity) / 1000)} kWh`);
+  if (e.solarW) out.push(`+solar ${Math.round((e.solarW * quantity) / 1000)} kW`);
+  if (e.chutes) out.push(`${e.chutes * quantity} chute${e.chutes * quantity === 1 ? '' : 's'}`);
+  return out.join(', ');
+}
+
+/** What a whole equipment row gives, for the slot panels */
+export function equipmentSummary(equipment: readonly InventorySlot[] | null | undefined): string {
+  const s = computeRocketStats([], 0, null, equipment ?? null);
+  const out: string[] = [];
+  if (s.batteryWh > 0) out.push(`+${Math.round(s.batteryWh / 1000)} kWh`);
+  if (s.solarW > 0) out.push(`+solar ${Math.round(s.solarW / 1000)} kW`);
+  if (s.chutes > 0) out.push(`${s.chutes} chute${s.chutes === 1 ? '' : 's'}`);
+  if (s.dryMass > 0) out.push(`+${Math.round(s.dryMass)} kg`);
+  return out.length ? out.join(', ') : 'Nothing fitted';
+}
+
+/**
+ * Older saves stacked parachutes, solar arrays and battery packs as parts.
+ * Split a saved stack into the parts that still are parts and the equipment
+ * items that were in it, so the caller can fit those into the equipment
+ * slots (or the cargo hold when they are full) - nothing is lost.
+ */
+export function splitLegacyStack<T extends { itemType: ItemType }>(saved: readonly T[]): { parts: T[]; equipment: ItemType[] } {
+  const parts: T[] = [];
+  const equipment: ItemType[] = [];
+  for (const p of saved) {
+    if (isEquipment(p.itemType) && !partStats(p.itemType)) equipment.push(p.itemType);
+    else parts.push(p);
+  }
+  return { parts, equipment };
+}
+
+/** Fit migrated items into the equipment row, then the cargo hold; returns what fit nowhere */
+export function stowLegacyEquipment(items: readonly ItemType[], equipment: InventorySlot[], cargo: InventorySlot[]): ItemType[] {
+  const lost: ItemType[] = [];
+  for (const t of items) {
+    if (slotStore(equipment).addItem(t, 1) === 0) continue;
+    if (slotStore(cargo).addItem(t, 1) === 0) continue;
+    lost.push(t);
+  }
+  return lost;
 }
 
 /** How deep in a body's gravity well a distance from its centre is: 1 = full, 0 = none */

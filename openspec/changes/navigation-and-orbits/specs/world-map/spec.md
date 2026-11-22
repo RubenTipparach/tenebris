@@ -41,6 +41,17 @@ North SHALL be at the top.
 - **WHEN** the map of Sequoia is open
 - **THEN** its tiles show Sequoia's own blocks (its beige scrub, its sands), not Earth's
 
+### Requirement: The map reads as ground with relief, not cells
+
+Tiles SHALL meet with no outline or seam. Each tile's colour SHALL be
+brighter the higher its ground stands over sea level, darker the deeper the
+water over it, and lit or shaded by its slope toward the light (up-left on
+the map).
+
+#### Scenario: Hills and deep water
+- **WHEN** the map of Earth is open
+- **THEN** no cell edges show, hills read lighter with shaded far slopes, and deep sea is darker than shallows
+
 ### Requirement: The map follows edits
 
 A block placed or broken SHALL change that tile on the map when it changes

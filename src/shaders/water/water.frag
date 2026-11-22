@@ -47,6 +47,8 @@ varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
 varying float vSunBrightness; // Day/night based on position relative to sun
+varying float vSunHeight;
+#include <tenebris_sky_light>
 
 // Convert depth buffer value to linear depth
 float linearizeDepth(float depth) {
@@ -186,9 +188,11 @@ void main() {
   // Base opacity with fresnel effect
   float finalOpacity = mix(opacity, 0.95, fresnel * 0.5);
 
-  // Apply day/night dimming based on sun position
-  // Water on the dark side of the planet should be much darker
-  float dayNightFactor = mix(0.1, 1.0, vSunBrightness); // 10% at night, 100% at day
+  // Light on the water: the sky light table's fill (openspec sky-lighting),
+  // half its colour so the water keeps its own - dark at night, lit by a
+  // glowing dusk sky
+  vec3 skyF = skyFill(vSunHeight);
+  vec3 dayNightFactor = mix(vec3(dot(skyF, vec3(0.2126, 0.7152, 0.0722))), skyF, 0.5);
   finalColor *= dayNightFactor;
 
   // Also dim specular/reflections on dark side (already calculated, apply reduction)

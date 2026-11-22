@@ -8,6 +8,7 @@ import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/So
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
+import { airlessSkyLight, skyLightUniforms } from './SkyLightTexture';
 import {
   buildChunkGeometryImmediate,
   createBufferGeometryFromData,
@@ -92,6 +93,8 @@ export class Planet {
   }
   private columns: Map<number, PlanetColumn> = new Map();
   private meshBuilder: HexBlockMeshBuilder;
+  // Sun and fill by sun height (openspec sky-lighting); airless until the planet's own is set
+  private skyLight: THREE.Texture = airlessSkyLight();
   private scene: THREE.Scene;
   private frustum: THREE.Frustum = new THREE.Frustum();
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
@@ -578,6 +581,11 @@ export class Planet {
     return this.config.name ?? 'earth';
   }
 
+  /** The terrain seed (world seed + this body's offset): seed-derived decoration (sea flora) keys on it */
+  public getSeed(): number {
+    return this.seed;
+  }
+
   // Check if detailed terrain is enabled for this planet
   public isDetailedTerrainEnabled(): boolean {
     return this.detailedTerrainEnabled;
@@ -729,18 +737,20 @@ export class Planet {
   }
 
   /**
-   * The topmost non-air block of every tile, by tile index (0 = none): from
-   * the loaded columns, else from the terrain generator (top blocks only)
-   * with every edit applied - so a planet never visited, or released, maps
-   * exactly as it would generate. For the world map.
+   * For the world map, by tile index: the topmost non-air block (0 = none)
+   * and the ground's height (the depth of the topmost block that is neither
+   * air nor water: the seabed under the sea). From the loaded columns, else
+   * from the terrain generator with every edit applied - so a planet never
+   * visited, or released, maps exactly as it would generate.
    */
-  public async getTopBlocks(): Promise<Uint16Array> {
+  public async getMapTiles(): Promise<{ top: Uint16Array; ground: Uint8Array }> {
     await this.initialize();
     const tiles = this.polyhedron.tiles;
     const out = new Uint16Array(tiles.length);
+    const outGround = new Uint8Array(tiles.length);
     if (this.columns.size >= tiles.length) {
-      for (let i = 0; i < tiles.length; i++) out[i] = this.topBlockOf(i);
-      return out;
+      for (let i = 0; i < tiles.length; i++) { out[i] = this.topBlockOf(i); outGround[i] = this.groundDepthOf(i); }
+      return { top: out, ground: outGround };
     }
     const worker = new Worker(new URL('../workers/terrainGenerationWorker.ts', import.meta.url), { type: 'module' });
     const edits: Array<[number, number, number]> = [];
@@ -749,9 +759,9 @@ export class Planet {
       worker.onmessage = (e) => {
         if (e.data?.type !== 'topBlocks') return;
         worker.terminate();
-        resolve(e.data.top as Uint16Array);
+        resolve({ top: e.data.top as Uint16Array, ground: e.data.ground as Uint8Array });
       };
-      worker.onerror = () => { worker.terminate(); resolve(out); };
+      worker.onerror = () => { worker.terminate(); resolve({ top: out, ground: outGround }); };
       worker.postMessage({
         type: 'generateTopBlocks',
         tiles: tiles.map(tile => ({ index: tile.index, center: { x: tile.center.x, y: tile.center.y, z: tile.center.z }, neighbors: tile.neighbors })),
@@ -769,6 +779,17 @@ export class Planet {
       if (column.blocks[d] !== HexBlockType.AIR) return column.blocks[d];
     }
     return HexBlockType.AIR;
+  }
+
+  /** The ground's height on a loaded tile: the topmost block that is neither air nor water (0 when not loaded). */
+  public groundDepthOf(tileIndex: number): number {
+    const column = this.columns.get(tileIndex);
+    if (!column) return 0;
+    for (let d = column.blocks.length - 1; d >= 0; d--) {
+      const b = column.blocks[d];
+      if (b !== HexBlockType.AIR && b !== HexBlockType.WATER) return d;
+    }
+    return 0;
   }
 
   /** Whether this tile's blocks are loaded (its top block can be read now). */
@@ -1053,6 +1074,25 @@ export class Planet {
   private handleWorkerResult(data: Record<string, unknown>): void {
     if (!this.batchedMeshGroup) return;
 
+    // A flat build is a snapshot of the blocks from when it was posted, and
+    // it is only posted in flat mode. If per-chunk meshes have taken over
+    // since, a block edit happened while it was in flight and the chunk
+    // meshes were built from the newer blocks: this result is stale. Applying
+    // it put the dug block back in the mesh while the world had it as air -
+    // step into it and every face round it was culled, a hole straight
+    // through the ground ("I mined some dirt and holes appeared"). Drop it;
+    // the chunk path builds any chunk that came into range meanwhile.
+    if (this.hasTransitionedToChunkMeshes) {
+      this.pendingWorkerTiles.clear();
+      this.isWorkerBuildActive = false;
+      this.needsRebatch = true;
+      if (!this.initialTerrainBuilt) {
+        this.initialTerrainBuilt = true;
+        this.checkInitialBuildComplete();
+      }
+      return;
+    }
+
     profiler.begin('Planet.workerResult');
 
     // Create new meshes FIRST (before removing old ones) to avoid holes
@@ -1121,18 +1161,8 @@ export class Planet {
       }
     }
 
-    // A full (flat) build replaces every per-chunk detail group, so go back
-    // to flat mode. Staying in chunk mode here left the next chunk rebuild
-    // adding its chunk on top of these flat meshes: the same terrain drawn
-    // twice, z-fighting into flickering see-through triangles.
-    if (this.hasTransitionedToChunkMeshes) {
-      for (const waterMesh of this.chunkDetailWaterMeshes.values()) {
-        this.waterMeshCallback?.(waterMesh, false);
-      }
-      this.chunkDetailWaterMeshes.clear();
-      this.chunkDetailMeshes.clear();
-      this.hasTransitionedToChunkMeshes = false;
-    }
+    // (A flat result never lands in chunk mode - see the stale check above -
+    // so there are no per-chunk groups to give up here.)
 
     profiler.end('Planet.workerResult.swap');
 
@@ -2368,7 +2398,8 @@ export class Planet {
           sunDirection: { value: this.sunDirection.clone() }, // Uses stored sun direction
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
+          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+          ...skyLightUniforms(this.skyLight),
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,
@@ -2601,7 +2632,8 @@ export class Planet {
         sunDirection: { value: this.sunDirection.clone() }, // Use actual sun direction
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
+        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+        ...skyLightUniforms(this.skyLight),
       },
       vertexShader: planetVert,
       fragmentShader: planetFrag,
@@ -5482,6 +5514,10 @@ export class Planet {
       // Schedule a rebuild after debounce period (allows batching rapid changes)
       this.dirtyRebuildDebounceTimer = window.setTimeout(() => {
         this.dirtyRebuildDebounceTimer = null;
+        // Back in flat mode meanwhile (terrain released): one chunk built on
+        // top of the flat meshes would draw that ground twice. Leave the
+        // chunks queued; the next update does the full switch to chunks.
+        if (!this.hasTransitionedToChunkMeshes) return;
         if (this.deferredRebuildChunks.size > 0) {
           const chunksToRebuild = new Set(this.deferredRebuildChunks);
           this.deferredRebuildChunks.clear();
@@ -5898,6 +5934,28 @@ export class Planet {
   }
 
   // Get block height (BLOCK_HEIGHT constant)
+  /** Direction to the sun (world space; planets don't spin, so it is also planet-local). */
+  public getSunDirection(): THREE.Vector3 {
+    return this.sunDirection;
+  }
+
+  /** The planet's sky light table (openspec sky-lighting): its terrain lights from it */
+  public getSkyLight(): THREE.Texture {
+    return this.skyLight;
+  }
+
+  public setSkyLight(tex: THREE.Texture): void {
+    this.skyLight = tex;
+    this.meshBuilder.setSkyLight(tex);
+    // LOD materials already built read it too
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o: THREE.Object3D) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.skyLight) m.uniforms.skyLight.value = tex;
+      });
+    }
+  }
+
   public getBlockHeight(): number {
     return this.BLOCK_HEIGHT;
   }

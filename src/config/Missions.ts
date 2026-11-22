@@ -38,7 +38,7 @@ import { ItemType } from '../player/Inventory';
  *   reactorBuilt place a fission reactor (off-world only)
  *   onBattery   a network keeps its machines running on battery charge
  *   fueled      refuel a rocket with `item`
- *   launchedWith take off in a rocket whose stack holds `item`
+ *   launchedWith take off in a rocket whose stack or equipment holds `item`
  *   sheared     shear a sheep
  *   chuteLanded land a rocket under an open parachute
  *   bottled     a gas collector fills an oxygen tank
@@ -491,12 +491,17 @@ export const MISSIONS: Mission[] = [
   {
     id: 'leadacid', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'raremetals', after: ['workbench'], title: 'Store power', help: 'Make a lead-acid battery and place it on a network.',
     objectives: [{ kind: 'placed', item: I.BATTERY_LEAD_ACID, count: 1, label: 'Lead-acid battery' }],
-    unlocks: [],
+    unlocks: [I.SOLAR_PANEL],
   },
   {
     id: 'onbattery', branch: 'storage', icon: I.BATTERY_LEAD_ACID, parent: 'leadacid', title: 'Run on battery', help: 'Keep a machine running when the generators fall short.',
     objectives: [{ kind: 'onBattery', count: 1, label: 'On battery' }],
     unlocks: [I.BATTERY_LITHIUM],
+  },
+  {
+    id: 'solar', branch: 'storage', icon: I.SOLAR_PANEL, parent: 'leadacid', title: 'Solar power', help: 'Make a solar panel at the workbench and set it in the open sun.',
+    objectives: [{ kind: 'placed', item: I.SOLAR_PANEL, count: 2, label: 'Solar panels' }],
+    unlocks: [I.SOLAR_ARRAY],
   },
   {
     id: 'lithium', branch: 'storage', icon: I.BATTERY_LITHIUM, parent: 'onbattery', title: 'Lithium-ion', help: 'A denser cell from lithium and cobalt.',
@@ -609,7 +614,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- rocketry, returning: a parachute landing and a fresh battery
   {
-    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: 'Add a parachute to the stack and land under it (P opens it).',
+    id: 'chute', branch: 'rocketry', icon: I.PARACHUTE, parent: 'launch', after: ['shear'], title: 'Safe return', help: "Fit a parachute in the rocket's equipment and land under it (P opens it).",
     objectives: [{ kind: 'chuteLanded', count: 1, label: 'Landed under a chute' }],
     unlocks: [],
   },
@@ -644,4 +649,13 @@ export const MISSION_TREE_UI = {
   PLAQUE_CHAR_W: 0.75,  // a branch plaque's width per character, in font sizes (packing)
   SIDE_W: 300,          // side panel width, px
   DRAG_SLOP_PX: 4,      // a click under this much movement opens a card
+  PAN_KEEP_PX: 40,      // panning stops with at least this much of a card in view
+};
+
+/** The HUD mission tracker: the mission to do now, shown during play. */
+export const MISSION_HUD = {
+  WIDTH: 230,           // px
+  ICON: 24,             // the mission's icon, px
+  OBJ_ICON: 16,         // an objective's icon, px
+  STORAGE_KEY: 'tenebris_mission_hud',  // '0' hides it; shown by default
 };

@@ -14,6 +14,7 @@ varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vSunBrightness;
+varying float vSunHeight; // sine of the sun's height over this spot's horizon (the sky light table's axis)
 varying float vSkyLight; // Pre-calculated sky light (0-1)
 varying float vTorchLight; // Pre-calculated torch light (0-1)
 varying float vBlockLight; // Block light (0-1)
@@ -45,6 +46,7 @@ void main() {
   // Smooth transition at terminator (day/night boundary)
   // Goes from 0 (full shadow) to 1 (full sun)
   vSunBrightness = smoothstep(-0.1, 0.3, sunFacing);
+  vSunHeight = sunFacing;
 
   // Calculate water depth - how far below water level this vertex is
   float distFromCenter = length(worldPos.xyz - planetCenter);

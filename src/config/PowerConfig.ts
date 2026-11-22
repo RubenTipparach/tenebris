@@ -11,7 +11,7 @@ export type PowerNodeKind =
   | 'steamEngine' | 'hydroGenerator' | 'reactor'
   | 'electricFurnace' | 'computer' | 'printer3D'
   | 'pumpJack' | 'refinery' | 'centrifuge' | 'nuclearFabricator'
-  | 'gasCollector'
+  | 'gasCollector' | 'solarPanel'
   | 'battery';
 
 export const POWER_CONFIG = {
@@ -23,6 +23,8 @@ export const POWER_CONFIG = {
     steamEngine: 2000,
     hydroGenerator: 1000,
     reactor: 50000,
+    // a solar panel's output in full sun, straight overhead (SOLAR scales it)
+    solarPanel: 600,
   } as Partial<Record<PowerNodeKind, number>>,
 
   // Machines: watts while working
@@ -44,6 +46,14 @@ export const POWER_CONFIG = {
     [ItemType.BATTERY_LITHIUM]: { capacityWh: 40000, maxRateW: 8000 },
     [ItemType.BATTERY_SOLID_STATE]: { capacityWh: 150000, maxRateW: 30000 },
   } as Record<number, { capacityWh: number; maxRateW: number }>,
+
+  // Solar panels (openspec wool-air-and-reentry, design 6): output is
+  // SUPPLY_W.solarPanel x the sun's height over the panel (the cosine of
+  // the angle to straight up), 0 at night or under a roof, and stronger with
+  // no air in the way
+  SOLAR: {
+    AIRLESS_BOOST: 1.4,   // on a world with no atmosphere
+  },
 } as const;
 
 /** The pump jack, the refinery, the centrifuge, the reactor, the fabricator. */
@@ -77,6 +87,7 @@ export const MACHINE_CONFIG = {
     reactor: { inputs: 4, outputs: 0 },
     nuclearFabricator: { inputs: 0, outputs: 1 },
     gasCollector: { inputs: 1, outputs: 1 },
+    solarPanel: { inputs: 0, outputs: 0 },
     battery: { inputs: 0, outputs: 0 },
   } as Record<string, { inputs: number; outputs: number }>,
 } as const;
@@ -143,6 +154,7 @@ export const MACHINE_KIND_OF: Partial<Record<ItemType, PowerNodeKind>> = {
   [ItemType.REACTOR]: 'reactor',
   [ItemType.NUCLEAR_FABRICATOR]: 'nuclearFabricator',
   [ItemType.GAS_COLLECTOR]: 'gasCollector',
+  [ItemType.SOLAR_PANEL]: 'solarPanel',
   [ItemType.BATTERY_LEAD_ACID]: 'battery',
   [ItemType.BATTERY_LITHIUM]: 'battery',
   [ItemType.BATTERY_SOLID_STATE]: 'battery',

@@ -1,6 +1,7 @@
 import { REACH_SET_FAR_M } from '../config/Missions';
 import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
+import { HexBlockType } from '../shared/blockTypes';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
 import { getBodyConfig, GAS_GIANTS, CelestialBodyType } from '../config/SolarSystemConfig';
 import { allOrbits, gameTimeS, positionAt } from '../world/Orbits';
@@ -31,6 +32,9 @@ class PlanetRaster {
   readonly canvas = document.createElement('canvas');
   private ctx: CanvasRenderingContext2D;
   private top: Uint16Array | null = null;
+  private ground: Uint8Array | null = null;
+  private lightFrom: Int32Array = new Int32Array(0);   // each tile's neighbour toward the light
+  private centres: Float32Array = new Float32Array(0);
   private polys: Float32Array[] = [];
   private wraps: Uint8Array = new Uint8Array(0);
   private colours: BlockColours;
@@ -70,8 +74,9 @@ class PlanetRaster {
     this.building = (async () => {
       this.ctx.fillStyle = C.UNKNOWN_TILE_COLOUR;
       this.ctx.fillRect(0, 0, this.width, this.height);
-      const top = await this.planet.getTopBlocks();
+      const { top, ground } = await this.planet.getMapTiles();
       this.top = top;
+      this.ground = ground;
       if (!this.polys.length) this.buildPolys();
       this.ctx.fillStyle = C.UNKNOWN_TILE_COLOUR;
       this.ctx.fillRect(0, 0, this.width, this.height);
@@ -112,13 +117,33 @@ class PlanetRaster {
       }
       this.polys[tile.index] = pts;
     }
+    // each tile's neighbour toward the light (up-left on the map), for the hillshade
+    this.centres = new Float32Array(tiles.length * 2);
+    for (const tile of tiles) {
+      const p = this.project(tile.center);
+      this.centres[tile.index * 2] = p.x;
+      this.centres[tile.index * 2 + 1] = p.y;
+    }
+    this.lightFrom = new Int32Array(tiles.length).fill(-1);
+    for (const tile of tiles) {
+      let best = -1, bestDot = 0;
+      const cx = this.centres[tile.index * 2], cy = this.centres[tile.index * 2 + 1];
+      for (const n of tile.neighbors) {
+        let dx = this.centres[n * 2] - cx;
+        const dy = this.centres[n * 2 + 1] - cy;
+        if (dx > this.width / 2) dx -= this.width; else if (dx < -this.width / 2) dx += this.width;
+        const d = (-dx - dy) / (Math.hypot(dx, dy) || 1);   // toward up-left
+        if (d > bestDot) { bestDot = d; best = n; }
+      }
+      this.lightFrom[tile.index] = best;
+    }
   }
 
   private drawTile(i: number): void {
     const pts = this.polys[i];
     if (!pts || !this.top) return;
     const ctx = this.ctx;
-    ctx.fillStyle = this.colours.colourOf(this.top[i]);
+    ctx.fillStyle = this.shaded(this.colours.colourOf(this.top[i]), i);
     const shifts = this.wraps[i] === 1 ? [0, -this.width] : [0];
     for (const dx of shifts) {
       ctx.beginPath();
@@ -126,21 +151,49 @@ class PlanetRaster {
       for (let k = 2; k < pts.length; k += 2) ctx.lineTo(pts[k] + dx, pts[k + 1]);
       ctx.closePath();
       ctx.fill();
-      if (this.wraps[i] !== 2 && C.TILE_OUTLINE_ALPHA > 0) {
-        ctx.strokeStyle = `rgba(0,0,0,${C.TILE_OUTLINE_ALPHA})`;
-        ctx.lineWidth = 1;
+      // closes the anti-aliased hairline between neighbours: no cell edges
+      if (this.wraps[i] !== 2 && C.TILE_SEAM_PX > 0) {
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.lineWidth = C.TILE_SEAM_PX;
+        ctx.lineJoin = 'round';
         ctx.stroke();
       }
     }
+  }
+
+  /**
+   * A tile's colour with relief: brighter the higher its ground stands over
+   * sea level, darker the deeper the water over it, and lit or shaded by its
+   * rise toward the light (its neighbour up-left on the map).
+   */
+  private shaded(hex: string, i: number): string {
+    if (!this.ground || !this.top || this.top[i] === 0) return hex;
+    const sea = this.planet.getSeaLevelDepth();
+    const h = this.ground[i];
+    let k = 1;
+    if (this.top[i] === HexBlockType.WATER) k -= Math.min(C.RELIEF_MAX_DOWN, Math.max(0, sea - h) * C.RELIEF_PER_BLOCK_DOWN);
+    else k += Math.min(C.RELIEF_MAX_UP, Math.max(0, h - sea) * C.RELIEF_PER_BLOCK_UP);
+    const n = this.lightFrom[i];
+    if (n >= 0) {
+      const rise = h - this.ground[n];
+      k += Math.max(-C.HILLSHADE_MAX, Math.min(C.HILLSHADE_MAX, rise * C.HILLSHADE_PER_BLOCK));
+    }
+    const v = parseInt(hex.slice(1), 16);
+    const ch = (s: number) => Math.max(0, Math.min(255, Math.round(((v >> s) & 255) * k)));
+    return `rgb(${ch(16)},${ch(8)},${ch(0)})`;
   }
 
   private onEdit(tile: number): void {
     if (!this.top) return;
     if (this.planet.isTileLoaded(tile)) {
       const next = this.planet.topBlockOf(tile);
-      if (next !== this.top[tile]) {
+      const ground = this.planet.groundDepthOf(tile);
+      if (next !== this.top[tile] || (this.ground && ground !== this.ground[tile])) {
         this.top[tile] = next;
+        if (this.ground) this.ground[tile] = ground;
+        // its shade and its neighbours' (their slope toward it) change
         this.drawTile(tile);
+        for (const n of this.planet.getTileNeighbors(tile)) if (this.lightFrom[n] === tile) this.drawTile(n);
       }
     } else {
       // an edit on terrain that isn't loaded (another player's): re-map on next look

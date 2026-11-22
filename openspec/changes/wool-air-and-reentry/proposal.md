@@ -31,7 +31,7 @@ be touched at all.
   - the command module runs on power and needs it to steer, fire engines and
     keep its cabin air;
   - its own cell lasts about 15 minutes of flight;
-  - battery packs add more;
+  - battery packs, fitted in the rocket's equipment slots, add more;
   - a lithium-ion battery swapped in tops a landed rocket up.
 - **Lithium is abundant on airless worlds:** a rich deposit on every moon,
   airless planet and asteroid. Earth keeps its thin veins, so the
@@ -39,7 +39,14 @@ be touched at all.
 - **Re-entry heat:** a rocket that has left an atmosphere heats up when it
   comes back in fast. It cools when it slows or leaves again, and burns up if
   it overheats. A HUD gauge shows it, and the rocket glows.
-- **Parachutes:** a rocket part made from wool.
+- **Rocket equipment** (owner, 2026-11-22: "parachute is an item you can put
+  in to the inventory to add more functionality to the rocket ... not a
+  separate module, same with solar arrays and batteries, you can equip in a
+  slot. you can add cargo slots to add more 'stuff' but increases weight of
+  rocket"): parachutes, solar arrays and battery packs are not parts of the
+  stack. The command module gives equipment slots; each fitted item adds its
+  function and its mass. Cargo bays stay the way to carry more stuff.
+- **Parachutes:** rocket equipment made from wool.
   - It opens in an atmosphere, by key or at a set height while falling, and
     holds the rocket to a safe landing speed.
   - It tears if opened too fast.
@@ -56,17 +63,25 @@ be touched at all.
     dies and respawns.
   - A HUD shows the air left. The suit is worn in its own slot and shows on
     the avatar.
+- **Solar power, after batteries** (owner, 2026-11-22: "oh yea, after
+  batteries reseached, solar panels"):
+  - a solar panel machine makes power on a cable network by day, in the
+    open sun, and more on an airless world;
+  - a solar array, fitted in the rocket's equipment, charges the command
+    module's battery while the rocket is in sunlight.
 - **Missions:** a Wool and leather branch, an Air and suits branch, a
   parachute landing, and a battery swap, each unlocking its recipes.
 
 ## Capabilities
 
 - ranching (new): sheep, cows, shears, wool, leather, carpet, clothing.
-- rocket-power (new): command-module battery, battery packs, swapping in a
+- rocket-power (new): command-module battery, the rocket's equipment slots,
+  battery packs, swapping in a
   battery, lithium on airless worlds.
-- reentry-and-parachutes (new): re-entry heat, the parachute part.
+- reentry-and-parachutes (new): re-entry heat, the parachute (equipment).
 - air-and-suits (new): gas collector, oxygen tanks, the space suit,
   exposure and death.
+- solar-power (new): the solar panel and the rocket's solar array.
 
 ## Impact
 

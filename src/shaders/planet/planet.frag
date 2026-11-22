@@ -4,7 +4,9 @@ precision highp float;
 uniform vec3 sunDirection;
 uniform float ambientIntensity;
 uniform float directionalIntensity;
-uniform float darkSideAmbient; // Minimum ambient on dark side (0-1)
+uniform float darkSideAmbient; // (unused: the sky light table's fill takes its place)
+// Sky light (openspec sky-lighting): the same table the near terrain reads
+#include <tenebris_sky_light>
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
@@ -23,16 +25,14 @@ void main() {
   // Lambert diffuse lighting on the mesh face
   float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
 
-  // Directional light: direct sunlight on the face
-  float directional = meshDiffuse * dayFactor * directionalIntensity;
+  // The sky light table at this spot's sun height (texel centres)
+  vec3 sunLight = skySun(vSunFacing);
+  vec3 fill = skyFill(vSunFacing);
 
-  // Ambient light: transitions from full intensity on day side to dim on dark side
-  float ambientDayNight = mix(darkSideAmbient, 1.0, dayFactor);
-  float ambient = ambientIntensity * ambientDayNight;
-
-  // Final lighting
-  float lighting = ambient + directional;
-  vec3 finalColor = vColor * lighting;
+  // Sunlight through the air on the face, plus the sky's fill
+  vec3 directional = sunLight * meshDiffuse * directionalIntensity;
+  vec3 ambient = fill * ambientIntensity;
+  vec3 finalColor = vColor * (ambient + directional);
 
   // Add vertex-baked torch light (visible on dark side, fades on day side)
   // Use threshold > 0.01 to avoid floating point precision issues

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from './SkyLightTexture';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { getAssetPath } from '../utils/assetPath';
@@ -1186,7 +1187,7 @@ function createPlanetAwareMaterial(baseColor: THREE.Color, sunDirection: THREE.V
         float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
 
         // Combine: directional light only applies if planet surface faces sun
-        float directional = meshDiffuse * shadowFactor * directionalIntensity;
+        vec3 directional = sunLight * meshDiffuse * directionalIntensity;
         float ambient = ambientIntensity;
 
         vec3 finalColor = baseColor * (ambient + directional);
@@ -1382,6 +1383,11 @@ class TreeBatcher {
     this.material.uniforms.sunDirection.value.copy(dir).normalize();
   }
 
+  /** The planet's sky light table (openspec sky-lighting) */
+  public setSkyLight(tex: THREE.Texture): void {
+    this.material.uniforms.skyLight.value = tex;
+  }
+
   // Trees without a tile go in chunk -1, which is always shown
   private chunkFor(tree: THREE.Group): number {
     const tileIndex = tree.userData.tileIndex;
@@ -1533,6 +1539,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
       directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
       treeAtlas: { value: treeAtlas() },
+      ...skyLightUniforms(),
     },
     vertexShader: `
       attribute float texCell;
@@ -1563,6 +1570,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       uniform float improved;
       uniform float ambientIntensity;
       uniform float directionalIntensity;
+      #include <tenebris_sky_light>
 
       varying vec3 vColor;
       varying vec3 vNormal;
@@ -1571,7 +1579,10 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       void main() {
         vec3 surfaceNormal = normalize(vWorldPosition - planetCenter);
         float planetSunFacing = dot(surfaceNormal, sunDirection);
-        float shadowFactor = smoothstep(-0.1, 0.2, planetSunFacing);
+        // The sky light table (openspec sky-lighting), as the terrain reads it
+        vec3 sunLight = skySun(planetSunFacing);
+        vec3 fill = skyFill(planetSunFacing) * ambientIntensity;
+        float shadowFactor = clamp(dot(sunLight, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         vec3 n = normalize(vNormal);
         if (!gl_FrontFacing) n = -n;
         float meshDiffuse = max(0.0, dot(n, sunDirection));
@@ -1585,19 +1596,17 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         vec2 auv = vec2((fract(tuv.x) + floor(vTexCell + 0.5)) * 0.25, fract(tuv.y));
         vec3 detail = texture2D(treeAtlas, auv).rgb * (255.0 / 200.0);
         vec3 tinted = vColor * detail;
-        // Ambient falls to 10% on the night side, exactly as the terrain's
-        // (terrain.vert/.frag), so trees don't glow against dark ground
-        float nightAmbient = ambientIntensity * mix(0.1, 1.0, smoothstep(-0.1, 0.3, planetSunFacing));
-        vec3 finalColor = tinted * (nightAmbient + directional);
+        // Sun and fill exactly as the terrain's, so trees sit in the same light
+        vec3 finalColor = tinted * (fill + directional);
         if (improved > 0.5) {
           // Wrap lighting (soft terminator on the canopy), sky/ground
           // hemisphere ambient, and a rim on the sun side
           float wrap = max(0.0, (dot(n, sunDirection) + 0.4) / 1.4);
           float hemi = 0.5 + 0.5 * dot(n, surfaceNormal);
-          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * nightAmbient * (0.6 + 0.4 * shadowFactor);
+          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * fill * (0.6 + 0.4 * shadowFactor);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
           float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
-          finalColor = tinted * (ambient + wrap * shadowFactor * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
+          finalColor = tinted * (ambient + wrap * sunLight * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
         }
         // Glowing parts (alien species) shine with their own colour, day
         // and night alike; 0 everywhere on ordinary trees
@@ -1816,6 +1825,11 @@ export class PlanetTreeManager {
   public setSunDirection(dir: THREE.Vector3): void {
     this.sunDirection.copy(dir).normalize();
     this.batcher.setSunDirection(dir);
+  }
+
+  /** The planet's sky light table (openspec sky-lighting) */
+  public setSkyLight(tex: THREE.Texture): void {
+    this.batcher.setSkyLight(tex);
   }
 
   public setPlanetCenter(center: THREE.Vector3): void {
@@ -2160,6 +2174,11 @@ export class FloraTreeManager {
   public setSunDirection(dir: THREE.Vector3): void {
     this.sunDirection.copy(dir).normalize();
     this.batcher.setSunDirection(dir);
+  }
+
+  /** The planet's sky light table (openspec sky-lighting) */
+  public setSkyLight(tex: THREE.Texture): void {
+    this.batcher.setSkyLight(tex);
   }
 
   public setPlanetCenter(center: THREE.Vector3): void {

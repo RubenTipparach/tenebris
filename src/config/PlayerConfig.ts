@@ -31,6 +31,7 @@ export const PlayerConfig = {
   // Camera
   MOUSE_SENSITIVITY: 0.002,
   INVERT_Y_AXIS: false,        // Invert vertical mouse look (true = pull down to look up)
+  PITCH_LIMIT_DEG: 89.9,       // Walker look pitch clamp, degrees off the horizon (openspec player-heading)
   ROLL_SPEED: 2, // Roll speed in space (Q/E)
   CAMERA_NEAR: 0.1,            // Near clipping plane
   CAMERA_FAR: 20000,           // Far clipping plane (10x increased for space travel)
@@ -101,7 +102,7 @@ export const PlayerConfig = {
   ATMOSPHERE_MIE_SCALE: 0.01,        // Mie scattering coefficient (sun glow/haze)
   ATMOSPHERE_MIE_G: 0.85,             // Mie phase asymmetry (-0.99 to 0.99, positive = forward scatter)
   ATMOSPHERE_SUN_INTENSITY: 5.0,     // Sun brightness for atmosphere
-  ATMOSPHERE_SAMPLES: 8,              // Number of ray march samples (higher = better quality, slower)
+  ATMOSPHERE_SAMPLES: 16,             // Even ray march steps, no dither (no grain; openspec sky-lighting)
   ATMOSPHERE_LIGHT_SAMPLES: 4,        // Number of light samples per ray step
 
   // Terrain rendering & streaming

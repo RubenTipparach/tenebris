@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from './SkyLightTexture';
 import cloudsVert from '../shaders/clouds/clouds.vert';
 import cloudsFrag from '../shaders/clouds/clouds.frag';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -154,6 +155,7 @@ function createCloudMaterial(sunDirection: THREE.Vector3): THREE.ShaderMaterial 
       cloudColor: { value: new THREE.Color(0xffffff) },
       shadowColor: { value: new THREE.Color(0x8888aa) },
       ambientIntensity: { value: 0.4 },
+      ...skyLightUniforms(),
     },
     vertexShader: cloudsVert,
     fragmentShader: cloudsFrag,
@@ -263,6 +265,11 @@ export class CloudSystem {
 
   public setSunDirection(sunDirection: THREE.Vector3): void {
     this.material.uniforms.sunDirection.value.copy(sunDirection).normalize();
+  }
+
+  /** The planet's sky light table (openspec sky-lighting) */
+  public setSkyLight(tex: THREE.Texture): void {
+    this.material.uniforms.skyLight.value = tex;
   }
 
   // Animate clouds rotating slowly around the planet. worldTimeS (online:

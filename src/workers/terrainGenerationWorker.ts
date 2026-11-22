@@ -463,10 +463,14 @@ self.onmessage = (e: MessageEvent<GenerateTerrainMessage & { edits?: Array<[numb
     let max = 0;
     for (const t of tiles) max = Math.max(max, t.index + 1);
     const top = new Uint16Array(max);
+    // and the ground's height: the topmost block that is neither air nor
+    // water (the seabed under the sea) - the map shades by it
+    const ground = new Uint8Array(max);
     for (const [i, col] of columns) {
       for (let d = col.length - 1; d >= 0; d--) if (col[d] !== 0) { top[i] = col[d]; break; }
+      for (let d = col.length - 1; d >= 0; d--) if (col[d] !== 0 && col[d] !== HexBlockType.WATER) { ground[i] = d; break; }
     }
-    (self as unknown as Worker).postMessage({ type: 'topBlocks', top }, [top.buffer]);
+    (self as unknown as Worker).postMessage({ type: 'topBlocks', top, ground }, [top.buffer, ground.buffer]);
     return;
   }
 

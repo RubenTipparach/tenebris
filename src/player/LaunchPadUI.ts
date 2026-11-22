@@ -3,7 +3,8 @@ import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
-import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR, engineModes, engineModeLabel, validEngineMode } from '../rocket/RocketPerformance';
+import { showToast } from '../utils/toast';
+import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
 
 // Rocket validation result
 export interface RocketValidationResult {
@@ -68,6 +69,14 @@ export class LaunchPadUI {
 
   public setOnOpenCargoCallback(callback: (pad: PlacedLaunchPad) => void): void {
     this.onOpenCargoCallback = callback;
+  }
+
+  // Told when equipment is fitted or taken out (the pad and the inventory save)
+  private onEquipmentChangedCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  private equipRow: HTMLElement | null = null;
+  private equipSummary: HTMLElement | null = null;
+  public setOnEquipmentChangedCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onEquipmentChangedCallback = callback;
   }
 
   /** Gravity strength (1 = Earth) of the body a pad stands on, for its TWR */
@@ -170,6 +179,12 @@ export class LaunchPadUI {
         </div>
       </div>
 
+      <div class="launchpad-equipment">
+        <span class="equip-label">Equipment:</span>
+        <div class="launchpad-equip-row" id="launchpad-equip-row"></div>
+        <div class="launchpad-equip-summary" id="launchpad-equip-summary"></div>
+      </div>
+
       <div class="launchpad-validation" id="launchpad-validation">
         <div class="validation-message"></div>
       </div>
@@ -187,6 +202,7 @@ export class LaunchPadUI {
 
       <div class="launchpad-hint">
         <p>Drag rocket parts from inventory to rocket slots</p>
+        <p>Drag a parachute, solar array or battery pack to Equipment; click to take it out</p>
         <p>Press E or ESC to close</p>
       </div>
     `;
@@ -214,6 +230,8 @@ export class LaunchPadUI {
     this.refuelBtn = document.getElementById('launchpad-refuel-btn') as HTMLButtonElement;
     this.cargoBtn = document.getElementById('launchpad-cargo-btn') as HTMLButtonElement;
     this.statsElement = document.getElementById('launchpad-stats');
+    this.equipRow = document.getElementById('launchpad-equip-row');
+    this.equipSummary = document.getElementById('launchpad-equip-summary');
     this.statusElement = document.getElementById('launchpad-status');
     this.engineSlot = document.getElementById('launchpad-engine');
     this.validationMessageElement = document.getElementById('launchpad-validation');
@@ -947,6 +965,45 @@ export class LaunchPadUI {
         image-rendering: pixelated;
       }
 
+      .launchpad-equipment {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        margin-bottom: 10px;
+        padding: 8px;
+        background: rgba(29, 43, 83, 0.6);
+        border: 1px solid #29ADFF;
+        border-radius: 4px;
+      }
+
+      .launchpad-equipment .equip-label {
+        color: #aaa;
+        font-size: 12px;
+      }
+
+      .launchpad-equip-row {
+        display: flex;
+        gap: 4px;
+      }
+
+      .launchpad-equip-summary {
+        flex-basis: 100%;
+        font-size: 11px;
+        color: #3ee0ff;
+        font-family: 'Courier New', monospace;
+      }
+
+      .launchpad-slot .slot-count {
+        position: absolute;
+        bottom: 1px;
+        right: 3px;
+        font-size: 11px;
+        color: #FFF1E8;
+        text-shadow: 1px 1px 0 #000;
+        font-family: 'Courier New', monospace;
+      }
+
       .launchpad-slot .slot-number {
         position: absolute;
         bottom: 2px;
@@ -1199,13 +1256,101 @@ export class LaunchPadUI {
     this.onEngineModeCallback = callback;
   }
 
+  /**
+   * The equipment slots (ROCKET_CONFIG.EQUIPMENT): one cell per slot the
+   * stack gives, with the item's icon and count, and what it all gives
+   */
+  private updateEquipment(): void {
+    if (!this.equipRow || !this.currentLaunchPad) return;
+    const slots = this.currentLaunchPad.equipment;
+    if (this.equipRow.children.length !== slots.length) {
+      this.equipRow.innerHTML = '';
+      slots.forEach((_, i) => {
+        const cell = document.createElement('div');
+        cell.className = 'launchpad-slot equip-slot';
+        cell.dataset.equipSlot = String(i);
+        cell.innerHTML = '<img style="display:none;" draggable="false"><span class="slot-count"></span>';
+        cell.addEventListener('click', () => this.takeEquipment(i));
+        cell.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+          cell.classList.add('drag-over');
+        });
+        cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
+        cell.addEventListener('drop', (e) => {
+          e.preventDefault();
+          cell.classList.remove('drag-over');
+          const from = parseInt(e.dataTransfer?.getData('text/plain') ?? '', 10);
+          if (!isNaN(from)) this.fitFromInventory(from);
+        });
+        this.equipRow!.appendChild(cell);
+      });
+    }
+    slots.forEach((slot, i) => {
+      const cell = this.equipRow!.children[i] as HTMLElement;
+      const img = cell.querySelector('img') as HTMLImageElement;
+      const count = cell.querySelector('.slot-count') as HTMLElement;
+      const filled = slot.itemType !== ItemType.NONE && slot.quantity > 0;
+      cell.classList.toggle('filled', filled);
+      if (filled) {
+        img.src = getAssetPath(ITEM_DATA[slot.itemType].texture);
+        img.style.display = 'block';
+        count.textContent = slot.quantity > 1 ? String(slot.quantity) : '';
+        cell.title = `${ITEM_DATA[slot.itemType].name}: ${equipmentLabel(slot.itemType, slot.quantity)} (click to take out)`;
+      } else {
+        img.style.display = 'none';
+        count.textContent = '';
+        cell.title = 'Equipment slot - drop a parachute, solar array or battery pack';
+      }
+    });
+    if (this.equipSummary) {
+      this.equipSummary.textContent = slots.length === 0 ? 'Needs a command module' : equipmentSummary(slots);
+    }
+  }
+
+  /** Fit the equipment in one of the player's slots (hotbar or bag) into the rocket */
+  public fitFromInventory(inventorySlot: number): boolean {
+    const pad = this.currentLaunchPad;
+    const from = this.inventory?.getSlot(inventorySlot);
+    if (!pad || !from || from.itemType === ItemType.NONE) return false;
+    if (!isEquipment(from.itemType)) {
+      showToast('Only a parachute, solar array or battery pack fits there', { duration: 2500 });
+      return false;
+    }
+    if (fitEquipment(pad.equipment, from) <= 0) {
+      showToast('The equipment slots are full', { duration: 2000 });
+      return false;
+    }
+    this.afterEquipmentChange(pad);
+    return true;
+  }
+
+  /** Take an equipment slot's items back to the inventory (hotbar first) */
+  public takeEquipment(index: number): boolean {
+    const pad = this.currentLaunchPad;
+    const slot = pad?.equipment[index];
+    if (!pad || !slot || slot.itemType === ItemType.NONE || !this.inventory) return false;
+    const left = this.inventory.addItem(slot.itemType, slot.quantity);
+    if (left === slot.quantity) return false;
+    slot.quantity = left;
+    if (left <= 0) slot.itemType = ItemType.NONE;
+    this.afterEquipmentChange(pad);
+    return true;
+  }
+
+  private afterEquipmentChange(pad: PlacedLaunchPad): void {
+    this.onEquipmentChangedCallback?.(pad);
+    this.updateUI();
+    this.notifyChanges();
+  }
+
   /** The rocket's fuel, delta-v, TWR here and cargo space */
   private updateStats(): void {
     if (!this.statsElement || !this.currentLaunchPad) return;
     const pad = this.currentLaunchPad;
     const types = pad.rocketParts.map(p => p.itemType);
     const mode = validEngineMode(types, pad.engineMode ?? null);
-    const stats = computeRocketStats(types, cargoMass(pad.cargo), mode);
+    const stats = computeRocketStats(types, cargoMass(pad.cargo), mode, pad.equipment);
     const hasRocket = types.length > 0;
     if (this.refuelBtn) this.refuelBtn.disabled = !hasRocket || stats.fuelCapacity <= 0;
     if (this.cargoBtn) this.cargoBtn.disabled = stats.cargoSlots <= 0;
@@ -1223,6 +1368,10 @@ export class LaunchPadUI {
       <div class="stat"><span>dV</span><b>${Math.round(deltaVWith(stats, fuel))} m/s</b></div>
       <div class="stat ${twr < 1 ? 'warn' : ''}"><span>TWR</span><b>${twrText}</b></div>
       <div class="stat"><span>Cargo</span><b>${used}/${stats.cargoSlots}</b></div>
+      <div class="stat"><span>Power</span><b>${Math.round(stats.batteryWh / 1000)} kWh</b></div>
+      ${stats.solarW > 0 ? `<div class="stat"><span>Solar</span><b>${Math.round(stats.solarW / 1000)} kW</b></div>` : ''}
+      ${stats.chutes > 0 ? `<div class="stat"><span>Chutes</span><b>${stats.chutes}</b></div>` : ''}
+      <div class="stat"><span>Mass</span><b>${Math.round(stats.dryMass)} kg</b></div>
       <div class="stat"><span>Tier</span><b>${stats.tier}</b></div>
       ${twr < 1 && stats.thrust > 0 ? '<div class="stat-note">Too heavy to lift off here</div>' : ''}
       ${stats.problems.map(p => `<div class="stat-note">${p}</div>`).join('')}
@@ -1248,7 +1397,7 @@ export class LaunchPadUI {
     const modes = engineModes(types);
     if (modes.length < 2) return '';
     const rows = modes.map(m => {
-      const s = computeRocketStats(types, cargoMass(pad.cargo), m);
+      const s = computeRocketStats(types, cargoMass(pad.cargo), m, pad.equipment);
       const twr = surfaceTWR(s, gravity, fuel);
       const key = m == null ? 'all' : String(m);
       return `<div class="stat-mode${m === current ? ' active' : ''}" data-engine-mode="${key}" title="Launch in this mode">
@@ -1415,6 +1564,7 @@ export class LaunchPadUI {
     }
 
     this.updateStats();
+    this.updateEquipment();
 
     // Validate rocket and update UI
     const validation = this.validateRocket(this.currentLaunchPad);

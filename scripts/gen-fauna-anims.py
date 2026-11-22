@@ -273,6 +273,144 @@ SPECIES = {
             'legF': track(rot=neg(arc(0.5))),
         }),
     },
+    # ---- Sea life (openspec ocean-life) --------------------------------
+    # The fishing-table fish share three rigs by body plan (FaunaModels.ts
+    # buildFishModel): the tail beats about +Y, the body counter-sways
+    'swim_fish': {
+        'idle': (1.4, {
+            'body': track(rot=wave(0.04)),
+            'tail': track(rot=wave(0.25, phase=0.25)),
+            'finL': track(rot=wave(0.3)), 'finR': track(rot=wave(0.3, phase=0.5)),
+        }),
+        'move': (0.55, {
+            'body': track(rot=wave(-0.1)),
+            'tail': track(rot=wave(0.6, phase=0.25)),
+            'finL': track(rot=wave(0.15, mult=2, off=-0.2)), 'finR': track(rot=wave(0.15, mult=2, off=-0.2)),
+        }),
+    },
+    # eels: a wave travelling down four segments, each turning on the last
+    'swim_eel': {
+        'idle': (2.2, {
+            'body': track(rot=wave(0.08)),
+            'seg1': track(rot=wave(0.16, phase=0.15)),
+            'seg2': track(rot=wave(0.2, phase=0.3)),
+            'seg3': track(rot=wave(0.24, phase=0.45)),
+        }),
+        'move': (1.0, {
+            'body': track(rot=wave(0.18)),
+            'seg1': track(rot=wave(0.35, phase=0.15)),
+            'seg2': track(rot=wave(0.42, phase=0.3)),
+            'seg3': track(rot=wave(0.5, phase=0.45)),
+        }),
+    },
+    # rays: slow wing beats (both wings' axes point outward, so + is up for each)
+    'swim_ray': {
+        'idle': (2.4, {
+            'wingL': track(rot=wave(0.15)), 'wingR': track(rot=wave(0.15)),
+            'tail': track(rot=wave(0.2, phase=0.25)),
+            'body': track(dy=wave(-0.02)),
+        }),
+        'move': (1.2, {
+            'wingL': track(rot=wave(0.45)), 'wingR': track(rot=wave(0.45)),
+            'tail': track(rot=wave(0.3, phase=0.25)),
+            'body': track(dy=wave(-0.05)),
+        }),
+    },
+    # crab: side-on, the legs step about +X in two sets, the claws snip
+    'crab': {
+        'idle': (2.0, {
+            'clawL': track(rot=seq([0, 0.25, 0.25, 0, 0, 0, 0, 0])),
+            'clawR': track(rot=seq([0, 0, 0, 0, -0.25, -0.25, 0, 0])),
+            'body': track(dy=wave(0.006)),
+        }),
+        'move': (0.45, {
+            'legsA': track(rot=wave(0.4)), 'legsB': track(rot=neg(wave(0.4))),
+            'body': track(dy=bounce(0.015), rot=wave(0.05, mult=2)),
+            'clawL': track(rot=wave(0.1)), 'clawR': track(rot=wave(-0.1)),
+        }),
+    },
+    # sea jelly: the skirt pulses in, the bell lifts, the arms trail after
+    'jellyfish': {
+        'idle': (2.6, {
+            'skirtA': track(rot=seq([0, 0.3, 0.45, 0.3, 0.1, 0, 0, 0])),
+            'skirtB': track(rot=seq([0, 0.3, 0.45, 0.3, 0.1, 0, 0, 0])),
+            'body': track(dy=seq([0, 0.01, 0.04, 0.06, 0.05, 0.03, 0.01, 0])),
+            'arms': track(rot=wave(0.12, phase=0.3)),
+            'tentacles': track(rot=wave(0.15, phase=0.4)),
+        }),
+        'move': (1.8, {
+            'skirtA': track(rot=seq([0, 0.45, 0.6, 0.4, 0.15, 0, 0, 0])),
+            'skirtB': track(rot=seq([0, 0.45, 0.6, 0.4, 0.15, 0, 0, 0])),
+            'body': track(dy=seq([0, 0.02, 0.06, 0.09, 0.08, 0.05, 0.02, 0])),
+            'arms': track(rot=wave(0.2, phase=0.3)),
+            'tentacles': track(rot=wave(0.25, phase=0.4)),
+        }),
+    },
+    # sea turtle: the front flippers sweep (axes outward: + is up), the back steer
+    'seaTurtle': {
+        'idle': (2.8, {
+            'flipFL': track(rot=wave(0.2)), 'flipFR': track(rot=wave(0.2)),
+            'flipBL': track(rot=wave(0.1, phase=0.5)), 'flipBR': track(rot=wave(0.1, phase=0.5)),
+            'head': track(rot=wave(0.08, mult=2)),
+        }),
+        'move': (1.6, {
+            'flipFL': track(rot=wave(0.7)), 'flipFR': track(rot=wave(0.7)),
+            'flipBL': track(rot=wave(0.25, phase=0.5)), 'flipBR': track(rot=wave(0.25, phase=0.5)),
+            'body': track(rot=wave(-0.04), dy=wave(-0.03)),
+            'head': track(rot=wave(0.05, phase=0.25)),
+            'tail': track(rot=wave(0.15)),
+        }),
+    },
+    # lantern squid: fins ripple, arms gather and spread with each jet
+    'lanternSquid': {
+        'idle': (1.8, {
+            'fins': track(rot=wave(0.3)),
+            'arms': track(rot=wave(0.12, phase=0.3)),
+            'body': track(rot=wave(0.04)),
+        }),
+        'move': (0.8, {
+            'fins': track(rot=wave(0.5)),
+            'arms': track(rot=wave(0.35, phase=0.2)),
+            'body': track(dz=seq([0, 0.06, 0.09, 0.06, 0.02, 0, -0.02, 0])),
+        }),
+    },
+    'shellCrawler': {
+        'idle': (3.0, {
+            'body': track(dy=wave(0.008), rot=wave(0.03)),
+            'legsA': track(rot=wave(0.08)), 'legsB': track(rot=wave(-0.08)),
+        }),
+        'move': (0.7, {
+            'legsA': track(rot=wave(0.45)), 'legsB': track(rot=neg(wave(0.45))),
+            'body': track(rot=wave(0.08, mult=2), dy=bounce(0.02)),
+        }),
+    },
+    # moss otter: swims with up-down strokes of the body and its broad tail
+    'mossOtter': {
+        'idle': (2.0, {
+            'head': track(rot=seq([0, -0.1, -0.1, 0, 0.1, 0.15, 0.1, 0])),
+            'legF': track(rot=wave(0.2)), 'legB': track(rot=wave(0.15, phase=0.5)),
+            'tail': track(rot=wave(0.15)),
+        }),
+        'move': (0.8, {
+            'body': track(rot=wave(0.08)),
+            'tail': track(rot=wave(0.45, phase=0.2)),
+            'legF': track(rot=wave(0.5)), 'legB': track(rot=wave(0.35, phase=0.5)),
+            'head': track(rot=wave(-0.06)),
+        }),
+    },
+    # bog newt: a sprawled diagonal-pair walk with a wagging tail
+    'bogNewt': {
+        'idle': (2.4, {
+            'head': track(rot=seq([0, 0, -0.12, -0.12, 0, 0, 0, 0])),
+            'tail': track(rot=wave(0.2)),
+            'body': track(dy=wave(0.005)),
+        }),
+        'move': (0.6, {
+            **quad_walk(0.6, 0.01),
+            'tail': track(rot=wave(0.45)),
+            'body': track(dy=bounce(0.01)),
+        }),
+    },
     # ---- Players (the multiplayer avatar, src/net/Avatar.ts) -----------
     # Not fauna, but the same rig format: arms swing opposite the legs
     'player': {
