@@ -6,6 +6,11 @@ uniform vec3 sunDirection;
 uniform float ambientIntensity;
 uniform float directionalIntensity;
 
+// Sky light (openspec sky-lighting): row 0 the sun's light through the air,
+// row 1 the sky's fill, across the sun's height (src/shared/skyLight.ts) -
+// the same atmosphere the sky is drawn with, so ground and sky agree
+#include <tenebris_sky_light>
+
 // Underwater fog uniforms
 uniform float isUnderwater; // 1.0 if camera is underwater, 0.0 otherwise
 uniform vec3 underwaterFogColor;
@@ -29,6 +34,7 @@ varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vSunBrightness;
+varying float vSunHeight;
 varying float vSkyLight; // Pre-calculated sky light based on depth from surface
 varying float vTorchLight; // Pre-baked torch light from vertex shader
 varying float vBlockLight; // Light from emitting blocks
@@ -42,19 +48,19 @@ void main() {
   // Standard Lambert diffuse lighting on the mesh face
   float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
 
-  // Directional light: direct sunlight on the face
-  // Requires: face pointing toward sun (meshDiffuse), tile on day side (vSunBrightness), sky visible (vSkyLight)
-  float directional = meshDiffuse * vSunBrightness * directionalIntensity * vSkyLight;
+  // The sky light table at this spot's sun height
+  vec3 sunLight = skySun(vSunHeight);
+  vec3 fill = skyFill(vSunHeight);
 
-  // Ambient light: transitions from full intensity on day side to 10% on dark side
-  // vSunBrightness is based on tile position relative to sun (1.0 = day, 0.0 = night)
-  // This creates a gradual day/night transition for ambient lighting
-  float ambientDayNight = mix(0.1, 1.0, vSunBrightness); // 10% at night, 100% at day
-  float ambient = ambientIntensity * ambientDayNight * vSkyLight;
+  // Direct sunlight on the face: its colour through the air, faded as it
+  // sets; only where the sky is open (vSkyLight)
+  vec3 directional = sunLight * meshDiffuse * directionalIntensity * vSkyLight;
 
-  // Final lighting: ambient provides base, directional adds on top
-  float lighting = ambient + directional;
-  vec3 finalColor = texColor.rgb * lighting;
+  // Fill: the light the sky you see sheds - blue by day, a glowing dusk
+  // still lights the ground, starlight at night
+  vec3 ambient = fill * ambientIntensity * vSkyLight;
+
+  vec3 finalColor = texColor.rgb * (ambient + directional);
 
   // Apply vertex-baked torch light with warm orange color
   // vTorchLight is pre-calculated per vertex based on nearby torches

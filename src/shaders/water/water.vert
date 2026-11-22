@@ -11,6 +11,7 @@ varying vec3 vViewDirection;
 varying vec2 vUv;
 varying float vDepth;
 varying float vSunBrightness; // Day/night based on position relative to sun
+varying float vSunHeight;     // the sky light table's axis (openspec sky-lighting)
 
 void main() {
   vUv = uv;
@@ -59,6 +60,7 @@ void main() {
   float sunDot = dot(radialDir, sunDirection);
   // Smooth transition: -0.2 to 0.2 maps to 0 to 1 (terminator zone)
   vSunBrightness = smoothstep(-0.2, 0.2, sunDot);
+  vSunHeight = sunDot;
 
   // Final position
   gl_Position = projectionMatrix * viewMatrix * vec4(displacedPos, 1.0);

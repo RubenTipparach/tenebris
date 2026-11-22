@@ -22,6 +22,8 @@ varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
 varying float vSunBrightness;
+varying float vSunHeight;
+#include <tenebris_sky_light>
 varying float vSkyLight; // Pre-calculated sky light based on depth from surface
 varying float vTorchLight; // Pre-baked torch light from vertex shader
 varying float vWaterDepth; // How far below water surface
@@ -40,16 +42,10 @@ void main() {
   // Standard Lambert diffuse lighting on the mesh face
   float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
 
-  // Directional light
-  float directional = meshDiffuse * vSunBrightness * directionalIntensity * vSkyLight;
-
-  // Ambient light
-  float ambientDayNight = mix(0.1, 1.0, vSunBrightness);
-  float ambient = ambientIntensity * ambientDayNight * vSkyLight;
-
-  // Final lighting
-  float lighting = ambient + directional;
-  vec3 finalColor = texColor.rgb * lighting;
+  // Sun and fill from the sky light table, as the terrain (openspec sky-lighting)
+  vec3 directional = skySun(vSunHeight) * meshDiffuse * directionalIntensity * vSkyLight;
+  vec3 ambient = skyFill(vSunHeight) * ambientIntensity * vSkyLight;
+  vec3 finalColor = texColor.rgb * (ambient + directional);
 
   // Add specular highlight for glass shininess
   vec3 reflectDir = reflect(-sunDirection, vNormal);

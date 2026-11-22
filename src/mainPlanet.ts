@@ -6,7 +6,8 @@ import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
 import { PlanetTreeManager, FloraTreeManager, FloraSpecies, EarthTreeSpecies, standSpecies } from './planet/Tree';
 import { HexBlockType } from './shared/blockTypes';
-import { Atmosphere, createEarthAtmosphere, createAtmosphere } from './planet/Atmosphere';
+import { Atmosphere, createEarthAtmosphere, createAtmosphere, skyParamsFor } from './planet/Atmosphere';
+import { skyLightTexture } from './planet/SkyLightTexture';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { MACHINE_KIND_OF } from './config/PowerConfig';
@@ -59,6 +60,11 @@ function startWithRocket(): boolean {
  * Calculate the sun direction for a given planet position.
  * Returns a normalized vector pointing FROM the planet center TO the sun.
  */
+/** Sea level: where people stand, and what the sun sets behind */
+function groundRadiusOf(planet: Planet): number {
+  return planet.depthToRadius(planet.getSeaLevelDepth());
+}
+
 function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition: THREE.Vector3): THREE.Vector3 {
   return sunPosition.clone().sub(planetCenter).normalize();
 }
@@ -179,6 +185,10 @@ class PlanetGame {
         }
       );
       this.planets.set(bodyConfig.id, planet);
+      // Its sky light: sun and fill from its own atmosphere, or none (openspec sky-lighting)
+      planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
+        ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
+        : null));
     }
 
     // Things placed on a planet ride it round its orbit: the object
@@ -353,6 +363,7 @@ class PlanetGame {
       // Pass sun direction calculated from Earth's position to the sun
       const earthSunDirForTrees = calculateSunDirectionForPlanet(this.earth.center, this.sunPosition);
       this.treeManager = new PlanetTreeManager(planetObjectScene(this.engine.scene), earthSunDirForTrees);
+      this.treeManager.setSkyLight(this.earth.getSkyLight());
 
       // Load saved game data early so removed trees are available
       // (full load happens later but we need planet data now for tree generation)
@@ -575,13 +586,14 @@ class PlanetGame {
       // Create atmosphere for Earth (if enabled)
       loadingManager.setStatus('Creating environment...');
       if (PlayerConfig.ATMOSPHERE_ENABLED) {
-        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, earthSunDir);
+        this.earthAtmosphere = createEarthAtmosphere(this.earth.radius, groundRadiusOf(this.earth), earthSunDir);
         this.earthAtmosphere.setPosition(this.earth.center);
         this.engine.scene.add(this.earthAtmosphere.getMesh());
       }
 
       // Create clouds for Earth
       this.earthClouds = createEarthClouds(this.earth.radius, earthSunDir);
+      this.earthClouds.setSkyLight(this.earth.getSkyLight());
       this.earthClouds.setPosition(this.earth.center);
       this.engine.scene.add(this.earthClouds.getGroup());
 
@@ -1138,7 +1150,7 @@ class PlanetGame {
   private addAtmosphere(id: string, planet: Planet): void {
     const body = getBodyConfig(id);
     if (!body?.hasAtmosphere || !PlayerConfig.ATMOSPHERE_ENABLED) return;
-    const atmosphere = createAtmosphere(planet.radius, calculateSunDirectionForPlanet(planet.center, this.sunPosition), body.visual.atmosphereTint);
+    const atmosphere = createAtmosphere(planet.radius, groundRadiusOf(planet), calculateSunDirectionForPlanet(planet.center, this.sunPosition), body.visual.atmosphereTint);
     atmosphere.setPosition(planet.center);
     this.engine.scene.add(atmosphere.getMesh());
     this.atmospheres.push(atmosphere);
@@ -1155,6 +1167,7 @@ class PlanetGame {
     const t0 = performance.now();
     const roster = [...new Set(Object.values(table).map(f => f!.species))] as FloraSpecies[];
     const manager = new FloraTreeManager(planetObjectScene(this.engine.scene), roster, calculateSunDirectionForPlanet(planet.center, this.sunPosition));
+    manager.setSkyLight(planet.getSkyLight());
     this.floraManagers.set(id, manager);
     const removed = new Set(gameStorage.getRemovedTrees(id).map(t => t.tileIndex));
     manager.setChunkLookup((tileIndex) => planet.getTileChunkIndex(tileIndex));

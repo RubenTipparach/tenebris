@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from './SkyLightTexture';
 import { Planet } from './Planet';
 import { HexTile } from './GoldbergPolyhedron';
 import { HexBlockType } from '../shared/blockTypes';
@@ -212,6 +213,7 @@ export class Fauna {
       if (planet && r.mesh.visible) {
         r.material.uniforms.sunDirection.value.copy(sunDirection);
         r.material.uniforms.planetCenter.value.copy(planet.center);
+        r.material.uniforms.skyLight.value = planet.getSkyLight();
       }
     }
     if (!planet || roster.length === 0) return;
@@ -752,6 +754,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uDiffuse: { value: C.sunDiffuse },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
+      ...skyLightUniforms(),
     },
     defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
     vertexShader: `
@@ -814,20 +817,20 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uniform float uAmbient;
       uniform float uNight;
       uniform float uDiffuse;
+      #include <tenebris_sky_light>
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
       varying vec3 vWorld;
       void main() {
         vec3 up = normalize(vWorld - planetCenter);
-        // Same day/night curve as the terrain and ground clutter: ambient
-        // falls to uNight on the night side, so creatures don't glow (unless
-        // they really do: aGlow * uGlow)
+        // The terrain's sky light (openspec sky-lighting): sun and fill by
+        // this spot's sun height, so creatures sit in the same light (and
+        // don't glow at night unless they really do: aGlow * uGlow)
         float facing = dot(up, sunDirection);
-        float day = smoothstep(-0.1, 0.2, facing);
-        float ambient = uAmbient * mix(uNight, 1.0, smoothstep(-0.1, 0.3, facing));
+        vec3 ambient = uAmbient * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        vec3 lit = vColor * (ambient + uDiffuse * diff * day);
+        vec3 lit = vColor * (ambient + uDiffuse * diff * skySun(facing));
         gl_FragColor = vec4(lit + vColor * vGlow * uGlow, 1.0);
       }
     `,

@@ -5,6 +5,7 @@ precision highp float;
 
 uniform vec3 planetCenter;
 uniform float planetRadius;
+uniform float shadowRadius;      // the ground the sun sets behind (sea level)
 uniform float atmosphereRadius;
 uniform vec3 sunDirection;
 uniform vec3 viewerPosition;
@@ -154,7 +155,7 @@ void main() {
     opticalDepthM += segmentDepthM;
 
     // Check if this point can see the sun
-    vec2 sunPlanetHit = raySphereIntersect(samplePos, sunDir, planetCenter, planetRadius);
+    vec2 sunPlanetHit = raySphereIntersect(samplePos, sunDir, planetCenter, shadowRadius);
     if (sunPlanetHit.x > 0.0) continue; // In shadow
 
     // Find distance to atmosphere edge toward sun

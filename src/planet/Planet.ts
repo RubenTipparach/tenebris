@@ -8,6 +8,7 @@ import { TilesetConfig, LodColorsConfig, DEFAULT_LOD_COLORS } from '../config/So
 import { profiler } from '../engine/Profiler';
 import planetVert from '../shaders/planet/planet.vert?raw';
 import planetFrag from '../shaders/planet/planet.frag?raw';
+import { airlessSkyLight, skyLightUniforms } from './SkyLightTexture';
 import {
   buildChunkGeometryImmediate,
   createBufferGeometryFromData,
@@ -92,6 +93,8 @@ export class Planet {
   }
   private columns: Map<number, PlanetColumn> = new Map();
   private meshBuilder: HexBlockMeshBuilder;
+  // Sun and fill by sun height (openspec sky-lighting); airless until the planet's own is set
+  private skyLight: THREE.Texture = airlessSkyLight();
   private scene: THREE.Scene;
   private frustum: THREE.Frustum = new THREE.Frustum();
   private projScreenMatrix: THREE.Matrix4 = new THREE.Matrix4();
@@ -2368,7 +2371,8 @@ export class Planet {
           sunDirection: { value: this.sunDirection.clone() }, // Uses stored sun direction
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
+          darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+          ...skyLightUniforms(this.skyLight),
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,
@@ -2601,7 +2605,8 @@ export class Planet {
         sunDirection: { value: this.sunDirection.clone() }, // Use actual sun direction
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT }
+        darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
+        ...skyLightUniforms(this.skyLight),
       },
       vertexShader: planetVert,
       fragmentShader: planetFrag,
@@ -5901,6 +5906,23 @@ export class Planet {
   /** Direction to the sun (world space; planets don't spin, so it is also planet-local). */
   public getSunDirection(): THREE.Vector3 {
     return this.sunDirection;
+  }
+
+  /** The planet's sky light table (openspec sky-lighting): its terrain lights from it */
+  public getSkyLight(): THREE.Texture {
+    return this.skyLight;
+  }
+
+  public setSkyLight(tex: THREE.Texture): void {
+    this.skyLight = tex;
+    this.meshBuilder.setSkyLight(tex);
+    // LOD materials already built read it too
+    for (const root of [this.lodMesh, this.intermediateLODMesh]) {
+      root?.traverse((o: THREE.Object3D) => {
+        const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+        if (m?.uniforms?.skyLight) m.uniforms.skyLight.value = tex;
+      });
+    }
   }
 
   public getBlockHeight(): number {

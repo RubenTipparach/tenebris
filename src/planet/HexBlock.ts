@@ -9,6 +9,7 @@ import waterVert from '../shaders/water/water.vert';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
+import { airlessSkyLight, skyLightUniforms } from './SkyLightTexture';
 import iceVert from '../shaders/ice/ice.vert';
 import iceFrag from '../shaders/ice/ice.frag';
 import glassVert from '../shaders/glass/glass.vert';
@@ -147,6 +148,8 @@ export class HexBlockMeshBuilder {
   private terrainMaterials: THREE.ShaderMaterial[] = [];
   private sunDirection: THREE.Vector3 = new THREE.Vector3(1, 0.5, 0.3).normalize();
   private planetCenter: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+  // The planet's sky light (SkyLightTexture): sun and fill by the sun's height
+  private skyLight: THREE.Texture | null = null;
 
   constructor() {
     this.textureLoader = new THREE.TextureLoader();
@@ -160,6 +163,17 @@ export class HexBlockMeshBuilder {
     }
     for (const mat of this.terrainMaterials) {
       mat.uniforms.sunDirection.value.copy(this.sunDirection);
+    }
+  }
+
+  /** The planet's sky light table (sun and fill by sun height); terrain lights from it */
+  public setSkyLight(tex: THREE.Texture): void {
+    this.skyLight = tex;
+    const all = new Set<THREE.Material>([...this.terrainMaterials, ...this.materials.values()]);
+    if (this.waterShaderMaterial) all.add(this.waterShaderMaterial);
+    for (const mat of all) {
+      const u = (mat as THREE.ShaderMaterial).uniforms;
+      if (u?.skyLight) u.skyLight.value = tex;
     }
   }
 
@@ -314,6 +328,7 @@ export class HexBlockMeshBuilder {
           planetCenter: { value: this.planetCenter.clone() },
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
           // Underwater uniforms
           waterLevel: { value: 0.0 }, // Set by Planet based on sea level
           isUnderwater: { value: 0.0 },
@@ -399,6 +414,7 @@ export class HexBlockMeshBuilder {
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
         opacity: { value: 0.5 }, // 50% transparent
         specularPower: { value: 64.0 }, // Sharp specular highlight
         specularStrength: { value: 0.6 }, // Medium specular intensity
@@ -428,6 +444,7 @@ export class HexBlockMeshBuilder {
         planetCenter: { value: this.planetCenter.clone() },
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+        ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
         specularPower: { value: 128.0 }, // Sharper specular highlight for glass
         specularStrength: { value: 0.8 }, // Stronger specular intensity
         // Underwater uniforms
@@ -498,6 +515,7 @@ export class HexBlockMeshBuilder {
         aboveWaterFogFar: { value: PlayerConfig.ABOVE_WATER_FOG_FAR },
         isUnderwater: { value: 0.0 },
         planetCenter: { value: new THREE.Vector3(0, 0, 0) },
+        ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
         textureStrength: { value: PlayerConfig.WATER_TEXTURE_STRENGTH },
         scrollSpeed: { value: PlayerConfig.WATER_SCROLL_SPEED },
         causticStrength: { value: PlayerConfig.WATER_CAUSTIC_STRENGTH },
@@ -531,6 +549,7 @@ export class HexBlockMeshBuilder {
           planetCenter: { value: this.planetCenter.clone() },
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
           // Underwater uniforms
           waterLevel: { value: 0.0 }, // Set by Planet based on sea level
           isUnderwater: { value: 0.0 },

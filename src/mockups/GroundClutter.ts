@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { skyLightUniforms } from '../planet/SkyLightTexture';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
@@ -91,6 +92,7 @@ export class GroundClutter {
       mat.uniforms.time.value = this.time;
       mat.uniforms.sunDirection.value.copy(sunDirection);
       if (planet) mat.uniforms.planetCenter.value.copy(planet.center);
+      if (planet) mat.uniforms.skyLight.value = planet.getSkyLight();
     }
     const show = !!planet;
     this.tufts.visible = show;
@@ -374,6 +376,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       time: { value: 0 },
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
+      ...skyLightUniforms(),
     },
     defines: tuft ? { TUFT: 1 } : {},
     side: tuft ? THREE.DoubleSide : THREE.FrontSide,
@@ -408,6 +411,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vWorld;
+      #include <tenebris_sky_light>
       void main() {
         vec3 c = vColor;
         #ifdef TUFT
@@ -416,13 +420,12 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
           c *= t.rgb;
         #endif
         vec3 up = normalize(vWorld - planetCenter);
-        // Same day/night curve as the terrain (terrain.vert/.frag): ambient
-        // falls to 10% on the night side, so tufts and rocks don't glow
+        // The terrain's sky light (openspec sky-lighting): sun and fill by
+        // this spot's sun height, so tufts and rocks sit in the same light
         float facing = dot(up, sunDirection);
-        float day = smoothstep(-0.1, 0.2, facing);
-        float ambient = ${AMBIENT.toFixed(3)} * mix(0.1, 1.0, smoothstep(-0.1, 0.3, facing));
+        vec3 ambient = ${AMBIENT.toFixed(3)} * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        gl_FragColor = vec4(c * (ambient + 0.6 * diff * day), 1.0);
+        gl_FragColor = vec4(c * (ambient + 0.6 * diff * skySun(facing)), 1.0);
       }
     `,
   });
