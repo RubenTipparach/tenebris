@@ -50,7 +50,7 @@ And the jungle moons' blocks (public/textures/alien/<moon>_<block>.png):
   The ground tops' sides are the moon's own soil under a lip.
 
 And the industry resource blocks (public/textures/resources/*.png, all faces):
-  clay         Earth's shore clay: wet ochre-tan clay, trowel smears, a crack
+  clay         Earth's shore clay: terracotta plates with lit scalloped lips
   oil_sand     dark tar-soaked sand with glossy tar beads
   ore_uranium  dark rock with green uraninite nodules
 
@@ -666,10 +666,15 @@ def jungle_moons():
 # ---- Industry resources (openspec industry-and-nuclear) ---------------------
 
 RES = {
-    # wet riverbank clay: one warm ochre-tan ramp (Pale Blue Dot's 'sand'
-    # ramp plus its deep brown). Browner and duller than Earth's red dirt,
-    # mid-value where Earth's sand is near-white, warm where stone is grey
-    'clay': R('#41322c', '#725244', '#ab8465', '#cfaa81', '#eab798'),
+    # terracotta clay (the owner's photo): one burnt-sienna-to-orange ramp.
+    # The face tone #c56d25 is more orange and more even than Earth's dirt
+    # (red-brown #742f29 / #ab5236 noise with pink #ff856d specks), so the
+    # two read apart beside each other; mid-value, saturated and warm where
+    # sand is near-white, stone grey, grass green and water blue. #a8633e is
+    # the face's second step (the soft shade where a plate comes out from
+    # under the lip above), #8d4526 the shadow under a lip, #733126 its
+    # deepest tuck, #e69d69 the crisp lit ridge on each lip
+    'clay': R('#733126', '#8d4526', '#a8633e', '#c56d25', '#e69d69'),
     'tarsand': R('#010000', '#161612', '#2c2c25', '#41322c', '#725244'),
     'tar': R('#010000', '#011c34', '#1f3b52'),
     'urock': R('#161612', '#2c2c25', '#434137', '#a09f91'),
@@ -678,34 +683,36 @@ RES = {
 
 
 # Earth's shore clay, placed pixel by pixel (a ramp index per pixel, 0 dark
-# .. 4 light). Smooth body tone with big flat areas (clay is plastic, not
-# grainy); three trowel smears, each a soft mound with its lit cap on the
-# top left and a shadow crescent on the bottom right, the other sides
-# melting into the body (no outline, so nothing reads as a tile or a cobble);
-# a wet gloss on the two big smears; one short drying crack. The smears run
-# across the tile edges, so it tiles seamlessly.
+# .. 4 light), drawn from the owner's terracotta photo: three big smooth
+# plates, each a third to half the tile, overlapping like smeared clay.
+# Each plate's rounded, scalloped edge is a 1 px lip: a crisp bright ridge
+# (4) all along it, the shadow (1, its deepest pixel 0) tucked under it on
+# the bottom / right where it lies over the plate below, then one row of the
+# face's darker step (2) where that plate comes out from under it. The faces
+# are flat (3) - no grit, no specks - with two faint hairline cracks (2).
+# The plates run across the tile edges, so it tiles seamlessly.
 CLAY_PIXELS = '''
-2222222222222222
-2233333322222222
-3334422222222222
-3332222222122222
-3222222211122222
-2222211112222222
-2222222222222222
-2222222222222222
-2210222222222222
-2222002222222222
-2222231222233322
-2222222222342222
-2222222223222221
-2222222222222211
-3332222222211113
-2211122222222222
+3413333343333322
+4333333334333334
+1333333333444441
+3333233333110113
+4333323333322233
+3433323333334133
+3433333333334133
+3343333333343333
+3334433334413333
+3331144441133233
+3334110114333323
+3334132234333333
+3343333333433333
+3413333333344333
+4133333433311444
+1413333343333101
 '''.split()
 
 
 def res_clay(rng):
-    """Earth's shore clay: wet, smooth ochre-tan riverbank clay, trowel smears, one drying crack"""
+    """Earth's shore clay: terracotta, big overlapping smooth plates with lit scalloped lips"""
     # the old drawing's rng draws, kept so oil sand and uranium ore (drawn
     # after it from the same rng) stay byte-identical
     t = Tile(RES['clay'], 2)
