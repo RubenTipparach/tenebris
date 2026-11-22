@@ -50,7 +50,7 @@ And the jungle moons' blocks (public/textures/alien/<moon>_<block>.png):
   The ground tops' sides are the moon's own soil under a lip.
 
 And the industry resource blocks (public/textures/resources/*.png, all faces):
-  clay         Earth's shore clay: grey-brown slabs with drying cracks
+  clay         Earth's shore clay: wet ochre-tan clay, trowel smears, a crack
   oil_sand     dark tar-soaked sand with glossy tar beads
   ore_uranium  dark rock with green uraninite nodules
 
@@ -666,7 +666,10 @@ def jungle_moons():
 # ---- Industry resources (openspec industry-and-nuclear) ---------------------
 
 RES = {
-    'clay': R('#41322c', '#725244', '#a09f91', '#92a3b2', '#bfcad7'),
+    # wet riverbank clay: one warm ochre-tan ramp (Pale Blue Dot's 'sand'
+    # ramp plus its deep brown). Browner and duller than Earth's red dirt,
+    # mid-value where Earth's sand is near-white, warm where stone is grey
+    'clay': R('#41322c', '#725244', '#ab8465', '#cfaa81', '#eab798'),
     'tarsand': R('#010000', '#161612', '#2c2c25', '#41322c', '#725244'),
     'tar': R('#010000', '#011c34', '#1f3b52'),
     'urock': R('#161612', '#2c2c25', '#434137', '#a09f91'),
@@ -674,13 +677,42 @@ RES = {
 }
 
 
+# Earth's shore clay, placed pixel by pixel (a ramp index per pixel, 0 dark
+# .. 4 light). Smooth body tone with big flat areas (clay is plastic, not
+# grainy); three trowel smears, each a soft mound with its lit cap on the
+# top left and a shadow crescent on the bottom right, the other sides
+# melting into the body (no outline, so nothing reads as a tile or a cobble);
+# a wet gloss on the two big smears; one short drying crack. The smears run
+# across the tile edges, so it tiles seamlessly.
+CLAY_PIXELS = '''
+2222222222222222
+2233333322222222
+3334422222222222
+3332222222122222
+3222222211122222
+2222211112222222
+2222222222222222
+2222222222222222
+2210222222222222
+2222002222222222
+2222231222233322
+2222222222342222
+2222222223222221
+2222222222222211
+3332222222211113
+2211122222222222
+'''.split()
+
+
 def res_clay(rng):
-    """Earth's shore clay: smooth grey-brown slabs, drying cracks, a few wet smears"""
+    """Earth's shore clay: wet, smooth ochre-tan riverbank clay, trowel smears, one drying crack"""
+    # the old drawing's rng draws, kept so oil sand and uranium ore (drawn
+    # after it from the same rng) stay byte-identical
     t = Tile(RES['clay'], 2)
     plates(t, rng, RES['clay'][1:4], 8, RES['clay'][0])
     cushions(t, rng, RES['clay'], 4, [3], ((3, 1), (4, 1), (2, 1)))
     specks(t, rng, RES['clay'][4], 3)
-    return t.px
+    return [[RES['clay'][int(c)] for c in row] for row in CLAY_PIXELS]
 
 
 def res_oil_sand(rng):
