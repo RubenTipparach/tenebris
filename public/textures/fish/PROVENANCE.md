@@ -10,3 +10,5 @@
   `violet_gar` (Mirewood): drawn by this repo's `scripts/gen-item-icons.py`
   (`fish_icon`, PICO-8 colours matching their swimming models in
   `src/config/FishRosters.ts`).
+- `sprat` (Sequoia's glimmer sprat, openspec underwater-life): drawn by the
+  same `fish_icon` in `scripts/gen-item-icons.py`.

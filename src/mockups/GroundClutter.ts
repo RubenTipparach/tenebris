@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { skyLightUniforms } from '../planet/SkyLightTexture';
+import { torchLightUniforms } from '../planet/TorchLightUniforms';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { getAssetPath } from '../utils/assetPath';
@@ -99,10 +100,10 @@ export class GroundClutter {
 
   /**
    * planet: the world the player stands on (null in space); body: its config
-   * (its sea flora table); cameraUnderwater: fogs the sea plants like the terrain.
+   * (its sea flora table).
    */
   public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3,
-    body?: CelestialBodyConfig, cameraUnderwater = false): void {
+    body?: CelestialBodyConfig): void {
     if (!this.enabled) return;
     if (body !== this.seaBody) { this.seaBody = body; this.lastPlanet = null; }
     this.time += dt;
@@ -113,7 +114,7 @@ export class GroundClutter {
       if (planet) mat.uniforms.planetCenter.value.copy(planet.center);
       if (planet) mat.uniforms.skyLight.value = planet.getSkyLight();
     }
-    this.sea.setFrame(this.time, planet, sunDirection, cameraUnderwater);
+    this.sea.setFrame(this.time, planet, sunDirection);
     const show = !!planet;
     this.tufts.visible = show;
     this.rocks.visible = show;
@@ -400,6 +401,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
       ...skyLightUniforms(),
+      ...torchLightUniforms(),
     },
     defines: tuft ? { TUFT: 1 } : {},
     side: tuft ? THREE.DoubleSide : THREE.FrontSide,
@@ -435,6 +437,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
       varying vec3 vNormal;
       varying vec3 vWorld;
       #include <tenebris_sky_light>
+      #include <tenebris_torch_light>
       void main() {
         vec3 c = vColor;
         #ifdef TUFT
@@ -448,7 +451,7 @@ function makeMaterial(tuft: boolean): THREE.ShaderMaterial {
         float facing = dot(up, sunDirection);
         vec3 ambient = ${AMBIENT.toFixed(3)} * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
-        gl_FragColor = vec4(c * (ambient + 0.6 * diff * skySun(facing)), 1.0);
+        gl_FragColor = vec4(c * (ambient + 0.6 * diff * skySun(facing)) + torchGlow(c, vWorld, facing), 1.0);
       }
     `,
   });

@@ -28,9 +28,10 @@ export const DEPOSITS = {
 } satisfies Record<string, Deposit>;
 
 /**
- * Clay on a body's shores (Earth): beach tiles and shallow beds whose
- * low-frequency noise is above `threshold` turn from sand to clay, top and
- * soil layer, in broad patches.
+ * Clay on a body's shores (Earth), in broad low-frequency noise patches
+ * (above `threshold`): shallow sea beds turn to clay top and soil layer, and
+ * beaches keep their sand on top with clay in the layer under it - so every
+ * shore reads as sand and the clay is dug from the water or under the beach.
  */
 export interface ShoreClay {
   scale: number;       // noise frequency (low: big patches)

@@ -1,3 +1,5 @@
+import { setUnderwaterLook } from './planet/UnderwaterLook';
+import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
@@ -20,7 +22,8 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, RocketState, ROCKET_CONFIG } from './rocket';
 import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
-import { ItemType, ITEM_DATA } from './player/Inventory';
+import { ItemType, ITEM_DATA, toolOf } from './player/Inventory';
+import { toolIndexFor } from './player/Tools';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
@@ -92,8 +95,6 @@ class PlanetGame {
   private atmospheres: Atmosphere[] = [];
   private isReady: boolean = false;
   private elapsedTime: number = 0;
-  private waterUpdateTimer: number = 0;
-  private readonly WATER_UPDATE_INTERVAL = 5.0; // Update water every 5 seconds
 
   // Rocket flight system
   private rocketFlightManager: RocketFlightManager | null = null;
@@ -188,6 +189,11 @@ class PlanetGame {
         }
       );
       this.planets.set(bodyConfig.id, planet);
+      // Its water meshes join the engine's depth pre-pass (depth through water, every planet)
+      planet.setWaterMeshCallback((mesh, isAdd) => {
+        if (isAdd) this.engine.registerWaterMesh(mesh);
+        else this.engine.unregisterWaterMesh(mesh);
+      });
       // Its sky light: sun and fill from its own atmosphere, or none (openspec sky-lighting)
       planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
         ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
@@ -419,6 +425,10 @@ class PlanetGame {
           emitGameEvent('caughtOn', this.player.getCurrentPlanet()?.getName() ?? 'earth');
         }
         return left === 0;
+      }, () => {
+        // Each cast is one use of the rod in hand (openspec tools-and-toolbox)
+        const rod = toolIndexFor(this.blockInteraction.getInventory(), 'rod');
+        if (rod !== null) this.blockInteraction.wearSlot(rod);
       });
 
       // Give block interaction access to tree manager for mining trees
@@ -619,21 +629,6 @@ class PlanetGame {
       // Set sun direction for Earth (other planets done in deferred init after they're loaded)
       this.earth.setSunDirection(earthSunDir);
       loadingManager.completeStep('environment');
-
-      // Register water shader material with engine for depth-based fog
-      const waterMaterial = this.earth.getWaterShaderMaterial();
-      if (waterMaterial) {
-        this.engine.registerWaterMaterial(waterMaterial);
-      }
-
-      // Register water mesh callback for efficient depth pre-pass (avoids scene.traverse per frame)
-      this.earth.setWaterMeshCallback((mesh, isAdd) => {
-        if (isAdd) {
-          this.engine.registerWaterMesh(mesh);
-        } else {
-          this.engine.unregisterWaterMesh(mesh);
-        }
-      });
 
       // Setup settings menu
       this.setupSettingsMenu();
@@ -867,10 +862,15 @@ class PlanetGame {
       for (const [id, planet] of this.planets) {
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; onId = id; break; }
       }
+      const onSun = calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition);
       // Its body config carries the sea flora table (openspec ocean-life)
-      this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition),
-        onId ? getBodyConfig(onId) : undefined, this.player.getIsInWater());
+      this.groundClutter.update(deltaTime, pos, on, onSun,
+        onId ? getBodyConfig(onId) : undefined);
+      // Machines, chests and launch pads sit in the same light as the ground (MachineLight)
+      const lit = on ?? this.earth;
+      setMachineLight(lit.center, onSun, lit.getSkyLight());
+      // Sea plants and creatures fog and dim like the seabed (UnderwaterLook)
+      setUnderwaterLook(this.player.getIsInWater(), on ? on.getSeaSurfaceRadius() : -1);
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)
@@ -931,8 +931,9 @@ class PlanetGame {
       this.rightClickHeld = input.rightClick;
 
       // Fishing takes the mouse buttons while the rod is in hand
-      const holdingRod = isGameActive &&
-        this.blockInteraction.getInventory().getSelectedItem().itemType === ItemType.FISHING_ROD;
+      // The rod in hand: a rod in the selected hotbar slot, or the toolbox rod taken out (0)
+      const inv = this.blockInteraction.getInventory();
+      const holdingRod = isGameActive && (toolOf(inv.getSelectedItem().itemType)?.kind === 'rod' || inv.isRodOut());
       const fishing = this.fishing?.update(
         deltaTime, holdingRod, this.player.getCurrentPlanet(), this.player.position,
         input.leftClick, input.rightClick
@@ -988,6 +989,9 @@ class PlanetGame {
     const isUnderwater = this.player.getIsInWater();
     this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
     for (const [id, planet] of this.planets) {
+      // every planet's water material gets the depth texture (registering twice is a no-op)
+      const waterMaterial = planet.getWaterShaderMaterial();
+      if (waterMaterial) this.engine.registerWaterMaterial(waterMaterial);
       if (planet !== this.earth && planet.isInitialTerrainReady() && getBodyConfig(id)?.terrain.hasWater) {
         planet.updateWaterShader(this.elapsedTime, isUnderwater);
       }
@@ -1005,16 +1009,8 @@ class PlanetGame {
       this.earthClouds.update(deltaTime, worldMs === null ? null : worldMs / 1000);
     }
 
-    // Periodic water flow update (every 5 seconds)
-    this.waterUpdateTimer += deltaTime;
-    if (this.waterUpdateTimer >= this.WATER_UPDATE_INTERVAL) {
-      this.waterUpdateTimer = 0;
-      const nearbyTiles = this.earth.getVisibleTileIndices();
-      const waterFilled = this.earth.updateWaterFlow(nearbyTiles);
-      if (waterFilled > 0) {
-        console.log(`[Water update] Fixed ${waterFilled} water blocks in ${nearbyTiles.size} tiles`);
-      }
-    }
+    // Water flow (openspec water-flow): every planet ticks its own liquid
+    for (const planet of this.planets.values()) planet.updateLiquid(deltaTime);
 
     // Update tree visibility based on visible tiles/chunks
     // Trees are culled to match LOD chunk visibility - only show trees on visible terrain
@@ -1344,6 +1340,9 @@ class PlanetGame {
         MusicManager.setEnabled(musicToggle.checked);
       });
     }
+
+    // Screenshot button: the game view without the menu over it (as F9)
+    document.getElementById('screenshot-btn')?.addEventListener('click', () => this.engine.saveScreenshot());
 
     // Handle play music button
     const playMusicBtn = document.getElementById('play-music-btn');
@@ -1765,6 +1764,7 @@ class PlanetGame {
       rocketPowered: false,
       inGravityWell: well !== null,
       bodyBreathable: bodyId !== null && getBodyConfig(bodyId)?.breathable === true,
+      jetpack: this.player.getJetpackEnabled(),
     };
   }
 

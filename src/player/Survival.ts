@@ -29,6 +29,8 @@ export interface ExposureInput {
   inGravityWell: boolean;
   /** That body's air can be breathed (CelestialBodyConfig.breathable). */
   bodyBreathable: boolean;
+  /** The debug jetpack is on: like the rest of debug mode, air is not checked. */
+  jetpack?: boolean;
 }
 
 /**
@@ -37,6 +39,7 @@ export interface ExposureInput {
  * powered cabin is safe anywhere. Under water is not exposure (yet).
  */
 export function isExposed(i: ExposureInput): boolean {
+  if (i.jetpack) return false;
   if (i.inRocket) return !i.rocketPowered;
   if (!i.inGravityWell) return true;
   return !i.bodyBreathable;

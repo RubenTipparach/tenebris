@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -116,11 +117,9 @@ export class HydroGeneratorManager {
     this.hydroGeneratorMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -329,7 +328,7 @@ export class HydroGeneratorManager {
       return null;
     }
 
-    const instanceMaterial = this.hydroGeneratorMaterial.clone();
+    const instanceMaterial = withMachineLight(this.hydroGeneratorMaterial.clone());
     const mesh = new THREE.Mesh(this.hydroGeneratorGeometry, instanceMaterial);
 
     // Position above ground (on top of water)
@@ -417,7 +416,7 @@ export class HydroGeneratorManager {
       return null;
     }
 
-    const instanceMaterial = this.hydroGeneratorMaterial.clone();
+    const instanceMaterial = withMachineLight(this.hydroGeneratorMaterial.clone());
     const mesh = new THREE.Mesh(this.hydroGeneratorGeometry, instanceMaterial);
     mesh.position.copy(savedPosition);
 
@@ -494,25 +493,6 @@ export class HydroGeneratorManager {
 
   public getHydroGeneratorAtTile(tileIndex: number): PlacedHydroGenerator | undefined {
     return this.hydroGenerators.find(h => h.tileIndex === tileIndex);
-  }
-
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const hydroGenerator of this.hydroGenerators) {
-      let totalLight = 0;
-      for (const torchPos of torchPositions) {
-        const distance = hydroGenerator.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-      totalLight = Math.min(1.5, totalLight);
-      const material = hydroGenerator.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-    }
   }
 
   public exportForSave(): Array<{

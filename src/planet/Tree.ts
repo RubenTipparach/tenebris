@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { torchLightUniforms } from './TorchLightUniforms';
 import { skyLightUniforms } from './SkyLightTexture';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -1540,6 +1541,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
       treeAtlas: { value: treeAtlas() },
       ...skyLightUniforms(),
+      ...torchLightUniforms(),
     },
     vertexShader: `
       attribute float texCell;
@@ -1571,6 +1573,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       uniform float ambientIntensity;
       uniform float directionalIntensity;
       #include <tenebris_sky_light>
+      #include <tenebris_torch_light>
 
       varying vec3 vColor;
       varying vec3 vNormal;
@@ -1611,6 +1614,8 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         // Glowing parts (alien species) shine with their own colour, day
         // and night alike; 0 everywhere on ordinary trees
         finalColor += tinted * vGlow;
+        // Torches nearby, as on the ground under the tree
+        finalColor += torchGlow(tinted, vWorldPosition, planetSunFacing);
         gl_FragColor = vec4(finalColor, 1.0);
       }
     `,

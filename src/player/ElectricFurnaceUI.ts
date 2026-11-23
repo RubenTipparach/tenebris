@@ -1,4 +1,4 @@
-import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, halfUp } from './Inventory';
 import { PlacedElectricFurnace, ELECTRIC_SMELTING_RECIPES } from '../planet/ElectricFurnace';
 import { isElectricAdditive } from '../config/SmeltingRecipes';
 import { recipeLockedLabel, recipeOpen } from './RecipeGate';
@@ -481,7 +481,7 @@ export class ElectricFurnaceUI {
   private handleRightClick(slotType: string): void {
     if (!this.currentFurnace) return;
     const { count } = this.getStock(slotType);
-    this.takeBack(slotType, slotType === this.SLOT_OUTPUT ? Math.ceil(count / 2) : 1);
+    this.takeBack(slotType, slotType === this.SLOT_OUTPUT ? halfUp(count) : 1);
   }
 
   // Shift click: empty the slot, or (an empty input slot) load the selection

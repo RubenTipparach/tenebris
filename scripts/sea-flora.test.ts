@@ -2,7 +2,7 @@
 // Run: npx tsx scripts/sea-flora.test.ts
 import { SOLAR_SYSTEM, assertFloraRostersDisjoint, CelestialBodyConfig } from '../src/config/SolarSystemConfig';
 import { SEA_FLORA, SEA_FLORA_SPECIES, SeaFloraSpecies } from '../src/config/SeaFloraConfig';
-import { bodyGrowsSeaFlora, seabedOf, pickSeaZone, planSeaTile, waterWarmth, seaPatch } from '../src/planet/SeaFloraZones';
+import { bodyGrowsSeaFlora, seabedOf, pickSeaZone, planSeaTile, waterWarmth, seaPatch, rockyBed, neighbourBed } from '../src/planet/SeaFloraZones';
 import { HexBlockType } from '../src/shared/blockTypes';
 import { PlayerConfig } from '../src/config/PlayerConfig';
 
@@ -148,4 +148,53 @@ ok(species.every(sp => (perSpecies.get(sp) ?? 0) > 0), 'every species gets place
   const a = planSeaTile(earth, 77, SEED, dirs[100], { bed: 20, surface: 22 }, 90, 91.9);
   const b = planSeaTile(earth, 77, SEED + 1, dirs[100], { bed: 20, surface: 22 }, 90, 91.9);
   ok(JSON.stringify(a) !== JSON.stringify(b), 'another world seed places plants differently');
+}
+
+// ---- underwater-life: wavy plants and anemones on every sea world, its own
+const SEA_WORLDS = ['earth', 'sequoia', 'verdance', 'mirewood'];
+const speciesOf = (id: string) => [...new Set(body(id).seaFlora!.zones.map(z => z.species))];
+for (const id of SEA_WORLDS) {
+  const t = body(id).seaFlora!;
+  const own = speciesOf(id);
+  const role = (r: string) => own.filter(sp => SEA_FLORA_SPECIES[sp].role === r);
+  const tall = role('tallwavy'), short = role('shortwavy'), anem = role('anemone');
+  ok(tall.length >= 1 && short.length >= 1 && anem.length >= 1, `${id}: a tall wavy plant (${tall}), a short wavy plant (${short}) and an anemone (${anem})`);
+  ok([...tall, ...short].every(sp => (SEA_FLORA_SPECIES[sp].wave ?? 0) > 0 && SEA_FLORA_SPECIES[sp].sway > 0),
+    `${id}: its wavy plants carry a travelling wave`);
+  ok(tall.every(sp => !!SEA_FLORA_SPECIES[sp].reach), `${id}: its tall plants reach up the water column (kelp-style)`);
+  const minDepth = (sps: string[]) => Math.min(...t.zones.filter(z => sps.includes(z.species)).map(z => z.depth[0]));
+  ok(minDepth(tall) > minDepth(short), `${id}: tall plants start deeper (${minDepth(tall)}) than short ones (${minDepth(short)})`);
+  ok(anem.every(sp => !!SEA_FLORA_SPECIES[sp].flutter && SEA_FLORA_SPECIES[sp].cluster !== undefined && SEA_FLORA_SPECIES[sp].shape === 'anemone'),
+    `${id}: its anemones flutter and clump`);
+  ok(anem.every(sp => t.zones.some(z => z.species === sp && z.depth[1] <= 3)), `${id}: anemones grow in the shallows`);
+  // rocky beds in the shallows grow the anemone (patch at its lowest, so only the bed decides)
+  const onRock = pickSeaZone(t, 1, waterWarmth(t, dirs[0], SEED, 1), -1, true);
+  const onSilt = pickSeaZone(t, 1, waterWarmth(t, dirs[0], SEED, 1), -1, false);
+  ok(!!onRock && anem.includes(onRock.species) && !(onSilt && anem.includes(onSilt.species)),
+    `${id}: a rocky bed in the shallows grows ${onRock?.species}, flat silt does not`);
+  // its rock blocks make a bed rocky; so does a step to a neighbour, or a bank out of the water
+  const flat = { bed: 20, surface: 22 };
+  ok(rockyBed(t, { ...flat, bedBlock: t.rock![0] }, [flat, flat]) && !rockyBed(t, { ...flat, bedBlock: HexBlockType.DIRT }, [flat, flat, null])
+    && rockyBed(t, flat, [flat, { bed: 21, surface: 22 }]) && rockyBed(t, flat, [flat, 24]),
+    `${id}: rock (${t.rock}), a ledge and a bank are rocky; flat silt is not`);
+  // a tile of anemones is one clump: one spot, each within the cluster radius of it
+  const zone = t.zones.find(z => anem.includes(z.species) && z.rocky)!;
+  let clumped = true, tiles = 0;
+  for (let i = 0; i < 300; i++) {
+    const plan = planSeaTile({ ...t, zones: [zone] }, i, SEED, dirs[i], { bed: 20, surface: 22, rocky: true }, 90, 91.9);
+    if (plan.length < 2) continue;
+    tiles++;
+    const c = SEA_FLORA_SPECIES[plan[0].species].cluster!;
+    if (!plan.every(p => p.corner === plan[0].corner && p.spread === plan[0].spread && Math.hypot(...p.nudge) <= c + 1e-9)) clumped = false;
+  }
+  ok(clumped && tiles > 50, `${id}: each tile's anemones stand in one clump (${tiles} tiles)`);
+}
+{
+  // Earth's sea is its own: no species of it grows in any other sea
+  const earthSea = new Set(speciesOf('earth'));
+  ok(SEA_WORLDS.slice(1).every(id => speciesOf(id).every(sp => !earthSea.has(sp))), 'no other sea world grows an Earth sea species');
+  const sb2 = seabedOf(column(20, 24, HexBlockType.WATER, HexBlockType.STONE), MAXD);
+  ok(sb2?.bedBlock === HexBlockType.STONE, 'seabedOf reports the bed block (anemones favour rock)');
+  ok(neighbourBed(d => (d <= 26 ? HexBlockType.GRASS : HexBlockType.AIR), MAXD) === 26 && (neighbourBed(column(20, 24), MAXD) as { bed: number }).bed === 20,
+    'neighbourBed: dry land gives its top, water its seabed');
 }

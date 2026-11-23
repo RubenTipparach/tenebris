@@ -24,7 +24,9 @@ Writes, under public/textures/:
   battery pack are rocket equipment, not stack parts, so they have no part
   texture)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
-  gourami, violet gar)
+  gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
+  tools: icons/tools/<tier>_<kind>.png - pickaxe, axe and shovel in the
+  rock, copper, iron, steel and titanium tiers
 Deterministic - rerun to regenerate.
 """
 import os
@@ -606,7 +608,80 @@ JUNGLE_FISH = [
     ("peat_eel", "eel", "dgrey", "navy", "lgrey", "indigo", "black", 0, 0, {}),
     ("gourami", "fish", "blue", "navy", "lgrey", "lime", "black", 5.5, 4.4, {}),
     ("violet_gar", "fish", "indigo", "plum", "white", "pink", "black", 7.0, 2.6, {"bands": "plum"}),
+    # Sequoia's schooling fish (openspec underwater-life)
+    ("sprat", "fish", "lgrey", "blue", "white", "blue", "navy", 5.0, 2.6, {"stripe": "navy"}),
 ]
+
+
+# ---- Tools (openspec tools-and-toolbox) -------------------------------------
+# Every tool is a wooden handle on the same diagonal (bottom left to top
+# right) with its head drawn from a mask, lit from the top left like the
+# rest of the item art. `s` runs along the handle, `d` across it (positive
+# toward the top left), in diagonal steps.
+TOOL_RAMPS = {
+    "rock": ("navy", "dgrey", "dgrey", "lgrey"),
+    "copper": ("plum", "brown", "orange", "peach"),
+    "iron": ("navy", "dgrey", "lgrey", "white"),
+    "steel": ("black", "navy", "indigo", "lgrey"),
+    "titanium": ("navy", "indigo", "blue", "white"),
+}
+
+
+def _sd(x, y, ox=2, oy=13):
+    dx, dy = x - ox, y - oy
+    return (dx - dy) / 2, (-dx - dy) / 2
+
+
+def tool_icon(kind, tier):
+    px, c = _canvas()
+    handle, head = set(), set()
+    for y in range(16):
+        for x in range(16):
+            s, d = _sd(x, y)
+            if kind == "pickaxe":
+                if 0 <= s <= 8 and -0.5 <= d <= 0:
+                    handle.add((x, y))
+            elif kind == "axe":
+                if 0 <= s <= 9 and -0.5 <= d <= 0:
+                    handle.add((x, y))
+                # the blade on the top-left side, flaring toward its edge
+                if 0.5 <= d <= 4.5 and 6.5 - 0.45 * d <= s <= 8.5 + 0.45 * d:
+                    head.add((x, y))
+                if -2 <= d <= -1 and 7.5 <= s <= 8.5:
+                    head.add((x, y))     # the poll behind the handle
+            elif kind == "shovel":
+                if 4 <= s <= 11.5 and -0.5 <= d <= 0:
+                    handle.add((x, y))
+                if 11.5 <= s <= 12.5 and -1.5 <= d <= 1:
+                    handle.add((x, y))   # the grip
+                w = 2.0 * min(1.0, (s + 0.5) / 2.0)
+                if -0.5 <= s <= 4.5 and -w - 0.5 <= d <= w:
+                    head.add((x, y))
+    if kind == "pickaxe":
+        # a crescent across the top of the handle, its tips curving back
+        for y in range(16):
+            for x in range(16):
+                sp, dp = _sd(x, y)
+                if abs(dp) > 5.5:
+                    continue
+                centre = 8.5 - 0.11 * dp * dp
+                half = 1.1 * (1 - (dp / 6.5) ** 2) + 0.25
+                if abs(sp - centre) <= half:
+                    head.add((x, y))
+    dark, shade, mid, light = (c[k] for k in TOOL_RAMPS[tier])
+    for (x, y) in handle - head:
+        _, d = _sd(x, y)
+        px[y][x] = c["plum"] if d < 0 else c["brown"]
+    for (x, y) in head:
+        lit = (x - 1, y) not in head or (x, y - 1) not in head
+        shadow = (x + 1, y) not in head or (x, y + 1) not in head
+        px[y][x] = dark if lit and shadow else light if lit else shade if shadow else mid
+    if tier == "rock":
+        # knapped stone: a few darker flecks
+        for (x, y) in sorted(head):
+            if (x * 7 + y * 3) % 5 == 0 and px[y][x] == mid:
+                px[y][x] = shade
+    return px
 
 
 def write(rel, px):
@@ -710,3 +785,7 @@ if __name__ == "__main__":
     # ---- Ocean life: the jungle moons' fish (openspec ocean-life 1.2) ----
     for name, shape, body, back, belly, fin, line, length, height, extra in JUNGLE_FISH:
         write(f"fish/{name}.png", fish_icon(shape, body, back, belly, fin, line, length, height, **extra))
+    # ---- Tools (openspec tools-and-toolbox) ----
+    for tier in TOOL_RAMPS:
+        for kind in ("pickaxe", "axe", "shovel"):
+            write(f"icons/tools/{tier}_{kind}.png", tool_icon(kind, tier))

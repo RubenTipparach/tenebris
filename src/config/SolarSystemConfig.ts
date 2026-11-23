@@ -736,14 +736,18 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         hasWater: true,
         seaLevel: 12,
       },
-      // Sea flora: coral reefs in the warm shallows, seagrass meadows in the
+      // Sea flora: coral reefs in the warm shallows, beadlet anemones on
+      // the rocks (and the odd patch elsewhere), seagrass meadows in the
       // other shallows, kelp forests where the water is cool (high
       // latitude or deep). Zones in priority order, one species per bed.
       seaFlora: {
         warmth: { noiseScale: 2.5, noiseAmp: 0.15, depthCooling: 0.05 },
         patchScale: 3,
+        rock: [HexBlockType.STONE],
         zones: [
           { species: 'coral', depth: [1, 3], warmth: [0.62, 9], patch: -0.25, chance: 0.9, perTile: [2, 3] },
+          { species: 'beadletanemone', depth: [1, 3], rocky: true, chance: 0.6, perTile: [2, 3] },
+          { species: 'beadletanemone', depth: [1, 3], patch: 0.45, chance: 0.6, perTile: [2, 3] },
           { species: 'kelp', depth: [2, 20], warmth: [-9, 0.45], patch: -0.35, chance: 0.85, perTile: [1, 3] },
           { species: 'seagrass', depth: [1, 2], chance: 0.8, perTile: [4, 5] },
         ],
@@ -874,11 +878,17 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.SEQ_GRASS]: { species: 'lantern', chance: 0.3 },
       },
       floraDensity: 0.5,
-      // Sea flora: glow anemones in the shallows, sea fans deeper down
+      // Sea flora: glow anemones on the rocks and in patches of the
+      // shallows, lumen grass in the rest of them; ribbon weed forests in
+      // deep water, sea fans between them
       seaFlora: {
         patchScale: 3,
+        rock: [HexBlockType.STONE],
         zones: [
-          { species: 'glowanemone', depth: [1, 3], patch: -0.3, chance: 0.85, perTile: [2, 3] },
+          { species: 'glowanemone', depth: [1, 3], rocky: true, chance: 0.6, perTile: [2, 3] },
+          { species: 'glowanemone', depth: [1, 3], patch: 0.2, chance: 0.75, perTile: [2, 3] },
+          { species: 'lumengrass', depth: [1, 2], patch: -0.4, chance: 0.8, perTile: [4, 4] },
+          { species: 'ribbonweed', depth: [4, 20], patch: -0.15, chance: 0.85, perTile: [1, 3] },
           { species: 'seafan', depth: [3, 20], patch: -0.2, chance: 0.75, perTile: [1, 2] },
         ],
       },
@@ -977,7 +987,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
-      breathable: false,
+      breathable: true,   // inhabited: a city world has air
       intermediateLODAltitude: 70,
       highLODAltitude: 120,
       distantLODAltitude: 170,
@@ -1076,12 +1086,18 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.VERD_BANK]: { species: 'fanpalm', chance: 0.6 },
       },
       floraDensity: 3.5,
-      // Reed beds in the shallowest water, lily pads on the surface past them
+      // Jade anemones on the rocks (and in a few patches), reed beds in the
+      // shallowest water, lily pads on the surface past them, streamer weed
+      // trailing up from the deeper water
       seaFlora: {
         patchScale: 4,
+        rock: [HexBlockType.VERD_ROCK],
         zones: [
+          { species: 'jadeanemone', depth: [1, 3], rocky: true, chance: 0.6, perTile: [2, 3] },
+          { species: 'jadeanemone', depth: [1, 2], patch: 0.55, chance: 0.6, perTile: [2, 3] },
           { species: 'reedbed', depth: [1, 1], patch: -0.3, chance: 0.85, perTile: [3, 4] },
           { species: 'lilypad', depth: [2, 3], patch: -0.2, chance: 0.8, perTile: [1, 3] },
+          { species: 'streamerweed', depth: [3, 20], patch: -0.3, chance: 0.85, perTile: [1, 3] },
         ],
       },
     }),
@@ -1097,11 +1113,17 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         [HexBlockType.MIRE_BANK]: { species: 'weepfern', chance: 0.7 },
       },
       floraDensity: 3.5,
-      // Bladderwort mats under the surface of the shallows, swamp weed deeper
+      // Mire anemones on the rocks (and in a few patches), bladderwort mats
+      // under the surface of the shallows, swamp weed deeper and bog tresses
+      // streaming up from the deepest peat
       seaFlora: {
         patchScale: 4,
+        rock: [HexBlockType.MIRE_ROCK],
         zones: [
+          { species: 'mireanemone', depth: [1, 3], rocky: true, chance: 0.6, perTile: [2, 3] },
+          { species: 'mireanemone', depth: [1, 2], patch: 0.55, chance: 0.6, perTile: [2, 3] },
           { species: 'bladderwort', depth: [1, 2], patch: -0.3, chance: 0.85, perTile: [1, 3] },
+          { species: 'bogtress', depth: [4, 20], patch: -0.3, chance: 0.85, perTile: [1, 3] },
           { species: 'swampweed', depth: [2, 20], patch: -0.25, chance: 0.85, perTile: [2, 3] },
         ],
       },

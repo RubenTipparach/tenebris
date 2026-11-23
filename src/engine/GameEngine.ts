@@ -1,3 +1,4 @@
+import { showToast } from '../utils/toast';
 import * as THREE from 'three';
 import { PlayerConfig } from '../config/PlayerConfig';
 import skyboxVert from '../shaders/skybox/skybox.vert';
@@ -60,6 +61,13 @@ export class GameEngine {
   private depthRenderTarget: THREE.WebGLRenderTarget | null = null;
   private waterMaterials: Set<THREE.ShaderMaterial> = new Set();
   private waterMeshes: Set<THREE.Mesh> = new Set(); // Cached for O(1) visibility toggle
+  // Each water material's back-face depth twin for the depth pre-pass: the
+  // pre-pass holds the nearer of the terrain and the far side of the water,
+  // so the water shader's depth tint is the water's thickness along the view
+  // ray (a sheet on a slope, a cell seen side-on), never the distance to
+  // whatever lies behind it
+  private waterBackDepth: Map<THREE.Material, THREE.ShaderMaterial> = new Map();
+  private readonly savedClearColor = new THREE.Color();
   private readonly isMobile: boolean;
 
   private updateCallbacks: ((deltaTime: number) => void)[] = [];
@@ -121,7 +129,26 @@ export class GameEngine {
         e.preventDefault();
         getTechBlocksMenu().toggle();
       }
+      // F9 saves a screenshot of the game view (the canvas only: no HUD or menus)
+      if (e.code === 'F9') {
+        e.preventDefault();
+        this.saveScreenshot();
+      }
     });
+  }
+
+  /** Save the last rendered frame as a PNG download (preserveDrawingBuffer keeps it readable) */
+  public saveScreenshot(): void {
+    const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    this.renderer.domElement.toBlob((blob) => {
+      if (!blob) { showToast('Screenshot failed', { duration: 2000 }); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `tenebris-${stamp}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      showToast(`Screenshot saved: ${a.download}`, { duration: 2000 });
+    }, 'image/png');
   }
 
   private setupLighting(): void {
@@ -271,6 +298,15 @@ export class GameEngine {
     if (!this.waterMaterials.has(material)) {
       this.waterMaterials.add(material);
       this.updateWaterMaterialUniforms(material);
+      // Same vertex shader and uniforms (waves, flow smoothing), depth only
+      this.waterBackDepth.set(material, new THREE.ShaderMaterial({
+        uniforms: material.uniforms,
+        vertexShader: material.vertexShader,
+        fragmentShader: 'void main() { gl_FragColor = vec4(0.0); }',
+        side: THREE.BackSide,
+        depthWrite: true,
+        colorWrite: false,
+      }));
     }
   }
 
@@ -347,14 +383,33 @@ export class GameEngine {
     // Render with depth pre-pass for underwater fog
     profiler.begin('Render');
 
+    // Under water the view ends in the fog colour: everything past the fog's
+    // far distance is fully fogged, so the camera's far plane comes in to it
+    // for this frame. That drops what has no underwater fog of its own (the
+    // distant LOD, sea walls, sky shells, other planets) and the clear below
+    // shows the fog colour behind it (scene.background is not drawn with
+    // autoClear off)
+    const underwater = this.isUnderwater && this.underwaterFog !== null;
+    const viewFar = this.camera.far;
+    if (underwater) {
+      this.camera.far = this.underwaterFog!.far;
+      this.camera.updateProjectionMatrix();
+    }
+    for (const material of this.waterMaterials) {
+      if (material.uniforms.cameraFar) material.uniforms.cameraFar.value = this.camera.far;
+    }
+
     // Depth pre-pass: render scene to depth buffer (hide water temporarily)
     // Uses cached waterMeshes Set for O(1) lookup instead of scene.traverse()
     if (this.depthRenderTarget && this.waterMeshes.size > 0) {
-      // Hide water meshes during depth pass - store previous visibility
-      const waterVisibility: Map<THREE.Mesh, boolean> = new Map();
+      // Water draws only its far side into the depth pass (waterBackDepth);
+      // a water mesh whose material has no twin is hidden as before
+      const swapped: Array<[THREE.Mesh, THREE.Material | THREE.Material[], boolean]> = [];
       for (const mesh of this.waterMeshes) {
-        waterVisibility.set(mesh, mesh.visible);
-        mesh.visible = false;
+        const back = this.waterBackDepth.get(mesh.material as THREE.Material);
+        swapped.push([mesh, mesh.material, mesh.visible]);
+        if (back) mesh.material = back;
+        else mesh.visible = false;
       }
 
       // Render to depth target
@@ -362,19 +417,32 @@ export class GameEngine {
       this.renderer.render(this.scene, this.camera);
       this.renderer.setRenderTarget(null);
 
-      // Restore water visibility
-      for (const mesh of this.waterMeshes) {
-        mesh.visible = waterVisibility.get(mesh) ?? true;
+      for (const [mesh, material, visible] of swapped) {
+        mesh.material = material;
+        mesh.visible = visible;
       }
     }
 
-    // Far layer, then the main scene over it with a fresh depth buffer
+    // Far layer, then the main scene over it with a fresh depth buffer;
+    // under water no far layer, the frame cleared to the fog colour
     this.renderer.autoClear = false;
-    this.renderer.clear();
-    this.renderer.render(this.farScene, this.farCamera);
-    this.renderer.clearDepth();
+    if (underwater) {
+      this.renderer.getClearColor(this.savedClearColor);
+      const alpha = this.renderer.getClearAlpha();
+      this.renderer.setClearColor(this.underwaterFog!.color, 1);
+      this.renderer.clear();
+      this.renderer.setClearColor(this.savedClearColor, alpha);
+    } else {
+      this.renderer.clear();
+      this.renderer.render(this.farScene, this.farCamera);
+      this.renderer.clearDepth();
+    }
     this.renderer.render(this.scene, this.camera);
     this.renderer.autoClear = true;
+    if (underwater) {
+      this.camera.far = viewFar;
+      this.camera.updateProjectionMatrix();
+    }
     profiler.end('Render');
 
     profiler.end('Frame Total');
@@ -393,8 +461,13 @@ export class GameEngine {
     this.isUnderwater = underwater;
 
     if (underwater) {
-      // Create and apply underwater fog
-      const fogColor = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+      // Create and apply underwater fog. The terrain and water shaders mix
+      // toward UNDERWATER_FOG_COLOR's linear value and write it as is (they
+      // do no output encoding), so the fog and the background take the
+      // colour that puts those same values on screen: everything fades into
+      // one colour, with no edge where the terrain meets the background
+      const linear = new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR);
+      const fogColor = new THREE.Color().setRGB(linear.r, linear.g, linear.b, THREE.SRGBColorSpace);
       this.underwaterFog = new THREE.Fog(
         fogColor,
         PlayerConfig.UNDERWATER_FOG_NEAR,

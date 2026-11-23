@@ -11,6 +11,9 @@ import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
 import type { AirSystem } from './AirSystem';
 import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
+import { breakSeconds, mineTimeMult, wearAt, brokeMessage } from './Tools';
+import { TOOLBOX } from '../config/ToolConfig';
+import { renderDurability, renderToolboxHud, slotTooltip } from './ToolUI';
 
 // An engine, a fuel tank and a command module on the pad: a rocket that flies
 const ENGINES = new Set<ItemType>([ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE]);
@@ -63,6 +66,7 @@ import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } fr
 import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
+import { setTorchLights } from '../planet/TorchLightUniforms';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -1056,7 +1060,7 @@ export class PlanetBlockInteraction {
             tooltipEl.className = 'item-tooltip';
             slotEl.appendChild(tooltipEl);
           }
-          tooltipEl.textContent = itemData.name;
+          tooltipEl.textContent = slotTooltip(slot);
         } else {
           if (img) {
             img.style.display = 'none';
@@ -1069,10 +1073,23 @@ export class PlanetBlockInteraction {
           if (tooltipEl) tooltipEl.remove();
         }
 
-        // Update selection
-        slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot());
+        // A worn tool's durability bar (src/player/ToolUI.ts)
+        renderDurability(slotEl as HTMLElement, slot);
+
+        // Update selection (not while the toolbox rod is out)
+        slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot() && !this.inventory.isRodOut());
       }
     });
+    renderToolboxHud(this.inventory, () => this.toggleRod());
+  }
+
+  /** Take the toolbox rod out / put it away (the 0 key, or a click on its HUD slot). */
+  public toggleRod(): void {
+    const out = this.inventory.toggleRod();
+    if (!out && this.inventory.getToolbox()[TOOLBOX.KINDS.indexOf('rod')].itemType === ItemType.NONE) {
+      showToast('No fishing rod in the toolbox', { duration: TOOLBOX.TOAST_MS });
+    }
+    this.updateHotbarUI();
   }
 
   // Apply CSS styling to show only a portion of an atlas texture
@@ -1224,6 +1241,10 @@ export class PlanetBlockInteraction {
 
   private setupBlockSelection(): void {
     document.addEventListener('keydown', (e) => {
+      if (e.key === TOOLBOX.ROD_KEY && !this.craftingSystem.isMenuOpen()) {
+        this.toggleRod();
+        return;
+      }
       const digit = parseInt(e.key);
       if (digit >= 1 && digit <= 9) {
         this.inventory.setSelectedSlot(digit - 1);
@@ -1336,26 +1357,8 @@ export class PlanetBlockInteraction {
     // Balance every cable network and run the industry machines
     this.updatePowerGrid(deltaTime);
 
-    // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
-    const torchData = this.torchManager.getTorchDataForBaking();
-    if (torchData.length > 0) {
-      const torchPositions = torchData.map(t => t.position);
-      const torchRange = torchData[0].range;
-      const torchIntensity = torchData[0].intensity;
-      this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.electricFurnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.electronicsWorkbenchManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.cookerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.copperPipeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.cableNodeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.computerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.printer3DManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.launchPadManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-    }
+    // Torch light on grass, trees, animals and machines: the nearest torches, read per pixel (TorchLightUniforms)
+    setTorchLights(this.torchManager.getTorchDataForBaking(), this.player.position);
 
     // A machine panel is open: no mining or placing behind it
     if (this.machineUI.isOpen()) { this.resetMining(); return; }
@@ -1992,9 +1995,9 @@ export class PlanetBlockInteraction {
       this.miningProgress = 0;
     }
 
-    // Get mining time for this block
+    // Mining time for this block, faster with the right tool (src/player/Tools.ts)
     const itemType = blockToItem(blockType);
-    const mineTime = ITEM_DATA[itemType].mineTime;
+    const mineTime = breakSeconds(this.inventory, itemType);
 
     // Increase progress
     this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
@@ -2021,7 +2024,7 @@ export class PlanetBlockInteraction {
 
     // Get mining time based on tree part (trunks drop logs, leaves drop leaves)
     const itemType = treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES;
-    const mineTime = ITEM_DATA[itemType].mineTime;
+    const mineTime = breakSeconds(this.inventory, itemType);
 
     // Increase progress
     this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
@@ -2038,6 +2041,8 @@ export class PlanetBlockInteraction {
   }
 
   private breakTree(mesh: THREE.Mesh, treeType: string): void {
+    // The axe (if one did the job) wears by one use
+    this.wearToolFor(treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES);
     // Add items to inventory
     if (treeType === 'trunk') {
       // Trunks drop 4-8 logs AND 4-8 sticks
@@ -2926,8 +2931,9 @@ export class PlanetBlockInteraction {
       return;
     }
 
-    // Add item to inventory
+    // Add item to inventory; the tool that dug it (if any) wears by one use
     const itemType = blockToItem(blockType);
+    this.wearToolFor(itemType);
     if (itemType !== ItemType.NONE) {
       this.inventory.addItem(itemType, 1);
       this.updateHotbarUI();
@@ -2937,62 +2943,10 @@ export class PlanetBlockInteraction {
     // Save tile change
     const planetId = this.getPlanetId(planet);
 
-    // Check if water can flow into this space from above or from neighbors
-    let hasWaterSource = false;
-    const maxDepth = planet.getMaxDepth();
-
-    // First check: search upward in same column for water with clear path
-    for (let d = depth + 1; d < maxDepth; d++) {
-      const blockAtDepth = planet.getBlock(tileIndex, d);
-      if (blockAtDepth === HexBlockType.WATER) {
-        hasWaterSource = true;
-        break;
-      } else if (blockAtDepth !== HexBlockType.AIR) {
-        // Hit solid block before finding water - can't flow from above
-        break;
-      }
-    }
-
-    // Second check: if no water above, check neighboring tiles for water at same depth or above
-    // Water flows horizontally from neighbors if they have water at this depth level
-    if (!hasWaterSource) {
-      const neighbors = planet.getTileNeighbors(tileIndex);
-      for (const neighborIndex of neighbors) {
-        // Check if neighbor has water at the broken block's depth
-        const neighborBlock = planet.getBlock(neighborIndex, depth);
-        if (neighborBlock === HexBlockType.WATER) {
-          hasWaterSource = true;
-          break;
-        }
-        // Also check if neighbor has water directly above (at depth + 1) that could flow over
-        const neighborBlockAbove = planet.getBlock(neighborIndex, depth + 1);
-        if (neighborBlockAbove === HexBlockType.WATER) {
-          hasWaterSource = true;
-          break;
-        }
-      }
-    }
-
-    const newBlockType = hasWaterSource ? HexBlockType.WATER : HexBlockType.AIR;
-
-    // Remove block from world (or fill with water if water above)
-    planet.setBlock(tileIndex, depth, newBlockType);
-    gameStorage.saveTileChange(planetId, tileIndex, depth, newBlockType);
-
-    // If water flowed in, cascade it downward through any air blocks below
-    if (newBlockType === HexBlockType.WATER) {
-      for (let d = depth - 1; d > 0; d--) {
-        const blockBelow = planet.getBlock(tileIndex, d);
-        if (blockBelow === HexBlockType.AIR) {
-          // Air block - water flows down into it
-          planet.setBlock(tileIndex, d, HexBlockType.WATER);
-          gameStorage.saveTileChange(planetId, tileIndex, d, HexBlockType.WATER);
-        } else {
-          // Hit solid ground or another block type, stop cascading
-          break;
-        }
-      }
-    }
+    // Remove the block; any water beside or above flows in on the next liquid
+    // ticks (src/water/Liquid.ts) - flowing water is derived, only the edit is saved
+    planet.setBlock(tileIndex, depth, HexBlockType.AIR);
+    gameStorage.saveTileChange(planetId, tileIndex, depth, HexBlockType.AIR);
   }
 
   private placeBlock(planet: Planet, tileIndex: number, depth: number): void {
@@ -3953,11 +3907,12 @@ export class PlanetBlockInteraction {
 
   // The planet a placed object is on: the nearest planet centre (tile
   // indices exist on every planet, so they can't tell planets apart)
+  /** The planet a placed object belongs to; its position is in the configured frame (see restoreSavedObject) */
   private planetIdAt(position: THREE.Vector3): string {
     let planetId = this.getPlanetId(this.planets[0]);
     let best = Infinity;
     for (const planet of this.planets) {
-      const d = planet.center.distanceToSquared(position);
+      const d = planet.configuredCenter.distanceToSquared(position);
       if (d < best) {
         best = d;
         planetId = this.getPlanetId(planet);
@@ -4239,6 +4194,24 @@ export class PlanetBlockInteraction {
   }
 
   // Save inventory to local storage
+  /**
+   * One use off the tool that digs a block dropping `drop` (none if bare
+   * hands did it). A broken tool toasts; the inventory saves this frame.
+   */
+  private wearToolFor(drop: ItemType): void {
+    const { toolIndex } = mineTimeMult(this.inventory, drop);
+    if (toolIndex !== null) this.wearSlot(toolIndex);
+  }
+
+  /** One use off the tool in a slot (a dig, a cast): toast if it broke, save now. */
+  public wearSlot(index: number): void {
+    const w = wearAt(this.inventory, index);
+    if (w.kind === 'none') return;
+    if (w.kind === 'broke') showToast(brokeMessage(w), { duration: TOOLBOX.TOAST_MS });
+    this.updateHotbarUI();
+    this.saveInventory();
+  }
+
   private saveInventory(): void {
     gameStorage.saveInventory(this.inventory.exportForSave());
   }
@@ -4765,6 +4738,12 @@ export class PlanetBlockInteraction {
    * and a remote player's record (multiplayer) go through. `saved` is the
    * stored record with its planetId.
    */
+  // Saved objects are stored in their planet's CONFIGURED frame (the frame
+  // they were placed in; PlanetFrames routes them under the planet's
+  // attachRoot), so they are rebuilt against planet.configuredCenter - never
+  // the live centre, which moves on the orbit whenever another body is the
+  // reference frame and would tilt the object (owner: a furnace coming back
+  // as several copies in random orientations)
   private restoreSavedObject(kind: string, saved: { planetId: string }): Promise<unknown> {
     const planet = this.planets.find((p) => this.getPlanetId(p) === saved.planetId);
     if (!planet) return Promise.resolve();
@@ -4772,7 +4751,7 @@ export class PlanetBlockInteraction {
     switch (kind) {
       case 'machine': {
         const rec = saved as SavedMachine & { planetId: string };
-        this.machineManager.add(machineFromRecord(rec), planet.center);
+        this.machineManager.add(machineFromRecord(rec), planet.configuredCenter);
         break;
       }
       case 'torch': {
@@ -4782,7 +4761,7 @@ export class PlanetBlockInteraction {
           savedTorch.position.y,
           savedTorch.position.z
         );
-        this.torchManager.placeTorch(worldPosition, planet.center, savedTorch.tileIndex);
+        this.torchManager.placeTorch(worldPosition, planet.configuredCenter, savedTorch.tileIndex);
         break;
       }
       case 'furnace': {
@@ -4793,7 +4772,7 @@ export class PlanetBlockInteraction {
           savedFurnace.position.z
         );
         // Restore the furnace at exact saved position (no offset recalculation)
-        pending = this.furnaceManager.restoreFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.furnaceManager.restoreFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.fuelAmount = savedFurnace.fuelAmount;
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
@@ -4817,14 +4796,14 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        pending = this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+        pending = this.storageChestManager.restoreChest(savedPosition, planet.configuredCenter, savedChest.tileIndex, savedChest.rotation, slots);
         break;
       }
       case 'cooker': {
         const savedCooker = saved as SavedCooker & { planetId: string };
         const centre = new THREE.Vector3(savedCooker.position.x, savedCooker.position.y, savedCooker.position.z);
         const slots = savedCooker.slots.map(sl => ({ itemType: sl.itemType as ItemType, quantity: sl.quantity }));
-        pending = this.cookerManager.place(savedCooker.kind, centre, planet.center, savedCooker.tileIndex,
+        pending = this.cookerManager.place(savedCooker.kind, centre, planet.configuredCenter, savedCooker.tileIndex,
           savedCooker.rotation, slots, centre, savedCooker.progress ?? 0);
         break;
       }
@@ -4840,7 +4819,7 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        pending = this.garbagePileManager.restorePile(savedPosition, planet.center, savedPile.tileIndex, slots);
+        pending = this.garbagePileManager.restorePile(savedPosition, planet.configuredCenter, savedPile.tileIndex, slots);
         break;
       }
       case 'steamEngine': {
@@ -4851,7 +4830,7 @@ export class PlanetBlockInteraction {
           savedSteamEngine.position.z
         );
         // Restore the steam engine
-        pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
+        pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.configuredCenter, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
 
         // Restore fuel state to UI
         this.steamEngineUI.restoreState(savedSteamEngine.tileIndex, {
@@ -4871,7 +4850,7 @@ export class PlanetBlockInteraction {
           savedHydroGenerator.position.z
         );
         // Restore the hydro generator
-        pending = this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.center, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
+        pending = this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.configuredCenter, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
         break;
       }
       case 'copperPipe': {
@@ -4904,7 +4883,7 @@ export class PlanetBlockInteraction {
           savedFurnace.position.z
         );
         // Restore the electric furnace
-        pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
@@ -4925,7 +4904,7 @@ export class PlanetBlockInteraction {
           savedWorkbench.position.z
         );
         // Restore the electronics workbench
-        pending = this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.center, savedWorkbench.tileIndex, savedWorkbench.rotation);
+        pending = this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.configuredCenter, savedWorkbench.tileIndex, savedWorkbench.rotation);
         break;
       }
       case 'computer': {
@@ -4936,7 +4915,7 @@ export class PlanetBlockInteraction {
           savedComputer.position.z
         );
         // Restore the computer
-        pending = this.computerManager.restoreComputer(savedPosition, planet.center, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
+        pending = this.computerManager.restoreComputer(savedPosition, planet.configuredCenter, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
         break;
       }
       case 'printer3D': {
@@ -4980,7 +4959,7 @@ export class PlanetBlockInteraction {
 
         pending = this.printer3DManager.restorePrinter3D(
           savedPosition,
-          planet.center,
+          planet.configuredCenter,
           savedPrinter.tileIndex,
           savedPrinter.rotation,
           savedPrinter.isPowered,
@@ -4995,7 +4974,7 @@ export class PlanetBlockInteraction {
         const savedPosition = new THREE.Vector3(savedPad.position.x, savedPad.position.y, savedPad.position.z);
         // Every pad block sits at the saved top (a pad is level)
         const blockHeight = planet.getBlockHeight();
-        const outerRadius = savedPosition.distanceTo(planet.center);
+        const outerRadius = savedPosition.distanceTo(planet.configuredCenter);
         const innerRadius = outerRadius - blockHeight * 0.25;
         // Pads from older saves were placed whole: the middle and its ring
         const tileIndices = savedPad.tiles ?? [savedPad.centerTileIndex, ...savedPad.surroundingTileIndices];
@@ -5007,7 +4986,7 @@ export class PlanetBlockInteraction {
         // parts: they are equipment now, fitted below once the slots exist
         const legacy = splitLegacyStack(savedPad.rocketParts ?? []);
         pending = this.launchPadManager.restorePad(
-          planet.center,
+          planet.configuredCenter,
           hexes,
           outerRadius,
           blockHeight,

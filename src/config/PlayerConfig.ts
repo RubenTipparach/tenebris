@@ -76,7 +76,6 @@ export const PlayerConfig = {
 
   // Water texture vs procedural balance
   WATER_TEXTURE_STRENGTH: 0.7,     // How much the texture contributes (0 = none, 1 = full)
-  WATER_SCROLL_SPEED: 0.03,        // Speed of texture scrolling animation
   WATER_CAUSTIC_STRENGTH: 0.08,    // Strength of procedural caustic shimmer effect
   WATER_FOAM_STRENGTH: 0.1,        // Strength of foam at shallow edges
 
@@ -155,6 +154,8 @@ export const PlayerConfig = {
   // Torches
   TORCH_LIGHT_RANGE: 4,              // Torch light falloff distance (blocks)
   TORCH_LIGHT_INTENSITY: 1.5,        // Torch light intensity
+  TORCH_LIGHT_COLOR: [1.0, 0.7, 0.3] as [number, number, number], // Torch light colour on clutter (planet.frag's TORCH_LIGHT_COLOR)
+  TORCH_LIT_NEAREST: 16,             // Grass and pebbles are lit by this many torches nearest the player
   TORCH_FLICKER_SPEED: 8,            // How fast the torch light flickers
   TORCH_FLICKER_AMOUNT: 0.2,         // How much intensity varies (0-1)
 

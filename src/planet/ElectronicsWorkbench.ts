@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -98,11 +99,9 @@ export class ElectronicsWorkbenchManager {
     this.workbenchMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -156,7 +155,7 @@ export class ElectronicsWorkbenchManager {
       return null;
     }
 
-    const instanceMaterial = this.workbenchMaterial.clone();
+    const instanceMaterial = withMachineLight(this.workbenchMaterial.clone());
     const mesh = new THREE.Mesh(this.workbenchGeometry, instanceMaterial);
 
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
@@ -233,7 +232,7 @@ export class ElectronicsWorkbenchManager {
       return null;
     }
 
-    const instanceMaterial = this.workbenchMaterial.clone();
+    const instanceMaterial = withMachineLight(this.workbenchMaterial.clone());
     const mesh = new THREE.Mesh(this.workbenchGeometry, instanceMaterial);
 
     mesh.position.copy(savedPosition);
@@ -296,27 +295,6 @@ export class ElectronicsWorkbenchManager {
 
   public getElectronicsWorkbenchAtTile(tileIndex: number): PlacedElectronicsWorkbench | undefined {
     return this.workbenches.find(w => w.tileIndex === tileIndex);
-  }
-
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const workbench of this.workbenches) {
-      let totalLight = 0;
-
-      for (const torchPos of torchPositions) {
-        const distance = workbench.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-
-      totalLight = Math.min(1.5, totalLight);
-      const material = workbench.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-    }
   }
 
   public exportForSave(): Array<{

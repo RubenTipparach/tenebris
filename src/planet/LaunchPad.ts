@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { getAssetPath } from '../utils/assetPath';
@@ -9,7 +10,7 @@ import { RocketPart } from './RocketPart';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 import launchPadVert from '../shaders/launchPad/launchPad.vert';
-import launchPadFrag from '../shaders/launchPad/launchPad.frag';
+import launchPadFrag from '../shaders/tech/tech.frag';   // one fragment for every tech material
 import rocketPartVert from '../shaders/rocketPart/rocketPart.vert';
 import rocketPartFrag from '../shaders/rocketPart/rocketPart.frag';
 
@@ -235,11 +236,9 @@ export class LaunchPadManager {
     this.baseMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: baseTexture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: launchPadVert,
       fragmentShader: launchPadFrag,
@@ -279,11 +278,9 @@ export class LaunchPadManager {
     this.segmentMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: segmentTexture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -317,11 +314,9 @@ export class LaunchPadManager {
     this.rocketEngineMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: engineTexture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -960,13 +955,11 @@ export class LaunchPadManager {
       const material = new THREE.ShaderMaterial({
         uniforms: {
           techTexture: { value: texture },
-          sunDirection: { value: this.sunDirection.clone() },
-          planetCenter: { value: this.planetCenter.clone() },
+          ...machineLightUniforms(),
           planetRadius: { value: this.planetRadius },
           atmosphereHeight: { value: this.atmosphereHeight },
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          torchLight: { value: 0.0 },
           sunBrightness: { value: 1.0 }, // Pre-calculated sun brightness for consistent lighting
         },
         vertexShader: rocketPartVert,
@@ -1035,7 +1028,7 @@ export class LaunchPadManager {
     }
 
     // Create mesh with cloned material so each part has independent uniforms
-    const clonedMaterial = assets.material.clone();
+    const clonedMaterial = withMachineLight(assets.material.clone());
 
     // Calculate sun brightness from the launch pad position for consistent lighting
     // Always use launchPad.position as the reference - this ensures ALL parts get identical lighting
@@ -1334,63 +1327,6 @@ export class LaunchPadManager {
    */
   public isRocketAssembled(launchPad: PlacedLaunchPad): boolean {
     return launchPad.segmentCount > 0 && launchPad.rocketBlocks === launchPad.segmentCount;
-  }
-
-  /**
-   * Update torch lighting for all launch pads based on nearby torch positions
-   */
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const launchPad of this.launchPads) {
-      let totalLight = 0;
-
-      for (const torchPos of torchPositions) {
-        const distance = launchPad.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          // Inverse square falloff with decay (matching terrain)
-          const decay = 2; // Same as TorchConfig.LIGHT_DECAY
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-
-      // Clamp total light
-      totalLight = Math.min(1.5, totalLight);
-
-      // Update the pad hexes (they share one material)
-      const baseMesh = launchPad.hexes.values().next().value?.mesh;
-      if (baseMesh) {
-        const material = baseMesh.material as THREE.ShaderMaterial;
-        if (material.uniforms && material.uniforms.torchLight) {
-          material.uniforms.torchLight.value = totalLight;
-        }
-      }
-
-      // Update segment meshes
-      for (const segmentMesh of launchPad.segmentMeshes) {
-        const material = segmentMesh.material as THREE.ShaderMaterial;
-        if (material.uniforms && material.uniforms.torchLight) {
-          material.uniforms.torchLight.value = totalLight;
-        }
-      }
-
-      // Update rocket part meshes - use launch pad position for consistent lighting across all parts
-      // (same approach as sunBrightness - all parts inherit from a single reference point)
-      let rocketPartLight = 0;
-      for (const torchPos of torchPositions) {
-        const distance = launchPad.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          rocketPartLight += attenuation * torchIntensity;
-        }
-      }
-      rocketPartLight = Math.min(1.5, rocketPartLight);
-
-      // Apply the same torch light to ALL rocket parts
-      for (const rocketPart of launchPad.rocketParts) {
-        rocketPart.setTorchLight(rocketPartLight);
-      }
-    }
   }
 
   /**

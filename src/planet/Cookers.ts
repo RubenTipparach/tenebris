@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -89,11 +90,9 @@ export class CookerManager {
     const material = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -109,7 +108,7 @@ export class CookerManager {
   public async place(kind: CookerKind, groundPosition: THREE.Vector3, planetCenter: THREE.Vector3, tileIndex: number,
                      facing: number, slots?: InventorySlot[], savedCentre?: THREE.Vector3, progress = 0): Promise<PlacedCooker> {
     const { geometry, material } = await this.assetsFor(kind);
-    const mesh = new THREE.Mesh(geometry, material.clone());
+    const mesh = new THREE.Mesh(geometry, withMachineLight(material.clone()));
     const up = (savedCentre ?? groundPosition).clone().sub(planetCenter).normalize();
     const centre = savedCentre ?? groundPosition.clone().addScaledVector(up, COOKERS[kind].height / 2);
     mesh.position.copy(centre);
@@ -160,14 +159,4 @@ export class CookerManager {
   public getByMesh(mesh: THREE.Object3D): PlacedCooker | undefined { return this.cookers.find(c => c.mesh === mesh); }
   public getAtTile(tileIndex: number): PlacedCooker | undefined { return this.cookers.find(c => c.tileIndex === tileIndex); }
 
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const c of this.cookers) {
-      let light = 0;
-      for (const p of torchPositions) {
-        const d = c.position.distanceTo(p);
-        if (d < torchRange) light += torchIntensity / (1 + 2 * d * d / (torchRange * torchRange));
-      }
-      (c.mesh.material as THREE.ShaderMaterial).uniforms.torchLight.value = Math.min(1.5, light);
-    }
-  }
 }

@@ -355,8 +355,8 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
     const c = config.shoreClay;
     for (const tile of tiles) {
       const surfaceDepth = heightMap.get(tile.index) ?? SEA_LEVEL_DEPTH;
-      const shallowBed = surfaceDepth < SEA_LEVEL_DEPTH && surfaceDepth >= SEA_LEVEL_DEPTH - c.shallowDepth
-        && tile.neighbors.some(n => (heightMap.get(n) ?? SEA_LEVEL_DEPTH) >= SEA_LEVEL_DEPTH);
+      // any sea bed down to shallowDepth below the waterline
+      const shallowBed = surfaceDepth < SEA_LEVEL_DEPTH && surfaceDepth >= SEA_LEVEL_DEPTH - c.shallowDepth;
       if (!beachTiles.has(tile.index) && !shallowBed) continue;
       const len = Math.hypot(tile.center.x, tile.center.y, tile.center.z);
       const n = fractalSimplex3D(tile.center.x / len, tile.center.y / len, tile.center.z / len, c.scale, 2, 0.4, 2.0, config.seed + c.seedSalt);
@@ -388,7 +388,8 @@ function generateTerrain(tiles: TileData[], config: TerrainConfig): Map<number, 
         } else {
           blocks.push(rockWorldBlock(tile, depth, surfaceDepth, crust!, normalizedY, oreVeinCache, config));
         }
-      } else if (isClay && depth > surfaceDepth - 3) {
+      } else if (isClay && depth > surfaceDepth - 3 && (isUnderwater || depth < surfaceDepth)) {
+        // Clay lies under water, or under the beach's sand: the shore itself stays sand
         blocks.push(HexBlockType.CLAY);
       } else if (depth === surfaceDepth && biomeTop.has(tile.index)) {
         blocks.push(biomeTop.get(tile.index)!);

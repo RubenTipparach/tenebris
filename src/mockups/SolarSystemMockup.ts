@@ -216,7 +216,13 @@ const fragmentShader = `
         float t = dot(planetCenter - vWorld, ringNormal) / den;
         if (t > 0.0) {
           float r = length(vWorld + L * t - planetCenter) / planetRadius;
-          shade = 1.0 - ringShadow * ringDensity(r);
+          // Filtered by how much ring radius one pixel covers: near the limb
+          // the shadow's ringlets crowd below a pixel and would stripe, so
+          // they blend into their average there (a box filter of 5 taps)
+          float fw = clamp(fwidth(r), 0.0, 0.25);
+          float dens = (ringDensity(r - fw) + ringDensity(r - 0.5 * fw) + ringDensity(r) + ringDensity(r + 0.5 * fw) + ringDensity(r + fw)) / 5.0;
+          // and it fades out at the terminator, where the cloud tops go dark anyway
+          shade = 1.0 - ringShadow * dens * smoothstep(0.0, 0.15, ndl);
         }
       }
     }
@@ -229,6 +235,57 @@ const fragmentShader = `
     lit += haze * rim * hazeStrength * smoothstep(-0.15, 0.3, ndl) * 0.25;
     if (kind > 3.5 && kind < 4.5) lit += c2 * pow(1.0 - smoothstep(0.48, 0.52, n), 4.0) * 0.5; // lava glows on the night side
     gl_FragColor = vec4(lit, 1.0);
+  }
+`;
+
+/**
+ * The haze along a stretch of view ray through the giant's shell, thinning
+ * with height: its colour and cover. One function for the shell itself (the
+ * ray up to the cloud tops) and for the rings (the ray up to the ring point,
+ * so a ring seen behind the limb is hazed by the air in front of it, and one
+ * in front of the planet is not).
+ */
+const hazeGlsl = `
+  uniform vec3 glowColor;
+  uniform float shellRadius;
+  uniform float scaleHeight;
+  uniform float hazeDensity;
+  uniform float hazeStrength;
+  uniform vec3 terminatorTint;
+  #define MAX_HAZE_SAMPLES 16
+  uniform int hazeSamples;
+  vec2 hitSphere(vec3 ro, vec3 rd, float r) {
+    vec3 oc = ro - planetCenter;
+    float b = dot(oc, rd), c = dot(oc, oc) - r * r, d = b * b - c;
+    if (d < 0.0) return vec2(-1.0);
+    float s = sqrt(d);
+    return vec2(-b - s, -b + s);
+  }
+  // rgb: the haze's colour, a: how much of what lies beyond it shows haze instead
+  vec4 hazeSegment(vec3 ro, vec3 rd, float tEnd) {
+    vec2 shell = hitSphere(ro, rd, shellRadius);
+    float t0 = max(shell.x, 0.0), t1 = min(shell.y, tEnd);
+    vec2 core = hitSphere(ro, rd, planetRadius);
+    if (core.x > 0.0) t1 = min(t1, core.x);
+    if (shell.y < 0.0 || t1 <= t0) return vec4(0.0);
+    float step = (t1 - t0) / float(hazeSamples);
+    float thick = shellRadius - planetRadius;
+    float depth = 0.0, light = 0.0, warm = 0.0;
+    for (int i = 0; i < MAX_HAZE_SAMPLES; i++) {
+      if (i >= hazeSamples) break;
+      vec3 p = ro + rd * (t0 + step * (float(i) + 0.5));
+      vec3 up = normalize(p - planetCenter);
+      float h = clamp((length(p - planetCenter) - planetRadius) / thick, 0.0, 1.0);
+      float dens = exp(-h / scaleHeight) * step / thick;
+      float ndl = dot(up, normalize(sunPosition - p));
+      depth += dens;
+      light += dens * smoothstep(-0.25, 0.35, ndl);
+      warm += dens * (1.0 - smoothstep(0.0, 0.5, ndl));
+    }
+    if (depth <= 0.0) return vec4(0.0);
+    float cover = 1.0 - exp(-depth * hazeDensity);
+    vec3 col = mix(glowColor, glowColor * terminatorTint, warm / depth);
+    return vec4(col, cover * (light / depth) * hazeStrength);
   }
 `;
 
@@ -249,53 +306,16 @@ const glowShader = {
   // the shell, thinning with height, so a ray grazing the shell's outer edge
   // crosses almost none (no hard border) and one skimming the limb the most
   fragmentShader: `
-    uniform vec3 glowColor;
     uniform vec3 sunPosition;
     uniform vec3 planetCenter;
     uniform float planetRadius;
-    uniform float shellRadius;
-    uniform float scaleHeight;
-    uniform float hazeDensity;
-    uniform float hazeStrength;
-    uniform vec3 terminatorTint;
+    ${hazeGlsl}
     varying vec3 vNormal;
     varying vec3 vWorld;
-    #define MAX_HAZE_SAMPLES 16
-    uniform int hazeSamples;
-    vec2 hitSphere(vec3 ro, vec3 rd, float r) {
-      vec3 oc = ro - planetCenter;
-      float b = dot(oc, rd), c = dot(oc, oc) - r * r, d = b * b - c;
-      if (d < 0.0) return vec2(-1.0);
-      float s = sqrt(d);
-      return vec2(-b - s, -b + s);
-    }
     void main() {
-      vec3 ro = cameraPosition;
-      vec3 rd = normalize(vWorld - cameraPosition);
-      vec2 shell = hitSphere(ro, rd, shellRadius);
-      float t0 = max(shell.x, 0.0), t1 = shell.y;
-      vec2 core = hitSphere(ro, rd, planetRadius);
-      if (core.x > 0.0) t1 = min(t1, core.x);
-      if (t1 <= t0) discard;
-      float step = (t1 - t0) / float(hazeSamples);
-      float thick = shellRadius - planetRadius;
-      float depth = 0.0, light = 0.0, warm = 0.0;
-      for (int i = 0; i < MAX_HAZE_SAMPLES; i++) {
-        if (i >= hazeSamples) break;
-        vec3 p = ro + rd * (t0 + step * (float(i) + 0.5));
-        vec3 up = normalize(p - planetCenter);
-        float h = clamp((length(p - planetCenter) - planetRadius) / thick, 0.0, 1.0);
-        float dens = exp(-h / scaleHeight) * step / thick;
-        float ndl = dot(up, normalize(sunPosition - p));
-        depth += dens;
-        light += dens * smoothstep(-0.25, 0.35, ndl);
-        warm += dens * (1.0 - smoothstep(0.0, 0.5, ndl));
-      }
-      float cover = 1.0 - exp(-depth * hazeDensity);
-      float lit = depth > 0.0 ? light / depth : 0.0;
-      float terminator = depth > 0.0 ? warm / depth : 0.0;
-      vec3 col = mix(glowColor, glowColor * terminatorTint, terminator);
-      gl_FragColor = vec4(col, cover * lit * hazeStrength);
+      vec4 haze = hazeSegment(cameraPosition, normalize(vWorld - cameraPosition), 1e20);
+      if (haze.a <= 0.0) discard;
+      gl_FragColor = haze;
     }
   `,
 };
@@ -328,6 +348,7 @@ const ringShader = {
     uniform float ringOpacity;
     uniform float shadowSoft;
     ${ringDensityGlsl}
+    ${hazeGlsl}
     varying vec3 vWorld;
     varying vec2 vRing;
     void main() {
@@ -351,7 +372,11 @@ const ringShader = {
         float closest = sqrt(max(dot(oc, oc) - b * b, 0.0)) / planetRadius;
         miss = smoothstep(1.0 - shadowSoft, 1.0 + shadowSoft, closest);
       }
-      gl_FragColor = vec4(col * light * (0.04 + 0.96 * miss), d * ringOpacity);
+      vec3 ringCol = col * light * (0.04 + 0.96 * miss);
+      // seen behind the limb: the giant's haze in front of the ring
+      vec3 toRing = vWorld - cameraPosition;
+      vec4 haze = hazeSegment(cameraPosition, normalize(toRing), length(toRing));
+      gl_FragColor = vec4(mix(ringCol, haze.rgb, clamp(haze.a, 0.0, 1.0)), d * ringOpacity);
     }
   `,
 };
@@ -463,17 +488,21 @@ export class SolarSystemMockup {
     );
     holder.add(planet);
 
+    // The haze's numbers, shared by the shell and the rings (no air: no haze)
+    const haze = {
+      glowColor: { value: new THREE.Color(spec.atmosphere ?? 0x000000) },
+      shellRadius: { value: radius * G.HAZE_RADIUS }, scaleHeight: { value: G.HAZE_SCALE_HEIGHT },
+      hazeDensity: { value: G.HAZE_DENSITY }, hazeSamples: { value: G.HAZE_SAMPLES },
+      hazeStrength: { value: spec.atmosphere !== undefined ? G.HAZE_STRENGTH : 0 },
+      terminatorTint: { value: new THREE.Vector3(...G.TERMINATOR_TINT) },
+    };
     if (spec.atmosphere !== undefined) {
       const glow = new THREE.Mesh(
         new THREE.SphereGeometry(radius * G.HAZE_RADIUS, 64, 40),
         new THREE.ShaderMaterial({
           uniforms: {
-            glowColor: { value: new THREE.Color(spec.atmosphere) }, sunPosition: this.sunUniform,
+            ...haze, sunPosition: this.sunUniform,
             planetCenter: uniforms.planetCenter, planetRadius: { value: radius },
-            shellRadius: { value: radius * G.HAZE_RADIUS }, scaleHeight: { value: G.HAZE_SCALE_HEIGHT },
-            hazeDensity: { value: G.HAZE_DENSITY }, hazeSamples: { value: G.HAZE_SAMPLES },
-            hazeStrength: { value: G.HAZE_STRENGTH },
-            terminatorTint: { value: new THREE.Vector3(...G.TERMINATOR_TINT) },
           },
           vertexShader: glowShader.vertexShader,
           fragmentShader: glowShader.fragmentShader,
@@ -483,6 +512,9 @@ export class SolarSystemMockup {
           side: THREE.FrontSide,
         })
       );
+      // the shell first, then the rings over it: a ring in front of the limb
+      // covers the haze, one behind it is hazed in its own shader
+      glow.renderOrder = 1;
       holder.add(glow);
     }
 
@@ -500,6 +532,7 @@ export class SolarSystemMockup {
             c0: { value: c[0].clone().lerp(c[1], 0.3) }, c1: { value: c[1] }, c2: { value: c[2] },
             ringLit: { value: G.RING_LIT }, ringForward: { value: G.RING_FORWARD }, ringUnlit: { value: G.RING_UNLIT },
             ringOpacity: { value: G.RING_OPACITY }, shadowSoft: { value: G.RING_SHADOW_SOFT },
+            ...haze,
           },
           vertexShader: ringShader.vertexShader,
           fragmentShader: ringShader.fragmentShader,
@@ -509,6 +542,7 @@ export class SolarSystemMockup {
         })
       );
       ring.rotation.x = RING_TILT;
+      ring.renderOrder = 2;
       holder.add(ring);
     }
 

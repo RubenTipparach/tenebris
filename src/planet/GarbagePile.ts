@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -77,11 +78,9 @@ export class GarbagePileManager {
     this.pileMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -111,7 +110,7 @@ export class GarbagePileManager {
       return null;
     }
 
-    const instanceMaterial = this.pileMaterial.clone();
+    const instanceMaterial = withMachineLight(this.pileMaterial.clone());
     const mesh = new THREE.Mesh(this.pileGeometry, instanceMaterial);
 
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
@@ -164,7 +163,7 @@ export class GarbagePileManager {
       return null;
     }
 
-    const instanceMaterial = this.pileMaterial.clone();
+    const instanceMaterial = withMachineLight(this.pileMaterial.clone());
     const mesh = new THREE.Mesh(this.pileGeometry, instanceMaterial);
     mesh.position.copy(savedPosition);
 
@@ -269,25 +268,6 @@ export class GarbagePileManager {
 
   public getPileAtTile(tileIndex: number): PlacedGarbagePile | undefined {
     return this.piles.find(p => p.tileIndex === tileIndex);
-  }
-
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const pile of this.piles) {
-      let totalLight = 0;
-      for (const torchPos of torchPositions) {
-        const distance = pile.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-      totalLight = Math.min(1.5, totalLight);
-      const material = pile.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-    }
   }
 
   public exportForSave(): Array<{
