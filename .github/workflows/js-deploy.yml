@@ -47,6 +47,12 @@ on:
           - server only
           - pages + server
           - everything
+  # deploy-everything.yml calls it with ship: everything
+  workflow_call:
+    inputs:
+      ship:
+        type: string
+        required: true
 
 permissions:
   contents: read
