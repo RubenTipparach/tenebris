@@ -3,7 +3,8 @@
 ### Requirement: Each body says whether its air can be breathed
 
 Each body's config SHALL say whether its air is breathable. Earth, Sequoia,
-Verdance and Mirewood SHALL be breathable; every airless body SHALL NOT.
+Verdance, Mirewood and Metropole Prime (an inhabited city world) SHALL be
+breathable; every airless body SHALL NOT.
 
 #### Scenario: The Moon
 - **WHEN** the game reads the Moon's config
@@ -16,10 +17,15 @@ space outside a rocket, and inside a rocket whose battery is flat. Exposed,
 a player wearing a space suit with an oxygen tank in their inventory SHALL
 breathe from the tank; otherwise they SHALL hold their breath for a few
 seconds and then die, and respawn at the world's spawn with their inventory.
+While the debug jetpack is on, air SHALL NOT be checked (debug mode).
 
 #### Scenario: Shirt sleeves on the Moon
 - **WHEN** a player without a suit steps out of a rocket on the Moon
 - **THEN** the AIR bar runs down for 10 seconds and they die and respawn on Earth
+
+#### Scenario: Debug jetpack on the Moon
+- **WHEN** the debug jetpack is on and the player walks out on the Moon without a suit
+- **THEN** their air does not run down
 
 #### Scenario: Suited
 - **WHEN** a player wearing a suit with oxygen tanks walks on the Moon

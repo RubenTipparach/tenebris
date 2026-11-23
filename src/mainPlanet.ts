@@ -1772,6 +1772,7 @@ class PlanetGame {
       rocketPowered: false,
       inGravityWell: well !== null,
       bodyBreathable: bodyId !== null && getBodyConfig(bodyId)?.breathable === true,
+      jetpack: this.player.getJetpackEnabled(),
     };
   }
 

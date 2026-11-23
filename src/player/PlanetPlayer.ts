@@ -2518,6 +2518,10 @@ export class PlanetPlayer {
     return this.isInWater;
   }
 
+  public getJetpackEnabled(): boolean {
+    return this.jetpackEnabled;
+  }
+
   public setJetpackEnabled(enabled: boolean): void {
     this.jetpackEnabled = enabled;
     // If disabling jetpack while jetpacking, stop it

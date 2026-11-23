@@ -91,6 +91,8 @@ function run(s: ReturnType<typeof newAirState>, seconds: number, inp: { exposed:
   ok(!isExposed(at('earth')), 'on Earth (breathable): safe');
   ok(getBodyConfig('moon')?.breathable === false && isExposed(at('moon')), 'on the Moon (airless): exposed');
   ok(isExposed(at('earth', { inGravityWell: false, bodyBreathable: false })), 'open space outside a rocket: exposed');
+  ok(!isExposed(at('ferrum')), 'on Metropole Prime (inhabited): safe');
+  ok(!isExposed(at('moon', { jetpack: true })) && !isExposed(at('earth', { inGravityWell: false, bodyBreathable: false, jetpack: true })), 'the debug jetpack: air is not checked');
   ok(!isExposed(at('moon', { inRocket: true, rocketPowered: true })), 'a powered rocket cabin on the Moon: safe');
   ok(!isExposed({ inRocket: true, rocketPowered: true, inGravityWell: false, bodyBreathable: false }), 'a powered rocket cabin in open space: safe');
   ok(isExposed(at('earth', { inRocket: true, rocketPowered: false })), 'an unpowered rocket cabin, even over Earth: exposed');

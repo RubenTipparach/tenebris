@@ -977,7 +977,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       landable: true,
       hasAtmosphere: true,
-      breathable: false,
+      breathable: true,   // inhabited: a city world has air
       intermediateLODAltitude: 70,
       highLODAltitude: 120,
       distantLODAltitude: 170,
