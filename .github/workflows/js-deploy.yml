@@ -16,14 +16,14 @@
 #     pages + server GitHub Pages (rubentipparach.github.io/tenebris, the
 #                    pages.yml workflow) then the Fly server once Pages
 #                    deployed - no itch.io push, no heavyphoton.com
-#   The server's admin portal (https://tenebris-c.fly.dev/admin) needs an
-#   ADMIN_TOKEN Fly secret: fly secrets set ADMIN_TOKEN=... -a tenebris-c
+#   The server's admin portal (https://tenebris.fly.dev/admin) needs an
+#   ADMIN_TOKEN Fly secret: fly secrets set ADMIN_TOKEN=... -a tenebris
 #
 # - itch.io: builds tenebris-itch.zip and pushes it with butler to
 #   https://ruben-tipparach.itch.io/tenebris (channel html5). Needs a
 #   BUTLER_API_KEY secret (itch.io -> Settings -> API keys).
-# - multiplayer server: deploys server-js/ to the 'tenebris-c' Fly app
-#   (wss://tenebris-c.fly.dev/, the clients' default server), replacing the
+# - multiplayer server: deploys server-js/ to the 'tenebris' Fly app
+#   (wss://tenebris.fly.dev/, the clients' default server), replacing the
 #   Rust server there. Needs the FLY_API_TOKEN secret (a deploy token for
 #   tenebris-c, the same one the Rust deploy used).
 # - heavyphoton.com/tenebris/: pings heavyphoton.github.io, whose
@@ -134,7 +134,7 @@ jobs:
     uses: ./.github/workflows/pages.yml
 
   server:
-    name: Fly.io - deploy server-js to tenebris-c
+    name: Fly.io - deploy server-js to tenebris
     # ships after what it was released with succeeds (itch.io or Pages) -
     # or alone when 'server only' was picked
     needs: [itch, pages]

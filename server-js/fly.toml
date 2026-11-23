@@ -3,17 +3,17 @@
 # release > Run workflow): "itch + server" ships both together, "server
 # only" redeploys just this.
 #
-# It REPLACES the Rust server on the 'tenebris-c' app (the clients'
-# default URL is wss://tenebris-c.fly.dev/), so the Rust /admin portal is
-# replaced by this server's own (admin.js, needs the ADMIN_TOKEN secret:
-#   fly secrets set ADMIN_TOKEN=<long random string> -a tenebris-c
+# It runs on the 'tenebris' app (the clients' default URL is
+# wss://tenebris.fly.dev/; the old 'tenebris-c' app that held the Rust
+# server is gone), with this server's own /admin portal (admin.js, needs the ADMIN_TOKEN secret:
+#   fly secrets set ADMIN_TOKEN=<long random string> -a tenebris
 # ). The volume is shared: the JS worlds live under /data/worlds/ and the
 # Rust saves beside them are left alone.
 #
 # Manual deploy, from server-js/:
 #   fly deploy --config fly.toml
 
-app = 'tenebris-c'
+app = 'tenebris'
 primary_region = 'ord'
 
 [build]
