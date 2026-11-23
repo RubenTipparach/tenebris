@@ -8,7 +8,9 @@
 #                    itch.io push succeeds, so the server players connect
 #                    to always matches the itch build
 #     server only    just the multiplayer server (a server fix, or its
-#                    first deploy) - no itch.io push
+#                    first deploy) - no itch.io push. The server deploy is
+#                    also its own workflow, server.yml ("Multiplayer server -
+#                    Fly.io deploy"), runnable alone from the Actions tab
 #     pages + server GitHub Pages (rubentipparach.github.io/tenebris, the
 #                    pages.yml workflow) then the Fly server once Pages
 #                    deployed - no itch.io push, no heavyphoton.com
@@ -132,25 +134,6 @@ jobs:
         (inputs.ship == 'itch + server' && needs.itch.result == 'success') ||
         (inputs.ship == 'pages + server' && needs.pages.result == 'success') ||
         inputs.ship == 'server only')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Check for the Fly token
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: |
-          if [ -z "$FLY_API_TOKEN" ]; then
-            echo "::error::FLY_API_TOKEN secret is not set - create one with: fly tokens create deploy -a tenebris-c"
-            exit 1
-          fi
-
-      - name: Set up flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy server-js to Fly
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        working-directory: server-js
-        run: flyctl deploy --remote-only --config fly.toml --wait-timeout 600
+    # the same deploy as running server.yml on its own
+    uses: ./.github/workflows/server.yml
+    secrets: inherit

@@ -509,6 +509,10 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   **pages + server** to deploy GitHub Pages (`pages.yml`, called as a
   reusable workflow) and then the server once Pages is up - no itch push
   and no heavyphoton.com rebuild.
+- **Multiplayer server alone** - `server.yml` ("Multiplayer server - Fly.io
+  deploy") is the one copy of the Fly deploy: run it by hand from the
+  Actions tab for a server fix, and the release workflow calls it for its
+  server step (needs `FLY_API_TOKEN`).
 
 `static.yml` ("JS client - build + check") builds and verifies the client
 on every push to `main`; on branches it only runs by hand (Run workflow).

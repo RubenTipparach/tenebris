@@ -1,0 +1,54 @@
+# Multiplayer server: deploys server-js/ to the 'tenebris-c' Fly app
+# (wss://tenebris-c.fly.dev/, the clients' default server), replacing the
+# Rust server there.
+#
+# Run it on its own from the Actions tab (this workflow > Run workflow) for
+# a server fix, or let the release workflow (js-deploy.yml) call it after
+# its itch.io or Pages deploy. One copy of the deploy steps, used both ways.
+#
+# Needs the FLY_API_TOKEN secret: a deploy token for tenebris-c
+# (fly tokens create deploy -a tenebris-c). The admin portal
+# (https://tenebris-c.fly.dev/admin) needs an ADMIN_TOKEN Fly secret:
+# fly secrets set ADMIN_TOKEN=... -a tenebris-c
+name: Multiplayer server - Fly.io deploy (server-js to tenebris-c)
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      FLY_API_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+# One server deploy at a time
+concurrency:
+  group: fly-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Fly.io - deploy server-js to tenebris-c
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for the Fly token
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN secret is not set - create one with: fly tokens create deploy -a tenebris-c"
+            exit 1
+          fi
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy server-js to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: server-js
+        run: flyctl deploy --remote-only --config fly.toml --wait-timeout 600
