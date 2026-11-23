@@ -3907,11 +3907,12 @@ export class PlanetBlockInteraction {
 
   // The planet a placed object is on: the nearest planet centre (tile
   // indices exist on every planet, so they can't tell planets apart)
+  /** The planet a placed object belongs to; its position is in the configured frame (see restoreSavedObject) */
   private planetIdAt(position: THREE.Vector3): string {
     let planetId = this.getPlanetId(this.planets[0]);
     let best = Infinity;
     for (const planet of this.planets) {
-      const d = planet.center.distanceToSquared(position);
+      const d = planet.configuredCenter.distanceToSquared(position);
       if (d < best) {
         best = d;
         planetId = this.getPlanetId(planet);
@@ -4737,6 +4738,12 @@ export class PlanetBlockInteraction {
    * and a remote player's record (multiplayer) go through. `saved` is the
    * stored record with its planetId.
    */
+  // Saved objects are stored in their planet's CONFIGURED frame (the frame
+  // they were placed in; PlanetFrames routes them under the planet's
+  // attachRoot), so they are rebuilt against planet.configuredCenter - never
+  // the live centre, which moves on the orbit whenever another body is the
+  // reference frame and would tilt the object (owner: a furnace coming back
+  // as several copies in random orientations)
   private restoreSavedObject(kind: string, saved: { planetId: string }): Promise<unknown> {
     const planet = this.planets.find((p) => this.getPlanetId(p) === saved.planetId);
     if (!planet) return Promise.resolve();
@@ -4744,7 +4751,7 @@ export class PlanetBlockInteraction {
     switch (kind) {
       case 'machine': {
         const rec = saved as SavedMachine & { planetId: string };
-        this.machineManager.add(machineFromRecord(rec), planet.center);
+        this.machineManager.add(machineFromRecord(rec), planet.configuredCenter);
         break;
       }
       case 'torch': {
@@ -4754,7 +4761,7 @@ export class PlanetBlockInteraction {
           savedTorch.position.y,
           savedTorch.position.z
         );
-        this.torchManager.placeTorch(worldPosition, planet.center, savedTorch.tileIndex);
+        this.torchManager.placeTorch(worldPosition, planet.configuredCenter, savedTorch.tileIndex);
         break;
       }
       case 'furnace': {
@@ -4765,7 +4772,7 @@ export class PlanetBlockInteraction {
           savedFurnace.position.z
         );
         // Restore the furnace at exact saved position (no offset recalculation)
-        pending = this.furnaceManager.restoreFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.furnaceManager.restoreFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.fuelAmount = savedFurnace.fuelAmount;
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
@@ -4789,14 +4796,14 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        pending = this.storageChestManager.restoreChest(savedPosition, planet.center, savedChest.tileIndex, savedChest.rotation, slots);
+        pending = this.storageChestManager.restoreChest(savedPosition, planet.configuredCenter, savedChest.tileIndex, savedChest.rotation, slots);
         break;
       }
       case 'cooker': {
         const savedCooker = saved as SavedCooker & { planetId: string };
         const centre = new THREE.Vector3(savedCooker.position.x, savedCooker.position.y, savedCooker.position.z);
         const slots = savedCooker.slots.map(sl => ({ itemType: sl.itemType as ItemType, quantity: sl.quantity }));
-        pending = this.cookerManager.place(savedCooker.kind, centre, planet.center, savedCooker.tileIndex,
+        pending = this.cookerManager.place(savedCooker.kind, centre, planet.configuredCenter, savedCooker.tileIndex,
           savedCooker.rotation, slots, centre, savedCooker.progress ?? 0);
         break;
       }
@@ -4812,7 +4819,7 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        pending = this.garbagePileManager.restorePile(savedPosition, planet.center, savedPile.tileIndex, slots);
+        pending = this.garbagePileManager.restorePile(savedPosition, planet.configuredCenter, savedPile.tileIndex, slots);
         break;
       }
       case 'steamEngine': {
@@ -4823,7 +4830,7 @@ export class PlanetBlockInteraction {
           savedSteamEngine.position.z
         );
         // Restore the steam engine
-        pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.center, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
+        pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.configuredCenter, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
 
         // Restore fuel state to UI
         this.steamEngineUI.restoreState(savedSteamEngine.tileIndex, {
@@ -4843,7 +4850,7 @@ export class PlanetBlockInteraction {
           savedHydroGenerator.position.z
         );
         // Restore the hydro generator
-        pending = this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.center, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
+        pending = this.hydroGeneratorManager.restoreHydroGenerator(savedPosition, planet.configuredCenter, savedHydroGenerator.tileIndex, savedHydroGenerator.rotation, savedHydroGenerator.waterDepth);
         break;
       }
       case 'copperPipe': {
@@ -4876,7 +4883,7 @@ export class PlanetBlockInteraction {
           savedFurnace.position.z
         );
         // Restore the electric furnace
-        pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.center, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
+        pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
           if (placedFurnace) {
             placedFurnace.smeltingItem = savedFurnace.smeltingItem;
             placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
@@ -4897,7 +4904,7 @@ export class PlanetBlockInteraction {
           savedWorkbench.position.z
         );
         // Restore the electronics workbench
-        pending = this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.center, savedWorkbench.tileIndex, savedWorkbench.rotation);
+        pending = this.electronicsWorkbenchManager.restoreElectronicsWorkbench(savedPosition, planet.configuredCenter, savedWorkbench.tileIndex, savedWorkbench.rotation);
         break;
       }
       case 'computer': {
@@ -4908,7 +4915,7 @@ export class PlanetBlockInteraction {
           savedComputer.position.z
         );
         // Restore the computer
-        pending = this.computerManager.restoreComputer(savedPosition, planet.center, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
+        pending = this.computerManager.restoreComputer(savedPosition, planet.configuredCenter, savedComputer.tileIndex, savedComputer.rotation, savedComputer.isPowered);
         break;
       }
       case 'printer3D': {
@@ -4952,7 +4959,7 @@ export class PlanetBlockInteraction {
 
         pending = this.printer3DManager.restorePrinter3D(
           savedPosition,
-          planet.center,
+          planet.configuredCenter,
           savedPrinter.tileIndex,
           savedPrinter.rotation,
           savedPrinter.isPowered,
@@ -4967,7 +4974,7 @@ export class PlanetBlockInteraction {
         const savedPosition = new THREE.Vector3(savedPad.position.x, savedPad.position.y, savedPad.position.z);
         // Every pad block sits at the saved top (a pad is level)
         const blockHeight = planet.getBlockHeight();
-        const outerRadius = savedPosition.distanceTo(planet.center);
+        const outerRadius = savedPosition.distanceTo(planet.configuredCenter);
         const innerRadius = outerRadius - blockHeight * 0.25;
         // Pads from older saves were placed whole: the middle and its ring
         const tileIndices = savedPad.tiles ?? [savedPad.centerTileIndex, ...savedPad.surroundingTileIndices];
@@ -4979,7 +4986,7 @@ export class PlanetBlockInteraction {
         // parts: they are equipment now, fitted below once the slots exist
         const legacy = splitLegacyStack(savedPad.rocketParts ?? []);
         pending = this.launchPadManager.restorePad(
-          planet.center,
+          planet.configuredCenter,
           hexes,
           outerRadius,
           blockHeight,
