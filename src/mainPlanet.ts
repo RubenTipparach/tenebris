@@ -49,6 +49,9 @@ import type { ExposureInput } from './player/Survival';
 
 // Setting: new games start with a ready-to-fly rocket on a launch pad
 const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
+// Walker orientation -> avatar frame (the avatar looks down -Z, the walker
+// camera along +Z): half a turn about up. See setupMultiplayer getPose.
+const AVATAR_FROM_WALKER = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 function startWithRocket(): boolean {
   try {
     return localStorage.getItem(START_WITH_ROCKET_KEY) === '1';
@@ -1615,7 +1618,12 @@ class PlanetGame {
       const p = flying ? flying.getPosition() : this.player.position;
       const planet = this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
       const o = this.player.exportForSave().orientation;
-      return { planet, p, q: new THREE.Quaternion(o.x, o.y, o.z, o.w) };
+      // The walker's camera looks along orientation +Z (PlanetPlayer
+      // updateCamera: -localForward), but an avatar's frame looks down -Z
+      // (net/Avatar.ts). Turn half a revolution about up so other players
+      // see this player's face, not the back of their head.
+      const q = new THREE.Quaternion(o.x, o.y, o.z, o.w).multiply(AVATAR_FROM_WALKER);
+      return { planet, p, q };
     }, name, creator.getLook());
     this.multiplayer.setFrameOffset((planetId) => {
       const o = orbitOf(planetId);
