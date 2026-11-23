@@ -1,4 +1,5 @@
 import { emitGameEvent } from '../engine/GameEvents';
+import { ToolKind, ToolTier, TOOL_TIERS, ROD_USES, TOOLBOX } from '../config/ToolConfig';
 
 // Item types in the game
 export enum ItemType {
@@ -144,6 +145,23 @@ export enum ItemType {
   // Solar power, after batteries (openspec wool-air-and-reentry, design 6)
   SOLAR_PANEL = 115,
   SOLAR_ARRAY = 116,
+  // Tools (openspec tools-and-toolbox): pickaxe / axe / shovel per tier;
+  // ToolConfig.ts holds their uses and speed
+  ROCK_PICKAXE = 120,
+  ROCK_AXE = 121,
+  ROCK_SHOVEL = 122,
+  COPPER_PICKAXE = 123,
+  COPPER_AXE = 124,
+  COPPER_SHOVEL = 125,
+  IRON_PICKAXE = 126,
+  IRON_AXE = 127,
+  IRON_SHOVEL = 128,
+  STEEL_PICKAXE = 129,
+  STEEL_AXE = 130,
+  STEEL_SHOVEL = 131,
+  TITANIUM_PICKAXE = 132,
+  TITANIUM_AXE = 133,
+  TITANIUM_SHOVEL = 134,
   // The moons' and asteroids' own rock (numbered clear of the other item
   // families, beside their block ids 70-89)
   BASALT = 170,
@@ -194,6 +212,20 @@ export interface ItemData {
   atlasRegion?: { x: number; y: number; width: number; height: number; atlasWidth: number; atlasHeight: number };
   // Optional: rocket part data for items that go on the launch tower
   rocketPart?: RocketPartData;
+  // Optional: a tool's kind and tier (src/config/ToolConfig.ts)
+  tool?: { kind: ToolKind; tier: ToolTier };
+}
+
+// A tier tool's item data: "<Tier> <Kind>", its icon from scripts/gen-item-icons.py
+const KIND_NAMES: Record<ToolKind, string> = { pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', rod: 'Rod' };
+function toolItem(tier: keyof typeof TOOL_TIERS, kind: Exclude<ToolKind, 'rod'>): ItemData {
+  return {
+    name: `${TOOL_TIERS[tier].name} ${KIND_NAMES[kind]}`,
+    stackSize: 1,
+    texture: `/textures/icons/tools/${tier}_${kind}.png`,
+    mineTime: 0.3,
+    tool: { kind, tier },
+  };
 }
 
 export const ITEM_DATA: Record<ItemType, ItemData> = {
@@ -217,7 +249,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.STICK]: { name: 'Stick', stackSize: 64, texture: '/textures/sticks.png', mineTime: 0.3 },
   [ItemType.COAL]: { name: 'Coal', stackSize: 64, texture: '/textures/coal.png', mineTime: 0.3 },
   [ItemType.TORCH]: { name: 'Torch', stackSize: 64, texture: '/textures/torch_sprite.png', mineTime: 0.3 },
-  [ItemType.FISHING_ROD]: { name: 'Fishing Rod', stackSize: 1, texture: '/textures/fishing_rod.png', mineTime: 0.3 },
+  [ItemType.FISHING_ROD]: { name: 'Fishing Rod', stackSize: 1, texture: '/textures/fishing_rod.png', mineTime: 0.3, tool: { kind: 'rod', tier: 'wood' } },
   // Snow biome items (same hardness as dirt)
   [ItemType.SNOW]: { name: 'Snow', stackSize: 64, texture: '/textures/snow.png', mineTime: 0.5 },
   [ItemType.ICE]: { name: 'Ice', stackSize: 64, texture: '/textures/ice.png', mineTime: 0.5 },
@@ -496,27 +528,170 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
     mineTime: 3.0,
     // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not a part of the stack
   },
+  // Tools (openspec tools-and-toolbox)
+  [ItemType.ROCK_PICKAXE]: toolItem('rock', 'pickaxe'),
+  [ItemType.ROCK_AXE]: toolItem('rock', 'axe'),
+  [ItemType.ROCK_SHOVEL]: toolItem('rock', 'shovel'),
+  [ItemType.COPPER_PICKAXE]: toolItem('copper', 'pickaxe'),
+  [ItemType.COPPER_AXE]: toolItem('copper', 'axe'),
+  [ItemType.COPPER_SHOVEL]: toolItem('copper', 'shovel'),
+  [ItemType.IRON_PICKAXE]: toolItem('iron', 'pickaxe'),
+  [ItemType.IRON_AXE]: toolItem('iron', 'axe'),
+  [ItemType.IRON_SHOVEL]: toolItem('iron', 'shovel'),
+  [ItemType.STEEL_PICKAXE]: toolItem('steel', 'pickaxe'),
+  [ItemType.STEEL_AXE]: toolItem('steel', 'axe'),
+  [ItemType.STEEL_SHOVEL]: toolItem('steel', 'shovel'),
+  [ItemType.TITANIUM_PICKAXE]: toolItem('titanium', 'pickaxe'),
+  [ItemType.TITANIUM_AXE]: toolItem('titanium', 'axe'),
+  [ItemType.TITANIUM_SHOVEL]: toolItem('titanium', 'shovel'),
 };
 
-// Inventory slot
+// Which tool digs a block, read off the item the block drops - the same
+// item whose mineTime sets how long the dig takes (openspec
+// tools-and-toolbox, design 2). Items not listed have no tool: they break
+// at their own time whatever is in hand.
+const I = ItemType;
+export const DIG_WITH: Partial<Record<ItemType, ToolKind>> = {
+  ...Object.fromEntries([
+    I.STONE, I.ORE_COAL, I.ORE_COPPER, I.ORE_IRON, I.ORE_GOLD, I.ORE_LITHIUM, I.ORE_ALUMINUM,
+    I.ORE_COBALT, I.ORE_TITANIUM, I.ORE_URANIUM, I.MOON_ROCK, I.BASALT, I.SULFUR, I.ICE, I.GLASS,
+    I.BRICK_BLOCK, I.CONCRETE_BLOCK, I.STEEL_GIRDER, I.STEEL_GLASS,
+  ].map(i => [i, 'pickaxe'])),
+  ...Object.fromEntries([
+    I.DIRT, I.GRASS, I.SAND, I.SNOW, I.SEQ_DIRT, I.SEQ_SAND, I.SEQ_SNOW, I.CLAY,
+  ].map(i => [i, 'shovel'])),
+  ...Object.fromEntries([I.WOOD, I.LOG, I.LEAVES].map(i => [i, 'axe'])),
+};
+
+// Inventory slot. `uses` is a tool's uses LEFT; absent means fresh (the
+// "0 is fresh" sentinel of tenebris-rs ItemStack::dur), so slots and saves
+// from before durability read as fresh tools, never broken ones.
 export interface InventorySlot {
   itemType: ItemType;
   quantity: number;
+  uses?: number;
+}
+
+/** Hotbar 0-8, bag 9-35, then the toolbox (one slot per TOOLBOX.KINDS). */
+export const HOTBAR_SIZE = 9;
+export const PACK_SLOTS = 36;
+export const TOOLBOX_START = PACK_SLOTS;
+export const TOOLBOX_SLOTS = TOOLBOX.KINDS.length;
+
+/** Half a stack, rounded up: what a right-click picks up (7 -> 4, 1 -> 1). */
+export function halfUp(quantity: number): number {
+  return Math.ceil(quantity / 2);
+}
+
+/** A tool's kind and tier, or undefined for a non-tool. */
+export function toolOf(item: ItemType): { kind: ToolKind; tier: ToolTier } | undefined {
+  return ITEM_DATA[item]?.tool;
+}
+
+/** Uses a fresh tool has, or null for an item with no budget. */
+export function toolMaxUses(item: ItemType): number | null {
+  const t = toolOf(item);
+  if (!t) return null;
+  return t.tier === 'wood' ? ROD_USES : TOOL_TIERS[t.tier].uses;
+}
+
+/** Uses left on the tool in a slot, or null if it is not a tool. */
+export function usesLeft(slot: InventorySlot): number | null {
+  const max = toolMaxUses(slot.itemType);
+  if (max === null || slot.quantity <= 0) return null;
+  return slot.uses === undefined ? max : Math.max(0, Math.min(slot.uses, max));
+}
+
+/** Condition 0..1 (1 = fresh), or null for a non-tool: what the slot bar draws. */
+export function toolCondition(slot: InventorySlot): number | null {
+  const max = toolMaxUses(slot.itemType);
+  const left = usesLeft(slot);
+  return max === null || left === null ? null : left / max;
+}
+
+/** The toolbox kind a slot index holds, or null for a hotbar / bag slot. */
+export function toolboxKindAt(index: number): ToolKind | null {
+  const k = index - TOOLBOX_START;
+  return k >= 0 && k < TOOLBOX_SLOTS ? TOOLBOX.KINDS[k] : null;
+}
+
+/** May `item` sit in slot `index`? Any item in the hotbar / bag; only a tool of the slot's kind in the toolbox. */
+export function slotAccepts(index: number, item: ItemType): boolean {
+  const kind = toolboxKindAt(index);
+  return kind === null || item === ItemType.NONE || toolOf(item)?.kind === kind;
+}
+
+const emptySlot = (): InventorySlot => ({ itemType: ItemType.NONE, quantity: 0 });
+
+// Set a slot object's contents in place (references held by the UI stay valid)
+function assign(slot: InventorySlot, from: InventorySlot): void {
+  slot.itemType = from.quantity > 0 ? from.itemType : ItemType.NONE;
+  slot.quantity = from.quantity > 0 ? from.quantity : 0;
+  if (from.uses !== undefined && slot.quantity > 0) slot.uses = from.uses;
+  else delete slot.uses;
+}
+
+/**
+ * Put a stack back into `all` (hotbar + bag + toolbox), starting at
+ * `origin`: there if it fits, then onto the same item, then empty hotbar /
+ * bag slots. Returns how many found no room.
+ */
+function stow(all: InventorySlot[], stack: InventorySlot, origin: number): number {
+  let left = stack.quantity;
+  const size = ITEM_DATA[stack.itemType].stackSize;
+  const o = all[origin];
+  if (o && slotAccepts(origin, stack.itemType) && o.itemType === ItemType.NONE) {
+    assign(o, stack);
+    return 0;
+  }
+  if (size > 1) {
+    for (const i of [origin, ...Array.from({ length: PACK_SLOTS }, (_, k) => k)]) {
+      const s = all[i];
+      if (left <= 0 || !s || s.itemType !== stack.itemType) continue;
+      const add = Math.min(left, size - s.quantity);
+      if (add > 0) { s.quantity += add; left -= add; }
+    }
+  }
+  for (let i = 0; i < PACK_SLOTS && left > 0; i++) {
+    if (all[i].itemType !== ItemType.NONE) continue;
+    const put = Math.min(left, size);
+    assign(all[i], { itemType: stack.itemType, quantity: put, uses: stack.uses });
+    left -= put;
+  }
+  return left;
 }
 
 export class Inventory {
   private slots: InventorySlot[];
+  private toolbox: InventorySlot[];
   private selectedSlot: number = 0;
-  private hotbarSize: number = 9;
-  private totalSlots: number = 36; // 9 hotbar + 27 inventory
+  private hotbarSize: number = HOTBAR_SIZE;
+  private totalSlots: number = PACK_SLOTS; // 9 hotbar + 27 inventory
+  // A stack picked up by a right-click split, waiting to be put down
+  private held: { stack: InventorySlot; origin: number } | null = null;
+  // The toolbox rod is out (in hand) - toggled by TOOLBOX.ROD_KEY
+  private rodOut = false;
 
   constructor() {
     this.slots = [];
     for (let i = 0; i < this.totalSlots; i++) {
-      this.slots.push({ itemType: ItemType.NONE, quantity: 0 });
+      this.slots.push(emptySlot());
     }
+    this.toolbox = TOOLBOX.KINDS.map(emptySlot);
 
     // Inventory starts empty - items are obtained by mining
+  }
+
+  // Any slot by index: hotbar, bag, then toolbox
+  private ref(index: number): InventorySlot | null {
+    if (index >= 0 && index < this.totalSlots) return this.slots[index];
+    const k = index - TOOLBOX_START;
+    return k >= 0 && k < TOOLBOX_SLOTS ? this.toolbox[k] : null;
+  }
+
+  // Every slot, toolbox last (indices as ref)
+  private everySlot(): InventorySlot[] {
+    return [...this.slots, ...this.toolbox];
   }
 
   // Add item to inventory, returns amount that couldn't be added
@@ -536,13 +711,12 @@ export class Inventory {
       }
     }
 
-    // Then, try to fill empty slots
+    // Then, try to fill empty slots (a new tool is fresh: no wear carried over)
     for (let i = 0; i < this.totalSlots && remaining > 0; i++) {
       const slot = this.slots[i];
       if (slot.itemType === ItemType.NONE) {
         const canAdd = Math.min(remaining, itemData.stackSize);
-        slot.itemType = itemType;
-        slot.quantity = canAdd;
+        assign(slot, { itemType, quantity: canAdd });
         remaining -= canAdd;
       }
     }
@@ -550,15 +724,28 @@ export class Inventory {
     return remaining;
   }
 
-  // Set a specific slot's contents directly
-  public setSlot(slotIndex: number, itemType: ItemType, quantity: number): void {
-    if (slotIndex < 0 || slotIndex >= this.totalSlots) return;
-    this.slots[slotIndex].itemType = itemType;
-    this.slots[slotIndex].quantity = quantity;
-    if (quantity <= 0) {
-      this.slots[slotIndex].itemType = ItemType.NONE;
-      this.slots[slotIndex].quantity = 0;
+  /**
+   * A tool just made: into the toolbox if it has no tool of that kind
+   * ('toolbox'), else into the hotbar / bag ('inventory'), or 'full'.
+   * A non-tool goes through addItem ('inventory' / 'full').
+   */
+  public giveTool(itemType: ItemType): 'toolbox' | 'inventory' | 'full' {
+    const tool = toolOf(itemType);
+    if (tool) {
+      const box = this.toolbox[TOOLBOX.KINDS.indexOf(tool.kind)];
+      if (box.itemType === ItemType.NONE) {
+        assign(box, { itemType, quantity: 1 });
+        return 'toolbox';
+      }
     }
+    return this.addItem(itemType, 1) === 0 ? 'inventory' : 'full';
+  }
+
+  // Set a specific slot's contents directly (fresh: no tool wear)
+  public setSlot(slotIndex: number, itemType: ItemType, quantity: number): void {
+    const slot = this.ref(slotIndex);
+    if (!slot || !slotAccepts(slotIndex, itemType)) return;
+    assign(slot, { itemType, quantity });
   }
 
   // Remove item from inventory, returns amount actually removed
@@ -577,7 +764,7 @@ export class Inventory {
         removed += canRemove;
 
         if (slot.quantity === 0) {
-          slot.itemType = ItemType.NONE;
+          assign(slot, emptySlot());
         }
       }
     }
@@ -585,19 +772,12 @@ export class Inventory {
     return removed;
   }
 
-  // Check if inventory has at least this many of an item
+  // Check if inventory (hotbar + bag) has at least this many of an item
   public hasItem(itemType: ItemType, quantity: number): boolean {
-    let count = 0;
-    for (const slot of this.slots) {
-      if (slot.itemType === itemType) {
-        count += slot.quantity;
-        if (count >= quantity) return true;
-      }
-    }
-    return false;
+    return this.getItemCount(itemType) >= quantity;
   }
 
-  // Get count of item type
+  // Get count of item type (hotbar + bag; the toolbox's tools are in use, not stock)
   public getItemCount(itemType: ItemType): number {
     let count = 0;
     for (const slot of this.slots) {
@@ -613,14 +793,36 @@ export class Inventory {
     return this.slots.slice(0, this.hotbarSize);
   }
 
+  /** The toolbox's slots, in TOOLBOX.KINDS order (live references). */
+  public getToolbox(): InventorySlot[] {
+    return this.toolbox;
+  }
+
+  /** The slot index of the toolbox slot for a kind. */
+  public toolboxIndex(kind: ToolKind): number {
+    return TOOLBOX_START + TOOLBOX.KINDS.indexOf(kind);
+  }
+
   // Get selected slot index
   public getSelectedSlot(): number {
     return this.selectedSlot;
   }
 
-  // Set selected slot
+  // Set selected slot (picking a hotbar slot puts the toolbox rod away)
   public setSelectedSlot(slot: number): void {
     this.selectedSlot = Math.max(0, Math.min(this.hotbarSize - 1, slot));
+    this.rodOut = false;
+  }
+
+  /** Take the toolbox rod out, or put it away. Returns whether it is out. */
+  public toggleRod(): boolean {
+    this.rodOut = !this.rodOut && this.toolbox[TOOLBOX.KINDS.indexOf('rod')].itemType !== ItemType.NONE;
+    return this.rodOut;
+  }
+
+  /** Is the toolbox rod in hand? */
+  public isRodOut(): boolean {
+    return this.rodOut && this.toolbox[TOOLBOX.KINDS.indexOf('rod')].itemType !== ItemType.NONE;
   }
 
   // Get selected item
@@ -636,100 +838,145 @@ export class Inventory {
       emitGameEvent('placed', slot.itemType, 1);
       slot.quantity--;
       if (slot.quantity === 0) {
-        slot.itemType = ItemType.NONE;
+        assign(slot, emptySlot());
       }
       return true;
     }
     return false;
   }
 
-  // Get all slots (for inventory UI)
+  // Get all hotbar + bag slots (for inventory UI)
   public getAllSlots(): InventorySlot[] {
     return this.slots;
   }
 
-  // Swap two slots in the inventory
+  // Swap two slots (any index: hotbar, bag, toolbox); refused if a tool
+  // would land in the wrong toolbox slot
   public swapSlots(fromIndex: number, toIndex: number): void {
-    if (fromIndex < 0 || fromIndex >= this.totalSlots ||
-        toIndex < 0 || toIndex >= this.totalSlots ||
-        fromIndex === toIndex) {
-      return;
-    }
-
-    const temp = { ...this.slots[fromIndex] };
-    this.slots[fromIndex] = { ...this.slots[toIndex] };
-    this.slots[toIndex] = temp;
+    const from = this.ref(fromIndex);
+    const to = this.ref(toIndex);
+    if (!from || !to || fromIndex === toIndex) return;
+    if (!slotAccepts(toIndex, from.itemType) || !slotAccepts(fromIndex, to.itemType)) return;
+    const temp = { ...from };
+    assign(from, to);
+    assign(to, temp);
   }
 
-  // Merge or swap slots - if same item type, combine up to max stack (64), leftovers stay in source
-  // If different types, just swap
+  // Merge or swap slots - if same item type, combine up to its stack size,
+  // leftovers stay in source. If different types (or unstackable, like
+  // tools: two worn tools must never fuse), swap
   public mergeOrSwapSlots(fromIndex: number, toIndex: number): void {
-    if (fromIndex < 0 || fromIndex >= this.totalSlots ||
-        toIndex < 0 || toIndex >= this.totalSlots ||
-        fromIndex === toIndex) {
-      return;
-    }
-
-    const fromSlot = this.slots[fromIndex];
-    const toSlot = this.slots[toIndex];
-    const maxStack = 64;
-
-    // If target is empty, just move the item
-    if (toSlot.itemType === ItemType.NONE) {
-      this.slots[toIndex] = { ...fromSlot };
-      this.slots[fromIndex] = { itemType: ItemType.NONE, quantity: 0 };
-      return;
-    }
+    const fromSlot = this.ref(fromIndex);
+    const toSlot = this.ref(toIndex);
+    if (!fromSlot || !toSlot || fromIndex === toIndex) return;
 
     // If source is empty, nothing to do
     if (fromSlot.itemType === ItemType.NONE) {
       return;
     }
 
+    const maxStack = ITEM_DATA[fromSlot.itemType].stackSize;
+
     // If same item type, merge stacks
-    if (fromSlot.itemType === toSlot.itemType) {
+    if (fromSlot.itemType === toSlot.itemType && maxStack > 1) {
       const totalQuantity = fromSlot.quantity + toSlot.quantity;
       if (totalQuantity <= maxStack) {
         // All items fit in target slot
-        this.slots[toIndex].quantity = totalQuantity;
-        this.slots[fromIndex] = { itemType: ItemType.NONE, quantity: 0 };
+        toSlot.quantity = totalQuantity;
+        assign(fromSlot, emptySlot());
       } else {
         // Target slot fills up, leftovers stay in source
-        this.slots[toIndex].quantity = maxStack;
-        this.slots[fromIndex].quantity = totalQuantity - maxStack;
+        toSlot.quantity = maxStack;
+        fromSlot.quantity = totalQuantity - maxStack;
       }
       return;
     }
 
-    // Different item types - just swap
-    const temp = { ...fromSlot };
-    this.slots[fromIndex] = { ...toSlot };
-    this.slots[toIndex] = temp;
+    // Empty target, different types or tools - move / swap
+    this.swapSlots(fromIndex, toIndex);
   }
 
-  // Get a specific slot by index
+  // Get a specific slot by index (hotbar, bag or toolbox)
   public getSlot(index: number): InventorySlot | null {
-    if (index < 0 || index >= this.totalSlots) {
-      return null;
-    }
-    return this.slots[index];
+    return this.ref(index);
   }
 
-  // Export inventory state for saving
-  public exportForSave(): { itemType: number; quantity: number }[] {
-    return this.slots.map(slot => ({
+  // ---- right-click split: a stack held on the cursor ----------------------
+
+  /** The stack held on the cursor, if any. */
+  public getHeld(): InventorySlot | null {
+    return this.held?.stack ?? null;
+  }
+
+  /** Pick up half of a slot's stack, rounded up. Returns the held stack, or null. */
+  public takeHalf(index: number): InventorySlot | null {
+    const slot = this.ref(index);
+    if (this.held || !slot || slot.itemType === ItemType.NONE || slot.quantity <= 0) return null;
+    const take = halfUp(slot.quantity);
+    this.held = { stack: { itemType: slot.itemType, quantity: take, ...(slot.uses !== undefined ? { uses: slot.uses } : {}) }, origin: index };
+    slot.quantity -= take;
+    if (slot.quantity === 0) assign(slot, emptySlot());
+    return this.held.stack;
+  }
+
+  /**
+   * Put the held stack down on a slot: an empty slot takes it, the same
+   * stackable item merges (up to its stack size, the rest stays held),
+   * anything else swaps onto the cursor. False if nothing was held or the
+   * slot refuses it (a toolbox slot of another kind).
+   */
+  public placeHeld(index: number): boolean {
+    const slot = this.ref(index);
+    if (!this.held || !slot || !slotAccepts(index, this.held.stack.itemType)) return false;
+    const stack = this.held.stack;
+    const size = ITEM_DATA[stack.itemType].stackSize;
+    if (slot.itemType === ItemType.NONE) {
+      assign(slot, stack);
+      this.held = null;
+    } else if (slot.itemType === stack.itemType && size > 1) {
+      const add = Math.min(stack.quantity, size - slot.quantity);
+      slot.quantity += add;
+      stack.quantity -= add;
+      if (stack.quantity <= 0) this.held = null;
+    } else {
+      const was = { ...slot };
+      assign(slot, stack);
+      this.held = { stack: was, origin: index };
+    }
+    return true;
+  }
+
+  /** Put the held stack back (panel closed). Returns how many found no room. */
+  public returnHeld(): number {
+    if (!this.held) return 0;
+    const { stack, origin } = this.held;
+    this.held = null;
+    return stow(this.everySlot(), stack, origin);
+  }
+
+  // Export inventory state for saving: hotbar + bag, then the toolbox; a
+  // tool's wear rides as `uses`. A stack held on the cursor is saved as if
+  // put back, so closing the tab mid-split never loses it.
+  public exportForSave(): { itemType: number; quantity: number; uses?: number }[] {
+    const all = this.everySlot().map(s => ({ ...s }));
+    if (this.held) stow(all, { ...this.held.stack }, this.held.origin);
+    return all.map(slot => ({
       itemType: slot.itemType,
-      quantity: slot.quantity
+      quantity: slot.quantity,
+      ...(slot.uses !== undefined && slot.quantity > 0 ? { uses: slot.uses } : {}),
     }));
   }
 
-  // Import inventory state from save
-  public importFromSave(data: { itemType: number; quantity: number }[]): void {
-    for (let i = 0; i < Math.min(data.length, this.totalSlots); i++) {
-      this.slots[i] = {
-        itemType: data[i].itemType as ItemType,
-        quantity: data[i].quantity
-      };
+  // Import inventory state from save. Saves from before the toolbox have 36
+  // slots (the toolbox stays empty) and no `uses` (every tool loads fresh).
+  public importFromSave(data: { itemType: number; quantity: number; uses?: number }[]): void {
+    this.held = null;
+    for (let i = 0; i < Math.min(data.length, TOOLBOX_START + TOOLBOX_SLOTS); i++) {
+      const slot = this.ref(i)!;
+      const d = data[i];
+      if (!slotAccepts(i, d.itemType as ItemType)) continue;
+      const uses = typeof d.uses === 'number' && toolMaxUses(d.itemType as ItemType) !== null ? d.uses : undefined;
+      assign(slot, { itemType: d.itemType as ItemType, quantity: d.quantity, uses });
     }
   }
 }

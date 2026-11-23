@@ -128,9 +128,9 @@ export const MISSIONS: Mission[] = [
     unlocks: [I.FURNACE, I.TORCH, I.STORAGE_CHEST, I.FISHING_ROD],
   },
   {
-    id: 'stone', branch: 'trunk', icon: I.STONE, parent: 'planks', title: 'Dig stone', help: 'Dig down through the dirt.',
+    id: 'stone', branch: 'trunk', icon: I.STONE, parent: 'planks', title: 'Dig stone', help: 'Dig down through the dirt. Stone makes rock tools.',
     objectives: [{ kind: 'gained', item: I.STONE, count: 8, label: 'Stone' }],
-    unlocks: [],
+    unlocks: [I.ROCK_PICKAXE, I.ROCK_AXE, I.ROCK_SHOVEL],
   },
   {
     id: 'furnace', branch: 'trunk', icon: I.FURNACE, parent: 'stone', title: 'Build a furnace', help: 'Craft a Furnace from stone and place it.',
@@ -153,7 +153,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'ingots', branch: 'mining', icon: I.INGOT_IRON, parent: 'iron', title: 'Smelt iron', help: 'Put iron ore and coal in the furnace.',
     objectives: [{ kind: 'smelted', item: I.INGOT_IRON, count: 3, label: 'Iron ingots' }],
-    unlocks: [I.BUCKET, I.INGOT_COPPER, I.SHEARS],
+    unlocks: [I.BUCKET, I.INGOT_COPPER, I.SHEARS, I.COPPER_PICKAXE, I.COPPER_AXE, I.COPPER_SHOVEL, I.IRON_PICKAXE, I.IRON_AXE, I.IRON_SHOVEL],
   },
   {
     id: 'bucket', branch: 'mining', icon: I.WATER_BUCKET, parent: 'ingots', title: 'Carry water', help: 'Craft a bucket and fill it at water.',
@@ -300,7 +300,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'titanium', branch: 'moon', icon: I.INGOT_TITANIUM, parent: 'moonmetal', title: 'Smelt titanium', help: 'Smelt the ore.',
     objectives: [{ kind: 'smelted', item: I.INGOT_TITANIUM, count: 3, label: 'Titanium ingots' }],
-    unlocks: [],
+    unlocks: [I.TITANIUM_PICKAXE, I.TITANIUM_AXE, I.TITANIUM_SHOVEL],
   },
   {
     id: 'vacuum', branch: 'moon', icon: I.VACUUM_ENGINE, parent: 'titanium', title: 'Vacuum engine', help: 'Print a vacuum engine and a large tank.',
@@ -441,7 +441,7 @@ export const MISSIONS: Mission[] = [
   {
     id: 'steel', branch: 'construction', icon: I.STEEL_INGOT, parent: 'concrete', after: ['efurnace'], title: 'Make steel', help: 'Iron ingots with coal in the electric furnace.',
     objectives: [{ kind: 'smelted', item: I.STEEL_INGOT, count: 2, label: 'Steel ingots' }],
-    unlocks: [I.STEEL_GIRDER],
+    unlocks: [I.STEEL_GIRDER, I.STEEL_PICKAXE, I.STEEL_AXE, I.STEEL_SHOVEL],
   },
   {
     id: 'girders', branch: 'construction', icon: I.STEEL_GIRDER, parent: 'steel', title: 'Steel frame', help: 'Craft girders and raise a frame.',

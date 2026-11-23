@@ -1,4 +1,4 @@
-import { Inventory, ItemType, ITEM_DATA } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, halfUp } from './Inventory';
 import { PlacedFurnace } from '../planet/Furnace';
 import { furnaceFuel, smeltingRecipeFor, SMELTS_PER_COAL } from '../config/SmeltingRecipes';
 import { recipeLockedLabel } from './RecipeGate';
@@ -506,7 +506,7 @@ export class FurnaceUI {
       // Right-click output: pick up half
       if (this.currentFurnace.outputItem !== null && this.currentFurnace.outputCount > 0) {
         const itemType = this.currentFurnace.outputItem as ItemType;
-        const halfCount = Math.ceil(this.currentFurnace.outputCount / 2);
+        const halfCount = halfUp(this.currentFurnace.outputCount);
         const remaining = this.inventory.addItem(itemType, halfCount);
         const actuallyTaken = halfCount - remaining;
 
@@ -522,7 +522,7 @@ export class FurnaceUI {
     } else if (slotType === this.SLOT_FUEL) {
       // Right-click fuel: add half of the held fuel
       const selectedItem = this.inventory.getSelectedItem();
-      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, Math.ceil(selectedItem.quantity / 2))) {
+      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, halfUp(selectedItem.quantity))) {
         this.updateUI();
         this.notifyChanges();
       }

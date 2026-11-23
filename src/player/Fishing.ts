@@ -97,6 +97,8 @@ export class FishingSystem {
     scene: THREE.Scene,
     private camera: THREE.Camera,
     private giveFish: (item: ItemType) => boolean,
+    // Called on every cast: the rod wears by one use
+    private onCast: () => void = () => {},
   ) {
     this.floatGroup = new THREE.Group();
     const red = new THREE.Mesh(new THREE.SphereGeometry(0.06 * FLOAT_SCALE, 10, 8), new THREE.MeshBasicMaterial({ color: 0xd9332a }));
@@ -260,6 +262,7 @@ export class FishingSystem {
     this.phase = Phase.Flying;
     this.timer = 0;
     this.species = null;
+    this.onCast();
   }
 
   private lookForInterest(): void {

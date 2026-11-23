@@ -1,4 +1,4 @@
-import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, InventorySlot, halfUp } from './Inventory';
 import { PlacedStorageChest, CHEST_SLOTS } from '../planet/StorageChest';
 import { PlacedGarbagePile, GARBAGE_PILE_SLOTS } from '../planet/GarbagePile';
 import { getAssetPath } from '../utils/assetPath';
@@ -437,7 +437,7 @@ export class StorageUI {
     if (storageSlot.itemType === ItemType.NONE || storageSlot.quantity === 0) return;
 
     // Take half
-    const halfCount = Math.ceil(storageSlot.quantity / 2);
+    const halfCount = halfUp(storageSlot.quantity);
     const remaining = this.inventory.addItem(storageSlot.itemType, halfCount);
     const actuallyTaken = halfCount - remaining;
 

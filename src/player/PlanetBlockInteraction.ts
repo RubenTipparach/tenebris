@@ -11,6 +11,9 @@ import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
 import type { AirSystem } from './AirSystem';
 import { eat, isFood, tickWellFed, wellFedFactor, WellFed } from './Cooking';
+import { breakSeconds, mineTimeMult, wearAt, brokeMessage } from './Tools';
+import { TOOLBOX } from '../config/ToolConfig';
+import { renderDurability, renderToolboxHud, slotTooltip } from './ToolUI';
 
 // An engine, a fuel tank and a command module on the pad: a rocket that flies
 const ENGINES = new Set<ItemType>([ItemType.ROCKET_ENGINE, ItemType.VACUUM_ENGINE]);
@@ -1057,7 +1060,7 @@ export class PlanetBlockInteraction {
             tooltipEl.className = 'item-tooltip';
             slotEl.appendChild(tooltipEl);
           }
-          tooltipEl.textContent = itemData.name;
+          tooltipEl.textContent = slotTooltip(slot);
         } else {
           if (img) {
             img.style.display = 'none';
@@ -1070,10 +1073,23 @@ export class PlanetBlockInteraction {
           if (tooltipEl) tooltipEl.remove();
         }
 
-        // Update selection
-        slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot());
+        // A worn tool's durability bar (src/player/ToolUI.ts)
+        renderDurability(slotEl as HTMLElement, slot);
+
+        // Update selection (not while the toolbox rod is out)
+        slotEl.classList.toggle('selected', index === this.inventory.getSelectedSlot() && !this.inventory.isRodOut());
       }
     });
+    renderToolboxHud(this.inventory, () => this.toggleRod());
+  }
+
+  /** Take the toolbox rod out / put it away (the 0 key, or a click on its HUD slot). */
+  public toggleRod(): void {
+    const out = this.inventory.toggleRod();
+    if (!out && this.inventory.getToolbox()[TOOLBOX.KINDS.indexOf('rod')].itemType === ItemType.NONE) {
+      showToast('No fishing rod in the toolbox', { duration: TOOLBOX.TOAST_MS });
+    }
+    this.updateHotbarUI();
   }
 
   // Apply CSS styling to show only a portion of an atlas texture
@@ -1225,6 +1241,10 @@ export class PlanetBlockInteraction {
 
   private setupBlockSelection(): void {
     document.addEventListener('keydown', (e) => {
+      if (e.key === TOOLBOX.ROD_KEY && !this.craftingSystem.isMenuOpen()) {
+        this.toggleRod();
+        return;
+      }
       const digit = parseInt(e.key);
       if (digit >= 1 && digit <= 9) {
         this.inventory.setSelectedSlot(digit - 1);
@@ -1975,9 +1995,9 @@ export class PlanetBlockInteraction {
       this.miningProgress = 0;
     }
 
-    // Get mining time for this block
+    // Mining time for this block, faster with the right tool (src/player/Tools.ts)
     const itemType = blockToItem(blockType);
-    const mineTime = ITEM_DATA[itemType].mineTime;
+    const mineTime = breakSeconds(this.inventory, itemType);
 
     // Increase progress
     this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
@@ -2004,7 +2024,7 @@ export class PlanetBlockInteraction {
 
     // Get mining time based on tree part (trunks drop logs, leaves drop leaves)
     const itemType = treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES;
-    const mineTime = ITEM_DATA[itemType].mineTime;
+    const mineTime = breakSeconds(this.inventory, itemType);
 
     // Increase progress
     this.miningProgress += deltaTime * this.mineSpeed() / mineTime;
@@ -2021,6 +2041,8 @@ export class PlanetBlockInteraction {
   }
 
   private breakTree(mesh: THREE.Mesh, treeType: string): void {
+    // The axe (if one did the job) wears by one use
+    this.wearToolFor(treeType === 'trunk' ? ItemType.LOG : ItemType.LEAVES);
     // Add items to inventory
     if (treeType === 'trunk') {
       // Trunks drop 4-8 logs AND 4-8 sticks
@@ -2909,8 +2931,9 @@ export class PlanetBlockInteraction {
       return;
     }
 
-    // Add item to inventory
+    // Add item to inventory; the tool that dug it (if any) wears by one use
     const itemType = blockToItem(blockType);
+    this.wearToolFor(itemType);
     if (itemType !== ItemType.NONE) {
       this.inventory.addItem(itemType, 1);
       this.updateHotbarUI();
@@ -4222,6 +4245,24 @@ export class PlanetBlockInteraction {
   }
 
   // Save inventory to local storage
+  /**
+   * One use off the tool that digs a block dropping `drop` (none if bare
+   * hands did it). A broken tool toasts; the inventory saves this frame.
+   */
+  private wearToolFor(drop: ItemType): void {
+    const { toolIndex } = mineTimeMult(this.inventory, drop);
+    if (toolIndex !== null) this.wearSlot(toolIndex);
+  }
+
+  /** One use off the tool in a slot (a dig, a cast): toast if it broke, save now. */
+  public wearSlot(index: number): void {
+    const w = wearAt(this.inventory, index);
+    if (w.kind === 'none') return;
+    if (w.kind === 'broke') showToast(brokeMessage(w), { duration: TOOLBOX.TOAST_MS });
+    this.updateHotbarUI();
+    this.saveInventory();
+  }
+
   private saveInventory(): void {
     gameStorage.saveInventory(this.inventory.exportForSave());
   }
