@@ -42,6 +42,7 @@ import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
 import { Fauna } from './planet/Fauna';
 import { netSync } from './net/NetSync';
+import { AVATAR_FROM_WALKER, IDLE_ACTION } from './net/AvatarPose';
 import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
@@ -52,9 +53,6 @@ import type { ExposureInput } from './player/Survival';
 
 // Setting: new games start with a ready-to-fly rocket on a launch pad
 const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
-// Walker orientation -> avatar frame (the avatar looks down -Z, the walker
-// camera along +Z): half a turn about up. See setupMultiplayer getPose.
-const AVATAR_FROM_WALKER = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 function startWithRocket(): boolean {
   try {
     return localStorage.getItem(START_WITH_ROCKET_KEY) === '1';
@@ -1622,7 +1620,9 @@ class PlanetGame {
       // (net/Avatar.ts). Turn half a revolution about up so other players
       // see this player's face, not the back of their head.
       const q = new THREE.Quaternion(o.x, o.y, o.z, o.w).multiply(AVATAR_FROM_WALKER);
-      return { planet, p, q };
+      // What this player is doing, so others see them mine / place / interact
+      const a = flying ? { ...IDLE_ACTION } : this.blockInteraction.getActionFrame();
+      return { planet, p, q, a };
     }, name, creator.getLook());
     this.multiplayer.setFrameOffset((planetId) => {
       const o = orbitOf(planetId);

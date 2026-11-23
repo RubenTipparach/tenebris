@@ -65,6 +65,7 @@ import { MACHINE_CONFIG, MACHINE_KIND_OF, POWER_CONFIG } from '../config/PowerCo
 import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } from '../power/PowerGrid';
 import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
+import { ActionFrame, LocalAction, ShotAction } from '../net/AvatarPose';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
 import { setTorchLights } from '../planet/TorchLightUniforms';
 
@@ -341,6 +342,8 @@ export class PlanetBlockInteraction {
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
+  // What this player is doing, for other players' view of them (openspec avatar-anims)
+  private readonly action = new LocalAction();
   // Ranching: the animals round the player (set by the game once it has them)
   private fauna: Fauna | null = null;
   private animalHitCooldown = 0;
@@ -1014,7 +1017,25 @@ export class PlanetBlockInteraction {
     return false;
   }
 
+  /**
+   * A right-click action happened (a place or an interact): start the click
+   * cooldown and show the one-shot to other players. Every right-click
+   * action goes through here.
+   */
+  private usedRightClick(kind: ShotAction): void {
+    this.rightClickCooldown = this.CLICK_COOLDOWN;
+    this.action.shot(kind);
+  }
+
+  /** This player's action for the pose frame: mining, the last one-shot, the held item. */
+  public getActionFrame(): ActionFrame {
+    const held = this.inventory.getSelectedItem();
+    return this.action.frame(performance.now() / 1000, held.quantity > 0 ? held.itemType : ItemType.NONE);
+  }
+
+  // Every kind of mining shows its progress here, so this is where mining is noticed
   private updateMiningUI(progress: number): void {
+    if (progress > 0) this.action.mining(performance.now() / 1000);
     if (this.miningProgressContainer && this.miningProgressBar) {
       if (progress > 0) {
         this.miningProgressContainer.classList.add('active');
@@ -1291,6 +1312,7 @@ export class PlanetBlockInteraction {
 
   public update(deltaTime: number, leftClick: boolean, rightClick: boolean, wheelDelta: number = 0): void {
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);
+    this.action.frameAt(performance.now() / 1000);
 
     // Handle mouse wheel for hotbar scrolling
     if (wheelDelta !== 0) {
@@ -1381,7 +1403,7 @@ export class PlanetBlockInteraction {
     // An empty bucket fills at water (right click)
     if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.BUCKET &&
         this.tryFillBucket(origin, direction)) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
 
@@ -1552,13 +1574,13 @@ export class PlanetBlockInteraction {
     if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity) {
       this.eatSelected();
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
     // A space suit in hand: right click puts it on (the suit slot takes it)
     if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.SPACE_SUIT && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity && this.airSystem?.wearSuitInHand()) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
 
@@ -1573,7 +1595,7 @@ export class PlanetBlockInteraction {
       const cooker = this.cookerManager.getByMesh(cookerHit.object);
       if (rightClick && this.rightClickCooldown === 0 && cooker) {
         this.storageUI.openCooker(cooker, cooker.kind);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && cooker) {
         this.handleCookerMining(deltaTime, cooker);
       } else {
@@ -1635,7 +1657,7 @@ export class PlanetBlockInteraction {
       const machine = this.machineManager.getByMesh(machineHit.object);
       if (rightClick && this.rightClickCooldown === 0 && machine) {
         this.machineUI.openFor(machine);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && machine) {
         this.handleMachineMining(deltaTime, machine);
       } else {
@@ -1665,7 +1687,7 @@ export class PlanetBlockInteraction {
               break;
             }
           }
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.PLACE);
         }
         // No UI for cables when not holding cable item
       } else if (leftClick && cable) {
@@ -1686,7 +1708,7 @@ export class PlanetBlockInteraction {
       // Handle electric furnace interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && electricFurnace) {
         this.electricFurnaceUI.open(electricFurnace);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && electricFurnace) {
         this.handleElectricFurnaceMining(deltaTime, electricFurnace);
       } else {
@@ -1705,7 +1727,7 @@ export class PlanetBlockInteraction {
       // Handle electronics workbench interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && electronicsWorkbench) {
         this.electronicsWorkbenchUI.open(electronicsWorkbench);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && electronicsWorkbench) {
         this.handleElectronicsWorkbenchMining(deltaTime, electronicsWorkbench);
       } else {
@@ -1724,7 +1746,7 @@ export class PlanetBlockInteraction {
       // Handle computer interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && computer) {
         this.computerUI.open(computer);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && computer) {
         this.handleComputerMining(deltaTime, computer);
       } else {
@@ -1743,7 +1765,7 @@ export class PlanetBlockInteraction {
       // Handle 3D printer interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && printer) {
         this.printer3DUI.open(printer);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && printer) {
         this.handlePrinter3DMining(deltaTime, printer);
       } else {
@@ -1782,10 +1804,11 @@ export class PlanetBlockInteraction {
       if (rightClick && this.rightClickCooldown === 0 && launchPad) {
         if (this.inventory.getSelectedItem()?.itemType === ItemType.LAUNCH_PAD_SEGMENT && hitHex !== undefined && hitHex >= 0) {
           this.placeTowerSegmentByHand(launchPad, hitHex);
+          this.usedRightClick(ShotAction.PLACE);
         } else {
           this.launchPadUI.open(launchPad);
+          this.usedRightClick(ShotAction.INTERACT);
         }
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && launchPad && hitHex !== undefined && hitHex >= 0) {
         this.handleLaunchPadMining(deltaTime, launchPad, hitHex);
       } else {
@@ -1815,12 +1838,12 @@ export class PlanetBlockInteraction {
               break;
             }
           }
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.PLACE);
         } else {
           // Open UI when not holding pipe
           const network = this.copperPipeManager.getPipeNetwork(pipe.id);
           this.copperPipeUI.openPipe(pipe, network);
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.INTERACT);
         }
       } else if (leftClick && pipe) {
         this.handleCopperPipeMining(deltaTime, pipe);
@@ -1840,7 +1863,7 @@ export class PlanetBlockInteraction {
       // Handle hydro generator interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && hydroGenerator) {
         this.hydroGeneratorUI.open(hydroGenerator);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && hydroGenerator) {
         this.handleHydroGeneratorMining(deltaTime, hydroGenerator);
       } else {
@@ -1859,7 +1882,7 @@ export class PlanetBlockInteraction {
       // Handle steam engine interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && steamEngine) {
         this.steamEngineUI.open(steamEngine);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && steamEngine) {
         this.handleSteamEngineMining(deltaTime, steamEngine);
       } else {
@@ -1878,7 +1901,7 @@ export class PlanetBlockInteraction {
       // Handle storage chest interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && chest) {
         this.storageUI.open(chest);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && chest) {
         this.handleStorageChestMining(deltaTime, chest);
       } else {
@@ -1897,7 +1920,7 @@ export class PlanetBlockInteraction {
       // Handle garbage pile interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && pile) {
         this.storageUI.open(pile);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && pile) {
         this.handleGarbagePileMining(deltaTime, pile);
       } else {
@@ -1916,7 +1939,7 @@ export class PlanetBlockInteraction {
       // Handle furnace interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && furnace) {
         this.furnaceUI.open(furnace);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && furnace) {
         this.handleFurnaceMining(deltaTime, furnace);
       } else {
@@ -1972,7 +1995,7 @@ export class PlanetBlockInteraction {
       // Use the previous air block position for placement (supports horizontal placement)
       if (rightClick && this.rightClickCooldown === 0) {
         this.placeBlock(closestBlockPlanet, prevTileIndex, prevDepth);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.PLACE);
       }
     } else {
       // Hide wireframe highlight
@@ -4075,11 +4098,12 @@ export class PlanetBlockInteraction {
     }
     this.resetMining();
     if (rightClick && this.rightClickCooldown === 0 && held === ItemType.SHEARS) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       if (this.fauna.shear(pick.uid) > 0) emitGameEvent('sheared');
     } else if (leftClick && this.animalHitCooldown === 0) {
       this.animalHitCooldown = RANCHING.HIT_COOLDOWN_S;
       this.fauna.hit(pick.uid, this.player.position);
+      this.action.shot(ShotAction.SWING);
     }
     return true;
   }
