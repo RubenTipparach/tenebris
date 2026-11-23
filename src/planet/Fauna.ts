@@ -5,8 +5,9 @@ import { HexTile } from './GoldbergPolyhedron';
 import { HexBlockType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
 import {
-  FAUNA_CONFIG as C, FAUNA_SPECIES, FaunaSpecies, FaunaSpeciesId, faunaRoster, habitatOf, isWaterLife, waterLife, WaterLifeConfig,
+  FAUNA_CONFIG as C, FAUNA_SCHOOL, FAUNA_SPECIES, FaunaSpecies, FaunaSpeciesId, faunaRoster, habitatOf, isWaterLife, waterLife, WaterLifeConfig,
 } from '../config/FaunaConfig';
+import { Boid, seedSchool, stepSchool } from './Schooling';
 import { buildFaunaModel, FaunaModel } from './FaunaModels';
 import { surfaceTop, tileHash, waterColumn } from './SurfaceTiles';
 import { swimRadius, columnRadius, clearsSeabed } from './SwimRules';
@@ -56,8 +57,12 @@ import { RanchState, newRanchState, isShorn, shear as shearRule, hit as hitRule,
  *   keep a depth inside the water column of the tile they are over - eased
  *   towards a per-individual fraction of the column, then hard-clamped by
  *   SwimRules.swimRadius so they never leave the water or enter the seabed -
- *   and turn smoothly back from the shore. A school's first member leads;
- *   the rest hold an offset round it and alarm it when they see the player.
+ *   and turn smoothly back from the shore. A school (openspec
+ *   underwater-life) is ONE creature, its anchor, swimming as a solo swimmer
+ *   does, with its fish flocking round it as boids (src/planet/Schooling.ts):
+ *   each fish is held in the water under it, and the anchor flees when any
+ *   fish sees a player. It is one record in a snapshot (plus its fish
+ *   count); every client runs the same flock step round it.
  *   Seabed crawlers walk the submerged ground like walkers walk land. The
  *   swimming fish are the fishing table's own species (FaunaConfig derives
  *   them from FISH_ROSTERS). Water life rides the same live frames.
@@ -76,8 +81,8 @@ const enum State { Idle, Wander, Flee }
 // Species are sent as an index into this list (same build on every client)
 const SPECIES_IDS = Object.keys(FAUNA_SPECIES) as FaunaSpeciesId[];
 
-/** One creature in a snapshot: [id, species, site, dir xyz, groundR, face xyz, scale, tint, hover, moveW, speed, state, shorn (0/1)] */
-type SnapCreature = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+/** One creature in a snapshot: [id, species, site, dir xyz, groundR, face xyz, scale, tint, hover, moveW, speed, state, shorn (0/1), school fish (0 = not a school)] */
+type SnapCreature = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
 /** An animal action on the live channel 'faunaAct': a shear / hit sent to the host, or the host's drop back to a hitter. */
 interface FaunaAction { planet: string; act: 'shear' | 'hit' | 'drop'; id?: number; from?: [number, number, number]; to?: number; leather?: number }
 
@@ -164,7 +169,7 @@ interface Creature {
   groundR: number;        // smoothed height it stands at (a swimmer's body centre)
   surfR: number;          // water life: its tile's water surface radius
   depthT: number;         // swimmers: the fraction of the water column it keeps to
-  off: THREE.Vector3;     // school followers: station round the leader (right, up, forward)
+  boids?: SchoolFish[];   // a school's anchor: its fish (the anchor itself is not drawn)
   hover: number;
   state: State;
   timer: number;
@@ -180,6 +185,18 @@ interface Creature {
   shove: THREE.Vector3;      // knock-back velocity (tangent), dies away
   // Drawn from a host's snapshot: where it should be
   target?: { dir: THREE.Vector3; face: THREE.Vector3; groundR: number; moveW: number; speed: number };
+}
+
+/** One fish of a school: a boid (offset / velocity from the anchor) plus how it is drawn. */
+interface SchoolFish extends Boid {
+  pos: THREE.Vector3;   // world position
+  up: THREE.Vector3;    // radial-out there
+  face: THREE.Vector3;  // where it faces (tangent)
+  tile: HexTile;        // the tile under it (its water column)
+  clip: [number, number];
+  speed: number;
+  scale: number;
+  tint: number;
 }
 
 interface Herd { site: number; members: Creature[] }
@@ -211,6 +228,7 @@ export class Fauna {
   private x = new THREE.Vector3();
   private col = new THREE.Color();
   private y = new THREE.Vector3();
+  private threat = new THREE.Vector3();
 
   constructor(private scene: THREE.Scene) {
     netSync.onLive('fauna', (_from, data: FaunaSnapshot) => {
@@ -249,7 +267,7 @@ export class Fauna {
     if (!host) {
       const snap = this.remoteSnap;
       if (snap && snap.planet === planetId) { this.applySnapshot(snap, planet); this.remoteSnap = null; }
-      for (const herd of this.herds) for (const c of herd.members) this.follow(c, planet, dt);
+      for (const herd of this.herds) for (const c of herd.members) this.follow(c, planet, player, dt);
       this.draw();
       return;
     }
@@ -263,7 +281,7 @@ export class Fauna {
       this.lastScan.copy(player);
       viewers.forEach((v, i) => this.scan(planet, v, roster, viewers.length, i === 0));
     }
-    for (const herd of this.herds) for (const c of herd.members) this.step(c, herd, planet, nearest(c.pos, viewers), dt);
+    for (const herd of this.herds) for (const c of herd.members) this.step(c, planet, nearest(c.pos, viewers), dt);
     this.despawn(viewers);
     this.draw();
 
@@ -287,7 +305,7 @@ export class Fauna {
           r(c.dir.x, d), r(c.dir.y, d), r(c.dir.z, d), r(c.groundR, l),
           r(c.face.x, d), r(c.face.y, d), r(c.face.z, d),
           r(c.scale, l), r(c.tint, l), r(c.hover, l), r(c.moveW, l), r(c.speed, l), c.state,
-          isShorn(c.ranch, this.time) ? 1 : 0]);
+          isShorn(c.ranch, this.time) ? 1 : 0, c.boids?.length ?? 0]);
       }
     }
     return { planet: planet.getName(), animals };
@@ -301,7 +319,7 @@ export class Fauna {
     const herds = new Map<number, Herd>();
     for (const a of snap.animals) {
       if (!Array.isArray(a) || a.length < 16) continue;
-      const [id, sp, site, dx, dy, dz, g, fx, fy, fz, scale, tint, hover, moveW, speed, state, shorn] = a;
+      const [id, sp, site, dx, dy, dz, g, fx, fy, fz, scale, tint, hover, moveW, speed, state, shorn, fish] = a;
       const render = this.renders.get(SPECIES_IDS[sp]);
       if (!render) { if (SPECIES_IDS[sp]) this.load(SPECIES_IDS[sp]); continue; }
       const target = { dir: new THREE.Vector3(dx, dy, dz).normalize(), face: new THREE.Vector3(fx, fy, fz).normalize(), groundR: g, moveW, speed };
@@ -311,8 +329,8 @@ export class Fauna {
         const tile = poly.getTileAtPointFromHint(target.dir.clone().multiplyScalar(planet.radius), hint);
         c = {
           id, render, cfg: render.cfg, dir: target.dir.clone(), pos: new THREE.Vector3(), heading: target.face.clone(), face: target.face.clone(),
-          tile, tileR: g, groundR: g, surfR: g, depthT: 0.5, off: new THREE.Vector3(),
-        hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
+          tile, tileR: g, groundR: g, surfR: g, depthT: 0.5,
+          hover, state: state as State, timer: lerp(render.cfg.idleTime, Math.random()), speed,
           phase: [Math.random(), Math.random()], moveW, scale, tint, bobPhase: Math.random() * Math.PI * 2,
           ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
         };
@@ -320,6 +338,10 @@ export class Fauna {
       }
       c.target = target;
       c.state = state as State;
+      // a school: as many fish as the host has, flocking round it here
+      const n = typeof fish === 'number' && render.cfg.school ? Math.min(fish, C.maxPerSpecies) : 0;
+      if (!n) c.boids = undefined;
+      else if (c.boids?.length !== n) this.addFlock(c, n, planet);
       // a drawn animal's fleece is whatever the host says (it alone regrows it)
       c.ranch.shornUntil = shorn ? Infinity : 0;
       let herd = herds.get(site);
@@ -331,7 +353,7 @@ export class Fauna {
   }
 
   /** Ease a drawn creature towards the host's latest word on it. */
-  private follow(c: Creature, planet: Planet, dt: number): void {
+  private follow(c: Creature, planet: Planet, player: THREE.Vector3, dt: number): void {
     const t = c.target;
     if (t) {
       const k = Math.min(1, dt * C.mp.followRate);
@@ -345,6 +367,7 @@ export class Fauna {
     }
     this.animate(c, dt);
     this.place(c, planet);
+    if (c.boids) this.stepFlock(c, planet, player, dt);
   }
 
   /** Becoming the host: carry on simulating the creatures the old host left. */
@@ -381,6 +404,7 @@ export class Fauna {
     const spheres: { center: THREE.Vector3; radius: number }[] = [];
     for (const h of this.herds) {
       for (const c of h.members) {
+        if (c.boids) continue; // a school's anchor has no body (its fish aren't ranched)
         all.push(c);
         spheres.push(this.boundsOf(c));
       }
@@ -486,13 +510,15 @@ export class Fauna {
   public debugCounts(): { planet: string | null; herds: number; creatures: number; species: Record<string, number> } {
     const species: Record<string, number> = {};
     let creatures = 0;
-    for (const h of this.herds) for (const c of h.members) { species[c.render.id] = (species[c.render.id] ?? 0) + 1; creatures++; }
+    for (const h of this.herds) for (const c of h.members) { const n = heads(c); species[c.render.id] = (species[c.render.id] ?? 0) + n; creatures += n; }
     return { planet: this.planet?.getName() ?? null, herds: this.herds.length, creatures, species };
   }
 
   /** Every live creature's species and world position (debug / screenshots). */
   public debugCreatures(): { id: string; uid: number; pos: THREE.Vector3; moving: boolean }[] {
-    return this.herds.flatMap(h => h.members.map(c => ({ id: c.render.id, uid: c.id, pos: c.pos.clone(), moving: c.speed > 0.05 })));
+    return this.herds.flatMap(h => h.members.flatMap(c => c.boids
+      ? c.boids.map(b => ({ id: c.render.id, uid: c.id, pos: b.pos.clone(), moving: b.speed > 0.05 }))
+      : [{ id: c.render.id, uid: c.id, pos: c.pos.clone(), moving: c.speed > 0.05 }]));
   }
 
   private clear(): void {
@@ -540,10 +566,10 @@ export class Fauna {
     return c.render.bounds.radius * c.scale * W.bodyHalf + c.cfg.bob[0];
   }
 
-  /** The radius a swimmer wants (leader / solo: its column fraction; follower: its station), clamped into the water. */
-  private swimTarget(c: Creature, lead: Creature | null, W: WaterLifeConfig): number {
+  /** The radius a swimmer wants (its column fraction), clamped into the water. */
+  private swimTarget(c: Creature, W: WaterLifeConfig): number {
     const half = this.halfHeight(c, W);
-    const want = lead ? lead.groundR + c.off.y : columnRadius(c.tileR, c.surfR, c.depthT);
+    const want = columnRadius(c.tileR, c.surfR, c.depthT);
     return swimRadius(want, c.tileR, c.surfR, W.bedMargin + half, W.surfaceMargin + half);
   }
 
@@ -574,7 +600,7 @@ export class Fauna {
     const landRoster = roster.filter(id => !isWaterLife(FAUNA_SPECIES[id]));
     const waterRoster = roster.filter(id => isWaterLife(FAUNA_SPECIES[id]));
     let live = 0, liveWater = 0;
-    for (const h of this.herds) for (const c of h.members) { live++; if (isWaterLife(c.cfg)) liveWater++; }
+    for (const h of this.herds) for (const c of h.members) { const n = heads(c); live += n; if (isWaterLife(c.cfg)) liveWater += n; }
     const maxAll = C.maxCreatures * viewers, maxLand = C.maxLand * viewers, maxWater = C.maxWater * viewers;
     const minDist = self && this.arrived ? C.arrivalMinSpawnDistance : C.minSpawnDistance;
     const playerDir = player.clone().sub(planet.center);
@@ -621,15 +647,22 @@ export class Fauna {
         C.maxPerSpecies - this.speciesCount(render));
       if (room <= 0) continue;
       const members: Creature[] = [];
-      for (let i = 0; i < room; i++) {
-        const c = this.spawn(planet, render, tile, dir, ground, members[0] ?? null);
-        if (c) members.push(c);
+      if (cfg.school) {
+        // a school: one anchor, its fish flocking round it
+        const c = this.spawn(planet, render, tile, dir, ground);
+        if (c) { this.addFlock(c, room, planet); members.push(c); }
+      } else {
+        for (let i = 0; i < room; i++) {
+          const c = this.spawn(planet, render, tile, dir, ground);
+          if (c) members.push(c);
+        }
       }
       if (!members.length) continue;
       this.sites.add(tile.index);
       this.herds.push({ site: tile.index, members });
-      live += members.length;
-      if (water) liveWater += members.length;
+      const n = members.reduce((k, c) => k + heads(c), 0);
+      live += n;
+      if (water) liveWater += n;
     }
     // the first scan that finds generated terrain counts as the arrival one
     if (self && sawGround) this.arrived = false;
@@ -637,13 +670,12 @@ export class Fauna {
 
   private speciesCount(render: SpeciesRender): number {
     let n = 0;
-    for (const h of this.herds) for (const c of h.members) if (c.render === render) n++;
+    for (const h of this.herds) for (const c of h.members) if (c.render === render) n += heads(c);
     return n;
   }
 
-  /** One new member of a herd at a site (lead: the herd's first member, for a school's stations). */
-  private spawn(planet: Planet, render: SpeciesRender, site: HexTile, siteDir: THREE.Vector3, siteGround: number,
-    lead: Creature | null): Creature | null {
+  /** One new member of a herd at a site (or a school's anchor). */
+  private spawn(planet: Planet, render: SpeciesRender, site: HexTile, siteDir: THREE.Vector3, siteGround: number): Creature | null {
     const cfg = render.cfg;
     const land = !isWaterLife(cfg);
     const fits = (ti: number) => {
@@ -659,61 +691,32 @@ export class Fauna {
     let floor = fits(tile.index);
     if (!floor) { tile = site; dir.copy(siteDir); floor = fits(tile.index); }
     if (!floor) return null;
-    const heading = lead ? lead.heading.clone() : randomTangent(dir, new THREE.Vector3());
+    const heading = randomTangent(dir, new THREE.Vector3());
     const c: Creature = {
       id: this.nextId++, render, cfg, dir, pos: new THREE.Vector3(), heading, face: heading.clone(), tile,
       tileR: floor.r, groundR: floor.r, surfR: floor.surf, depthT: lerp(cfg.swimBand ?? [0.5, 0.5], Math.random()),
-      off: new THREE.Vector3(),
       hover: lerp(cfg.hover, Math.random()),
       state: State.Idle, timer: lerp(cfg.idleTime, Math.random()), speed: 0,
       phase: [Math.random(), Math.random()], moveW: 0,
       scale: lerp(cfg.scale, Math.random()), tint: lerp(C.tint, Math.random()), bobPhase: Math.random() * Math.PI * 2,
       ranch: newRanchState(), panic: 0, fleeFrom: new THREE.Vector3(), shove: new THREE.Vector3(),
     };
-    if (swims(cfg)) {
-      const W = waterLife(planet.getName());
-      if (cfg.school && lead) {
-        // a station round the leader: beside / above / behind it, never on it
-        const s = cfg.school;
-        c.off.set((Math.random() * 2 - 1) * s, (Math.random() * 2 - 1) * s * 0.4, -Math.random() * s);
-      }
-      c.groundR = this.swimTarget(c, null, W);
-    }
+    if (swims(cfg)) c.groundR = this.swimTarget(c, waterLife(planet.getName()));
     this.place(c, planet);
     return c;
   }
 
-  private step(c: Creature, herd: Herd, planet: Planet, player: THREE.Vector3, dt: number): void {
+  private step(c: Creature, planet: Planet, player: THREE.Vector3, dt: number): void {
     const cfg = c.cfg;
     const up = c.dir;
     const swimmer = swims(cfg);
     const W = swimmer ? waterLife(planet.getName()) : null;
-    const lead = swimmer && cfg.school && herd.members[0] !== c ? herd.members[0] : null;
-    const dist = c.pos.distanceTo(player);
-    let gap = 0, ahead = 0; // a school member: how far (along the ground) it is off its station, and which way
-    if (lead) {
-      // a school member: sees the player for the whole school, else holds its station
-      if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) {
-        lead.panic = Math.max(lead.panic, W!.schoolAlarmS);
-        lead.fleeFrom.copy(player);
-      }
-      this.x.crossVectors(lead.dir, lead.face).normalize();
-      const station = this.v.copy(lead.pos).addScaledVector(this.x, c.off.x).addScaledVector(lead.face, c.off.z).sub(c.pos);
-      station.addScaledVector(up, -station.dot(up));
-      gap = station.length();
-      if (gap > 1e-6) station.divideScalar(gap);
-      // ahead of its station (> 0: the station is in front): slow down rather than turn round
-      ahead = station.dot(lead.face);
-      c.heading.copy(lead.face).addScaledVector(station, Math.min(1, gap * W!.schoolGain) * Math.max(0, ahead + 1) / 2);
-      tangent(c.heading, up);
-      c.state = lead.state;
-    } else if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) {
-      c.state = State.Flee;
-    }
-    if (lead) {
-      // stations are steered above
-    } else if (c.panic > 0) {
-      // hit (or alarmed by its school): run from there until the panic wears off
+    // a school sees the player through its nearest fish
+    let dist = c.pos.distanceTo(player);
+    if (c.boids) for (const b of c.boids) dist = Math.min(dist, b.pos.distanceTo(player));
+    if (cfg.fleeRadius > 0 && dist < cfg.fleeRadius) c.state = State.Flee;
+    if (c.panic > 0) {
+      // hit: run from there until the panic wears off
       c.panic -= dt;
       c.state = State.Flee;
       c.heading.copy(c.pos).sub(c.fleeFrom);
@@ -746,12 +749,7 @@ export class Fauna {
         }
       }
     }
-    let target = c.state === State.Idle ? 0 : c.state === State.Wander ? cfg.walkSpeed : cfg.fleeSpeed;
-    if (lead) {
-      // keep up: the leader's pace, plus a little to close on the station
-      const close = Math.max(-lead.speed, Math.min(cfg.walkSpeed * W!.schoolCatchUp, ahead * gap * W!.schoolGain));
-      target = Math.max(0, Math.min(cfg.fleeSpeed, lead.speed + close));
-    }
+    const target = c.state === State.Idle ? 0 : c.state === State.Wander ? cfg.walkSpeed : cfg.fleeSpeed;
     const blend = Math.min(1, dt * C.blendRate);
     c.speed += (target - c.speed) * blend;
     c.face.lerp(c.heading, Math.min(1, dt * C.turnRate));
@@ -794,7 +792,7 @@ export class Fauna {
     }
     if (swimmer) {
       // ease to the depth it wants, then hold it inside this tile's water
-      const want = this.swimTarget(c, lead, W!);
+      const want = this.swimTarget(c, W!);
       c.groundR += (want - c.groundR) * Math.min(1, dt * W!.depthFollowRate);
       const half = this.halfHeight(c, W!);
       c.groundR = swimRadius(c.groundR, c.tileR, c.surfR, W!.bedMargin + half, W!.surfaceMargin + half);
@@ -803,6 +801,73 @@ export class Fauna {
     }
     this.animate(c, dt);
     this.place(c, planet);
+    if (c.boids) this.stepFlock(c, planet, player, dt);
+  }
+
+  /** A school's fish round its anchor: (n) new ones scattered in its spread. */
+  private addFlock(c: Creature, n: number, planet: Planet): void {
+    const boids = seedSchool(n, c.dir, c.cfg.school ?? 0, FAUNA_SCHOOL);
+    c.boids = boids.map(b => ({
+      ...b, pos: c.pos.clone().add(b.off), up: c.dir.clone(), face: c.face.clone(), tile: c.tile,
+      clip: [Math.random(), Math.random()] as [number, number], speed: 0,
+      scale: lerp(c.cfg.scale, Math.random()), tint: lerp(C.tint, Math.random()),
+    }));
+    this.stepFlock(c, planet, null, 0);
+  }
+
+  /**
+   * A school's flock step (host and drawn alike, round wherever the anchor
+   * is): the boids rules (Schooling.ts), then each fish held in the water
+   * column under it - over the shore or too-shallow water it is drawn back
+   * to the anchor - facing the way it swims.
+   */
+  private stepFlock(c: Creature, planet: Planet, player: THREE.Vector3 | null, dt: number): void {
+    const boids = c.boids!;
+    const S = FAUNA_SCHOOL;
+    const W = waterLife(planet.getName());
+    const poly = planet.getPolyhedron();
+    stepSchool(boids, {
+      up: c.dir, radius: c.cfg.school ?? 0, threat: player ? this.threat.copy(player).sub(c.pos) : null,
+      fleeRadius: c.cfg.fleeRadius, speed: c.cfg.walkSpeed, time: this.time,
+    }, S, dt);
+    const anchorVel = this.y.copy(c.face).multiplyScalar(c.speed);
+    const blend = Math.min(1, dt * C.blendRate);
+    for (const b of boids) {
+      const rel = this.v.copy(c.pos).add(b.off).sub(planet.center);
+      let r = rel.length();
+      b.up.copy(rel).divideScalar(r);
+      b.tile = poly.getTileAtPointFromHint(this.x.copy(b.up).multiplyScalar(planet.radius), b.tile);
+      let floor = this.floorAt(c.cfg, planet, b.tile.index);
+      if (!floor) {
+        // over the shore: back toward the anchor, in the anchor's water
+        b.off.multiplyScalar(Math.max(0, 1 - dt * S.shorePull));
+        b.vel.addScaledVector(b.off, -dt * S.shorePull);
+        floor = { r: c.tileR, surf: c.surfR };
+        rel.copy(c.pos).add(b.off).sub(planet.center);
+        r = rel.length();
+        b.up.copy(rel).divideScalar(r);
+      }
+      const half = c.render.bounds.radius * b.scale * W.bodyHalf;
+      const held = swimRadius(r, floor.r, floor.surf, W.bedMargin + half, W.surfaceMargin + half);
+      if (held !== r) {
+        // at the bed or the surface: stop pushing into it
+        const into = b.vel.dot(b.up) * (held - r);
+        if (into < 0) b.vel.addScaledVector(b.up, -b.vel.dot(b.up));
+        r = held;
+      }
+      b.pos.copy(planet.center).addScaledVector(b.up, r);
+      b.off.copy(b.pos).sub(c.pos);
+      // face the way it swims (the school's velocity plus its own)
+      const vel = this.x.copy(anchorVel).add(b.vel);
+      vel.addScaledVector(b.up, -vel.dot(b.up));
+      b.speed += (vel.length() - b.speed) * blend;
+      if (vel.lengthSq() > 1e-6) b.face.lerp(vel.normalize(), Math.min(1, dt * S.faceRate));
+      tangent(b.face, b.up);
+      // its fin beat quickens with its speed (never stops: swimmers always fin)
+      const rate = Math.max(b.speed / c.cfg.walkSpeed, 1);
+      b.clip[CLIP_IDLE] = (b.clip[CLIP_IDLE] + dt / c.render.durations[CLIP_IDLE]) % 1;
+      b.clip[CLIP_MOVE] = (b.clip[CLIP_MOVE] + dt / c.render.durations[CLIP_MOVE] * rate) % 1;
+    }
   }
 
   /** Advance the creature's clips from its speed (host and drawn alike). */
@@ -842,6 +907,21 @@ export class Fauna {
     for (const h of this.herds) {
       for (const c of h.members) {
         const r = c.render;
+        if (c.boids) {
+          // a school: its fish, not its anchor
+          for (const b of c.boids) {
+            if (r.count >= C.maxPerSpecies) break;
+            const i = r.count++;
+            this.x.crossVectors(b.up, b.face).normalize();
+            this.m.makeBasis(this.x, b.up, b.face).scale(this.v.setScalar(b.scale)).setPosition(b.pos);
+            r.mesh.setMatrixAt(i, this.m);
+            r.mesh.setColorAt(i, this.col.setScalar(b.tint));
+            r.anim.setXYZ(i, 1, b.clip[CLIP_IDLE], b.clip[CLIP_MOVE]);
+            r.fleece?.setX(i, 1);
+          }
+          continue;
+        }
+        if (r.count >= C.maxPerSpecies) continue;
         const i = r.count++;
         this.x.crossVectors(c.dir, c.face).normalize();
         this.m.makeBasis(this.x, c.dir, c.face).scale(this.v.setScalar(c.scale)).setPosition(c.pos);
@@ -860,6 +940,11 @@ export class Fauna {
       if (r.fleece) r.fleece.needsUpdate = true;
     }
   }
+}
+
+/** How many animals a creature is (a school's anchor: its fish) - what the caps count. */
+function heads(c: Creature): number {
+  return c.boids ? c.boids.length : 1;
 }
 
 function nearest(p: THREE.Vector3, list: THREE.Vector3[]): THREE.Vector3 {

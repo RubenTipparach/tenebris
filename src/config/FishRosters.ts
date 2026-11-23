@@ -60,6 +60,9 @@ export const FISH_ROSTERS: Record<string, FishSpecies[]> = {
       look: { shape: 'fish', body: 0x4f6f8f, back: 0x3a5470, belly: 0x9fb6c9, fin: 0x4f6f8f, height: 0.42, school: [2, 4] } },
     { item: ItemType.FISH_SERPENT, name: 'Sea serpent', lengthM: 1.3, minDepth: 3, bite: 0.12, pull: 1.45, strength: 4,
       look: { shape: 'eel', body: 0x307866, back: 0x1e5042, belly: 0xb6d0b2, fin: 0x1e5042, school: [1, 1] } },
+    // A small silver schooling fish with a blue back (openspec underwater-life)
+    { item: ItemType.FISH_SPRAT, name: 'Glimmer sprat', lengthM: 0.12, minDepth: 1, bite: 0.6, pull: 0.35, strength: 1,
+      look: { shape: 'fish', body: 0xc2c3c7, back: 0x29adff, belly: 0xfff1e8, fin: 0x29adff, stripe: 0x1d2b53, height: 0.28, school: [8, 12] } },
   ],
   // Verdance: emerald river water, red laterite banks
   verdance: [

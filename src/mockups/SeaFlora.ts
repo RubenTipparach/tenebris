@@ -5,7 +5,7 @@ import { HexTile } from '../planet/GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import type { CelestialBodyConfig } from '../config/SolarSystemConfig';
 import { SEA_FLORA, SEA_FLORA_SPECIES, SeaFloraLook, SeaFloraShape, SeaFloraSpecies, SeaFloraTable } from '../config/SeaFloraConfig';
-import { bodyGrowsSeaFlora, planSeaTile, seabedOf } from '../planet/SeaFloraZones';
+import { bodyGrowsSeaFlora, neighbourBed, planSeaTile, rockyBed, rockyDepthLimit, seabedOf } from '../planet/SeaFloraZones';
 
 /**
  * Sea flora (openspec ocean-life 2.1): the seabed layer of GroundClutter.
@@ -42,12 +42,15 @@ export class SeaFlora {
   private planet: Planet | null = null;
   private table: SeaFloraTable | null = null;
   private seed = 0;
+  private rockyDepth = 0;
   private readonly m = new THREE.Matrix4();
   private readonly q = new THREE.Quaternion();
   private readonly yaw = new THREE.Quaternion();
   private readonly pos = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private readonly Y = new THREE.Vector3(0, 1, 0);
+  private readonly tx = new THREE.Vector3();
+  private readonly tz = new THREE.Vector3();
 
   constructor(private scene: THREE.Scene) {}
 
@@ -55,6 +58,7 @@ export class SeaFlora {
   public begin(planet: Planet, body: CelestialBodyConfig | undefined): void {
     this.planet = planet;
     this.table = bodyGrowsSeaFlora(body) ? body.seaFlora : null;
+    this.rockyDepth = this.table ? rockyDepthLimit(this.table) : 0;
     this.seed = planet.getSeed();
     for (const l of this.layers.values()) l.count = 0;
   }
@@ -64,8 +68,13 @@ export class SeaFlora {
     const planet = this.planet, table = this.table;
     if (!planet || !table) return;
     const ti = tile.index;
-    const col = seabedOf(d => planet.getBlock(ti, d), planet.getMaxDepth());
+    const maxDepth = planet.getMaxDepth();
+    const col = seabedOf(d => planet.getBlock(ti, d), maxDepth);
     if (!col) return;
+    // anemones' ground: rock, or a step in the bed next to a neighbour
+    if (col.surface - col.bed <= this.rockyDepth) {
+      col.rocky = rockyBed(table, col, tile.neighbors.map(n => neighbourBed(d => planet.getBlock(n, d), maxDepth)));
+    }
     const bedRadius = planet.depthToRadius(col.bed);
     const surfaceRadius = planet.depthToRadius(col.surface) - PlayerConfig.WATER_SURFACE_OFFSET;
     const plants = planSeaTile(table, ti, this.seed, [dir.x, dir.y, dir.z], col, bedRadius, surfaceRadius);
@@ -77,6 +86,11 @@ export class SeaFlora {
       const v = tile.vertices[Math.min(tile.vertices.length - 1, Math.floor(p.corner * tile.vertices.length))];
       const at = tile.center.clone().lerp(v, p.spread).normalize();
       this.pos.copy(planet.center).addScaledVector(at, p.baseRadius);
+      if (p.nudge[0] || p.nudge[1]) {
+        // a clump member, off its tile's spot in the tangent plane
+        this.pos.addScaledVector(this.tx.set(1, 0, 0).applyQuaternion(this.q), p.nudge[0])
+          .addScaledVector(this.tz.set(0, 0, 1).applyQuaternion(this.q), p.nudge[1]);
+      }
       this.yaw.setFromAxisAngle(this.Y, p.yaw);
       this.scale.set(p.width, p.height, p.width);
       this.m.compose(this.pos, this.q.clone().multiply(this.yaw), this.scale);
@@ -277,14 +291,25 @@ function buildShape(shape: SeaFloraShape): THREE.BufferGeometry {
       break;
     }
     case 'anemone': {
-      // A stout column, a ring of tentacles; the tips are the accent that glows
-      b.tube([[0, 0, 0], [0, 0.22, 0], [0, 0.4, 0]], 0.18, 0.22, 7, [0, 1, 1]);
-      const n = 14;
+      // A squat column flaring to an oral disc (a dark mouth in the middle),
+      // two rings of plump tentacles curling out and up from its rim; the
+      // tips are the accent (the glow anemone's glow)
+      b.tube([[0, 0, 0], [0, 0.22, 0], [0, 0.42, 0]], 0.2, 0.27, 8, [0, 1, 1]);
+      const disc = 0.27, rim = 0.42;
+      for (let i = 0; i < 8; i++) {
+        const a0 = (i / 8) * Math.PI * 2, a1 = ((i + 1) / 8) * Math.PI * 2;
+        b.tri([0, rim + 0.01, 0], polar(a1, disc * 0.35, rim + 0.01), polar(a0, disc * 0.35, rim + 0.01), 0);
+        b.quad(polar(a0, disc * 0.35, rim + 0.01), polar(a1, disc * 0.35, rim + 0.01), polar(a1, disc, rim), polar(a0, disc, rim), 2, 1);
+      }
+      const n = 22;
       for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
-        const ring = i % 2 ? 0.16 : 0.1;
-        const root = polar(a, ring, 0.38), tip = polar(a, ring + 0.18 + b.rnd() * 0.1, 0.8 + b.rnd() * 0.2);
-        b.tube(arc(root, tip, 3, polar(a, 0.05, 0.05)), 0.03, 0.014, 4, [1, 2, 2, 3]);
+        const a = (i / n) * Math.PI * 2 + (i % 2) * 0.12;
+        const inner = i % 2 === 1;
+        const r0 = inner ? disc * 0.6 : disc * 0.92;
+        const root = polar(a, r0, rim);
+        const reach = inner ? 0.2 + b.rnd() * 0.08 : 0.3 + b.rnd() * 0.1;
+        const tip = polar(a, r0 + reach, rim + (inner ? 0.5 : 0.32) + b.rnd() * 0.12);
+        b.tube(arc(root, tip, 3, polar(a, inner ? 0.02 : 0.07, 0.08)), 0.04, 0.016, 4, [1, 2, 2, 3]);
       }
       break;
     }
@@ -358,6 +383,67 @@ function buildShape(shape: SeaFloraShape): THREE.BufferGeometry {
       }
       break;
     }
+    case 'ribbon': {
+      // Ribbon weed: a few long flat ribbons from one root, each twisting
+      // slowly as it rises (its flat side turns), light toward the top
+      const n = 5, segs = 12;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + b.rnd() * 0.6;
+        const top = 0.75 + b.rnd() * 0.25, twist = 1.5 + b.rnd() * 2, lean = 0.05 + b.rnd() * 0.08;
+        const pts: V3[] = Array.from({ length: segs + 1 }, (_, k) => {
+          const y = (k / segs) * top;
+          return [Math.cos(a) * (0.03 + lean * y), y, Math.sin(a) * (0.03 + lean * y)];
+        });
+        for (let k = 0; k < segs; k++) {
+          const tw0 = a + twist * (k / segs), tw1 = a + twist * ((k + 1) / segs);
+          const w0 = 0.09 * (1 - 0.4 * k / segs), w1 = 0.09 * (1 - 0.4 * (k + 1) / segs);
+          const s0: V3 = [Math.cos(tw0) * w0 / 2, 0, Math.sin(tw0) * w0 / 2], s1: V3 = [Math.cos(tw1) * w1 / 2, 0, Math.sin(tw1) * w1 / 2];
+          const t0 = k < 2 ? 0 : k < segs - 3 ? 1 : 2, t1 = k + 1 < 2 ? 0 : k + 1 < segs - 3 ? 1 : k + 1 === segs ? 3 : 2;
+          b.quad(sub(pts[k], s0), add(pts[k], s0), add(pts[k + 1], s1), sub(pts[k + 1], s1), t0, t1);
+        }
+      }
+      break;
+    }
+    case 'streamer': {
+      // Streamer weed: a thin stem to the top hung with pairs of narrow
+      // leaflets angled up, the top leaflets lighter
+      const stems = 3, segs = 10;
+      for (let k = 0; k < stems; k++) {
+        const a = k * 2.2 + b.rnd() * 0.6, r = 0.04 + b.rnd() * 0.06, top = 0.8 + b.rnd() * 0.2;
+        const stem: V3[] = Array.from({ length: segs + 1 }, (_, i) => {
+          const y = (i / segs) * top;
+          return [Math.cos(a) * r * (0.4 + y), y, Math.sin(a) * r * (0.4 + y)];
+        });
+        b.tube(stem, 0.014, 0.008, 3, [0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 2]);
+        for (let i = 1; i <= segs; i++) {
+          for (const side of [-1, 1]) {
+            const la = a + i * 1.3 + (side > 0 ? 0 : Math.PI);
+            const root = stem[i], out = add(root, polar(la, 0.09 + b.rnd() * 0.05, 0.05));
+            const across = norm(cross(sub(out, root), [0, 1, 0]));
+            const tone = i > segs - 3 ? 2 : 1;
+            b.strip([root, add(root, scl(sub(out, root), 0.5)), out], across, 0.03, 0.012, [tone, tone, i === segs ? 3 : tone]);
+          }
+        }
+      }
+      break;
+    }
+    case 'tresses': {
+      // Bog tresses: a tight bunch of hair-fine strands that fan out a
+      // little and wander as they rise, the tips catching the light
+      const n = 16, segs = 8;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + b.rnd() * 0.4;
+        const top = 0.7 + b.rnd() * 0.3, fan = 0.04 + b.rnd() * 0.12, kink = b.rnd() * Math.PI * 2;
+        const pts: V3[] = Array.from({ length: segs + 1 }, (_, k) => {
+          const y = (k / segs) * top;
+          const wob = Math.sin(k * 1.1 + kink) * 0.03 * y;
+          return [Math.cos(a) * (0.02 + fan * y) + wob, y, Math.sin(a) * (0.02 + fan * y) - wob];
+        });
+        const side = norm(cross(sub(pts[segs], pts[0]), [Math.cos(a), 0, Math.sin(a)]));
+        b.strip(pts, side, 0.035, 0.012, [0, 0, 1, 1, 1, 2, 2, 3]);
+      }
+      break;
+    }
     case 'bladderwort': {
       // A flat mat of fine fronds (y ~0), flower stalks up to the surface (y 1)
       const n = 12;
@@ -395,6 +481,9 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
       ramps: { value: ramps },
       swayAmp: { value: look.sway },
       swaySpeed: { value: look.swaySpeed },
+      waveLag: { value: look.wave ?? 0 },
+      flutterAmp: { value: look.flutter?.amp ?? 0 },
+      flutterSpeed: { value: look.flutter?.speed ?? 0 },
       bobAmp: { value: look.float?.bob ?? 0 },
       bobSpeed: { value: look.float?.bobSpeed ?? 0 },
       currentAxis: { value: new THREE.Vector3(...S.CURRENT_AXIS).normalize() },
@@ -416,6 +505,9 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
       uniform float time;
       uniform float swayAmp;
       uniform float swaySpeed;
+      uniform float waveLag;
+      uniform float flutterAmp;
+      uniform float flutterSpeed;
       uniform float bobAmp;
       uniform float bobSpeed;
       uniform vec3 currentAxis;
@@ -443,8 +535,25 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
         vec3 across = cross(up, along);
         float ph = iPhase + dot(base, vec3(0.13, 0.11, 0.17));
         float sway = swayAmp * h * bend * bend;
-        w.xyz += (along * sin(time * swaySpeed + ph)
-          + across * ${f(S.WOBBLE)} * sin(time * swaySpeed * ${f(S.WOBBLE_SPEED)} + ph * 1.7)) * sway;
+        // The travelling wave: the phase lags up the plant, so the bend runs
+        // root to tip as an S instead of the plant leaning as one piece
+        float t = time * swaySpeed + ph - waveLag * bend;
+        w.xyz += (along * sin(t)
+          + across * ${f(S.WOBBLE)} * sin(t * ${f(S.WOBBLE_SPEED)} + ph * 1.7)) * sway;
+        // Tentacle flutter (anemones): each tentacle by its angle round the
+        // column, opening and closing the ring and swirling round it
+        if (flutterAmp > 0.0) {
+          vec2 rxz = position.xz;
+          float rr = length(rxz);
+          if (rr > 1e-4) {
+            float ang = atan(rxz.y, rxz.x);
+            float ft = time * flutterSpeed + ang * ${f(S.FLUTTER_LOBES)} + ph - waveLag * bend;
+            vec3 radial = normalize(m * vec3(rxz.x, 0.0, rxz.y));
+            vec3 swirl = normalize(cross(up, radial));
+            float fa = flutterAmp * h * bend * bend;
+            w.xyz += (radial * ${f(S.FLUTTER_RADIAL)} * sin(ft) + swirl * ${f(1 - S.FLUTTER_RADIAL)} * cos(ft * 1.3)) * fa;
+          }
+        }
         // Floaters bob down from their rest, never above it
         w.xyz += up * (sin(time * bobSpeed + ph) * 0.5 - 0.5) * bobAmp;
         // Normals through the inverse-transpose of a rotate-scale matrix

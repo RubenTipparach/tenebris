@@ -24,7 +24,7 @@ Writes, under public/textures/:
   battery pack are rocket equipment, not stack parts, so they have no part
   texture)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
-  gourami, violet gar)
+  gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
 Deterministic - rerun to regenerate.
 """
 import os
@@ -606,6 +606,8 @@ JUNGLE_FISH = [
     ("peat_eel", "eel", "dgrey", "navy", "lgrey", "indigo", "black", 0, 0, {}),
     ("gourami", "fish", "blue", "navy", "lgrey", "lime", "black", 5.5, 4.4, {}),
     ("violet_gar", "fish", "indigo", "plum", "white", "pink", "black", 7.0, 2.6, {"bands": "plum"}),
+    # Sequoia's schooling fish (openspec underwater-life)
+    ("sprat", "fish", "lgrey", "blue", "white", "blue", "navy", 5.0, 2.6, {"stripe": "navy"}),
 ]
 
 

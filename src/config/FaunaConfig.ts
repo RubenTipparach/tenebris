@@ -72,9 +72,10 @@ export interface FaunaSpecies {
    */
   swimBand?: [number, number];
   /**
-   * Schooling swimmers: the herd swims as one - the first member leads, the
-   * rest hold an offset round it, up to this far (units). Omitted = each
-   * member wanders on its own.
+   * Schooling swimmers (openspec underwater-life): the herd is ONE record, an
+   * anchor that wanders and flees, with its fish flocking round it as boids
+   * (src/planet/Schooling.ts, rules in FAUNA_SCHOOL) - the school's spread,
+   * in units. Omitted = each member wanders on its own.
    */
   school?: number;
   /** The baked clip file (public/animations/<anim>.anim.json); omitted = the species id. */
@@ -157,11 +158,6 @@ export interface WaterLifeConfig {
   bodyHalf: number;
   /** How fast (1/s) a swimmer eases to its depth. */
   depthFollowRate: number;
-  /** School followers: steering gain (1/s per unit off station) and the most extra speed it adds (x walk). */
-  schoolGain: number;
-  schoolCatchUp: number;
-  /** A follower that sees the player alarms the whole school for this long (s). */
-  schoolAlarmS: number;
   /** A blocked swimmer turns round by about half a turn, give or take up to this much (radians). */
   turnJitter: number;
   /** Speed kept when a swimmer meets the shore (it turns, smoothly). */
@@ -174,7 +170,7 @@ export interface WaterLifeConfig {
 
 const WATER_BASE: WaterLifeConfig = {
   siteChance: 0.006, minSwimDepth: 2, minCrawlDepth: 1, bedMargin: 0.15, surfaceMargin: 0.35, bodyHalf: 0.5,
-  depthFollowRate: 1.5, schoolGain: 1.2, schoolCatchUp: 1.5, schoolAlarmS: 3, turnJitter: Math.PI / 2,
+  depthFollowRate: 1.5, turnJitter: Math.PI / 2,
   blockedSpeedKeep: 0.5, fleeDepth: 0.15, riseOnBlock: 0.5,
 };
 
@@ -193,6 +189,47 @@ export function waterLife(planetId: string): WaterLifeConfig {
 }
 
 /**
+ * The flock rules of a school (src/planet/Schooling.ts). Gains are per
+ * second (accelerations scale by the species' cruise speed where noted), and
+ * distances are fractions of the school's spread (FaunaSpecies.school).
+ */
+export interface SchoolRules {
+  /** New fish scatter over this fraction of the spread. */
+  seedSpread: number;
+  /** Share of vertical motion kept (0 = a flat sheet, 1 = a ball). */
+  flatten: number;
+  /** Pull toward the flock's centre (1/s^2). */
+  cohesion: number;
+  /** Pull back to the anchor past the spread (1/s^2 per unit beyond). */
+  leash: number;
+  /** Personal space (fraction of the spread) and how hard a fish keeps it (x cruise speed, 1/s). */
+  separation: number;
+  separationGain: number;
+  /** Neighbours it aligns with (fraction of the spread) and how fast it matches their velocity (1/s). */
+  neighbour: number;
+  alignment: number;
+  /** How fast velocity relative to the school dies away (1/s). */
+  drag: number;
+  /** Flight from a threat inside the flee radius (x cruise speed, 1/s). */
+  fleeGain: number;
+  /** Per-fish wander: rate (rad/s) and strength (x cruise speed, 1/s). */
+  wanderRate: number;
+  wander: number;
+  /** Most speed relative to the school (x cruise speed). */
+  maxRelSpeed: number;
+  /** How fast a fish turns to face where it swims (1/s). */
+  faceRate: number;
+  /** A fish over the shore or too-shallow water is drawn back to the anchor this fast (1/s). */
+  shorePull: number;
+}
+
+export const FAUNA_SCHOOL: SchoolRules = {
+  seedSpread: 0.7, flatten: 0.35, cohesion: 0.9, leash: 4, separation: 0.32, separationGain: 6,
+  neighbour: 0.7, alignment: 1.6, drag: 0.5, fleeGain: 14, wanderRate: 0.7, wander: 0.5,
+  maxRelSpeed: 1.6, faceRate: 6, shorePull: 3,
+};
+
+/**
  * The swimming fish: one fauna entry per fishing-table fish (FISH_ROSTERS),
  * derived here so the schools on a planet are exactly its catch. Numbers
  * that turn a fish's size and fight into how it swims:
@@ -200,20 +237,23 @@ export function waterLife(planetId: string): WaterLifeConfig {
 export const FISH_FAUNA = {
   /** Drawn length = max(minLength, lengthM * visualScale) units (game scale, like the rabbits). */
   visualScale: 1.6,
-  minLength: 0.3,
+  minLength: 0.4,
   /** Cruise speed = speedBase + speedPerM * drawn length; flee = cruise * fleeMul * (fleeBase + pull). */
   speedBase: 0.5,
   speedPerM: 0.8,
   fleeMul: 2.5,
   fleeBase: 0.6,
-  fleeRadius: 5,
+  /** Inside the underwater fog (PlayerConfig UNDERWATER_FOG_FAR), so a school can be watched before it bolts */
+  fleeRadius: 3,
   idleTime: [1, 3] as [number, number],
   wanderTime: [3, 7] as [number, number],
   /** Default school size and body height / length when the look omits them. */
   school: [3, 6] as [number, number],
   height: 0.3,
   /** School spread (units) per drawn length, times sqrt(largest school). */
-  spreadPerLength: 1.4,
+  spreadPerLength: 1.6,
+  /** A fish schools (one boids flock per herd) when its largest herd is at least this. */
+  minSchool: 3,
   /** Per-individual size spread. */
   scale: [0.85, 1.15] as [number, number],
   swimBand: [0.2, 0.8] as [number, number],
@@ -248,7 +288,7 @@ function fishFauna(): Record<string, FaunaSpecies> {
         walkSpeed: walk, fleeSpeed: walk * F.fleeMul * (F.fleeBase + f.pull), fleeRadius: F.fleeRadius,
         idleTime: F.idleTime, wanderTime: F.wanderTime, herd,
         scale: F.scale, hover: [0, 0], bob: [0, 0], maxStep: 99, weight: f.bite * F.weightMul, glow: 0,
-        swimBand: F.swimBand, school: herd[1] > 1 && !eel ? len * F.spreadPerLength * Math.sqrt(herd[1]) : undefined,
+        swimBand: F.swimBand, school: herd[1] >= F.minSchool && !eel ? len * F.spreadPerLength * Math.sqrt(herd[1]) : undefined,
         anim: `swim_${f.look.shape}`, fish: f,
       };
     }
