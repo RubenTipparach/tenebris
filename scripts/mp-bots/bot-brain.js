@@ -1,0 +1,796 @@
+// Injected into each bot client after scripts/mp-e2e/page-helpers.js.
+// A bot plays the game toward its missions through the player's own
+// inputs: it turns its head with mouse movement (the same deltas a mouse
+// feeds InputManager), walks with W, jumps with Space, holds the left
+// button to chop and mine, right-clicks to place and open machines, and
+// uses the crafting / furnace panels through their own handlers. Nothing
+// is given to it: every log, stone and ore it holds it dug itself.
+//
+// window.__bot.start(role) runs the loop; __bot.status() reports to the
+// runner (scripts/mp-bots/run.cjs). Roles pick which branches to follow
+// after the shared trunk: 'miner' (mining and smelting) or 'builder'
+// (light, storage, clay and bricks).
+(() => {
+  const BASE = '/tenebris/js/src';
+  const g = () => window.__tenebris;
+  const T = () => window.__THREE;
+  const bi = () => g().blockInteraction;
+  const inv = () => bi().getInventory();
+  const planet = () => g().player.getCurrentPlanet();
+  const player = () => g().player;
+  const im = () => g().inputManager;
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  let I = null;          // ItemType
+  let B = null;          // HexBlockType
+  let RECIPES = null;    // CRAFTING_RECIPES
+  let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
+  let pitchSign = 1;     // measured: which way +mouseY turns the head
+
+  const st = {
+    role: null, running: false, task: 'idle', goal: '', log: [], stuck: 0,
+    home: null, furnaceTile: null, started: Date.now(), errors: 0,
+  };
+  const say = (msg) => {
+    const line = `${new Date().toISOString().slice(11, 19)} ${msg}`;
+    st.log.push(line);
+    if (st.log.length > 200) st.log.shift();
+    console.log(`[bot] ${msg}`);
+  };
+
+  async function loadModules() {
+    const inventory = await import(`${BASE}/player/Inventory.ts`);
+    const blocks = await import(`${BASE}/shared/blockTypes.ts`);
+    const crafting = await import(`${BASE}/player/CraftingSystem.ts`);
+    const cfg = await import(`${BASE}/config/PlayerConfig.ts`);
+    I = inventory.ItemType;
+    B = blocks.HexBlockType;
+    RECIPES = crafting.CRAFTING_RECIPES;
+    SENS = cfg.PlayerConfig.MOUSE_SENSITIVITY;
+  }
+
+  // ---- raw inputs -------------------------------------------------------
+  // Headless Chrome can't take pointer lock, so the bot holds the game in
+  // its "playing" state the way a locked pointer does.
+  function holdLock() {
+    const m = im();
+    if (!m.isPointerLocked) {
+      m.isPointerLocked = true;
+      const ins = document.getElementById('instructions');
+      if (ins) ins.style.display = 'none';
+    }
+  }
+  const key = (code, down) => document.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code, key: code, bubbles: true }));
+  const mouse = (button, down) => document.dispatchEvent(new MouseEvent(down ? 'mousedown' : 'mouseup', { button, bubbles: true }));
+  function releaseAll() {
+    for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space', 'ShiftLeft']) key(k, false);
+    mouse(0, false); mouse(2, false);
+  }
+  // Mouse movement, in pixels, as the mouse would report it
+  function moveMouse(dx, dy) {
+    const m = im();
+    m.mouseMovement.x += dx;
+    m.mouseMovement.y += dy;
+  }
+  async function tap(code, ms = 120) { key(code, true); await sleep(ms); key(code, false); }
+  async function click(button, ms = 90) { mouse(button, true); await sleep(ms); mouse(button, false); }
+
+  // ---- looking ------------------------------------------------------------
+  function upAt(p) { return planet().getSurfaceNormal(p); }
+  function lookDir() { return player().getForwardVector().clone().normalize(); }
+  function eye() { return player().getRaycastOrigin().clone(); }
+  // yaw (about up) and pitch errors from the current look to `dir`
+  function lookError(dir) {
+    const up = upAt(player().position);
+    const f = lookDir();
+    const fh = f.clone().addScaledVector(up, -f.dot(up));
+    const dh = dir.clone().addScaledVector(up, -dir.dot(up));
+    let yaw = 0;
+    if (fh.lengthSq() > 1e-6 && dh.lengthSq() > 1e-6) {
+      fh.normalize(); dh.normalize();
+      yaw = Math.atan2(fh.clone().cross(dh).dot(up), fh.dot(dh));
+    }
+    const pitchNow = Math.asin(Math.max(-1, Math.min(1, f.dot(up))));
+    const pitchWant = Math.asin(Math.max(-1, Math.min(1, dir.clone().normalize().dot(up))));
+    return { yaw, pitch: pitchWant - pitchNow };
+  }
+  // One frame's worth of head turn toward `dir` (a quick hand, not a snap)
+  function steer(dir, maxRad = 0.12) {
+    const e = lookError(dir);
+    const clamp = (v) => Math.max(-maxRad, Math.min(maxRad, v));
+    // yawDelta = -mouseX * SENS (PlanetPlayer), positive yaw = turn toward +cross
+    moveMouse(-clamp(e.yaw) / SENS, pitchSign * clamp(e.pitch) / SENS);
+    return e;
+  }
+  async function lookAtPoint(p, tol = 0.03, maxMs = 2500) {
+    const t0 = performance.now();
+    while (performance.now() - t0 < maxMs) {
+      holdLock();
+      const dir = p.clone().sub(eye()).normalize();
+      const e = steer(dir);
+      if (Math.abs(e.yaw) < tol && Math.abs(e.pitch) < tol) return true;
+      await nextFrame();
+    }
+    return false;
+  }
+  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+
+  async function calibrate() {
+    // Which way does +mouseY move the pitch? Measure it once.
+    holdLock();
+    await sleep(300);
+    const up = upAt(player().position);
+    const p0 = Math.asin(lookDir().dot(up));
+    moveMouse(0, 60);
+    await nextFrame(); await nextFrame(); await nextFrame();
+    const p1 = Math.asin(lookDir().dot(up));
+    moveMouse(0, -60);
+    await nextFrame(); await nextFrame();
+    pitchSign = (p1 - p0) > 0 ? 1 : -1;
+    say(`calibrated: +mouseY turns pitch ${pitchSign > 0 ? 'up' : 'down'}`);
+  }
+
+  // ---- geometry -------------------------------------------------------------
+  const P = () => planet();
+  function tileOf(pos) { return P().getTileAtPoint(pos)?.index ?? null; }
+  function myTile() { return tileOf(player().position); }
+  // World point at the centre of block (tile, depth)
+  function blockCenter(tile, depth) {
+    const p = P();
+    const t = p.getTileByIndex(tile);
+    const r = p.depthToRadius(depth) - p.getBlockHeight() / 2;
+    return t.center.clone().normalize().multiplyScalar(r).add(p.center);
+  }
+  // World point on the top face of block (tile, depth)
+  function blockTop(tile, depth) {
+    const p = P();
+    const t = p.getTileByIndex(tile);
+    return t.center.clone().normalize().multiplyScalar(p.depthToRadius(depth)).add(p.center);
+  }
+  function feetDepth() { return P().getDepthAtPoint(player().position); }
+  // The surface round here: the standing depth on the ground of the tiles
+  // around this one (the bot's own column may be a shaft)
+  function surfaceDepth() {
+    const p = P();
+    const gs = tilesWithin(myTile(), 2).filter(t => p.isTileLoaded(t)).map(t => p.groundDepthOf(t)).sort((a, b) => a - b);
+    return gs.length ? gs[Math.floor(gs.length / 2)] + 1 : feetDepth();
+  }
+  function hdist(a, b) {
+    const up = upAt(a);
+    const d = b.clone().sub(a);
+    return d.addScaledVector(up, -d.dot(up)).length();
+  }
+  function rayHit() {
+    return P().raycast(eye(), lookDir(), 8);
+  }
+  function neighbors(tile) { return P().getTileNeighbors(tile); }
+  function tilesWithin(start, n) {
+    const out = [start]; const seen = new Set(out); let fr = [start];
+    for (let i = 0; i < n; i++) {
+      const nx = [];
+      for (const t of fr) for (const nb of neighbors(t)) if (!seen.has(nb)) { seen.add(nb); nx.push(nb); out.push(nb); }
+      fr = nx;
+    }
+    return out;
+  }
+
+  // ---- inventory --------------------------------------------------------------
+  const count = (item) => inv().getItemCount(item);
+  function selectItem(item) {
+    const iv = inv();
+    let idx = -1;
+    for (let i = 0; i < 9; i++) { const s = iv.getSlot(i); if (s && s.itemType === item && s.quantity > 0) { idx = i; break; } }
+    if (idx < 0) {
+      // in the bag: drag it onto the last hotbar slot
+      const all = iv.getAllSlots();
+      const from = all.findIndex((s, i) => i >= 9 && s.itemType === item && s.quantity > 0);
+      if (from < 0) return false;
+      iv.swapSlots(from, 8);
+      idx = 8;
+    }
+    iv.setSelectedSlot(idx);
+    bi().updateHotbarUI();
+    return true;
+  }
+  function selectEmptyHand() {
+    // a slot with nothing (or a non-placeable) so left-click mines by hand / tool
+    const iv = inv();
+    for (let i = 0; i < 9; i++) { const s = iv.getSlot(i); if (!s || s.itemType === 0 || s.quantity === 0) { iv.setSelectedSlot(i); bi().updateHotbarUI(); return; } }
+    iv.setSelectedSlot(0); bi().updateHotbarUI();
+  }
+
+  // ---- skills -------------------------------------------------------------------
+  // Walk to within `arrive` metres (horizontal) of world point `target`.
+  async function walkTo(target, arrive = 1.6, maxMs = 45000) {
+    st.task = 'walking';
+    const t0 = performance.now();
+    let lastPos = player().position.clone(), lastCheck = t0, stalls = 0;
+    selectEmptyHand();
+    try {
+      while (performance.now() - t0 < maxMs) {
+        holdLock();
+        const pos = player().position;
+        const d = hdist(pos, target);
+        if (d < arrive) { key('KeyW', false); return true; }
+        const up = upAt(pos);
+        const flat = target.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
+        // eyes a little down the road
+        const dir = flat.clone().addScaledVector(up, -0.25).normalize();
+        const e = steer(dir, 0.15);
+        key('KeyW', Math.abs(e.yaw) < 0.6);
+        if (player().getIsInWater()) key('Space', true); else if (stalls === 0) key('Space', false);
+        const now = performance.now();
+        if (now - lastCheck > 700) {
+          const moved = hdist(lastPos, pos);
+          if (moved < 0.35) {
+            stalls++;
+            if (stalls <= 3) { await tap('Space', 250); }
+            else {
+              // a wall: dig through it at head and foot height
+              key('KeyW', false);
+              await clearAhead(flat);
+              stalls = 1;
+            }
+          } else stalls = 0;
+          lastPos = pos.clone(); lastCheck = now;
+        }
+        await nextFrame();
+      }
+      return false;
+    } finally { key('KeyW', false); key('Space', false); }
+  }
+
+  // Mine the blocks straight ahead at foot and head height
+  async function clearAhead(flat) {
+    const pos = player().position;
+    const up = upAt(pos);
+    for (const h of [1.5, 0.5]) {
+      const p = pos.clone().addScaledVector(flat, 0.9).addScaledVector(up, h);
+      const tile = tileOf(p);
+      if (tile === null) continue;
+      const depth = P().getDepthAtPoint(p);
+      const b = P().getBlock(tile, depth);
+      if (b !== B.AIR && b !== B.WATER) await mineBlock(tile, depth, 8000);
+    }
+  }
+
+  // Hold the left button on block (tile, depth) until it breaks.
+  async function mineBlock(tile, depth, maxMs = 20000) {
+    const p = P();
+    const before = p.getBlock(tile, depth);
+    if (before === B.AIR || before === B.WATER) return true;
+    selectEmptyHand();
+    const target = blockCenter(tile, depth);
+    await lookAtPoint(target, 0.05, 1500);
+    const t0 = performance.now();
+    mouse(0, true);
+    try {
+      while (performance.now() - t0 < maxMs) {
+        holdLock();
+        steer(target.clone().sub(eye()).normalize(), 0.08);
+        const now = p.getBlock(tile, depth);
+        if (now === B.AIR || now === B.WATER) return true;
+        const hit = rayHit();
+        if (hit && (hit.tileIndex !== tile || hit.depth !== depth)) {
+          // something in the way: mine through it first
+          const hb = p.getBlock(hit.tileIndex, hit.depth);
+          if (hb !== B.AIR && hb !== B.WATER && hit.depth > 0) {
+            mouse(0, false);
+            const ok = await mineBlock(hit.tileIndex, hit.depth, Math.min(8000, maxMs - (performance.now() - t0)));
+            if (!ok) return false;
+            await lookAtPoint(target, 0.05, 800);
+            mouse(0, true);
+          }
+        }
+        if (!hit) {
+          // out of reach
+          return false;
+        }
+        await nextFrame();
+      }
+      return false;
+    } finally { mouse(0, false); }
+  }
+
+  // Nearest standing tree trunk mesh
+  function nearestTrunk(maxDist = 120) {
+    const tm = g().treeManager ?? bi().treeManager;
+    if (!tm) return null;
+    const pos = player().position;
+    let best = null, bd = maxDist;
+    const tmp = new (T().Vector3)();
+    for (const m of tm.getTreeMeshes()) {
+      if (m.userData.treeType !== 'trunk' || !m.visible) continue;
+      m.getWorldPosition(tmp);
+      const d = tmp.distanceTo(pos);
+      if (d < bd) { bd = d; best = { mesh: m, pos: tmp.clone() }; }
+    }
+    return best;
+  }
+
+  async function chopTree() {
+    const tree = nearestTrunk();
+    if (!tree) { say('no tree in sight - wandering'); await wander(); return false; }
+    st.task = 'walking to a tree';
+    await walkTo(tree.pos, 2.2, 40000);
+    st.task = 'chopping';
+    const logs0 = count(I.LOG);
+    const up = upAt(player().position);
+    // the trunk at chest height
+    const base = tree.pos.clone();
+    const aim = base.clone().addScaledVector(upAt(base), 1.2);
+    selectEmptyHand();
+    await lookAtPoint(aim, 0.04, 2000);
+    const t0 = performance.now();
+    mouse(0, true);
+    try {
+      while (performance.now() - t0 < 25000) {
+        holdLock();
+        steer(aim.clone().sub(eye()).normalize(), 0.06);
+        if (count(I.LOG) > logs0 || !tree.mesh.parent) break;
+        await nextFrame();
+      }
+    } finally { mouse(0, false); }
+    const got = count(I.LOG) - logs0;
+    say(got > 0 ? `felled a tree: +${got} logs` : 'could not fell that tree');
+    return got > 0;
+  }
+
+  async function wander() {
+    const pos = player().position;
+    const up = upAt(pos);
+    const T3 = T();
+    const r = new T3.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+    r.addScaledVector(up, -r.dot(up)).normalize();
+    await walkTo(pos.clone().addScaledVector(r, 25), 2, 15000);
+  }
+
+  // Dig straight down under your feet until `pred()` or `minDepth`.
+  async function digDown(pred, maxBlocks = 40) {
+    st.task = 'digging down';
+    for (let i = 0; i < maxBlocks; i++) {
+      if (pred()) return true;
+      const tile = myTile();
+      const d = P().groundDepthOf(tile);
+      if (d <= 2) return false;
+      const b = P().getBlock(tile, d);
+      if (b === B.WATER) return false;
+      await mineBlock(tile, d, 15000);
+      await sleep(400); // fall into the hole
+      await mineNearbyOres(2);
+    }
+    return pred();
+  }
+
+  // Ore blocks within `radius` tiles that touch air (visible from a tunnel)
+  const ORES = () => [B.ORE_COAL, B.ORE_IRON, B.ORE_COPPER, B.ORE_GOLD, B.ORE_ALUMINUM, B.ORE_LITHIUM, B.ORE_COBALT];
+  function oreAround(radius, wanted) {
+    const p = P();
+    const pos = player().position;
+    const fd = feetDepth();
+    const out = [];
+    for (const t of tilesWithin(myTile(), radius)) {
+      if (!p.isTileLoaded(t)) continue;
+      for (let d = Math.max(1, fd - 3); d <= fd + 3; d++) {
+        const b = p.getBlock(t, d);
+        if (wanted.includes(b)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
+      }
+    }
+    return out.sort((a, b) => a.dist - b.dist);
+  }
+
+  // Mine any ore the bot can reach from where it stands
+  async function mineNearbyOres(radius = 2) {
+    const want = ORES();
+    for (const o of oreAround(radius, want)) {
+      if (o.dist > 5) continue;
+      await mineBlock(o.tile, o.depth, 15000);
+    }
+  }
+
+  // Tunnel toward the nearest wanted ore and mine it
+  async function tunnelToOre(wanted, radius = 6) {
+    const list = oreAround(radius, wanted);
+    if (!list.length) return false;
+    const o = list[0];
+    st.task = `tunnelling to ore ${o.block}`;
+    for (let step = 0; step < 12; step++) {
+      const c = blockCenter(o.tile, o.depth);
+      if (c.distanceTo(eye()) < 4.5) { await mineBlock(o.tile, o.depth, 20000); return true; }
+      // dig the two blocks in front (foot + head) and step forward
+      const pos = player().position;
+      const up = upAt(pos);
+      const flat = c.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
+      await lookAtPoint(pos.clone().addScaledVector(flat, 3).addScaledVector(up, 1.0), 0.06, 1200);
+      await clearAhead(flat);
+      key('KeyW', true); await sleep(450); key('KeyW', false);
+      await sleep(150);
+    }
+    return false;
+  }
+
+  // Climb out of a shaft: jump and place a block under your feet, again and again
+  async function pillarUpTo(depthWanted, maxBlocks = 40) {
+    st.task = 'climbing out';
+    for (let i = 0; i < maxBlocks; i++) {
+      if (feetDepth() > depthWanted) return true;
+      const filler = [I.DIRT, I.STONE, I.SAND, I.WOOD].find(it => count(it) > 0);
+      if (filler === undefined) { say('nothing to build a pillar with'); return false; }
+      selectItem(filler);
+      const pos = player().position.clone();
+      const up = upAt(pos);
+      // look straight down
+      await lookAtPoint(pos.clone().addScaledVector(up, -3), 0.05, 1200);
+      const d0 = feetDepth();
+      key('Space', true);
+      await sleep(180);
+      for (let k = 0; k < 6; k++) { await click(2, 40); await sleep(30); }
+      key('Space', false);
+      await sleep(350);
+      if (feetDepth() <= d0) {
+        // the shaft may be wider than one tile: mine the ceiling and retry
+        const tile = myTile();
+        const above = P().getBlock(tile, d0 + 2);
+        if (above !== B.AIR) await mineBlock(tile, d0 + 2, 8000);
+      }
+    }
+    return feetDepth() > depthWanted;
+  }
+
+  // ---- crafting --------------------------------------------------------------
+  async function craft(output, times = 1) {
+    const cs = bi().getCraftingSystem();
+    const idx = RECIPES.findIndex(r => r.output.itemType === output);
+    if (idx < 0) { say(`no recipe for ${output}`); return 0; }
+    st.task = `crafting ${RECIPES[idx].name}`;
+    releaseAll();
+    cs.open();
+    await sleep(400);
+    cs.selectRecipe(idx);
+    await sleep(300);
+    let made = 0;
+    for (let i = 0; i < times; i++) {
+      const before = count(output);
+      cs.craftSelectedRecipe();
+      await sleep(250);
+      if (count(output) > before || RECIPES[idx].output.itemType !== output) made++;
+      else break;
+    }
+    await sleep(300);
+    cs.close();
+    holdLock();
+    say(`crafted ${RECIPES[idx].name} x${made}`);
+    return made;
+  }
+  const canCraft = (output) => {
+    const r = RECIPES.find(r => r.output.itemType === output);
+    return r && r.inputs.every(i => inv().hasItem(i.itemType, i.quantity));
+  };
+
+  // Place `item` on top of the ground of a neighbouring tile
+  async function placeNearby(item, check) {
+    if (!selectItem(item)) return false;
+    st.task = `placing ${item}`;
+    const here = myTile();
+    const p = P();
+    const myDepth = feetDepth();
+    const cands = tilesWithin(here, 2).filter(t => t !== here && p.isTileLoaded(t))
+      .map(t => ({ t, g: p.groundDepthOf(t) }))
+      .filter(c => Math.abs(c.g + 1 - myDepth) <= 1 && p.getBlock(c.t, c.g + 1) === B.AIR && p.getBlock(c.t, c.g + 2) === B.AIR && p.getBlock(c.t, c.g) !== B.WATER)
+      .sort((a, b) => blockTop(a.t, a.g).distanceTo(player().position) - blockTop(b.t, b.g).distanceTo(player().position));
+    if (!cands.length) {
+      // down a shaft: carve a pocket in the wall and set it on the floor there
+      const n = neighbors(here).find(t => p.isTileLoaded(t) && p.getBlock(t, myDepth - 1) !== B.AIR && p.getBlock(t, myDepth - 1) !== B.WATER);
+      if (n !== undefined) {
+        await mineBlock(n, myDepth + 1, 10000);
+        await mineBlock(n, myDepth, 10000);
+        cands.push({ t: n, g: myDepth - 1 });
+      }
+    }
+    for (const c of cands.slice(0, 6)) {
+      selectItem(item);
+      const before = count(item);
+      await lookAtPoint(blockTop(c.t, c.g), 0.04, 1500);
+      await click(2, 80);
+      await sleep(700);
+      if (count(item) < before) { say(`placed item ${item} on tile ${c.t}`); return c.t; }
+    }
+    return false;
+  }
+
+  // ---- furnace --------------------------------------------------------------
+  function myFurnace() {
+    const fm = bi().furnaceManager;
+    const pos = player().position;
+    let best = null, bd = 1e9;
+    for (const f of fm.getPlacedFurnaces()) {
+      const d = f.position.distanceTo(pos);
+      if (st.furnaceTile !== null && f.tileIndex === st.furnaceTile) return f;
+      if (d < bd) { bd = d; best = f; }
+    }
+    return bd < 30 ? best : null;
+  }
+  async function openFurnace(f) {
+    await walkTo(f.position, 2.2, 30000);
+    const aim = f.position.clone().addScaledVector(upAt(f.position), 0.3);
+    selectEmptyHand();
+    await lookAtPoint(aim, 0.04, 2000);
+    await click(2, 80);
+    await sleep(500);
+    return bi().furnaceUI.isMenuOpen();
+  }
+  async function smelt(ore, n) {
+    let f = myFurnace();
+    if (!f) {
+      if (count(I.FURNACE) === 0 && canCraft(I.FURNACE)) await craft(I.FURNACE, 1);
+      const t = await placeNearby(I.FURNACE);
+      if (t === false) return false;
+      st.furnaceTile = t;
+      f = myFurnace();
+      if (!f) return false;
+    }
+    st.task = 'smelting';
+    if (!(await openFurnace(f))) { say('could not open the furnace'); return false; }
+    const ui = bi().furnaceUI;
+    const all = inv().getAllSlots();
+    // fuel: enough coal for n smelts
+    const needFuel = Math.max(0, Math.ceil((n - f.fuelAmount) / 8));
+    if (needFuel > 0) {
+      if (count(I.COAL) < needFuel) { ui.close(); holdLock(); say('not enough coal'); return false; }
+      selectItem(I.COAL);
+      for (let k = 0; k < needFuel; k++) ui.handleFuelSlotClick();
+    }
+    const slot = inv().getAllSlots().findIndex(s => s.itemType === ore && s.quantity > 0);
+    if (slot >= 0) ui.handleDropFromInventory(slot, 'furnace-input');
+    say(`furnace loaded: ${f.inputCount} to smelt, fuel ${f.fuelAmount}`);
+    // wait at the furnace while it works (10 s an item)
+    const t0 = performance.now();
+    while ((f.inputCount > 0) && performance.now() - t0 < (n + 2) * 11000) await sleep(1000);
+    ui.handleOutputSlotClick();
+    await sleep(300);
+    ui.close();
+    holdLock();
+    say(`collected from the furnace`);
+    return true;
+  }
+
+  // ---- water ---------------------------------------------------------------
+  function nearestWaterTile(radius = 14) {
+    const p = P();
+    const pos = player().position;
+    let best = null, bd = 1e9;
+    for (const t of tilesWithin(myTile(), radius)) {
+      if (!p.isTileLoaded(t)) continue;
+      const top = p.topBlockOf(t);
+      if (top !== B.WATER) continue;
+      const tt = p.getTileByIndex(t);
+      const d = tt.center.clone().add(p.center).distanceTo(pos);
+      if (d < bd) { bd = d; best = t; }
+    }
+    return best;
+  }
+  async function fillBucket() {
+    const w = nearestWaterTile();
+    if (w === null) { say('no water nearby - exploring'); await wander(); return false; }
+    const p = P();
+    const surf = p.getSurfacePosition(p.getTileByIndex(w));
+    await walkTo(surf, 3, 40000);
+    selectItem(I.BUCKET);
+    // the water's surface: the topmost water block of that column
+    let d = p.getMaxDepth() - 1;
+    while (d > 0 && p.getBlock(w, d) !== B.WATER) d--;
+    await lookAtPoint(blockTop(w, d), 0.05, 1500);
+    await click(2, 80);
+    await sleep(500);
+    return count(I.WATER_BUCKET) > 0;
+  }
+
+  // ---- missions ----------------------------------------------------------------
+  function tracker() { return g().missions.getTracker(); }
+  function openIds() { return tracker().openMissions().map(m => m.id); }
+  function doneIds() { return tracker().save().done; }
+
+  // What the bot does for a mission. Returns when it made progress or gave up.
+  const PLAYBOOK = {
+    logs: async () => { await chopTree(); },
+    planks: async () => {
+      if (count(I.LOG) < 2) { await chopTree(); return; }
+      await craft(I.WOOD, 2);
+      await craft(I.STICK, 2);
+    },
+    stone: async () => {
+      st.home ??= myTile();
+      const surface = surfaceDepth();
+      await digDown(() => count(I.STONE) >= 12);
+      await pillarUpTo(surface - 1);
+      if (count(I.STONE) >= 5 && count(I.STICK) >= 2 && tracker().recipeOpen(I.ROCK_PICKAXE)) await craft(I.ROCK_PICKAXE, 1);
+    },
+    furnace: async () => {
+      if (count(I.STONE) < 8) { await digForStone(8); return; }
+      if (count(I.FURNACE) === 0) await craft(I.FURNACE, 1);
+      const t = await placeNearby(I.FURNACE);
+      if (t !== false) st.furnaceTile = t;
+    },
+    iron: async () => {
+      if (count(I.ROCK_PICKAXE) === 0 && canCraft(I.ROCK_PICKAXE) && tracker().recipeOpen(I.ROCK_PICKAXE)) await craft(I.ROCK_PICKAXE, 1);
+      await goMining([B.ORE_IRON, B.ORE_COAL], () => count(I.ORE_IRON) >= 6 && count(I.ORE_COAL) >= 1);
+      if (count(I.ORE_COAL) > 0) await craft(I.COAL, 1);
+    },
+    ingots: async () => {
+      if (count(I.ORE_IRON) < 3) { await goMining([B.ORE_IRON], () => count(I.ORE_IRON) >= 6); return; }
+      if (count(I.COAL) < 1) { await getCoal(); return; }
+      await smelt(I.ORE_IRON, count(I.ORE_IRON));
+    },
+    bucket: async () => {
+      if (count(I.BUCKET) === 0 && count(I.WATER_BUCKET) === 0) {
+        if (count(I.INGOT_IRON) < 3) {
+          if (count(I.ORE_IRON) < 3) { await goMining([B.ORE_IRON], () => count(I.ORE_IRON) >= 3); return; }
+          if (count(I.COAL) < 1) { await getCoal(); return; }
+          await smelt(I.ORE_IRON, count(I.ORE_IRON)); return;
+        }
+        await craft(I.BUCKET, 1);
+      }
+      if (count(I.BUCKET) > 0) await fillBucket();
+    },
+    copper: async () => {
+      if (count(I.ORE_COPPER) < 3) { await goMining([B.ORE_COPPER, B.ORE_COAL], () => count(I.ORE_COPPER) >= 3); return; }
+      if (count(I.COAL) < 1) { await getCoal(); return; }
+      await smelt(I.ORE_COPPER, count(I.ORE_COPPER));
+    },
+    lightmetals: async () => {
+      if (count(I.ORE_ALUMINUM) < 3 && count(I.INGOT_ALUMINUM) < 3) { await goMining([B.ORE_ALUMINUM, B.ORE_GOLD, B.ORE_COAL], () => count(I.ORE_ALUMINUM) >= 3 && count(I.ORE_GOLD) >= 1); return; }
+      if (count(I.COAL) < 1) { await getCoal(); return; }
+      if (count(I.ORE_ALUMINUM) > 0) await smelt(I.ORE_ALUMINUM, count(I.ORE_ALUMINUM));
+      if (count(I.ORE_GOLD) > 0) await smelt(I.ORE_GOLD, count(I.ORE_GOLD));
+    },
+    torches: async () => {
+      if (count(I.TORCH) < 4) {
+        if (count(I.COAL) < 1) { await getCoal(); return; }
+        if (count(I.STICK) < 1) { await chopTree(); return; }
+        await craft(I.TORCH, 1);
+        return;
+      }
+      for (let i = 0; i < 4; i++) {
+        await placeNearby(I.TORCH);
+        await wander();
+      }
+    },
+    chest: async () => {
+      if (count(I.STORAGE_CHEST) === 0) {
+        if (count(I.WOOD) < 8) { if (count(I.LOG) < 2) { await chopTree(); return; } await craft(I.WOOD, 2); return; }
+        await craft(I.STORAGE_CHEST, 1);
+      }
+      await placeNearby(I.STORAGE_CHEST);
+    },
+    rod: async () => {
+      if (count(I.STICK) < 3) { if (count(I.WOOD) < 2) await craft(I.WOOD, 1); await craft(I.STICK, 1); }
+      await craft(I.FISHING_ROD, 1);
+    },
+    clay: async () => { await findAndDig([B.CLAY], () => count(I.CLAY) >= 8); },
+    bricks: async () => {
+      if (count(I.CLAY) < 4) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 8); return; }
+      if (count(I.COAL) < 1) { await getCoal(); return; }
+      await smelt(I.CLAY, Math.min(count(I.CLAY), 6));
+    },
+    campfire: async () => {
+      if (count(I.CAMPFIRE) === 0) {
+        if (!canCraft(I.CAMPFIRE)) { if (count(I.STONE) < 6) await digForStone(8); if (count(I.STICK) < 4) await chopTree(); return; }
+        await craft(I.CAMPFIRE, 1);
+      }
+      await placeNearby(I.CAMPFIRE);
+    },
+    clayblock: async () => {
+      if (count(I.CLAY) < 4) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 4); return; }
+      for (let i = 0; i < 4; i++) await placeNearby(I.CLAY);
+    },
+  };
+
+  async function digForStone(n) {
+    const surface = surfaceDepth();
+    await digDown(() => count(I.STONE) >= n);
+    await pillarUpTo(surface - 1);
+  }
+  async function getCoal() {
+    if (count(I.ORE_COAL) === 0) await goMining([B.ORE_COAL], () => count(I.ORE_COAL) >= 2);
+    if (count(I.ORE_COAL) > 0) await craft(I.COAL, 1);
+  }
+  // Dig a shaft down to ore level, tunnel to the wanted ores, climb back out
+  async function goMining(wanted, done) {
+    const surface = surfaceDepth();
+    st.task = 'going mining';
+    const seaLevel = P().getSeaLevelDepth ? P().getSeaLevelDepth() : surface - 10;
+    for (let round = 0; round < 8 && !done(); round++) {
+      if (oreAround(6, wanted).length === 0) {
+        // deeper, a few blocks at a time
+        const target = feetDepth() - 4;
+        await digDown(() => feetDepth() <= target || oreAround(6, wanted).length > 0, 6);
+        if (feetDepth() <= 3) break;
+        continue;
+      }
+      await tunnelToOre(wanted, 6);
+      await mineNearbyOres(2);
+    }
+    if (feetDepth() < surface - 1) await pillarUpTo(surface - 1, 60);
+    void seaLevel;
+    return done();
+  }
+  // Find a surface block of type `kinds` within range, walk there, dig it
+  async function findAndDig(kinds, done) {
+    const p = P();
+    for (let round = 0; round < 6 && !done(); round++) {
+      let target = null, bd = 1e9;
+      for (const t of tilesWithin(myTile(), 16)) {
+        if (!p.isTileLoaded(t)) continue;
+        const gd = p.groundDepthOf(t);
+        for (let d = gd; d >= Math.max(1, gd - 3); d--) {
+          if (kinds.includes(p.getBlock(t, d))) {
+            const c = blockCenter(t, d); const dd = c.distanceTo(player().position);
+            if (dd < bd) { bd = dd; target = { t, d, c }; }
+            break;
+          }
+        }
+      }
+      if (!target) { say('none of that nearby - exploring'); await wander(); await wander(); continue; }
+      await walkTo(target.c, 2.5, 40000);
+      await mineBlock(target.t, target.d, 15000);
+    }
+  }
+
+  // Missions each role plays, in order of preference, after the trunk
+  const ROLE_ORDER = {
+    miner: ['logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'clay', 'bricks', 'campfire', 'clayblock', 'iron', 'ingots', 'bucket', 'copper'],
+  };
+
+  function pickMission() {
+    const open = new Set(openIds());
+    for (const id of ROLE_ORDER[st.role] ?? ROLE_ORDER.miner) if (open.has(id) && PLAYBOOK[id]) return id;
+    return null;
+  }
+
+  async function loop() {
+    while (st.running) {
+      try {
+        holdLock();
+        const id = pickMission();
+        if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
+        const m = tracker().openMissions().find(x => x.id === id);
+        if (st.goal !== id) say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`);
+        st.goal = id;
+        await PLAYBOOK[id]();
+      } catch (e) {
+        st.errors++;
+        say(`error: ${e && e.message}`);
+        releaseAll();
+        await sleep(1500);
+      }
+      await sleep(200);
+    }
+  }
+
+  window.__bot = {
+    async start(role) {
+      if (st.running) return;
+      await loadModules();
+      st.role = role;
+      st.running = true;
+      holdLock();
+      await calibrate();
+      say(`${role} bot starting at tile ${myTile()}`);
+      loop();
+    },
+    stop() { st.running = false; releaseAll(); },
+    status() {
+      const t = tracker();
+      const s = t.save();
+      const hot = inv().getAllSlots().filter(x => x.itemType && x.quantity).map(x => [x.itemType, x.quantity]);
+      return {
+        role: st.role, task: st.task, goal: st.goal, done: s.done, now: t.now()?.id ?? null,
+        pos: player().position.toArray().map(v => +v.toFixed(1)), tile: myTile(), depth: feetDepth(),
+        items: hot, errors: st.errors, log: st.log.slice(-12),
+      };
+    },
+    // exposed for poking at a running bot from the runner's REPL
+    skills: { chopTree, walkTo, mineBlock, digDown, craft, placeNearby, smelt, goMining, pillarUpTo, fillBucket },
+  };
+})();
