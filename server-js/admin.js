@@ -36,6 +36,10 @@ function sameSecret(a, b) {
 
 // null when the request may go on, else the response already sent
 function authorize(req, res) {
+  // ADMIN_OPEN=1 (server-js/fly.toml [env]): the portal needs no token - anyone
+  // with the URL can reset or delete worlds and kick players. Owner's call,
+  // "for now"; remove the line from fly.toml to lock it again.
+  if (process.env.ADMIN_OPEN === '1') return null;
   const token = process.env.ADMIN_TOKEN;
   if (!token) return json(res, 503, { error: 'Admin is off: set the ADMIN_TOKEN secret (fly secrets set ADMIN_TOKEN=... -a tenebris)' }) || true;
   const addr = (req.headers['fly-client-ip'] || req.socket.remoteAddress || '').toString();
