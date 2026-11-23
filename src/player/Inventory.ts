@@ -173,6 +173,8 @@ export enum ItemType {
   FISH_PEATEEL = 193,
   FISH_GOURAMI = 194,
   FISH_GAR = 195,
+  // Sequoia's schooling fish (openspec underwater-life)
+  FISH_SPRAT = 196,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -415,6 +417,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_PEATEEL]: { name: 'Peat Eel', stackSize: 16, texture: '/textures/fish/peat_eel.png', mineTime: 0.3 },
   [ItemType.FISH_GOURAMI]: { name: 'Mire Gourami', stackSize: 16, texture: '/textures/fish/gourami.png', mineTime: 0.3 },
   [ItemType.FISH_GAR]: { name: 'Violet Gar', stackSize: 16, texture: '/textures/fish/violet_gar.png', mineTime: 0.3 },
+  [ItemType.FISH_SPRAT]: { name: 'Glimmer Sprat', stackSize: 16, texture: '/textures/fish/sprat.png', mineTime: 0.3 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)

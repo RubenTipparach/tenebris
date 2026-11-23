@@ -3,7 +3,7 @@
 // depth clamp. Run: npx tsx scripts/ocean-life.test.ts
 import { existsSync, readFileSync } from 'fs';
 import {
-  FAUNA_SPECIES, FAUNA_SPECIES_IDS, FAUNA_LIFELESS, faunaRoster, fishFaunaId, isWaterLife, habitatOf, validateFaunaRosters, waterLife,
+  FAUNA_SPECIES, FAUNA_SPECIES_IDS, FAUNA_LIFELESS, FAUNA_SCHOOL, FISH_FAUNA, faunaRoster, fishFaunaId, isWaterLife, habitatOf, validateFaunaRosters, waterLife,
 } from '../src/config/FaunaConfig';
 import { FISH_ROSTERS, FISH_ITEMS } from '../src/config/FishRosters';
 import { ITEM_DATA, ItemType } from '../src/player/Inventory';
@@ -11,6 +11,8 @@ import { SOLAR_SYSTEM } from '../src/config/SolarSystemConfig';
 import { buildFaunaModel } from '../src/planet/FaunaModels';
 import { swimRadius, clearsSeabed, columnRadius } from '../src/planet/SwimRules';
 import { emptyCookerSlots, findCookingRecipe } from '../src/player/Cooking';
+import * as THREE from 'three';
+import { seedSchool, stepSchool } from '../src/planet/Schooling';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 
@@ -113,3 +115,47 @@ ok(swimRadius(60, 50, 51, 0.8, 0.8) === 50.5, 'a column too shallow for the marg
 ok(!clearsSeabed(50.1, 50, 58, 0.5), 'a swimmer below a rising seabed must rise first');
 ok(columnRadius(10, 20, 0.25) === 12.5, 'column fraction 0.25 is a quarter of the way up');
 ok(['earth', 'sequoia', 'verdance', 'mirewood'].every(p => waterLife(p).siteChance > 0), 'every sea world has water spawn numbers');
+
+// ---- underwater-life: schools of fish (boids round one anchor record)
+for (const p of ['earth', 'sequoia', 'verdance', 'mirewood']) {
+  const schools = faunaRoster(p).filter(id => FAUNA_SPECIES[id].fish && FAUNA_SPECIES[id].school);
+  ok(schools.length >= 1 && schools.every(id => FAUNA_SPECIES[id].herd[1] >= FISH_FAUNA.minSchool),
+    `${p}: a schooling fish of its own roster (${schools.join(', ')})`);
+}
+ok(FAUNA_SPECIES_IDS.filter(id => FAUNA_SPECIES[id].school).every(id => FAUNA_SPECIES[id].motion === 'swim' && FAUNA_SPECIES[id].fish?.look.shape !== 'eel'),
+  'only swimmers school, and never eels');
+{
+  const sprat = FISH_ROSTERS.sequoia.find(f => f.item === ItemType.FISH_SPRAT);
+  const d = ITEM_DATA[ItemType.FISH_SPRAT];
+  const icon = d && new URL(`../public${d.texture}`, import.meta.url);
+  ok(!!sprat && !!d && !!icon && existsSync(icon) && FISH_ITEMS.has(ItemType.FISH_SPRAT) && ItemType.FISH_SPRAT === 196,
+    'Sequoia: the glimmer sprat (item 196) is on its fishing table with an icon on disk');
+}
+{
+  // the flock: holds together, keeps apart, swims as one, flees a threat
+  const up = new THREE.Vector3(0, 1, 0);
+  let seed = 99;
+  const r01 = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
+  const radius = 1.6, speed = 1, n = 10;
+  const frame = (threat: THREE.Vector3 | null, time: number) => ({ up, radius, threat, fleeRadius: 5, speed, time });
+  const boids = seedSchool(n, up, radius, FAUNA_SCHOOL, r01);
+  ok(boids.length === n && boids.every(b => b.off.length() <= radius), `seedSchool: ${n} fish inside the school's spread`);
+  const dt = 1 / 30;
+  let maxOff = 0, minPair = Infinity, maxRel = 0;
+  for (let k = 0; k < 30 * 30; k++) {
+    stepSchool(boids, frame(null, k * dt), FAUNA_SCHOOL, dt);
+    if (k < 30 * 10) continue; // settled
+    for (const b of boids) { maxOff = Math.max(maxOff, b.off.length()); maxRel = Math.max(maxRel, b.vel.length()); }
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) minPair = Math.min(minPair, boids[i].off.distanceTo(boids[j].off));
+  }
+  ok(maxOff < radius * 1.6, `cohesion: a calm school stays together (farthest fish ${maxOff.toFixed(2)} of spread ${radius})`);
+  ok(minPair > radius * FAUNA_SCHOOL.separation * 0.35, `separation: no two fish overlap (closest pair ${minPair.toFixed(2)})`);
+  ok(maxRel <= speed * FAUNA_SCHOOL.maxRelSpeed + 1e-9, `alignment: fish swim with the school (most relative speed ${maxRel.toFixed(2)})`);
+  const flat = boids.every(b => Math.abs(b.off.y) < radius * 0.8);
+  ok(flat, 'a school is a lens: vertical spread kept small');
+  const threat = new THREE.Vector3(0.3, 0, 0);
+  const before = boids.reduce((s, b) => s + b.off.distanceTo(threat), 0) / n;
+  for (let k = 0; k < 30; k++) stepSchool(boids, frame(threat, k * dt), FAUNA_SCHOOL, dt);
+  const after = boids.reduce((s, b) => s + b.off.distanceTo(threat), 0) / n;
+  ok(after > before + 0.3, `flight: the fish scatter from a threat (mean distance ${before.toFixed(2)} -> ${after.toFixed(2)} in 1 s)`);
+}
