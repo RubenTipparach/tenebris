@@ -437,6 +437,17 @@
     return feetDepth() > depthWanted;
   }
 
+  // Close any open panel (what Esc does): the furnace panel opens inside the
+  // inventory screen, and closing one leaves the other up
+  function closeMenus() {
+    const b = bi();
+    try { if (b.furnaceUI.isMenuOpen()) b.furnaceUI.close(); } catch {}
+    try { if (b.storageUI.isMenuOpen()) b.storageUI.close(); } catch {}
+    try { if (b.machineUI && b.machineUI.isOpen()) b.machineUI.close(); } catch {}
+    try { const cs = b.getCraftingSystem(); if (cs.isMenuOpen()) cs.close(); } catch {}
+    holdLock();
+  }
+
   // ---- crafting --------------------------------------------------------------
   async function craft(output, times = 1) {
     const cs = bi().getCraftingSystem();
@@ -457,8 +468,7 @@
       else break;
     }
     await sleep(300);
-    cs.close();
-    holdLock();
+    closeMenus();
     say(`crafted ${RECIPES[idx].name} x${made}`);
     return made;
   }
@@ -469,6 +479,7 @@
 
   // Place `item` on top of the ground of a neighbouring tile
   async function placeNearby(item, check) {
+    closeMenus();
     if (!selectItem(item)) return false;
     await toSurface();
     st.task = `placing ${item}`;
@@ -477,7 +488,7 @@
     const myDepth = feetDepth();
     const cands = tilesWithin(here, 2).filter(t => t !== here && p.isTileLoaded(t))
       .map(t => ({ t, g: p.groundDepthOf(t) }))
-      .filter(c => Math.abs(c.g + 1 - myDepth) <= 1 && p.getBlock(c.t, c.g + 1) === B.AIR && p.getBlock(c.t, c.g + 2) === B.AIR && p.getBlock(c.t, c.g) !== B.WATER)
+      .filter(c => Math.abs(c.g + 1 - myDepth) <= 2 && p.getBlock(c.t, c.g + 1) === B.AIR && p.getBlock(c.t, c.g + 2) === B.AIR && p.getBlock(c.t, c.g) !== B.WATER)
       .sort((a, b) => blockTop(a.t, a.g).distanceTo(player().position) - blockTop(b.t, b.g).distanceTo(player().position));
     if (!cands.length) {
       // down a shaft: carve a pocket in the wall and set it on the floor there
@@ -541,6 +552,7 @@
     }
     st.task = 'smelting';
     if (!(await openFurnace(f))) {
+      closeMenus();
       st.furnaceFails = (st.furnaceFails || 0) + 1;
       say('could not open the furnace');
       if (st.furnaceFails >= 2) {
@@ -558,7 +570,7 @@
     // fuel: enough coal for n smelts
     const needFuel = Math.max(0, Math.ceil((n - f.fuelAmount) / 8));
     if (needFuel > 0) {
-      if (count(I.COAL) < needFuel) { ui.close(); holdLock(); say('not enough coal'); return false; }
+      if (count(I.COAL) < needFuel) { closeMenus(); say('not enough coal'); return false; }
       selectItem(I.COAL);
       for (let k = 0; k < needFuel; k++) ui.handleFuelSlotClick();
     }
@@ -570,8 +582,7 @@
     while ((f.inputCount > 0) && performance.now() - t0 < (n + 2) * 11000) await sleep(1000);
     ui.handleOutputSlotClick();
     await sleep(300);
-    ui.close();
-    holdLock();
+    closeMenus();
     say(`collected from the furnace`);
     return true;
   }
@@ -605,6 +616,49 @@
     await click(2, 80);
     await sleep(500);
     return count(I.WATER_BUCKET) > 0;
+  }
+
+  // ---- fishing --------------------------------------------------------------
+  // Phases (src/player/Fishing.ts): Ready 0, Charging 1, Flying 2, Floating 3,
+  // Nibble 4, Bite 5 (the float goes under), Hooked 6
+  async function goFishing(casts = 6) {
+    const f = g().fishing;
+    const w = nearestWaterTile(20);
+    if (w === null) { say('no water nearby - exploring for a pond'); await wander(); await wander(); return false; }
+    const p = P();
+    const surf = p.getSurfacePosition(p.getTileByIndex(w));
+    await walkTo(surf, 5, 40000);
+    closeMenus();
+    const iv = inv();
+    if (!iv.isRodOut()) { bi().toggleRod(); }
+    if (!iv.isRodOut()) { say('no rod to fish with'); return false; }
+    st.task = 'fishing';
+    let caught = 0;
+    for (let c = 0; c < casts; c++) {
+      // out over the water, a little above the horizon
+      const pos = player().position;
+      const up = upAt(pos);
+      const flat = surf.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
+      await lookAtPoint(pos.clone().addScaledVector(flat, 10).addScaledVector(up, 2.5), 0.05, 1500);
+      const fish0 = tracker().save();
+      mouse(0, true); await sleep(900); mouse(0, false);    // charge and throw
+      const t0 = performance.now();
+      let landed = false;
+      while (performance.now() - t0 < 60000) {
+        holdLock();
+        const ph = f.phase;
+        if (ph === 0 && performance.now() - t0 > 3000) break;   // wound in / dry / got away / landed
+        if (ph === 5) { await click(0, 60); }                    // strike
+        if (ph === 6) mouse(0, f.tension < 0.55);                // reel, ease off near the snap
+        await nextFrame();
+      }
+      mouse(0, false);
+      void fish0; void landed;
+      caught++;
+      await sleep(600);
+    }
+    if (iv.isRodOut()) bi().toggleRod();
+    return true;
   }
 
   // ---- missions ----------------------------------------------------------------
@@ -688,6 +742,8 @@
       if (count(I.STICK) < 3) { if (count(I.WOOD) < 2) await craft(I.WOOD, 1); await craft(I.STICK, 1); }
       await craft(I.FISHING_ROD, 1);
     },
+    fish: async () => { await goFishing(6); },
+    fishkinds: async () => { await goFishing(8); },
     clay: async () => { await findAndDig([B.CLAY], () => count(I.CLAY) >= 8); },
     bricks: async () => {
       if (count(I.CLAY) < 4) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 8); return; }
@@ -700,6 +756,19 @@
         await craft(I.CAMPFIRE, 1);
       }
       await placeNearby(I.CAMPFIRE);
+    },
+    brickwall: async () => {
+      const blocks = count(I.BRICK_BLOCK);
+      const bricksNeeded = Math.max(0, (8 - blocks) * 4 - count(I.BRICK));
+      if (bricksNeeded > 0) {
+        if (count(I.CLAY) < Math.min(bricksNeeded, 16)) { await findAndDig([B.CLAY], () => count(I.CLAY) >= Math.min(bricksNeeded, 16)); return; }
+        if (count(I.COAL) < 2) { await getCoal(); return; }
+        await smelt(I.CLAY, Math.min(count(I.CLAY), 16));
+        return;
+      }
+      if (blocks < 8) await craft(I.BRICK_BLOCK, 8 - blocks);
+      // a wall: blocks side by side, then a second course on top
+      for (let i = 0; i < 8 && count(I.BRICK_BLOCK) > 0; i++) await placeNearby(I.BRICK_BLOCK);
     },
     clayblock: async () => {
       if (count(I.CLAY) < 4) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 4); return; }
@@ -761,7 +830,7 @@
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
     miner: ['logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
-    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'clay', 'bricks', 'campfire', 'clayblock', 'iron', 'ingots', 'bucket', 'copper'],
+    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'iron', 'ingots', 'bucket', 'copper'],
   };
 
   function pickMission() {
@@ -773,7 +842,7 @@
   async function loop() {
     while (st.running) {
       try {
-        holdLock();
+        closeMenus();
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
         const m = tracker().openMissions().find(x => x.id === id);
