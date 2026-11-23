@@ -25,3 +25,4 @@ tenebris-c/assets/textures/*.png
 !tenebris-c/assets/textures/water_normal.png
 !tenebris-c/assets/textures/water_flow_arrow.png
 tenebris-c/assets/textures/planet_seq/
+mp-e2e-out/
