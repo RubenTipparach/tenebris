@@ -509,6 +509,11 @@ Deploys are in `.github/workflows/js-deploy.yml`:
   **pages + server** to deploy GitHub Pages (`pages.yml`, called as a
   reusable workflow) and then the server once Pages is up - no itch push
   and no heavyphoton.com rebuild.
+- **Deploy everything** - `deploy-everything.yml` ("Deploy everything - JS
+  client to Pages, heavyphoton.com, itch.io, Fly.io"): one Run workflow
+  button that runs the release workflow with its `everything` choice
+  (Pages + heavyphoton.com + itch.io, then the Fly server once itch.io and
+  Pages succeeded). JS only - never the Rust port.
 - **Multiplayer server alone** - `server.yml` ("Multiplayer server - Fly.io
   deploy") is the one copy of the Fly deploy: run it by hand from the
   Actions tab for a server fix, and the release workflow calls it for its

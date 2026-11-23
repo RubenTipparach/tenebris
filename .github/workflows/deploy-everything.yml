@@ -1,0 +1,27 @@
+# One button for a full JS release: Actions > this workflow > Run workflow.
+# Ships the JS client (not the Rust port) to all four places, by running the
+# release workflow (js-deploy.yml) with its 'everything' choice - one copy
+# of every deploy step:
+#   - GitHub Pages     rubentipparach.github.io/tenebris (pages.yml)
+#   - heavyphoton.com  pings heavyphoton.github.io to rebuild docs/tenebris
+#   - itch.io          butler push to ruben-tipparach/tenebris:html5
+#   - Fly.io           server-js to the tenebris-c app (server.yml), only
+#                      after itch.io and Pages both succeeded
+# Secrets: BUTLER_API_KEY, FLY_API_TOKEN, SITE_DISPATCH_TOKEN (without the
+# last, heavyphoton.com picks the release up on its hourly check).
+name: Deploy everything - JS client to Pages, heavyphoton.com, itch.io, Fly.io
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: JS client - release everything
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/js-deploy.yml
+    with:
+      ship: everything
+    secrets: inherit
