@@ -593,9 +593,11 @@
     const pos = player().position;
     let best = null, bd = 1e9;
     for (const t of tilesWithin(myTile(), radius)) {
-      if (!p.isTileLoaded(t)) continue;
+      if (!p.isTileLoaded(t) || (st.badWater || []).includes(t)) continue;
       const top = p.topBlockOf(t);
       if (top !== B.WATER) continue;
+      // a pond, not a puddle in a hole: water on two sides at least
+      if (neighbors(t).filter(n => p.topBlockOf(n) === B.WATER).length < 2) continue;
       const tt = p.getTileByIndex(t);
       const d = tt.center.clone().add(p.center).distanceTo(pos);
       if (d < bd) { bd = d; best = t; }
@@ -603,19 +605,76 @@
     return best;
   }
   async function fillBucket() {
-    const w = nearestWaterTile();
-    if (w === null) { say('no water nearby - exploring'); await wander(); return false; }
+    const w = nearestWaterTile(30);
+    if (w === null) { say('no water nearby - exploring'); await wander(); await wander(); return false; }
     const p = P();
-    const surf = p.getSurfacePosition(p.getTileByIndex(w));
-    await walkTo(surf, 3, 40000);
-    selectItem(I.BUCKET);
-    // the water's surface: the topmost water block of that column
     let d = p.getMaxDepth() - 1;
     while (d > 0 && p.getBlock(w, d) !== B.WATER) d--;
-    await lookAtPoint(blockTop(w, d), 0.05, 1500);
+    const water = blockCenter(w, d);
+    st.task = 'walking to water';
+    await toSurface();
+    await walkTo(water, 1.8, 40000);
+    closeMenus();
+    for (const lift of [0, 0.3, -0.3]) {
+      selectItem(I.BUCKET);
+      const aim = water.clone().addScaledVector(upAt(water), lift);
+      await lookAtPoint(aim, 0.04, 1500);
+      await click(2, 80);
+      await sleep(500);
+      if (count(I.WATER_BUCKET) > 0) { say('filled a water bucket'); return true; }
+    }
+    say(`could not fill the bucket at tile ${w} (water ${water.distanceTo(eye()).toFixed(1)} m away)`);
+    st.badWater = (st.badWater || []).concat([w]);
+    try { localStorage.setItem('bot_badWater', JSON.stringify(st.badWater)); } catch {}
+    return false;
+  }
+
+  // ---- cooking stations (campfire, kiln, oven) ---------------------------------
+  const STATION_ITEM = () => ({ campfire: I.CAMPFIRE, kiln: I.KILN, oven: I.OVEN });
+  function fishItems() {
+    return Object.keys(I).filter(k => isNaN(+k) && k.startsWith('FISH_') && k !== 'FISH_STEW').map(k => I[k]);
+  }
+  function invSlotOf(item) {
+    return inv().getAllSlots().findIndex(s => s.itemType === item && s.quantity > 0);
+  }
+  // Put `inputs` (item ids, or 'fish') in a station of `kind` and take the dish out
+  async function cookAt(kind, inputs, output) {
+    const cm = bi().cookerManager;
+    const pos = player().position;
+    let c = cm.getPlaced().filter(x => x.kind === kind).sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
+    if (!c || c.position.distanceTo(pos) > 25) {
+      const it = STATION_ITEM()[kind];
+      if (count(it) === 0) { if (!canCraft(it)) { say(`need a ${kind}`); return false; } await craft(it, 1); }
+      const t = await placeNearby(it);
+      if (t === false) return false;
+      c = cm.getAtTile(t);
+      if (!c) return false;
+    }
+    st.task = `cooking at the ${kind}`;
+    await walkTo(c.position, 2.2, 30000);
+    selectEmptyHand();
+    await lookAtPoint(c.position.clone().addScaledVector(upAt(c.position), 0.3), 0.04, 2000);
     await click(2, 80);
     await sleep(500);
-    return count(I.WATER_BUCKET) > 0;
+    const ui = bi().storageUI;
+    if (!ui.isMenuOpen()) { say(`could not open the ${kind}`); closeMenus(); return false; }
+    let slot = 0;
+    for (const want of inputs) {
+      const item = want === 'fish' ? fishItems().find(f => count(f) > 0) : want;
+      const from = item === undefined ? -1 : invSlotOf(item);
+      if (from < 0) { say(`missing an ingredient for the ${kind}`); closeMenus(); return false; }
+      ui.transferFromInventory(from, slot++);
+      await sleep(200);
+    }
+    const before = count(output);
+    const t0 = performance.now();
+    while (performance.now() - t0 < 40000 && !c.slots.some(s => s.itemType === output && s.quantity > 0)) await sleep(500);
+    c.slots.forEach((s, i) => { if (s.itemType !== 0 && s.quantity > 0) ui.handleShiftClick(i); });
+    await sleep(300);
+    closeMenus();
+    const got = count(output) - before;
+    say(got > 0 ? `cooked ${got} at the ${kind}` : `nothing came out of the ${kind}`);
+    return got > 0;
   }
 
   // ---- fishing --------------------------------------------------------------
@@ -743,6 +802,63 @@
       await craft(I.FISHING_ROD, 1);
     },
     fish: async () => { await goFishing(6); },
+    kiln: async () => {
+      if (count(I.KILN) === 0) {
+        if (count(I.BRICK) < 8) { await makeBricks(8); return; }
+        await craft(I.KILN, 1);
+      }
+      await placeNearby(I.KILN);
+    },
+    pot: async () => {
+      if (count(I.CLAY) < 1) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 4); return; }
+      await cookAt('kiln', [I.CLAY], I.CLAY_POT);
+    },
+    oven: async () => {
+      if (count(I.OVEN) === 0) {
+        if (count(I.BRICK) < 8) { await makeBricks(8); return; }
+        if (count(I.INGOT_IRON) < 1) {
+          if (count(I.ORE_IRON) < 1) { await goMining([B.ORE_IRON], () => count(I.ORE_IRON) >= 2); return; }
+          await smelt(I.ORE_IRON, count(I.ORE_IRON)); return;
+        }
+        await craft(I.OVEN, 1);
+      }
+      await placeNearby(I.OVEN);
+    },
+    stew: async () => {
+      if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return; }
+      if (count(I.CLAY_POT) < 1) {
+        if (count(I.CLAY) < 1) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 2); return; }
+        await cookAt('kiln', [I.CLAY], I.CLAY_POT); return;
+      }
+      if (count(I.WATER_BUCKET) < 1) {
+        if (count(I.BUCKET) < 1) {
+          if (count(I.INGOT_IRON) < 3) { if (count(I.ORE_IRON) < 3) { await goMining([B.ORE_IRON], () => count(I.ORE_IRON) >= 3); return; } await smelt(I.ORE_IRON, count(I.ORE_IRON)); return; }
+          await craft(I.BUCKET, 1);
+        }
+        await fillBucket(); return;
+      }
+      await cookAt('oven', ['fish', I.WATER_BUCKET, I.CLAY_POT], I.FISH_STEW);
+    },
+    eat: async () => {
+      if (count(I.FISH_STEW) < 1) { await PLAYBOOK.stew(); return; }
+      closeMenus();
+      selectItem(I.FISH_STEW);
+      // eyes on the sky so no machine takes the click
+      const pos = player().position;
+      await lookAtPoint(pos.clone().addScaledVector(upAt(pos), 20), 0.1, 1500);
+      await click(2, 80);
+      await sleep(500);
+      say('ate a fish stew');
+    },
+    cement: async () => {
+      if (count(I.CLAY) < 2) { await findAndDig([B.CLAY], () => count(I.CLAY) >= 3); return; }
+      if (count(I.STONE) < 2) { await digForStone(4); return; }
+      await cookAt('kiln', [I.CLAY, I.STONE], I.CEMENT);
+    },
+    cookfish: async () => {
+      if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return; }
+      await cookAt('campfire', ['fish'], I.COOKED_FISH);
+    },
     fishkinds: async () => { await goFishing(8); },
     clay: async () => { await findAndDig([B.CLAY], () => count(I.CLAY) >= 8); },
     bricks: async () => {
@@ -776,6 +892,14 @@
     },
   };
 
+  // Fire clay in the furnace until there are `n` bricks
+  async function makeBricks(n) {
+    const need = n - count(I.BRICK);
+    if (need <= 0) return;
+    if (count(I.CLAY) < need) { await findAndDig([B.CLAY], () => count(I.CLAY) >= need); return; }
+    if (count(I.COAL) < 2) { await getCoal(); return; }
+    await smelt(I.CLAY, need);
+  }
   async function digForStone(n) {
     const surface = surfaceDepth();
     await digDown(() => count(I.STONE) >= n);
@@ -830,12 +954,14 @@
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
     miner: ['logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
-    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'iron', 'ingots', 'bucket', 'copper'],
+    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
   function pickMission() {
     const open = new Set(openIds());
     for (const id of ROLE_ORDER[st.role] ?? ROLE_ORDER.miner) if (open.has(id) && PLAYBOOK[id]) return id;
+    // its own branches are done: help itself to the other's
+    for (const order of Object.values(ROLE_ORDER)) for (const id of order) if (open.has(id) && PLAYBOOK[id]) return id;
     return null;
   }
 
@@ -864,6 +990,7 @@
       if (st.running) return;
       await loadModules();
       st.role = role;
+      try { st.badWater = JSON.parse(localStorage.getItem('bot_badWater') || '[]'); } catch {}
       st.running = true;
       holdLock();
       await calibrate();
