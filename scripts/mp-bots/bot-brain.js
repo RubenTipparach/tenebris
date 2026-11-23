@@ -470,6 +470,7 @@
   // Place `item` on top of the ground of a neighbouring tile
   async function placeNearby(item, check) {
     if (!selectItem(item)) return false;
+    await toSurface();
     st.task = `placing ${item}`;
     const here = myTile();
     const p = P();
@@ -495,7 +496,15 @@
       await sleep(700);
       if (count(item) < before) { say(`placed item ${item} on tile ${c.t}`); return c.t; }
     }
+    say(`could not place item ${item} (${cands.length} spots tried, depth ${myDepth}, surface ${surfaceDepth()})`);
+    await wander();
     return false;
+  }
+
+  // Climb out to the surface if down a hole
+  async function toSurface() {
+    const s = surfaceDepth();
+    if (feetDepth() < s - 1) { say('climbing out to the surface'); await pillarUpTo(s - 1, 60); }
   }
 
   // ---- furnace --------------------------------------------------------------
@@ -504,11 +513,12 @@
     const pos = player().position;
     let best = null, bd = 1e9;
     for (const f of fm.getPlacedFurnaces()) {
+      if ((st.ignoreFurnaces || []).includes(f.tileIndex)) continue;
       const d = f.position.distanceTo(pos);
       if (st.furnaceTile !== null && f.tileIndex === st.furnaceTile) return f;
       if (d < bd) { bd = d; best = f; }
     }
-    return bd < 30 ? best : null;
+    return bd < 12 ? best : null;
   }
   async function openFurnace(f) {
     await walkTo(f.position, 2.2, 30000);
@@ -530,7 +540,19 @@
       if (!f) return false;
     }
     st.task = 'smelting';
-    if (!(await openFurnace(f))) { say('could not open the furnace'); return false; }
+    if (!(await openFurnace(f))) {
+      st.furnaceFails = (st.furnaceFails || 0) + 1;
+      say('could not open the furnace');
+      if (st.furnaceFails >= 2) {
+        st.furnaceFails = 0;
+        st.ignoreFurnaces = (st.ignoreFurnaces || []).concat([f.tileIndex]);
+        st.furnaceTile = null;
+        say('building a new furnace here');
+      }
+      await sleep(1000);
+      return false;
+    }
+    st.furnaceFails = 0;
     const ui = bi().furnaceUI;
     const all = inv().getAllSlots();
     // fuel: enough coal for n smelts
@@ -614,7 +636,7 @@
     iron: async () => {
       if (count(I.ROCK_PICKAXE) === 0 && canCraft(I.ROCK_PICKAXE) && tracker().recipeOpen(I.ROCK_PICKAXE)) await craft(I.ROCK_PICKAXE, 1);
       await goMining([B.ORE_IRON, B.ORE_COAL], () => count(I.ORE_IRON) >= 6 && count(I.ORE_COAL) >= 1);
-      if (count(I.ORE_COAL) > 0) await craft(I.COAL, 1);
+      if (count(I.ORE_COAL) > 0 && count(I.COAL) < 16) await craft(I.COAL, 1);
     },
     ingots: async () => {
       if (count(I.ORE_IRON) < 3) { await goMining([B.ORE_IRON], () => count(I.ORE_IRON) >= 6); return; }
@@ -692,7 +714,7 @@
   }
   async function getCoal() {
     if (count(I.ORE_COAL) === 0) await goMining([B.ORE_COAL], () => count(I.ORE_COAL) >= 2);
-    if (count(I.ORE_COAL) > 0) await craft(I.COAL, 1);
+    if (count(I.ORE_COAL) > 0 && count(I.COAL) < 16) await craft(I.COAL, 1);
   }
   // Dig a shaft down to ore level, tunnel to the wanted ores, climb back out
   async function goMining(wanted, done) {
