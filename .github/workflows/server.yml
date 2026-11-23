@@ -47,8 +47,28 @@ jobs:
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 
+      # The worlds' volume: made here the first time, so a new app needs no
+      # CLI setup (Fly's dashboard has no button for volumes). Name, region
+      # and the app come from server-js/fly.toml; already there, nothing happens.
+      - name: Make sure the tenebris_saves volume exists
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        working-directory: server-js
+        run: |
+          set -e
+          APP=$(sed -n "s/^app = '\(.*\)'/\1/p" fly.toml)
+          REGION=$(sed -n "s/^primary_region = '\(.*\)'/\1/p" fly.toml)
+          if flyctl volumes list -a "$APP" --json | grep -q '"name": *"tenebris_saves"'; then
+            echo "tenebris_saves already exists on $APP"
+          else
+            flyctl volumes create tenebris_saves -a "$APP" -r "$REGION" --size 1 --yes
+          fi
+
       - name: Deploy server-js to Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         working-directory: server-js
-        run: flyctl deploy --remote-only --config fly.toml --wait-timeout 600
+        # --ha=false: ONE machine. The worlds live on that machine's own
+        # volume (tenebris_saves at /data); Fly's default of two machines on a
+        # first deploy would want two volumes and split the worlds between them
+        run: flyctl deploy --remote-only --config fly.toml --wait-timeout 600 --ha=false

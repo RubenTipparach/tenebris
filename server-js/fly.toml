@@ -10,8 +10,10 @@
 # ). The volume is shared: the JS worlds live under /data/worlds/ and the
 # Rust saves beside them are left alone.
 #
+# One machine, one volume (the worlds are on it). First time:
+#   fly volumes create tenebris_saves -a tenebris -r ord --size 1
 # Manual deploy, from server-js/:
-#   fly deploy --config fly.toml
+#   fly deploy --config fly.toml --ha=false
 
 app = 'tenebris'
 primary_region = 'ord'
