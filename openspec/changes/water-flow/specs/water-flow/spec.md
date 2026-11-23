@@ -121,3 +121,29 @@ measured per fragment, the same at every camera height.
 
 - **WHEN** a flowing cell is seen side-on with only sky behind it
 - **THEN** it is tinted by its own width, not drawn opaque
+
+### Requirement: Water carries Pale Blue Dot's flow texture
+
+Over its own shading, colours, depth tint and fog, water SHALL draw
+Tenebris's water tile as Pale Blue Dot's water mockup does: on a top the
+tile pans along that cell's flow (the downhill slope of its corner heights)
+and stands still where the top is flat; on a flowing cell's side it stands
+vertical and pans down with froth; on a source's side it stands still. The
+tile SHALL fade out with distance and at grazing angles, and SHALL not change
+the view from under water.
+
+#### Scenario: A top on a slope
+
+- **WHEN** flowing water runs down a slope from a source
+- **THEN** each sloped top's tile pans downhill, and the source's top and the sea stand still
+
+#### Scenario: A fall
+
+- **WHEN** water falls off a ledge
+- **THEN** its sides show standing streaks panning down, frothed water blue
+
+#### Scenario: The sea from afar
+
+- **WHEN** the sea is seen from high up or at a grazing angle
+- **THEN** the tile has faded to the water's plain colour, with no sparkle
+

@@ -21,6 +21,13 @@
 //   S3 a newly wet cell under water grows down from the water above;
 //   S4 a dried cell is drawn one more tick, shrinking toward where it drained,
 //      then hidden.
+// And the flow texture (PBD water-look.js, Tenebris C's water_fs): each vertex
+// carries liquidFlow - xyz a direction, w its face code (FACE_* + 3 x the
+// axis a cap's tile is projected along). A cap's xyz is its flow (the corner
+// levels' least-squares slope, downhill, length = speed; zero on a flat cap,
+// so sources and the sea stand still); a side's is the unit direction along
+// its bottom edge. water.vert pans the tile along a cap's flow and stands it
+// up on a side, a flowing side panning down.
 // Pure (no THREE) so the geometry worker runs it.
 
 import { HexBlockType, isClearSolid } from '../shared/blockTypes';
@@ -62,6 +69,8 @@ export interface WaterTarget {
   vertexOffset: number;
   /** Per vertex: where it was last tick (xyz) and its smoothing mode + 4 x tick stamp (w). */
   liquidPrev?: number[];
+  /** Per vertex: the flow texture's direction (xyz) and face code (w) - see FACE_*. */
+  liquidFlow?: number[];
 }
 
 /** One column to mesh: its tile outline and the neighbour across each edge (edge i joins vertex i and i+1). */
@@ -78,8 +87,14 @@ export const TWEEN_EASE = 1;
 export const TWEEN_SWEEP = 2;
 export const TWEEN_GONE = 3;
 
+/** A face's kind for the flow texture (liquidFlow.w mod 3; water.vert reads it). */
+export const FACE_CAP = 0;     // a top or a bottom: the tile pans along its flow
+export const FACE_FALL = 1;    // a flowing cell's side: the tile stands, panning down, with froth
+export const FACE_STILL = 2;   // a source's side: the tile stands still
+
 type V = [number, number, number];
-interface Piece { id: string; v: V[]; alt: V[]; n: V[]; uv: number[]; }
+/** f: the face's liquidFlow (direction xyz, face code w), the same on all its vertices. */
+interface Piece { id: string; v: V[]; alt: V[]; n: V[]; uv: number[]; f: [number, number, number, number]; }
 
 const norm = (a: V): V => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const scale = (a: V, s: number): V => [a[0] * s, a[1] * s, a[2] * s];
@@ -123,16 +138,54 @@ export function cornerLevels(col: LiquidColumn, depth: number, view: CellReader)
   return out;
 }
 
+/**
+ * A cap's flow from its corner heights (PBD liquidMesh: "Luanti turns the
+ * flowing texture down the corner gradient"): the least-squares slope of the
+ * corners over the cell's tangent plane, pointing downhill, its length the
+ * speed (WaterConfig.FLOW_*); zero where the cap is (nearly) flat.
+ * up: the cell's outward unit direction; offsets: each corner's tangent
+ * offset from the cell centre (metres); heights: each corner's height (metres).
+ */
+export function capFlow(up: V, offsets: V[], heights: number[]): V {
+  // a tangent basis at the cell
+  const ref: V = Math.abs(up[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const e1 = norm(sub(ref, scale(up, dot(ref, up))));
+  const e2 = cross(up, e1);
+  const n = heights.length;
+  const mean = heights.reduce((a, b) => a + b, 0) / n;
+  let sxx = 0, sxy = 0, syy = 0, bx = 0, by = 0;
+  for (let i = 0; i < n; i++) {
+    const x = dot(offsets[i], e1), y = dot(offsets[i], e2), h = heights[i] - mean;
+    sxx += x * x; sxy += x * y; syy += y * y; bx += h * x; by += h * y;
+  }
+  const det = sxx * syy - sxy * sxy;
+  if (Math.abs(det) < 1e-12) return [0, 0, 0];
+  const gx = (syy * bx - sxy * by) / det, gy = (sxx * by - sxy * bx) / det;
+  const gl = Math.hypot(gx, gy);
+  if (gl < WaterConfig.FLOW_MIN_SLOPE) return [0, 0, 0];
+  const sp = Math.min(WaterConfig.FLOW_MAX_SPEED, WaterConfig.FLOW_MIN_SPEED + WaterConfig.FLOW_SLOPE_K * gl);
+  const g = [e1[0] * gx + e2[0] * gy, e1[1] * gx + e2[1] * gy, e1[2] * gx + e2[2] * gy] as V;
+  return scale(g, -sp / gl);
+}
+
+/** The axis (0 x, 1 y, 2 z) a cap's tile is projected along: the cell's outward direction's largest component. */
+export function capAxis(up: V): number {
+  const a = up.map(Math.abs);
+  return a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
+}
+
 class ColumnShape {
   readonly n: number;
   readonly dirs: V[];
   readonly cdir: V;
   readonly uvs: Array<[number, number]> = [];
+  readonly axis: number;
 
   constructor(readonly col: LiquidColumn, readonly dims: LiquidDims) {
     this.n = col.vertices.length;
     this.dirs = col.vertices.map(v => norm([v.x, v.y, v.z]));
     this.cdir = norm([col.center.x, col.center.y, col.center.z]);
+    this.axis = capAxis(this.cdir);
     // the tile UVs every hex top uses (createFaceGeometry)
     for (let i = 0; i < this.n; i++) {
       const a = (i / this.n) * Math.PI * 2 - Math.PI / 2;
@@ -156,6 +209,8 @@ class ColumnShape {
     const lv = cornerLevels(this.col, depth, view);
     const floor = this.floorR(depth), top = this.topR(depth);
     const out: Piece[] = [];
+    const capCode = FACE_CAP + 3 * this.axis;
+    const sideCode = isFlowCode(view(t, depth)) ? FACE_FALL : FACE_STILL;
 
     // The top, unless water is on it or an opaque block caps it
     if (!wetAbove && above !== CELL_SOLID) {
@@ -175,7 +230,13 @@ class ColumnShape {
         nn.push(fn, fn, fn);
         uv.push(0.5, 0.5, this.uvs[i][0], this.uvs[i][1], this.uvs[j][0], this.uvs[j][1]);
       }
-      out.push({ id: 'top', v, alt: v.map(p => scale(norm(p), top)), n: nn, uv });
+      let fl: V = [0, 0, 0];
+      if (!flat) {
+        const sheet = this.levelR(depth, 1);
+        const offs = dirs.map(d => scale(sub(d, scale(this.cdir, dot(d, this.cdir))), sheet));
+        fl = capFlow(this.cdir, offs, lv.map(l => this.levelR(depth, l)));
+      }
+      out.push({ id: 'top', v, alt: v.map(p => scale(norm(p), top)), n: nn, uv, f: [fl[0], fl[1], fl[2], capCode] });
     }
 
     // The sides: only over air
@@ -187,12 +248,14 @@ class ColumnShape {
       const tz = wetAbove ? top : this.levelR(depth, lv[z]);
       const A0 = scale(dirs[s], floor), Z0 = scale(dirs[z], floor), Z1 = scale(dirs[z], tz), A1 = scale(dirs[s], ta);
       const sn = norm(cross(sub(Z0, A0), sub(A1, A0)));
+      const along = norm(sub(Z0, A0));
       out.push({
         id: 's' + s,
         v: [A0, Z0, Z1, A0, Z1, A1],
         alt: [A1, Z1, Z1, A1, Z1, A1],
         n: [sn, sn, sn, sn, sn, sn],
         uv: [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1],
+        f: [along[0], along[1], along[2], sideCode],
       });
     }
 
@@ -206,7 +269,7 @@ class ColumnShape {
         nn.push(bn, bn, bn);
         uv.push(0.5, 0.5, this.uvs[j][0], this.uvs[j][1], this.uvs[i][0], this.uvs[i][1]);
       }
-      out.push({ id: 'b', v, alt: v, n: nn, uv });
+      out.push({ id: 'b', v, alt: v, n: nn, uv, f: [0, 0, 0, capCode] });
     }
     return out;
   }
@@ -250,6 +313,8 @@ class ColumnShape {
 function emit(out: WaterTarget, piece: Piece, cur: V[], prev: V[], mode: number, stamp: number): void {
   const base = out.vertexOffset;
   const lp = (out.liquidPrev ??= []);
+  const lf = (out.liquidFlow ??= []);
+  const f = piece.f;
   const w = mode === TWEEN_STATIC ? 0 : mode + 4 * stamp;
   for (let j = 0; j < cur.length; j++) {
     const p = cur[j], q = prev[j], nn = piece.n[j];
@@ -260,6 +325,7 @@ function emit(out: WaterTarget, piece: Piece, cur: V[], prev: V[], mode: number,
     out.skyLight.push(1);
     out.torchLight.push(0);
     lp.push(q[0], q[1], q[2], w);
+    lf.push(f[0], f[1], f[2], f[3]);
     out.indices.push(base + j);
   }
   out.vertexOffset += cur.length;

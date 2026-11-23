@@ -73,6 +73,7 @@ interface GeometryData {
   indices: number[];
   vertexOffset: number;
   liquidPrev?: number[]; // water only: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
+  liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
 function createEmptyGeometryData(): GeometryData {
@@ -5193,6 +5194,9 @@ export class Planet {
     // Water: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
     if (data.liquidPrev && data.liquidPrev.length > 0) {
       geometry.setAttribute('liquidPrev', new THREE.Float32BufferAttribute(data.liquidPrev, 4));
+    }
+    if (data.liquidFlow && data.liquidFlow.length > 0) {
+      geometry.setAttribute('liquidFlow', new THREE.Float32BufferAttribute(data.liquidFlow, 4));
     }
     // Add sky light attribute for depth-based lighting
     if (data.skyLight.length > 0) {

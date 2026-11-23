@@ -28,6 +28,7 @@ export interface GeometryData {
   indices: number[];
   vertexOffset: number;
   liquidPrev?: number[];  // water only: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
+  liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
 export function createEmptyGeometryData(): GeometryData {
@@ -473,6 +474,12 @@ export function createBufferGeometryFromData(data: GeometryData): THREE.BufferGe
 
   if (data.liquidPrev && data.liquidPrev.length > 0) {
     geometry.setAttribute('liquidPrev', new THREE.Float32BufferAttribute(data.liquidPrev, 4));
+  }
+
+  if (data.liquidFlow && data.liquidFlow.length > 0) {
+
+    geometry.setAttribute('liquidFlow', new THREE.Float32BufferAttribute(data.liquidFlow, 4));
+
   }
 
   geometry.setIndex(data.indices);

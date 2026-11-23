@@ -37,6 +37,7 @@ interface GeometryData {
   indices: number[];
   vertexOffset: number;
   liquidPrev?: number[];  // water only (src/water/LiquidMesh.ts)
+  liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
 function createEmptyGeometryData(): GeometryData {

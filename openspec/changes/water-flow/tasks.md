@@ -19,7 +19,13 @@
 - [x] 3.3 Depth pre-pass draws water's far side (back-face depth twin per water material), every planet registered; per-fragment fog distances in water.frag and terrain.frag.
 - [x] 3.4 Headless sweeps: the sea at +3 .. -2.5 m, and the flow volumes (above, at the surface, inside, inside a filled pit, beside a fall).
 
-## 4. Verify
+## 4. The flow texture (PBD's water look)
 
-- [x] 4.1 All `scripts/*.test.ts`, `npx tsc --noEmit -p .`, `npx vite build`, `npx openspec validate --all --strict`.
-- [ ] 4.2 Owner's in-game check: pour a bucket on a hillside, dig beside the sea, swim in a filled pit.
+- [x] 4.1 `src/water/FlowTile.ts`: water.png ranked into tones (= PBD TEX_IDX). Verify: test 11.
+- [x] 4.2 `LiquidMesh`: `liquidFlow` per vertex (cap flow from the corner slope, side direction, face code); plumbed through the three meshers, the worker transfer and both geometry builders. Verify: test 10.
+- [x] 4.3 `water.vert` / `water.frag`: caps panned along the flow, sides standing, falls panned down with froth; fades by distance and texel size; none under water; numbers in `WaterConfig`. Verify: headless watertex-* shots (fall close up, caps from above, the sea from the shore, high up).
+
+## 5. Verify
+
+- [x] 5.1 All `scripts/*.test.ts`, `npx tsc --noEmit -p .`, `npx vite build`, `npx openspec validate --all --strict`.
+- [ ] 5.2 Owner's in-game check: pour a bucket on a hillside, dig beside the sea, swim in a filled pit; the flow texture on tops, falls and the sea.

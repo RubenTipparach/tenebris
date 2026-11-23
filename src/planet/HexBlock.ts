@@ -6,6 +6,8 @@ import { TilesetConfig, EARTH_TILESET, MOON_TILESET, SEQUOIA_TILESET } from '../
 import { getAssetPath } from '../utils/assetPath';
 import { LIGHTING_CONFIG } from '../config/LightingConfig';
 import waterVert from '../shaders/water/water.vert';
+import { flowTile, FlowTile } from '../water/FlowTile';
+import { WaterConfig } from '../config/WaterConfig';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
@@ -135,6 +137,35 @@ function missingTexture(): THREE.Texture {
     missing.needsUpdate = true;
   }
   return missing;
+}
+
+/**
+ * The water shader's flow tile from the loaded water texture (one source:
+ * the PNG): nearest-sampled, repeat-wrapped, never mipmapped. Without a
+ * canvas to read the pixels (or before the image loads) it is one body
+ * pixel of the texture's mean, which draws the water untextured.
+ */
+function waterFlowTile(tex: THREE.Texture): { texture: THREE.DataTexture; mean: [number, number, number] } {
+  let tile: FlowTile | null = null;
+  const img = tex.image as (CanvasImageSource & { width: number; height: number }) | undefined;
+  try {
+    if (img && img.width > 0 && typeof document !== 'undefined') {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      if (g) {
+        g.drawImage(img, 0, 0);
+        tile = flowTile(g.getImageData(0, 0, img.width, img.height).data, img.width, img.height);
+      }
+    }
+  } catch { tile = null; }
+  if (!tile) tile = flowTile([0, 0, 0, 255], 1, 1);
+  const t = new THREE.DataTexture(tile.data, tile.width, tile.height, THREE.RGBAFormat);
+  t.magFilter = t.minFilter = THREE.NearestFilter;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.generateMipmaps = false;
+  t.needsUpdate = true;
+  return { texture: t, mean: tile.mean };
 }
 
 // Texture loads shared by every planet's mesh builder (see loadTexture)
@@ -484,6 +515,9 @@ export class HexBlockMeshBuilder {
     configureTexture(waterTexture);
     this.textures.set('water', waterTexture);
 
+    // The flow texture's tile: the same PNG, its pixels ranked into tones (src/water/FlowTile.ts)
+    const flow = waterFlowTile(waterTexture);
+
     // Parse hex colors to THREE.Color (using overrides or defaults)
     const waterColorVec = new THREE.Color(waterColor);
     const deepWaterColorVec = new THREE.Color(waterDeepColor);
@@ -494,7 +528,6 @@ export class HexBlockMeshBuilder {
     this.waterShaderMaterial = new THREE.ShaderMaterial({
       uniforms: {
         time: { value: 0.0 },
-        waterTexture: { value: waterTexture },
         uvTiling: { value: PlayerConfig.WATER_UV_TILING },
         waterColor: { value: waterColorVec },
         deepWaterColor: { value: deepWaterColorVec },
@@ -517,7 +550,25 @@ export class HexBlockMeshBuilder {
         planetCenter: { value: new THREE.Vector3(0, 0, 0) },
         ...skyLightUniforms(this.skyLight ?? airlessSkyLight()),
         textureStrength: { value: PlayerConfig.WATER_TEXTURE_STRENGTH },
-        scrollSpeed: { value: PlayerConfig.WATER_SCROLL_SPEED },
+        // The flow texture (openspec water-flow 9; WaterConfig TEX_* / FOAM_*)
+        waterFlowTile: { value: flow.texture },
+        waterTileMean: { value: new THREE.Vector3(...flow.mean) },
+        texTileM: { value: WaterConfig.TEX_TILE_M },
+        texPanK: { value: WaterConfig.TEX_PAN_K },
+        texFallPan: { value: WaterConfig.TEX_FALL_PAN },
+        texFade: { value: new THREE.Vector2(WaterConfig.TEX_FADE_NEAR, WaterConfig.TEX_FADE_FAR) },
+        texTexelFade: { value: new THREE.Vector2(WaterConfig.TEX_TEXEL_FADE_START, WaterConfig.TEX_TEXEL_FADE_END) },
+        texSize: { value: flow.texture.image.width },
+        rippleTone: { value: new THREE.Vector2(WaterConfig.RIPPLE_SKY_MIX, WaterConfig.RIPPLE_LIFT) },
+        glintFoam: { value: WaterConfig.GLINT_FOAM },
+        foamColor: { value: new THREE.Vector3(...WaterConfig.FOAM_COLOR) },
+        fallFoamColor: { value: new THREE.Vector3(...WaterConfig.FALL_FOAM_COLOR) },
+        fallFroth: { value: new THREE.Vector4(WaterConfig.FALL_FROTH_BASE, WaterConfig.FALL_FROTH_RIPPLE, WaterConfig.FALL_FROTH_GLINT, WaterConfig.FALL_FROTH_SCALE) },
+        frothPixel: { value: new THREE.Vector3(WaterConfig.FROTH_PIXELS_PER_M, WaterConfig.FROTH_ROW_K, WaterConfig.FROTH_FALL_SPEED) },
+        frothJitter: { value: WaterConfig.FROTH_JITTER },
+        capFoam: { value: new THREE.Vector3(WaterConfig.CAP_FOAM_THRESHOLD, WaterConfig.CAP_FOAM_SPEED_K, WaterConfig.CAP_FOAM_STRENGTH) },
+        foamMax: { value: WaterConfig.FOAM_MAX },
+        fallAlpha: { value: WaterConfig.FALL_ALPHA },
         causticStrength: { value: PlayerConfig.WATER_CAUSTIC_STRENGTH },
         foamStrength: { value: PlayerConfig.WATER_FOAM_STRENGTH },
         // Depth texture uniforms (set by GameEngine)
