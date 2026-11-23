@@ -1,3 +1,4 @@
+import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
@@ -864,10 +865,12 @@ class PlanetGame {
       const onSun = calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition);
       // Its body config carries the sea flora table (openspec ocean-life)
       this.groundClutter.update(deltaTime, pos, on, onSun,
-        onId ? getBodyConfig(onId) : undefined, this.player.getIsInWater());
+        onId ? getBodyConfig(onId) : undefined);
       // Machines, chests and launch pads sit in the same light as the ground (MachineLight)
       const lit = on ?? this.earth;
       setMachineLight(lit.center, onSun, lit.getSkyLight());
+      // Sea plants and creatures fog and dim like the seabed (UnderwaterLook)
+      setUnderwaterLook(this.player.getIsInWater(), on ? on.getSeaSurfaceRadius() : -1);
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)

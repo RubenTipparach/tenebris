@@ -1,3 +1,4 @@
+import { underwaterLookUniforms } from '../planet/UnderwaterLook';
 import * as THREE from 'three';
 import { skyLightUniforms } from '../planet/SkyLightTexture';
 import { Planet } from '../planet/Planet';
@@ -113,8 +114,8 @@ export class SeaFlora {
     }
   }
 
-  /** Per frame: time, light and whether the camera is under water. */
-  public setFrame(time: number, planet: Planet | null, sunDirection: THREE.Vector3, cameraUnderwater: boolean): void {
+  /** Per frame: time and light (under water: UnderwaterLook's shared uniforms). */
+  public setFrame(time: number, planet: Planet | null, sunDirection: THREE.Vector3): void {
     for (const l of this.layers.values()) {
       if (!planet) { l.mesh.visible = false; continue; }
       l.mesh.visible = l.count > 0;
@@ -123,7 +124,6 @@ export class SeaFlora {
       u.sunDirection.value.copy(sunDirection);
       u.planetCenter.value.copy(planet.center);
       u.skyLight.value = planet.getSkyLight();
-      u.isUnderwater.value = cameraUnderwater ? 1 : 0;
     }
   }
 
@@ -488,11 +488,7 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
       bobSpeed: { value: look.float?.bobSpeed ?? 0 },
       currentAxis: { value: new THREE.Vector3(...S.CURRENT_AXIS).normalize() },
       glowColor: { value: new THREE.Color(look.glow ?? '#000000') },
-      underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING },
-      fogColor: { value: new THREE.Color(PlayerConfig.UNDERWATER_FOG_COLOR) },
-      fogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
-      fogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
-      isUnderwater: { value: 0 },
+      ...underwaterLookUniforms(),
       ...skyLightUniforms(),
     },
     side: THREE.DoubleSide,
@@ -567,17 +563,13 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
       uniform vec3 sunDirection;
       uniform vec3 planetCenter;
       uniform vec3 glowColor;
-      uniform float underwaterDimming;
-      uniform vec3 fogColor;
-      uniform float fogNear;
-      uniform float fogFar;
-      uniform float isUnderwater;
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
       varying vec3 vWorld;
       varying float vSurface;
       #include <tenebris_sky_light>
+      #include <tenebris_underwater>
       void main() {
         vec3 n = normalize(vNormal);
         if (!gl_FrontFacing) n = -n;
@@ -587,20 +579,10 @@ function makeMaterial(look: SeaFloraLook): THREE.ShaderMaterial {
         vec3 ambient = ${f(PlayerConfig.AMBIENT_LIGHT_INTENSITY)} * skyFill(facing);
         float diff = max(0.0, dot(n, sunDirection));
         vec3 c = vColor * (ambient + ${f(S.DIFFUSE)} * diff * skySun(facing));
-        // Dimmed by the water above it, the terrain shader's way
-        float depth = max(0.0, vSurface - length(vWorld - planetCenter));
-        if (depth > 0.0) {
-          float dim = exp(-depth * underwaterDimming);
-          c *= dim;
-          c = mix(c, fogColor * dim, (1.0 - dim) * 0.5);
-        }
-        // Glowing tips: added after the dimming (they make their own light), strong at night
+        // Glowing tips make their own light, strong at night
         float night = 1.0 - smoothstep(${f(S.GLOW_NIGHT_E)}, ${f(S.GLOW_DAY_E)}, facing);
-        c += glowColor * vGlow * mix(${f(S.GLOW_DAY)}, ${f(S.GLOW_NIGHT)}, night);
-        if (isUnderwater > 0.5) {
-          float fog = clamp((distance(cameraPosition, vWorld) - fogNear) / (fogFar - fogNear), 0.0, 1.0);
-          c = mix(c, fogColor, fog);
-        }
+        // Dimmed by the water above it and fogged with the seabed (UnderwaterLook)
+        c = underwaterLook(c, glowColor * vGlow * mix(${f(S.GLOW_DAY)}, ${f(S.GLOW_NIGHT)}, night), vWorld, planetCenter, vSurface);
         gl_FragColor = vec4(c, 1.0);
       }
     `,

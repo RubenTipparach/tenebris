@@ -470,12 +470,17 @@ export class HexBlockMeshBuilder {
       this.materials.set(key, mat);
     }
 
-    // Sea wall material - unlit, no fog so it stays exact color
+    // Sea wall material: the curtain at the edge of the detailed terrain
+    // that hides the gap down to the seabed from above. Unlit; under water
+    // it takes the scene's underwater fog like everything else, so it melts
+    // into the murk instead of standing in the sea as a wall (owner: "some
+    // sort of big ocean wall"). Above water the scene has no fog, so it
+    // keeps its exact colour there.
     const seaWallColor = new THREE.Color(PlayerConfig.SEA_WALL_COLOR);
     const seaWallMat = new THREE.MeshBasicMaterial({
       color: seaWallColor,
       side: THREE.DoubleSide,
-      fog: false  // Not affected by scene fog - stays exact color
+      fog: true,
     });
     this.materials.set('seaWall', seaWallMat);
 

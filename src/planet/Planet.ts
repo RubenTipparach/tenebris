@@ -5852,6 +5852,12 @@ export class Planet {
     return surface >= 0 && r < surface;
   }
 
+  /** The open sea's drawn surface radius, or -1 on a world with no sea */
+  public getSeaSurfaceRadius(): number {
+    const hasWater = this.config.hasWater !== false && !this.config.texturePath;
+    return hasWater ? this.depthToRadius(this.getSeaLevelDepth()) - PlayerConfig.WATER_SURFACE_OFFSET : -1;
+  }
+
   // The water surface over a point: the drawn surface (waterSurfaceRadiusAt)
   // of the topmost water cell in its column, or -1 if the column holds none
   public getWaterSurfaceRadius(position: THREE.Vector3): number {

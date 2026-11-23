@@ -100,10 +100,10 @@ export class GroundClutter {
 
   /**
    * planet: the world the player stands on (null in space); body: its config
-   * (its sea flora table); cameraUnderwater: fogs the sea plants like the terrain.
+   * (its sea flora table).
    */
   public update(dt: number, player: THREE.Vector3, planet: Planet | null, sunDirection: THREE.Vector3,
-    body?: CelestialBodyConfig, cameraUnderwater = false): void {
+    body?: CelestialBodyConfig): void {
     if (!this.enabled) return;
     if (body !== this.seaBody) { this.seaBody = body; this.lastPlanet = null; }
     this.time += dt;
@@ -114,7 +114,7 @@ export class GroundClutter {
       if (planet) mat.uniforms.planetCenter.value.copy(planet.center);
       if (planet) mat.uniforms.skyLight.value = planet.getSkyLight();
     }
-    this.sea.setFrame(this.time, planet, sunDirection, cameraUnderwater);
+    this.sea.setFrame(this.time, planet, sunDirection);
     const show = !!planet;
     this.tufts.visible = show;
     this.rocks.visible = show;

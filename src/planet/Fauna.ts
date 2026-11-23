@@ -1,3 +1,4 @@
+import { underwaterLookUniforms } from './UnderwaterLook';
 import * as THREE from 'three';
 import { torchLightUniforms } from './TorchLightUniforms';
 import { skyLightUniforms } from './SkyLightTexture';
@@ -992,6 +993,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       planetCenter: { value: new THREE.Vector3() },
       ...skyLightUniforms(),
       ...torchLightUniforms(),
+      ...underwaterLookUniforms(),
     },
     defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
     vertexShader: `
@@ -1056,6 +1058,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uniform float uDiffuse;
       #include <tenebris_sky_light>
       #include <tenebris_torch_light>
+      #include <tenebris_underwater>
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
@@ -1069,7 +1072,9 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
         vec3 ambient = uAmbient * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
         vec3 lit = vColor * (ambient + uDiffuse * diff * skySun(facing));
-        gl_FragColor = vec4(lit + vColor * vGlow * uGlow + torchGlow(vColor, vWorld, facing), 1.0);
+        // dimmed by the water above it and fogged with the seabed (UnderwaterLook); glow is its own light
+        vec3 c = underwaterLook(lit + torchGlow(vColor, vWorld, facing), vColor * vGlow * uGlow, vWorld, planetCenter, seaSurfaceRadius);
+        gl_FragColor = vec4(c, 1.0);
       }
     `,
   });
