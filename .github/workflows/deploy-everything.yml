@@ -5,7 +5,7 @@
 #   - GitHub Pages     rubentipparach.github.io/tenebris (pages.yml)
 #   - heavyphoton.com  pings heavyphoton.github.io to rebuild docs/tenebris
 #   - itch.io          butler push to ruben-tipparach/tenebris:html5
-#   - Fly.io           server-js to the tenebris-c app (server.yml), only
+#   - Fly.io           server-js to the tenebris app (server.yml), only
 #                      after itch.io and Pages both succeeded
 # Secrets: BUTLER_API_KEY, FLY_API_TOKEN, SITE_DISPATCH_TOKEN (without the
 # last, heavyphoton.com picks the release up on its hourly check).

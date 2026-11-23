@@ -19,7 +19,7 @@
 #
 # The Rust server used to be deployed to Fly from here on every push to
 # every branch. The JS server (server-js/) has replaced it on the
-# 'tenebris-c' app and is deployed from main by js-deploy.yml.
+# 'tenebris' app and is deployed from main by js-deploy.yml.
 name: JS client - build + check (site, itch zip, server-js)
 
 on:
@@ -126,7 +126,7 @@ jobs:
           retention-days: 3
 
       # The JS multiplayer server (server-js/) - install and syntax-check it
-      # here; js-deploy.yml deploys it to the 'tenebris-c' Fly app from main.
+      # here; js-deploy.yml deploys it to the 'tenebris' Fly app from main.
       # (The Rust server is no longer deployed by CI: the JS server replaced
       # it on tenebris-c. tenebris-rs/fly.toml still deploys it by hand.)
       - name: Check JS multiplayer server

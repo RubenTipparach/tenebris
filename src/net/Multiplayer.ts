@@ -7,7 +7,7 @@ import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
 import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
 /**
- * Online play against server-js/ (deployed to the 'tenebris-c' Fly app).
+ * Online play against server-js/ (deployed to the 'tenebris' Fly app).
  *
  * Each client simulates itself. The server relays poses and owns the list
  * of block edits: local edits go up as they are saved (GameStorage
@@ -19,7 +19,7 @@ import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer }
  * through NetSync, which game systems use without a reference to this.
  */
 
-export const DEFAULT_SERVER = 'wss://tenebris-c.fly.dev/';
+export const DEFAULT_SERVER = 'wss://tenebris.fly.dev/';
 // Close codes the server uses (server-js/server.js)
 const CLOSE_KICKED = 4001;
 const CLOSE_DELETED = 4004;

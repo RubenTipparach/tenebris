@@ -10,7 +10,7 @@
 //   POST /admin/api/players/<id>/kick        { reason }
 //
 // Every API call needs `Authorization: Bearer <ADMIN_TOKEN>`. ADMIN_TOKEN is a
-// Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris-c`); without it the
+// Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris`); without it the
 // API answers 503 and nothing can be changed. The page itself holds no
 // secret - it asks for the token and keeps it in the browser's storage.
 import fs from 'node:fs';
@@ -37,7 +37,7 @@ function sameSecret(a, b) {
 // null when the request may go on, else the response already sent
 function authorize(req, res) {
   const token = process.env.ADMIN_TOKEN;
-  if (!token) return json(res, 503, { error: 'Admin is off: set the ADMIN_TOKEN secret (fly secrets set ADMIN_TOKEN=... -a tenebris-c)' }) || true;
+  if (!token) return json(res, 503, { error: 'Admin is off: set the ADMIN_TOKEN secret (fly secrets set ADMIN_TOKEN=... -a tenebris)' }) || true;
   const addr = (req.headers['fly-client-ip'] || req.socket.remoteAddress || '').toString();
   const now = Date.now();
   const f = fails.get(addr);
