@@ -27,10 +27,20 @@
 //         landed rockets): the latest data per (kind, planet, key) is kept
 //         and logged like an edit; data null removes it
 //     { t: 'live', ch, data }   relayed to the world, never stored (fauna
-//         snapshots from the planet's host, rockets in flight)
+//         snapshots from the planet's host, rockets in flight) - except the
+//         'status' channel: the player's own summary (items, suit, missions;
+//         src/net/AdminReport.ts) for the admin portal, kept per player in
+//         memory and never relayed
+//   client -> server over HTTP
+//     POST /maps/<world>/<planet>?player=<id>&key=<uploadKey>   a map image
+//         (webp / png) of a planet the player has drawn with the game's map
+//         renderer; kept per world + planet in DATA_DIR/maps/ for the portal
 //   server -> client
 //     { t: 'welcome', id, now, world: { id, name, seed, created }, edits: [[planet, tile, depth, block], ...],
-//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q }] }
+//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q }],
+//       uploadKey, maps: { planet: madeAtMs } }
+//         uploadKey signs this connection's map uploads; maps says which
+//         planets of the world have a map and when it was made
 //         now is the server clock (ms): every client derives the world's time
 //         of day from (now - created) so the sun is the same for everyone
 //     { t: 'join', id, name, look }   { t: 'leave', id }
@@ -48,12 +58,18 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { handleAdmin } from './admin.js';
+import { placeOn } from './geo.js';
+import { cleanStatus, STATUS_CHANNEL } from './status.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const WORLDS_DIR = path.join(DATA_DIR, 'worlds');
 const WORLD_INDEX = path.join(WORLDS_DIR, 'index.json');
 const LEGACY_EDIT_LOG = path.join(DATA_DIR, 'js-edits.log');
+const MAPS_DIR = path.join(DATA_DIR, 'maps');   // <world>/<planet>.<webp|png>
+// The game's items, missions and bodies (scripts/gen-admin-data.ts)
+const GAME_DATA = JSON.parse(fs.readFileSync(new URL('./game-data.json', import.meta.url), 'utf8'));
+const BODIES = new Map(GAME_DATA.bodies.map(b => [b.id, b]));
 const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 64);   // whole server
 const MAX_WORLDS = Number(process.env.MAX_WORLDS || 100);
 const CREATE_COOLDOWN_MS = 20_000;   // per address, so the list can't be flooded
@@ -62,6 +78,10 @@ const MAX_RECS_PER_SECOND = 40;      // object records, per client
 const MAX_LIVE_PER_SECOND = 30;      // relayed live frames, per client
 const MAX_RECORDS_PER_WORLD = 20_000;
 const MAX_MESSAGE_BYTES = 16 * 1024; // a chest or a rocket's cargo fits easily
+const MAX_MAP_BYTES = 512 * 1024;    // one planet map image
+const MAP_MIN_UPLOAD_GAP_MS = 20_000; // per player, so a client can't churn the disk
+const MAP_TYPES = { 'image/webp': 'webp', 'image/png': 'png' };
+const SPACE_ALT_RADII = 0.5;         // higher than this many body radii: 'in space'
 const KIND = /^[a-zA-Z][a-zA-Z0-9]{0,23}$/;
 const KEY = /^[A-Za-z0-9:_.-]{1,64}$/;
 const CHANNEL = /^[a-zA-Z][a-zA-Z0-9]{0,23}$/;
@@ -122,7 +142,16 @@ function openWorld(meta) {
     fs.writeFileSync(tmp, [...records.values()].map(r => JSON.stringify(r)).join('\n') + (records.size ? '\n' : ''));
     fs.renameSync(tmp, recLog);
   }
-  const w = { ...meta, edits, log, records, recLog, players: new Set() };
+  // Planet maps players uploaded: planet -> { at, ext }
+  const maps = new Map();
+  const mapDir = path.join(MAPS_DIR, meta.id);
+  if (fs.existsSync(mapDir)) {
+    for (const f of fs.readdirSync(mapDir)) {
+      const m = /^([a-z][a-z0-9_]{1,23})\.(webp|png)$/.exec(f);
+      if (m) maps.set(m[1], { at: Math.round(fs.statSync(path.join(mapDir, f)).mtimeMs), ext: m[2] });
+    }
+  }
+  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set() };
   worlds.set(w.id, w);
   return w;
 }
@@ -203,8 +232,15 @@ function deleteWorld(w) {
   closeWorldPlayers(w, CLOSE_DELETED, 'world deleted');
   worlds.delete(w.id);
   for (const f of [w.log, w.recLog]) fs.rmSync(f, { force: true });
+  dropMaps(w);
   saveIndex();
   return true;
+}
+
+// A world's planet maps (its terrain is gone or about to change wholesale)
+function dropMaps(w) {
+  fs.rmSync(w.mapDir, { recursive: true, force: true });
+  w.maps.clear();
 }
 
 // Back to fresh terrain: every edit and object gone, same name and seed
@@ -213,6 +249,7 @@ function resetWorld(w) {
   w.edits.clear();
   w.records.clear();
   for (const f of [w.log, w.recLog]) fs.writeFileSync(f, '');
+  dropMaps(w);
   return true;
 }
 
@@ -244,6 +281,19 @@ function noticeWorld(w, text) {
   return true;
 }
 
+// What the portal shows of a player: who, where (lat / lon / altitude on
+// their planet, and map u v), and their last status frame
+function playerInfo(p) {
+  const body = BODIES.get(p.planet);
+  const at = body ? placeOn(p.p, body) : null;
+  const riding = p.status?.ride === 'rocket';
+  const place = riding ? 'rocket' : at && body && at.alt > SPACE_ALT_RADII * body.radius ? 'space' : 'surface';
+  return {
+    id: p.id, name: p.name, look: p.look, planet: p.planet, since: p.joinedAt, lastSeen: p.lastSeen,
+    place, at, status: p.status,
+  };
+}
+
 const startedAt = Date.now();
 function serverStatus() {
   const mem = process.memoryUsage();
@@ -259,8 +309,8 @@ function serverStatus() {
       return {
         id: w.id, name: w.name, seed: w.seed, created: w.created,
         edits: w.edits.size, records: w.records.size, kinds,
-        players: [...w.players].map(pid => players.get(pid)).filter(Boolean)
-          .map(p => ({ id: p.id, name: p.name, planet: p.planet, since: p.joinedAt })),
+        players: [...w.players].map(pid => players.get(pid)).filter(Boolean).map(playerInfo),
+        maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
       };
     }),
   };
@@ -303,6 +353,7 @@ function onMessage(id, raw) {
   let m;
   try { m = JSON.parse(raw); } catch { return; }
   if (!m || typeof m !== 'object') return;
+  pl.lastSeen = Date.now();
 
   if (m.t === 'hello' && typeof m.name === 'string') {
     pl.name = m.name.replace(/[^\x20-\x7e]/g, '').slice(0, 24) || pl.name;
@@ -324,6 +375,10 @@ function onMessage(id, raw) {
     if (r[3] !== null && !w.records.has(recKey(r)) && w.records.size >= MAX_RECORDS_PER_WORLD) return;
     recordObject(w, r);
     broadcast(w, { t: 'rec', id, kind: m.kind, planet: m.planet, key: m.key, data: m.data }, id);
+  } else if (m.t === 'live' && m.ch === STATUS_CHANNEL) {
+    if (!allow(pl, 'live', MAX_LIVE_PER_SECOND)) return;
+    const st = cleanStatus(m.data);
+    if (st) pl.status = { ...st, at: Date.now() };
   } else if (m.t === 'live' && typeof m.ch === 'string' && CHANNEL.test(m.ch)) {
     if (!allow(pl, 'live', MAX_LIVE_PER_SECOND)) return;
     broadcast(w, { t: 'live', id, ch: m.ch, data: m.data ?? null }, id);
@@ -346,7 +401,42 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-const admin = { worlds, players, serverStatus, renameWorld, deleteWorld, resetWorld, clearRecordKind, kickPlayer, noticeWorld };
+// A planet map from a player of that world (their connection's key)
+function uploadMap(req, res, url) {
+  const [, , worldId, planet] = url.pathname.split('/');
+  const w = worlds.get(worldId);
+  const pl = players.get(Number(url.searchParams.get('player')));
+  const ext = MAP_TYPES[(req.headers['content-type'] || '').split(';')[0].trim()];
+  if (!w || !isPlanetId(planet) || !pl || pl.world !== w || url.searchParams.get('key') !== pl.uploadKey) {
+    return json(res, 403, { error: 'Not a player of that world' });
+  }
+  if (!ext) return json(res, 415, { error: 'webp or png only' });
+  if (Number(req.headers['content-length'] || 0) > MAX_MAP_BYTES) return json(res, 413, { error: 'Too big' });
+  if (Date.now() - pl.lastMapAt < MAP_MIN_UPLOAD_GAP_MS) return json(res, 429, { error: 'Too soon' });
+  pl.lastMapAt = Date.now();
+  const chunks = [];
+  let size = 0;
+  req.on('data', (c) => { size += c.length; if (size > MAX_MAP_BYTES) req.destroy(); else chunks.push(c); });
+  req.on('end', () => {
+    if (size > MAX_MAP_BYTES || !worlds.has(w.id)) return json(res, 400, { error: 'Dropped' });
+    fs.mkdirSync(w.mapDir, { recursive: true });
+    const old = w.maps.get(planet);
+    const file = path.join(w.mapDir, `${planet}.${ext}`);
+    fs.writeFileSync(`${file}.tmp`, Buffer.concat(chunks));
+    fs.renameSync(`${file}.tmp`, file);
+    if (old && old.ext !== ext) fs.rmSync(path.join(w.mapDir, `${planet}.${old.ext}`), { force: true });
+    w.maps.set(planet, { at: Date.now(), ext });
+    json(res, 201, { ok: true });
+  });
+}
+
+// A world's planet map: its file, type and when it was made, or null
+function mapFile(w, planet) {
+  const m = w.maps.get(planet);
+  return m ? { file: path.join(w.mapDir, `${planet}.${m.ext}`), type: `image/${m.ext}`, at: m.at } : null;
+}
+
+const admin = { worlds, players, serverStatus, renameWorld, deleteWorld, resetWorld, clearRecordKind, kickPlayer, noticeWorld, gameData: GAME_DATA, mapFile };
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -356,6 +446,8 @@ const server = http.createServer((req, res) => {
     res.end('ok');
     return;
   }
+  if (url.pathname.startsWith('/maps/') && req.method === 'OPTIONS') return json(res, 204, {});
+  if (url.pathname.startsWith('/maps/') && req.method === 'POST') return uploadMap(req, res, url);
   if (url.pathname === '/worlds' && req.method === 'OPTIONS') return json(res, 204, {});
   if (url.pathname === '/worlds' && req.method === 'GET') {
     // busiest first, then newest
@@ -398,7 +490,8 @@ wss.on('connection', (ws, req) => {
     return;
   }
   const id = nextId++;
-  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {}, id, joinedAt: Date.now() });
+  const uploadKey = crypto.randomBytes(12).toString('hex');
+  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {}, id, joinedAt: Date.now(), lastSeen: Date.now(), status: null, uploadKey, lastMapAt: 0 });
   send(ws, {
     t: 'welcome',
     id,
@@ -408,6 +501,8 @@ wss.on('connection', (ws, req) => {
     records: [...w.records.values()],
     players: [...w.players].map(pid => [pid, players.get(pid)]).filter(([, p]) => p)
       .map(([pid, p]) => ({ id: pid, name: p.name, look: p.look, planet: p.planet, p: p.p, q: p.q })),
+    uploadKey,
+    maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
   });
   w.players.add(id);
   ws.on('message', (data) => onMessage(id, data.toString()));

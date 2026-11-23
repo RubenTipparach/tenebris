@@ -57,6 +57,17 @@ export function latLon(dir: V3): { lat: number; lon: number } {
   return { lat: Math.asin(Math.max(-1, Math.min(1, d.y))), lon: Math.atan2(-d.z, d.x) };
 }
 
+/**
+ * Where a direction falls on a planet map: u, v in 0..1 of the
+ * equirectangular raster (longitude -pi..pi left to right, north up). The
+ * Map tab's raster and the admin portal's markers (server-js/geo.js, held
+ * equal by scripts/admin-monitor.test.ts) both project with this.
+ */
+export function mapUV(dir: V3): { u: number; v: number } {
+  const { lat, lon } = latLon(dir);
+  return { u: (lon + Math.PI) / (2 * Math.PI), v: (Math.PI / 2 - lat) / Math.PI };
+}
+
 /** The unit direction for a latitude / longitude (inverse of latLon). */
 export function fromLatLon(lat: number, lon: number): V3 {
   const c = Math.cos(lat);

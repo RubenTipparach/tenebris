@@ -24,6 +24,11 @@ export class Navigation {
     crafting.registerPanel('map', { show: (el) => this.map.show(el), hide: () => this.map.hide() });
   }
 
+  /** A planet's map from the Map tab's renderer, scaled (MapPanel.mapImage). */
+  mapImage(id: string, width: number, height: number): Promise<HTMLCanvasElement | null> {
+    return this.map.mapImage(id, width, height);
+  }
+
   update(): void {
     const me = this.ctx.player();
     const planet = me.planetId ? this.ctx.planets.get(me.planetId) : undefined;
