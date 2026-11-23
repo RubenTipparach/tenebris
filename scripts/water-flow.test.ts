@@ -4,7 +4,10 @@
 //
 // Run: npx tsx scripts/water-flow.test.ts
 import { Liquid, LiquidWorld, FLOW_BIT, FALLING_BIT, LEVEL_MASK, CELL_SOURCE, CELL_AIR } from '../src/water/Liquid';
-import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, WaterTarget, TWEEN_EASE, TWEEN_SWEEP, TWEEN_GONE } from '../src/water/LiquidMesh';
+import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, WaterTarget, TWEEN_EASE, TWEEN_SWEEP, TWEEN_GONE, FACE_CAP, FACE_FALL, FACE_STILL } from '../src/water/LiquidMesh';
+import { flowTile } from '../src/water/FlowTile';
+import { readFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { edgeNeighbors } from '../src/shared/voxelLight';
 import { HexBlockType } from '../src/shared/blockTypes';
 import { WaterConfig } from '../src/config/WaterConfig';
@@ -226,4 +229,95 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
     tris++;
   }
   ok(tris === 6 + 12 + 6 && outward === tris, `9. every face of a lone cell winds outward (${outward}/${tris})`);
+}
+
+// ---- 10. the flow texture's data: face kinds and flow vectors (PBD water-look.js) ----
+{
+  const newOut = (): WaterTarget => ({ positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 });
+  /** Each vertex's liquidFlow as [x, y, z, kind], and its position. */
+  const faces = (out: WaterTarget) => {
+    const lf = out.liquidFlow ?? [];
+    const vs: Array<{ f: number[]; kind: number; p: number[] }> = [];
+    for (let i = 0; i < out.positions.length / 3; i++) {
+      vs.push({ f: lf.slice(4 * i, 4 * i + 3), kind: lf[4 * i + 3] % 3, p: out.positions.slice(3 * i, 3 * i + 3) });
+    }
+    return vs;
+  };
+  const P = patch(10, 4, () => 1);
+  P.place(0, 0, 1, HexBlockType.WATER);
+  P.settle();
+  const read = cellReader(t => P.blocks[t], (t, d) => P.liquid.flowAt(t, d));
+  const dims = { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 };
+  const mesh = (t: number) => { const out = newOut(); meshLiquidColumn(P.column(t), 4, read, null, 0, dims, () => out); return out; };
+
+  const src = mesh(P.id(0, 0));
+  ok((src.liquidFlow ?? []).length === src.positions.length / 3 * 4, '10. every vertex carries liquidFlow');
+  ok(faces(src).every(v => v.kind === FACE_CAP && Math.hypot(v.f[0], v.f[1], v.f[2]) === 0), '10. a source cap has zero flow (the sea stands still)');
+
+  // a cap on the slope east of the source: its flow points downhill, away from the source
+  const t = P.id(3, 0);
+  const caps = faces(mesh(t)).filter(v => v.kind === FACE_CAP);
+  const c0 = P.column(P.id(0, 0)).center, c3 = P.column(t).center;
+  const away = [c3.x - c0.x, c3.y - c0.y, c3.z - c0.z];
+  const f = caps[0].f, sp = Math.hypot(f[0], f[1], f[2]);
+  const cosAway = (f[0] * away[0] + f[1] * away[1] + f[2] * away[2]) / (sp * Math.hypot(away[0], away[1], away[2]));
+  ok(caps.length === 18 && sp >= WaterConfig.FLOW_MIN_SPEED && sp <= WaterConfig.FLOW_MAX_SPEED, `10. a sloped cap has a flow (speed ${sp.toFixed(2)})`);
+  ok(cosAway > 0.5, `10. it points downhill, away from the source, within a hex side (cos ${cosAway.toFixed(2)})`);
+  const up = [c3.x, c3.y, c3.z].map(x => x / P.R);
+  ok(Math.abs(f[0] * up[0] + f[1] * up[1] + f[2] * up[2]) < 1e-6 * sp + 1e-9, '10. and lies in the tangent plane');
+  ok(caps.every(v => v.f.every((x, k) => x === f[k])), '10. one flow vector for the whole cap');
+  const sides = faces(mesh(P.id(8, 0))).filter(v => v.kind !== FACE_CAP);
+  ok(sides.length > 0 && sides.every(v => v.kind === FACE_FALL), '10. a flowing cell\'s sides over air are falling faces');
+
+  // a fall: the column beside the terrace (test 2's drop)
+  const D = patch(6, 10, (q, r) => (q + r / 2 <= -1 ? 6 : 2));
+  D.place(-3, 0, 6, HexBlockType.WATER);
+  D.settle();
+  const readD = cellReader(tt => D.blocks[tt], (tt, d) => D.liquid.flowAt(tt, d));
+  const outD = newOut();
+  meshLiquidColumn(D.column(D.id(0, 0)), 10, readD, null, 0, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
+  const fall = faces(outD).filter(v => v.kind === FACE_FALL);
+  ok(fall.length > 0, `10. the fall's sides are marked falling (${fall.length / 6} faces)`);
+  ok(fall.every(v => Math.abs(Math.hypot(v.f[0], v.f[1], v.f[2]) - 1) < 1e-6), '10. a side carries its unit along-face direction');
+
+  // a source on a ledge: its sides are still walls
+  const L = patch(4, 4, () => 1);
+  L.place(0, 0, 2, HexBlockType.WATER);
+  const outL = newOut();
+  meshLiquidColumn(L.column(L.id(0, 0)), 4, cellReader(tt => L.blocks[tt], (tt, d) => L.liquid.flowAt(tt, d)), null, 0, dims, () => outL);
+  const kinds = new Set(faces(outL).map(v => v.kind));
+  ok(kinds.has(FACE_STILL) && !kinds.has(FACE_FALL), '10. a source\'s sides are still walls');
+
+  // the smoothing still gets the same data: a rebuild mid-flow carries liquidFlow on every vertex
+  const S = patch(6, 4, () => 1);
+  S.place(0, 0, 1, HexBlockType.WATER);
+  S.liquid.tick();
+  const readS = cellReader(tt => S.blocks[tt], (tt, d) => S.liquid.flowAt(tt, d));
+  const outS = newOut();
+  meshLiquidColumn(S.column(S.id(1, 0)), 4, readS, (tt, d) => S.liquid.prevAt(tt, d), S.liquid.tickStamp, dims, () => outS);
+  ok((outS.liquidFlow ?? []).length === (outS.liquidPrev ?? []).length && outS.liquidFlow!.length > 0, '10. smoothed rebuilds carry liquidFlow too');
+}
+
+// ---- 11. the flow tile is water.png, its tones PBD's TEX_IDX ----
+{
+  const png = readFileSync(new URL('../public/textures/water.png', import.meta.url));
+  let i = 8, w = 0, h = 0, plte: number[] = [], idat: Buffer[] = [];
+  while (i < png.length) {
+    const len = png.readUInt32BE(i), type = png.toString('ascii', i + 4, i + 8), d = png.subarray(i + 8, i + 8 + len);
+    if (type === 'IHDR') { w = d.readUInt32BE(0); h = d.readUInt32BE(4); }
+    if (type === 'PLTE') plte = [...d];
+    if (type === 'IDAT') idat.push(d);
+    i += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const rgba: number[] = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const k = raw[y * (w + 1) + 1 + x]; rgba.push(plte[3 * k], plte[3 * k + 1], plte[3 * k + 2], 255); }
+  const tile = flowTile(rgba, w, h);
+  const TEX_IDX = '0000011000111100100000000000000000010121000000001000000000001012001000000100000000001001000000000000000000110010010000000000000000000101201000001000000000000122000000000000000010112221010001000000000000000000001000000002100020001001100000010000000000000000';
+  let same = w === 16 && h === 16;
+  for (let y = 0; y < 16 && same; y++) for (let x = 0; x < 16; x++) {
+    if (tile.data[((15 - y) * 16 + x) * 4 + 3] !== +TEX_IDX[y * 16 + x] * 127) { same = false; break; }
+  }
+  ok(same, '11. water.png ranked by luminance gives PBD\'s TEX_IDX tones (flipped so v runs up)');
+  ok(tile.mean.every(c => c > 0 && c < 1), '11. the tile has a mean colour to fade to');
 }

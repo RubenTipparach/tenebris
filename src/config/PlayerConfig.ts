@@ -76,7 +76,6 @@ export const PlayerConfig = {
 
   // Water texture vs procedural balance
   WATER_TEXTURE_STRENGTH: 0.7,     // How much the texture contributes (0 = none, 1 = full)
-  WATER_SCROLL_SPEED: 0.03,        // Speed of texture scrolling animation
   WATER_CAUSTIC_STRENGTH: 0.08,    // Strength of procedural caustic shimmer effect
   WATER_FOAM_STRENGTH: 0.1,        // Strength of foam at shallow edges
 

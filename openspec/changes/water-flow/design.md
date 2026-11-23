@@ -134,6 +134,48 @@ Under water the surface fades to the same fog colour as the terrain shader,
 the scene fog and the cleared background (it was darkened by the day/night
 factor, so the view ended in two colours).
 
+### 9. The flow texture (PBD's water look)
+
+The owner, shown Pale Blue Dot's water sim mockup: "see how the side of water
+uses a different texture? can you just port this textures over? I really
+liked that water". Tenebris keeps its own flat shading, colours, depth tint
+and fog; PBD's flow texture goes on top, one treatment for tops and another
+for sides (PBD water-look.js, which follows Tenebris C's water_fs).
+
+- The tile is Tenebris's own water tile, `public/textures/water.png` (byte
+  for byte `tenebris-rs/assets/textures/water.png`), which the water material
+  already loads. `src/water/FlowTile.ts` ranks its colours by luminance into
+  tones (0 the body, 1 a ripple, 2 a glint) - exactly PBD's `TEX_IDX`
+  (`scripts/water-flow.test.ts` 11) - into a 16 x 16 nearest, repeat-wrapped
+  tile with v running up. It replaces the old texture scrolled diagonally on
+  per-face UVs; the water's body takes the tile's mean colour (what that
+  scroll averaged to), so the base colour stays.
+- The mesher gives every water vertex `liquidFlow` (vec4): a cap's flow
+  vector (the least-squares slope of its corner heights over the tangent
+  plane, downhill, length `FLOW_MIN_SPEED + FLOW_SLOPE_K x slope` up to
+  `FLOW_MAX_SPEED`, zero under `FLOW_MIN_SLOPE` - so sources and the sea
+  stand still), or a side's unit along-edge direction; w is the face code:
+  0 cap, 1 a flowing cell's side (falling: Luanti runs the flowing texture
+  down it), 2 a source's side (still), plus 3 x the axis a cap projects
+  along. Worker and main thread run the same mesher, and the smoothing keeps
+  working (the flow follows the state each piece was built from).
+- `water.vert` works in planet-local coordinates (world - planetCenter). A
+  cap projects onto the plane of its cell's dominant axis (one plane for a
+  whole region, so still water tiles without seams on the sphere) and pans
+  the tile along its flow at `TEX_PAN_K` x speed, streaks along the flow. A
+  side stands the tile up: u = the radius (height), v = along the face; a
+  falling side pans down at `TEX_FALL_PAN`.
+- `water.frag` draws the tones on the surface after the depth tint (so the
+  deep sea shows them): a ripple mixed toward the sky and lifted, a glint
+  toward the foam; a fast cap foams in blocky pixels drifting downstream; a
+  falling side froths a water blue (`FALL_FOAM_COLOR`, no band at each
+  layer's top) in blocky pixels falling down it and is near opaque
+  (`FALL_ALPHA`). The tile fades out with distance (`TEX_FADE_NEAR..FAR`)
+  and as a screen pixel spans a texel or more (`TEX_TEXEL_FADE_*`), so it
+  never sparkles at a grazing angle or from orbit. From under water nothing
+  changes: the surface keeps its fixed fog look.
+- Every number is in `WaterConfig.ts`.
+
 ## Risks
 
 - Renewal can flood a cave system that touches the sea once an edit opens

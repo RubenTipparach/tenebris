@@ -11,8 +11,26 @@ uniform float reflectionStrength;
 uniform float distortionStrength;
 uniform float specularPower;
 uniform float specularStrength;
-uniform sampler2D waterTexture;
 uniform float uvTiling;
+// The flow texture (src/water/LiquidMesh.ts liquidFlow, WaterConfig TEX_* / FOAM_*)
+uniform sampler2D waterFlowTile;   // a: each water.png pixel's tone / 2
+uniform vec3 waterTileMean;        // the tile's mean colour (what it fades to far off)
+uniform vec2 texFade;              // the tile fades out between these distances
+uniform vec2 texTexelFade;         // ... and between these texels per screen pixel
+uniform float texSize;             // the tile's texels across
+uniform vec2 rippleTone;           // x: a ripple's mix toward the sky, y: its lift
+uniform float glintFoam;           // a glint's mix toward the foam colour
+uniform vec3 foamColor;            // caps' foam
+uniform vec3 fallFoamColor;        // falling sides' froth (water blue)
+uniform vec4 fallFroth;            // base, + on ripples, + on glints, scale
+uniform float frothJitter;         // the blocky pixels' share of the froth
+uniform vec3 capFoam;              // fast caps: threshold, speed k, strength
+uniform float foamMax;
+uniform float fallAlpha;
+varying vec2 vTileUv;
+varying vec2 vFrothUv;
+varying vec3 vFlowCap;
+varying vec2 vFoamUv;
 
 // Underwater fog uniforms (when camera is below water)
 uniform vec3 underwaterFogColor;
@@ -34,7 +52,6 @@ uniform vec2 resolution;
 
 // Texture vs procedural balance
 uniform float textureStrength;
-uniform float scrollSpeed;
 uniform float causticStrength;
 uniform float foamStrength;
 
@@ -91,28 +108,33 @@ float fbm(vec2 p) {
 }
 
 void main() {
-  // Animated UV - scroll texture in two directions and blend
-  vec2 baseUv = vUv * uvTiling;
-
-  // Two scrolling layers of the water texture (using configurable scroll speed)
-  vec2 scrollUv1 = baseUv + vec2(time * scrollSpeed, time * scrollSpeed * 0.66);
-  vec2 scrollUv2 = baseUv * 1.2 + vec2(-time * scrollSpeed * 0.83, time * scrollSpeed);
-
-  // Sample texture at both positions
-  vec4 texSample1 = texture2D(waterTexture, scrollUv1);
-  vec4 texSample2 = texture2D(waterTexture, scrollUv2);
-
-  // Blend the two samples for animated water
-  vec4 texColor = mix(texSample1, texSample2, 0.5);
-
-  // Use baseUv for other effects
-  vec2 finalUv = baseUv;
-
   // The camera's distance to this fragment, exact per fragment (vDepth is
   // interpolated per vertex, which overshoots badly when the camera is close
   // to a big face: 0.3 m over the sea it read as metres, and the sea went
   // opaque)
   float fragDist = length(cameraPosition - vWorldPosition);
+
+  // The flow texture (Pale Blue Dot's water-look.js, Tenebris C's water_fs):
+  // Tenebris's water tile, public/textures/water.png (= tenebris-rs/assets/
+  // textures/water.png), nearest-sampled at the coordinates water.vert
+  // pans - along a cap's flow, down a flowing side. Its alpha is each
+  // pixel's tone: 0 the body, 1 a ripple, 2 a glint. The water itself takes
+  // the tile's mean colour (the texture's share of the base colour, as the
+  // old scrolled texture averaged out), and the tones are drawn on top as
+  // Pale Blue Dot draws them, fading out with distance so the 12 cm pixels
+  // never shimmer far off or from orbit.
+  // (and as a screen pixel spans more than about one texel: at a grazing
+  // angle a near pixel covers many, and nearest sampling sparkles there)
+  float texelsPerPixel = length(fwidth(vTileUv)) * texSize;
+  float tk = (1.0 - smoothstep(texFade.x, texFade.y, fragDist))
+           * (1.0 - smoothstep(texTexelFade.x, texTexelFade.y, texelsPerPixel));
+  float tone = texture2D(waterFlowTile, vTileUv).a * 2.0;
+  float rip = step(0.5, tone) * tk, glint = step(1.5, tone) * tk;
+  vec4 texColor = vec4(waterTileMean, 1.0);
+  vec2 baseUv = vUv * uvTiling;
+
+  // Use baseUv for other effects
+  vec2 finalUv = baseUv;
 
   // Fog factor and color based on whether camera is above or below water
   float depthFogFactor = 0.0;
@@ -215,6 +237,34 @@ void main() {
 
   // Make more opaque as fog increases
   finalOpacity = mix(finalOpacity, 1.0, depthFogFactor);
+
+  // The flow texture's three tones, and the froth, on the surface - over the
+  // tint of the water under it, so the deep sea shows them too (above water:
+  // from below the surface keeps its fixed fog look). Lit like the water. A ripple is lifted toward the sky
+  // the water mirrors, a glint mixed toward the foam; a fast cap foams in
+  // blocky pixels drifting downstream; a flowing side froths a water blue in
+  // pixels falling down it, and is near opaque - a sheet of falling water.
+  float aw = 1.0 - isUnderwater;
+  bool fallFace = vFlowCap.x > 0.5 && vFlowCap.x < 1.5;
+  vec3 foamC = (fallFace ? fallFoamColor : foamColor) * dayNightFactor;
+  vec3 ripC = mix(finalColor, skyColor * dayNightFactor, rippleTone.x) * rippleTone.y;
+  finalColor = mix(finalColor, ripC, rip * (1.0 - glint) * aw);
+  finalColor = mix(finalColor, foamC, glint * glintFoam * aw);
+  float flowFoam = 0.0;
+  if (vFlowCap.x < 0.5) {
+    float nse = hash(floor(vFoamUv));
+    float sp = vFlowCap.y;
+    flowFoam = step(capFoam.x - capFoam.y * clamp(sp, 0.0, 1.5), nse) * clamp(sp, 0.0, 1.0) * capFoam.z * tk;
+    flowFoam *= 1.0 - frothJitter + frothJitter * nse;
+  } else if (fallFace) {
+    float nse = hash(floor(vFrothUv));
+    flowFoam = (fallFroth.x + fallFroth.y * rip + fallFroth.z * glint) * fallFroth.w;
+    flowFoam *= 1.0 - frothJitter * tk + frothJitter * tk * nse;
+  }
+  flowFoam = min(flowFoam, foamMax) * aw;
+  finalColor = mix(finalColor, foamC, flowFoam);
+  finalOpacity = max(finalOpacity, flowFoam);
+  if (fallFace) finalOpacity = mix(finalOpacity, max(finalOpacity, fallAlpha), aw);
 
   gl_FragColor = vec4(finalColor, finalOpacity);
 }
