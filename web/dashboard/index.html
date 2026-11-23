@@ -295,7 +295,7 @@
     // dashboard works against the live Fly deployment by default and
     // a local server during dev. URL takes precedence over hash;
     // hash takes precedence over the baked default.
-    const DEFAULT_HOST = "https://tenebris-c.fly.dev";
+    const DEFAULT_HOST = "https://tenebris.fly.dev";
     function resolveHost() {
       const u = new URL(window.location.href);
       const q = u.searchParams.get("host");

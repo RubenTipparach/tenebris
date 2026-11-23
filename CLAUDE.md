@@ -477,7 +477,7 @@ freely. It ships to two places:
   block edits and appends every edit to the world's log on arrival. The
   in-game server browser (Settings > Multiplayer: worlds) lists, creates
   and joins worlds; a world opens as `?world=<id>`, which sets the terrain
-  seed and a separate local save slot before the game builds anything. It is deployed to the `tenebris-c` Fly app, which
+  seed and a separate local save slot before the game builds anything. It is deployed to the `tenebris` Fly app (`server-js/fly.toml`; the old `tenebris-c` app is gone), which
   means it REPLACES the Rust server there (and its /admin portal and tile
   editor); `tenebris-rs/fly.toml` still deploys the Rust one by hand.
   `?mp` joins the 'main' world; add `&server=ws://localhost:8080/` for a
@@ -543,7 +543,7 @@ reference:
   tenebris-c/...` attribution comments (documentation, not a dependency),
   and the save / wire-compat string literals that contain `tenebris-c` -
   the `tenebris-c:` localStorage / KV key namespaces, the
-  `wss://tenebris-c.fly.dev/` server URL, the `tenebris-c` `%APPDATA%`
+  `wss://tenebris-c.fly.dev/` server URL in the Rust tree, the `tenebris-c` `%APPDATA%`
   config dir. Changing those breaks existing saves and MP interop; they
   stay verbatim.
 
@@ -960,13 +960,13 @@ After each commit, always show these links to the user:
 
 - Play the games: https://rubentipparach.github.io/tenebris/
 - Track CI builds: https://github.com/RubenTipparach/tenebris/actions
-- JS multiplayer server: https://tenebris-c.fly.dev/
+- JS multiplayer server: https://tenebris.fly.dev/
 
 The JS server has its own operator portal at
-https://tenebris-c.fly.dev/admin (`server-js/admin.js` + `admin.html`):
+https://tenebris.fly.dev/admin (`server-js/admin.js` + `admin.html`):
 worlds (rename / reset / delete), who is online (kick), object counts per
 kind (clear a kind), and a message to everyone in a world. It needs the
-`ADMIN_TOKEN` Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris-c`);
+`ADMIN_TOKEN` Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris`);
 without it the API stays off. The Rust server's hex structure editor (which
 exports `*.template.json` into `tenebris-rs/assets/templates/`) is offline
 while the JS server holds `tenebris-c` (deploy `tenebris-rs/fly.toml` to
