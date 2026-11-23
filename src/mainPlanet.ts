@@ -92,8 +92,6 @@ class PlanetGame {
   private atmospheres: Atmosphere[] = [];
   private isReady: boolean = false;
   private elapsedTime: number = 0;
-  private waterUpdateTimer: number = 0;
-  private readonly WATER_UPDATE_INTERVAL = 5.0; // Update water every 5 seconds
 
   // Rocket flight system
   private rocketFlightManager: RocketFlightManager | null = null;
@@ -188,6 +186,11 @@ class PlanetGame {
         }
       );
       this.planets.set(bodyConfig.id, planet);
+      // Its water meshes join the engine's depth pre-pass (depth through water, every planet)
+      planet.setWaterMeshCallback((mesh, isAdd) => {
+        if (isAdd) this.engine.registerWaterMesh(mesh);
+        else this.engine.unregisterWaterMesh(mesh);
+      });
       // Its sky light: sun and fill from its own atmosphere, or none (openspec sky-lighting)
       planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
         ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
@@ -620,21 +623,6 @@ class PlanetGame {
       this.earth.setSunDirection(earthSunDir);
       loadingManager.completeStep('environment');
 
-      // Register water shader material with engine for depth-based fog
-      const waterMaterial = this.earth.getWaterShaderMaterial();
-      if (waterMaterial) {
-        this.engine.registerWaterMaterial(waterMaterial);
-      }
-
-      // Register water mesh callback for efficient depth pre-pass (avoids scene.traverse per frame)
-      this.earth.setWaterMeshCallback((mesh, isAdd) => {
-        if (isAdd) {
-          this.engine.registerWaterMesh(mesh);
-        } else {
-          this.engine.unregisterWaterMesh(mesh);
-        }
-      });
-
       // Setup settings menu
       this.setupSettingsMenu();
 
@@ -988,6 +976,9 @@ class PlanetGame {
     const isUnderwater = this.player.getIsInWater();
     this.earth.updateWaterShader(this.elapsedTime, isUnderwater);
     for (const [id, planet] of this.planets) {
+      // every planet's water material gets the depth texture (registering twice is a no-op)
+      const waterMaterial = planet.getWaterShaderMaterial();
+      if (waterMaterial) this.engine.registerWaterMaterial(waterMaterial);
       if (planet !== this.earth && planet.isInitialTerrainReady() && getBodyConfig(id)?.terrain.hasWater) {
         planet.updateWaterShader(this.elapsedTime, isUnderwater);
       }
@@ -1005,16 +996,8 @@ class PlanetGame {
       this.earthClouds.update(deltaTime, worldMs === null ? null : worldMs / 1000);
     }
 
-    // Periodic water flow update (every 5 seconds)
-    this.waterUpdateTimer += deltaTime;
-    if (this.waterUpdateTimer >= this.WATER_UPDATE_INTERVAL) {
-      this.waterUpdateTimer = 0;
-      const nearbyTiles = this.earth.getVisibleTileIndices();
-      const waterFilled = this.earth.updateWaterFlow(nearbyTiles);
-      if (waterFilled > 0) {
-        console.log(`[Water update] Fixed ${waterFilled} water blocks in ${nearbyTiles.size} tiles`);
-      }
-    }
+    // Water flow (openspec water-flow): every planet ticks its own liquid
+    for (const planet of this.planets.values()) planet.updateLiquid(deltaTime);
 
     // Update tree visibility based on visible tiles/chunks
     // Trees are culled to match LOD chunk visibility - only show trees on visible terrain

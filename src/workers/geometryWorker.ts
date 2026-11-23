@@ -16,7 +16,7 @@ import {
   vec3Normalize,
   vec3Negate
 } from '../shared/vec3';
-import { buildWaterWallAtDepth } from '../shared/geometry';
+import { cellReader, meshLiquidColumn, flowLookup } from '../water/LiquidMesh';
 
 // Torch data for vertex lighting calculation
 interface TorchData {
@@ -36,6 +36,7 @@ interface GeometryData {
   torchLight: number[];  // Baked torch light level per vertex
   indices: number[];
   vertexOffset: number;
+  liquidPrev?: number[];  // water only (src/water/LiquidMesh.ts)
 }
 
 function createEmptyGeometryData(): GeometryData {
@@ -70,6 +71,7 @@ interface WorkerConfig {
   sunDirection: Vec3;
   uvScale: number;  // Texture tiling scale
   torches?: TorchData[];  // Nearby torches for vertex lighting (optional)
+  flowCells?: number[];   // flowing water as [tile, depth, byte] triples (src/water/Liquid.ts)
 }
 
 // Helper to convert depth to radius (0 = bedrock, maxDepth-1 = sky)
@@ -415,9 +417,9 @@ function buildColumnGeometry(
 ): void {
   for (let depth = 0; depth < column.blocks.length; depth++) {
     const blockType = column.blocks[depth];
-    if (blockType === HexBlockType.AIR) continue;
+    // Air, and water: water is drawn by meshLiquidColumn (src/water/LiquidMesh.ts)
+    if (blockType === HexBlockType.AIR || blockType === HexBlockType.WATER) continue;
 
-    const isWater = blockType === HexBlockType.WATER;
     const isIce = blockType === HexBlockType.ICE;
     const isGlass = isClearSolid(blockType) && !isIce;
     // In new depth system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
@@ -426,30 +428,22 @@ function buildColumnGeometry(
 
     // For face culling: a face is exposed if adjacent block is AIR, or WATER (for non-water blocks), or ICE/GLASS (for non-ice/glass blocks)
     const hasTopExposed = blockAbove === HexBlockType.AIR ||
-      (!isWater && blockAbove === HexBlockType.WATER) ||
+      blockAbove === HexBlockType.WATER ||
       (!isIce && !isGlass && isClearSolid(blockAbove));
     const hasBottomExposed = blockBelow === HexBlockType.AIR ||
-      (!isWater && blockBelow === HexBlockType.WATER) ||
+      blockBelow === HexBlockType.WATER ||
       (!isIce && !isGlass && isClearSolid(blockBelow));
 
-    // Water only renders if air is above; Ice/Glass render like solid blocks
-    if (isWater && blockAbove !== HexBlockType.AIR && !isClearSolid(blockAbove)) continue;
-
     // Ice needs to check for exposed sides too (treated like a solid block for rendering)
-    const sideShow = isWater ? [] : exposedEdges(column, depth, neighborDataMap, edges);
+    const sideShow = exposedEdges(column, depth, neighborDataMap, edges);
     const hasSideExposed = sideShow.some(Boolean);
 
-    // Skip if no faces are exposed (water handled separately above)
-    if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
+    // Skip if no faces are exposed
+    if (!hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
     // In new system: higher depth = larger radius (closer to surface)
-    let outerRadius = depthToRadius(depth, config);
-    let innerRadius = outerRadius - config.blockHeight;
-
-    if (isWater) {
-      outerRadius -= config.waterSurfaceOffset;
-      innerRadius -= config.waterSurfaceOffset;
-    }
+    const outerRadius = depthToRadius(depth, config);
+    const innerRadius = outerRadius - config.blockHeight;
 
     if (innerRadius <= 0) continue;
 
@@ -467,19 +461,15 @@ function buildColumnGeometry(
     const torches = config.torches || [];
 
     // Create top face
-    if (isWater ? true : hasTopExposed) {
+    if (hasTopExposed) {
       const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false, config.uvScale);
       if (topGeom) {
-        if (isWater) {
-          mergeGeometry(bufferFor(out, 'water'), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, 1.0, torches);
-        } else {
-          mergeGeometry(bufferFor(out, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches, topBlock);
-        }
+        mergeGeometry(bufferFor(out, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches, topBlock);
       }
     }
 
     // Create bottom face
-    if (!isWater && hasBottomExposed) {
+    if (hasBottomExposed) {
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
         mergeGeometry(bufferFor(out, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomLight, torches, bottomBlock);
@@ -487,7 +477,7 @@ function buildColumnGeometry(
     }
 
     // Create side faces
-    if (!isWater && hasSideExposed) {
+    if (hasSideExposed) {
       const sidesGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, false, true, config.uvScale);
       if (sidesGeom) {
         const shown = keepSides(sidesGeom, sideShow);
@@ -496,6 +486,16 @@ function buildColumnGeometry(
       }
     }
   }
+}
+
+// The water of each column (src/water/LiquidMesh.ts), at rest: the worker
+// draws this tick's water, the main-thread rebuilds near the player smooth it
+function waterOf(columns: ColumnData[], neighborDataMap: Map<number, NeighborData>, config: WorkerConfig) {
+  const own = new Map(columns.map(c => [c.tileIndex, c.blocks]));
+  const read = cellReader(t => own.get(t) ?? neighborDataMap.get(t)?.blocks, flowLookup(config.flowCells));
+  return (column: ColumnData, edges: number[], target: () => GeometryData) => meshLiquidColumn(
+    { tileIndex: column.tileIndex, vertices: column.tile.vertices, center: column.tile.center, edges },
+    column.blocks.length, read, null, 0, config, target);
 }
 
 // Worker message handler
@@ -521,24 +521,11 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
     );
 
     const light = lightRegion(columns, neighborDataMap);
+    const water = waterOf(columns, neighborDataMap, config);
     for (const column of columns) {
-      buildColumnGeometry(column, neighborDataMap, config, buffers, light.field, light.edgesOf(column), light.blockField);
-
-      // Generate water walls for water blocks adjacent to air in neighbors
-      for (let depth = 0; depth < column.blocks.length; depth++) {
-        if (column.blocks[depth] === HexBlockType.WATER) {
-          // Generate walls at each depth where water is adjacent to neighbor's air
-          buildWaterWallAtDepth(
-            column.tile.vertices,
-            column.tile.neighbors,
-            column.blocks,
-            neighborDataMap,
-            depth,
-            config,
-            bufferFor(buffers, 'water')
-          );
-        }
-      }
+      const edges = light.edgesOf(column);
+      buildColumnGeometry(column, neighborDataMap, config, buffers, light.field, edges, light.blockField);
+      water(column, edges, () => bufferFor(buffers, 'water'));
     }
 
     const result: GeometryResultMessage = { type: 'geometryResult', ...buffers };
@@ -567,27 +554,15 @@ self.onmessage = (e: MessageEvent<BuildGeometryMessage | BuildChunkGeometryMessa
 
     // Build geometry, routing each column to its chunk's buffers
     const light = lightRegion(columns, neighborDataMap);
+    const water = waterOf(columns, neighborDataMap, config);
     for (const column of columns) {
       const chunkIndex = tileToChunkMap.get(column.tileIndex);
       if (chunkIndex === undefined || !chunkGeometries[chunkIndex]) continue;
 
       const chunk = chunkGeometries[chunkIndex];
-      buildColumnGeometry(column, neighborDataMap, config, chunk, light.field, light.edgesOf(column), light.blockField);
-
-      // Generate water walls for water blocks
-      for (let depth = 0; depth < column.blocks.length; depth++) {
-        if (column.blocks[depth] === HexBlockType.WATER) {
-          buildWaterWallAtDepth(
-            column.tile.vertices,
-            column.tile.neighbors,
-            column.blocks,
-            neighborDataMap,
-            depth,
-            config,
-            bufferFor(chunk, 'water')
-          );
-        }
-      }
+      const edges = light.edgesOf(column);
+      buildColumnGeometry(column, neighborDataMap, config, chunk, light.field, edges, light.blockField);
+      water(column, edges, () => bufferFor(chunk, 'water'));
     }
 
     const result: ChunkGeometryResultMessage = {

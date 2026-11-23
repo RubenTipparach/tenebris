@@ -525,7 +525,10 @@ export class HexBlockMeshBuilder {
         cameraNear: { value: 0.1 },
         cameraFar: { value: 2000 },
         resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
-        useDepthFog: { value: 1.0 } // 1.0 = use depth-based fog, 0.0 = disabled (mobile)
+        useDepthFog: { value: 1.0 }, // 1.0 = use depth-based fog, 0.0 = disabled (mobile)
+        // Water flow smoothing (src/water/LiquidMesh.ts), driven by Planet.updateLiquid
+        liquidT: { value: 1.0 },
+        liquidTick: { value: 0.0 }
       },
       vertexShader: waterVert,
       fragmentShader: waterFrag,

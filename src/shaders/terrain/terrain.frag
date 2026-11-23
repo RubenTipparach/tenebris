@@ -89,7 +89,9 @@ void main() {
 
   // Apply underwater fog when camera is underwater
   if (isUnderwater > 0.5) {
-    float fogFactor = clamp((vDistanceFromCamera - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
+    // per fragment: the per-vertex distance overshoots on faces close to the camera
+    float fragDist = length(cameraPosition - vWorldPosition);
+    float fogFactor = clamp((fragDist - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
     finalColor = mix(finalColor, underwaterFogColor, fogFactor);
   }
 
