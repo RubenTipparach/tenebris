@@ -31,7 +31,8 @@ export const WaterConfig = {
   FLOW_MIN_SPEED: 0.3,
   FLOW_SLOPE_K: 5,
   FLOW_MAX_SPEED: 0.9,
-  /** Metres one 16-pixel tile of water.png covers (12.5 cm a pixel). */
+  /** Metres one 16-pixel tile of water.png covers until the planet sets its own:
+   *  Planet sets it to a cell's width / PlayerConfig.WATER_UV_TILING, the scale the water texture always had. */
   TEX_TILE_M: 2.0,
   /** Metres a second a cap's tile pans per unit of its flow vector. */
   TEX_PAN_K: 1.6,

@@ -11,6 +11,8 @@
 #                    first deploy) - no itch.io push. The server deploy is
 #                    also its own workflow, server.yml ("Multiplayer server -
 #                    Fly.io deploy"), runnable alone from the Actions tab
+#     everything     itch.io, GitHub Pages and heavyphoton.com, then the
+#                    Fly server once both itch.io and Pages succeeded
 #     pages + server GitHub Pages (rubentipparach.github.io/tenebris, the
 #                    pages.yml workflow) then the Fly server once Pages
 #                    deployed - no itch.io push, no heavyphoton.com
@@ -29,7 +31,7 @@
 #   SITE_DISPATCH_TOKEN secret: a fine-grained PAT for
 #   heavyphoton.github.io with Contents: read and write. Without it the
 #   site still picks the change up on its hourly check.
-name: JS client - release (itch.io + Fly.io server manual, heavyphoton.com on push)
+name: JS client - release (itch.io, Pages, Fly.io server manual; heavyphoton.com on push)
 
 on:
   push:
@@ -44,6 +46,7 @@ on:
           - itch + server
           - server only
           - pages + server
+          - everything
 
 permissions:
   contents: read
@@ -56,7 +59,7 @@ jobs:
   itch:
     name: itch.io - butler push ruben-tipparach/tenebris:html5
     # manual releases only, when itch.io was asked for
-    if: github.event_name == 'workflow_dispatch' && inputs.ship == 'itch + server'
+    if: github.event_name == 'workflow_dispatch' && (inputs.ship == 'itch + server' || inputs.ship == 'everything')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -117,7 +120,7 @@ jobs:
   pages:
     name: GitHub Pages - deploy rubentipparach.github.io/tenebris
     # 'pages + server': the same Pages deploy pages.yml runs on push
-    if: github.event_name == 'workflow_dispatch' && inputs.ship == 'pages + server'
+    if: github.event_name == 'workflow_dispatch' && (inputs.ship == 'pages + server' || inputs.ship == 'everything')
     permissions:
       contents: read
       pages: write
@@ -133,6 +136,7 @@ jobs:
       always() && github.event_name == 'workflow_dispatch' && (
         (inputs.ship == 'itch + server' && needs.itch.result == 'success') ||
         (inputs.ship == 'pages + server' && needs.pages.result == 'success') ||
+        (inputs.ship == 'everything' && needs.itch.result == 'success' && needs.pages.result == 'success') ||
         inputs.ship == 'server only')
     # the same deploy as running server.yml on its own
     uses: ./.github/workflows/server.yml
