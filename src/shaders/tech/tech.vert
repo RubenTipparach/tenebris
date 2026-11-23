@@ -5,7 +5,7 @@ uniform vec3 sunDirection;
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
 varying vec2 vUv;
-varying float vSunBrightness;
+varying float vSunFacing;
 
 void main() {
   vUv = uv;
@@ -25,8 +25,8 @@ void main() {
   // Compute sun brightness based on angle between surface and sun
   float sunFacing = dot(surfaceDir, sunDirection);
 
-  // Smooth transition at terminator (day/night boundary)
-  vSunBrightness = smoothstep(-0.1, 0.3, sunFacing);
+  // The sun's height over this spot: the sky light table's index, as the terrain's
+  vSunFacing = sunFacing;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }

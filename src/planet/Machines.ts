@@ -1,3 +1,4 @@
+import { machineLightUniforms } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -42,11 +43,9 @@ export class MachineManager {
       mat = new THREE.ShaderMaterial({
         uniforms: {
           techTexture: { value: tex },
-          sunDirection: { value: this.sunDirection.clone() },
-          planetCenter: { value: this.planetCenter.clone() },
+          ...machineLightUniforms(),
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          torchLight: { value: 0.0 },
         },
         vertexShader: techVert,
         fragmentShader: techFrag,

@@ -1337,28 +1337,8 @@ export class PlanetBlockInteraction {
     // Balance every cable network and run the industry machines
     this.updatePowerGrid(deltaTime);
 
-    // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
-    const torchData = this.torchManager.getTorchDataForBaking();
-    // Grass and pebbles read the nearest torches each frame (TorchLightUniforms)
-    setTorchLights(torchData, this.player.position);
-    if (torchData.length > 0) {
-      const torchPositions = torchData.map(t => t.position);
-      const torchRange = torchData[0].range;
-      const torchIntensity = torchData[0].intensity;
-      this.furnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.electricFurnaceManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.electronicsWorkbenchManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.storageChestManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.cookerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.garbagePileManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.steamEngineManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.hydroGeneratorManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.copperPipeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.cableNodeManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.computerManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.printer3DManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-      this.launchPadManager.updateTorchLighting(torchPositions, torchRange, torchIntensity);
-    }
+    // Torch light on grass, trees, animals and machines: the nearest torches, read per pixel (TorchLightUniforms)
+    setTorchLights(this.torchManager.getTorchDataForBaking(), this.player.position);
 
     // A machine panel is open: no mining or placing behind it
     if (this.machineUI.isOpen()) { this.resetMining(); return; }

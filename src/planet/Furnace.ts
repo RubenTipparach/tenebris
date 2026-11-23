@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
@@ -140,11 +141,9 @@ export class FurnaceManager {
     this.furnaceMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
-        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },  // Updated per-furnace based on nearby torches
+        directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },  // Updated per-furnace based on nearby torches
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -198,7 +197,7 @@ export class FurnaceManager {
     }
 
     // Clone the material for per-furnace torch lighting
-    const instanceMaterial = this.furnaceMaterial.clone();
+    const instanceMaterial = withMachineLight(this.furnaceMaterial.clone());
 
     // Create the furnace mesh with its own material instance
     const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
@@ -300,7 +299,7 @@ export class FurnaceManager {
     }
 
     // Clone the material for per-furnace torch lighting
-    const instanceMaterial = this.furnaceMaterial.clone();
+    const instanceMaterial = withMachineLight(this.furnaceMaterial.clone());
 
     // Create the furnace mesh with its own material instance
     const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
@@ -380,30 +379,6 @@ export class FurnaceManager {
 
   public getFurnaceAtTile(tileIndex: number): PlacedFurnace | undefined {
     return this.furnaces.find(f => f.tileIndex === tileIndex);
-  }
-
-  // Update torch lighting for all furnaces based on nearby torch positions
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const furnace of this.furnaces) {
-      let totalLight = 0;
-
-      for (const torchPos of torchPositions) {
-        const distance = furnace.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          // Inverse square falloff with decay (matching terrain)
-          const decay = 2; // Same as TorchConfig.LIGHT_DECAY
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-
-      // Clamp and apply to material uniform
-      totalLight = Math.min(1.5, totalLight); // Allow slight over-brightness for nearby torches
-      const material = furnace.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-    }
   }
 
   public update(deltaTime: number): void {

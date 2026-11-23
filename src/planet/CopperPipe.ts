@@ -1,3 +1,4 @@
+import { machineLightUniforms } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -102,11 +103,9 @@ export class CopperPipeManager {
     this.pipeMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
         skyLight: { value: 1.0 },
       },
       vertexShader: techVert,
@@ -586,36 +585,6 @@ export class CopperPipeManager {
   // Get all placed pipes
   public getPlacedPipes(): PlacedCopperPipe[] {
     return Array.from(this.pipes.values());
-  }
-
-  // Update torch lighting for all pipes
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const pipe of this.pipes.values()) {
-      let totalLight = 0;
-      for (const torchPos of torchPositions) {
-        const distance = pipe.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-      totalLight = Math.min(1.5, totalLight);
-
-      // Update pipe mesh
-      const material = pipe.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-
-      // Update connector meshes
-      for (const connector of pipe.connectorMeshes) {
-        const connectorMaterial = connector.material as THREE.ShaderMaterial;
-        if (connectorMaterial.uniforms && connectorMaterial.uniforms.torchLight) {
-          connectorMaterial.uniforms.torchLight.value = totalLight;
-        }
-      }
-    }
   }
 
   // Export for save

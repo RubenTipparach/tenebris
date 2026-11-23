@@ -1,3 +1,4 @@
+import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
@@ -867,10 +868,13 @@ class PlanetGame {
       for (const [id, planet] of this.planets) {
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; onId = id; break; }
       }
+      const onSun = calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition);
       // Its body config carries the sea flora table (openspec ocean-life)
-      this.groundClutter.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition),
+      this.groundClutter.update(deltaTime, pos, on, onSun,
         onId ? getBodyConfig(onId) : undefined, this.player.getIsInWater());
+      // Machines, chests and launch pads sit in the same light as the ground (MachineLight)
+      const lit = on ?? this.earth;
+      setMachineLight(lit.center, onSun, lit.getSkyLight());
     }
     // Fauna: on whichever planet the player stands on; the roster table
     // decides who lives there (a planet with no roster spawns nothing)

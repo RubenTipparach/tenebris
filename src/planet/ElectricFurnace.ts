@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import { emitGameEvent } from '../engine/GameEvents';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
@@ -120,11 +121,9 @@ export class ElectricFurnaceManager {
     this.furnaceMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -178,7 +177,7 @@ export class ElectricFurnaceManager {
       return null;
     }
 
-    const instanceMaterial = this.furnaceMaterial.clone();
+    const instanceMaterial = withMachineLight(this.furnaceMaterial.clone());
     const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
 
     const upDirection = worldPosition.clone().sub(planetCenter).normalize();
@@ -263,7 +262,7 @@ export class ElectricFurnaceManager {
       return null;
     }
 
-    const instanceMaterial = this.furnaceMaterial.clone();
+    const instanceMaterial = withMachineLight(this.furnaceMaterial.clone());
     const mesh = new THREE.Mesh(this.furnaceGeometry, instanceMaterial);
 
     mesh.position.copy(savedPosition);
@@ -340,27 +339,6 @@ export class ElectricFurnaceManager {
     const furnace = this.getElectricFurnaceAtTile(tileIndex);
     if (furnace) {
       furnace.isPowered = isPowered;
-    }
-  }
-
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const furnace of this.furnaces) {
-      let totalLight = 0;
-
-      for (const torchPos of torchPositions) {
-        const distance = furnace.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-
-      totalLight = Math.min(1.5, totalLight);
-      const material = furnace.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
     }
   }
 

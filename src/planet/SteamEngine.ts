@@ -1,3 +1,4 @@
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -134,11 +135,9 @@ export class SteamEngineManager {
     this.steamEngineMaterial = new THREE.ShaderMaterial({
       uniforms: {
         techTexture: { value: texture },
-        sunDirection: { value: this.sunDirection.clone() },
-        planetCenter: { value: this.planetCenter.clone() },
+        ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        torchLight: { value: 0.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -209,7 +208,7 @@ export class SteamEngineManager {
       return null;
     }
 
-    const instanceMaterial = this.steamEngineMaterial.clone();
+    const instanceMaterial = withMachineLight(this.steamEngineMaterial.clone());
     const mesh = new THREE.Mesh(this.steamEngineGeometry, instanceMaterial);
 
     // Position above ground
@@ -292,7 +291,7 @@ export class SteamEngineManager {
       return null;
     }
 
-    const instanceMaterial = this.steamEngineMaterial.clone();
+    const instanceMaterial = withMachineLight(this.steamEngineMaterial.clone());
     const mesh = new THREE.Mesh(this.steamEngineGeometry, instanceMaterial);
     mesh.position.copy(savedPosition);
 
@@ -368,25 +367,6 @@ export class SteamEngineManager {
 
   public getSteamEngineAtTile(tileIndex: number): PlacedSteamEngine | undefined {
     return this.steamEngines.find(s => s.tileIndex === tileIndex);
-  }
-
-  public updateTorchLighting(torchPositions: THREE.Vector3[], torchRange: number, torchIntensity: number): void {
-    for (const steamEngine of this.steamEngines) {
-      let totalLight = 0;
-      for (const torchPos of torchPositions) {
-        const distance = steamEngine.position.distanceTo(torchPos);
-        if (distance < torchRange) {
-          const decay = 2;
-          const attenuation = 1 / (1 + decay * distance * distance / (torchRange * torchRange));
-          totalLight += attenuation * torchIntensity;
-        }
-      }
-      totalLight = Math.min(1.5, totalLight);
-      const material = steamEngine.mesh.material as THREE.ShaderMaterial;
-      if (material.uniforms && material.uniforms.torchLight) {
-        material.uniforms.torchLight.value = totalLight;
-      }
-    }
   }
 
   public exportForSave(): Array<{
