@@ -155,6 +155,8 @@ export const PlayerConfig = {
   // Torches
   TORCH_LIGHT_RANGE: 4,              // Torch light falloff distance (blocks)
   TORCH_LIGHT_INTENSITY: 1.5,        // Torch light intensity
+  TORCH_LIGHT_COLOR: [1.0, 0.7, 0.3] as [number, number, number], // Torch light colour on clutter (planet.frag's TORCH_LIGHT_COLOR)
+  TORCH_LIT_NEAREST: 16,             // Grass and pebbles are lit by this many torches nearest the player
   TORCH_FLICKER_SPEED: 8,            // How fast the torch light flickers
   TORCH_FLICKER_AMOUNT: 0.2,         // How much intensity varies (0-1)
 

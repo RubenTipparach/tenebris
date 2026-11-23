@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { torchLightUniforms } from './TorchLightUniforms';
 import { skyLightUniforms } from './SkyLightTexture';
 import { Planet } from './Planet';
 import { HexTile } from './GoldbergPolyhedron';
@@ -905,6 +906,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       sunDirection: { value: new THREE.Vector3(1, 0, 0) },
       planetCenter: { value: new THREE.Vector3() },
       ...skyLightUniforms(),
+      ...torchLightUniforms(),
     },
     defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
     vertexShader: `
@@ -968,6 +970,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       uniform float uNight;
       uniform float uDiffuse;
       #include <tenebris_sky_light>
+      #include <tenebris_torch_light>
       varying vec3 vColor;
       varying float vGlow;
       varying vec3 vNormal;
@@ -981,7 +984,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
         vec3 ambient = uAmbient * skyFill(facing);
         float diff = max(0.0, dot(normalize(vNormal), sunDirection));
         vec3 lit = vColor * (ambient + uDiffuse * diff * skySun(facing));
-        gl_FragColor = vec4(lit + vColor * vGlow * uGlow, 1.0);
+        gl_FragColor = vec4(lit + vColor * vGlow * uGlow + torchGlow(vColor, vWorld, facing), 1.0);
       }
     `,
   });

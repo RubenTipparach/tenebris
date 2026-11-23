@@ -1345,6 +1345,9 @@ class PlanetGame {
       });
     }
 
+    // Screenshot button: the game view without the menu over it (as F9)
+    document.getElementById('screenshot-btn')?.addEventListener('click', () => this.engine.saveScreenshot());
+
     // Handle play music button
     const playMusicBtn = document.getElementById('play-music-btn');
     if (playMusicBtn) {

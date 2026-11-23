@@ -1,3 +1,4 @@
+import { showToast } from '../utils/toast';
 import * as THREE from 'three';
 import { PlayerConfig } from '../config/PlayerConfig';
 import skyboxVert from '../shaders/skybox/skybox.vert';
@@ -121,7 +122,26 @@ export class GameEngine {
         e.preventDefault();
         getTechBlocksMenu().toggle();
       }
+      // F9 saves a screenshot of the game view (the canvas only: no HUD or menus)
+      if (e.code === 'F9') {
+        e.preventDefault();
+        this.saveScreenshot();
+      }
     });
+  }
+
+  /** Save the last rendered frame as a PNG download (preserveDrawingBuffer keeps it readable) */
+  public saveScreenshot(): void {
+    const stamp = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    this.renderer.domElement.toBlob((blob) => {
+      if (!blob) { showToast('Screenshot failed', { duration: 2000 }); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `tenebris-${stamp}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      showToast(`Screenshot saved: ${a.download}`, { duration: 2000 });
+    }, 'image/png');
   }
 
   private setupLighting(): void {

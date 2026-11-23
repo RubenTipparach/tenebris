@@ -63,6 +63,7 @@ import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } fr
 import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
+import { setTorchLights } from '../planet/TorchLightUniforms';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -1338,6 +1339,8 @@ export class PlanetBlockInteraction {
 
     // Update furnace, storage chest, garbage pile, and steam engine torch lighting based on nearby torches
     const torchData = this.torchManager.getTorchDataForBaking();
+    // Grass and pebbles read the nearest torches each frame (TorchLightUniforms)
+    setTorchLights(torchData, this.player.position);
     if (torchData.length > 0) {
       const torchPositions = torchData.map(t => t.position);
       const torchRange = torchData[0].range;
