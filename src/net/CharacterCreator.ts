@@ -117,7 +117,7 @@ export class CharacterCreator {
       this.scene.remove(this.avatar.group);
       this.avatar.dispose();
     }
-    this.avatar = new Avatar(this.look);
+    this.avatar = new Avatar(this.look, undefined, 'studio');
     this.avatar.group.rotation.y = turn;
     this.scene.add(this.avatar.group);
   }

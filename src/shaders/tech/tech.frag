@@ -1,7 +1,12 @@
 // Tech block fragment shader with planet-aware lighting and torch support
 precision highp float;
 
+// TECH_COLOR: one flat colour instead of the texture (player avatars), same light
+#ifdef TECH_COLOR
+uniform vec3 techColor;
+#else
 uniform sampler2D techTexture;
+#endif
 uniform vec3 sunDirection;
 uniform float ambientIntensity;
 uniform float directionalIntensity;
@@ -16,7 +21,11 @@ varying float vSunFacing;
 #include <tenebris_torch_light>
 
 void main() {
+#ifdef TECH_COLOR
+  vec4 texColor = vec4(techColor, 1.0);
+#else
   vec4 texColor = texture2D(techTexture, vUv);
+#endif
   // Alpha test - discard transparent pixels
   if (texColor.a < 0.5) {
     discard;

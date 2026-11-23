@@ -14,10 +14,11 @@ void main() {
   vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPosition = worldPos.xyz;
 
-  // For world-space geometry, normals are already in world space
-  // For transformed meshes (segments), we need model matrix rotation
-  // Use normalMatrix which handles non-uniform scaling correctly
-  vNormal = normalize(normalMatrix * normal);
+  // World-space normal: the sun direction it is lit against is world space.
+  // (three's normalMatrix is VIEW space - lighting with it made the sun's
+  // shading on machines and chests follow the camera.) The inverse-transpose
+  // keeps it right for scaled meshes (cable / pipe segments).
+  vNormal = normalize(transpose(inverse(mat3(modelMatrix))) * normal);
 
   // Calculate surface direction (from planet center)
   vec3 surfaceDir = normalize(worldPos.xyz - planetCenter);
