@@ -4896,6 +4896,21 @@ export class Planet {
       mat.uniforms.liquidT.value = this.liquid.tickFraction(WaterConfig.TICK_SECONDS);
       mat.uniforms.liquidTick.value = this.liquid.tickStamp;
     }
+    // The water tile's scale: WATER_UV_TILING repeats across one hex cell,
+    // as the water texture was tiled before the flow texture (owner: "use
+    // same tiling scale we had before")
+    if (mat?.uniforms.texTileM) mat.uniforms.texTileM.value = this.hexWidthM() / PlayerConfig.WATER_UV_TILING;
+  }
+
+  private cachedHexWidthM = 0;
+  /** Centre-to-centre distance of two neighbouring cells at the sea surface (m) */
+  private hexWidthM(): number {
+    if (this.cachedHexWidthM > 0) return this.cachedHexWidthM;
+    const t = this.polyhedron.tiles[0];
+    const n = this.polyhedron.tiles[t.neighbors[0]];
+    const r = this.depthToRadius(this.getSeaLevelDepth());
+    this.cachedHexWidthM = t.center.clone().normalize().distanceTo(n.center.clone().normalize()) * r;
+    return this.cachedHexWidthM;
   }
 
   /** The liquid rule, for tests and the debug console. */
