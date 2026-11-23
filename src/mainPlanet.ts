@@ -20,7 +20,8 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, RocketState, ROCKET_CONFIG } from './rocket';
 import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
-import { ItemType, ITEM_DATA } from './player/Inventory';
+import { ItemType, ITEM_DATA, toolOf } from './player/Inventory';
+import { toolIndexFor } from './player/Tools';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
@@ -419,6 +420,10 @@ class PlanetGame {
           emitGameEvent('caughtOn', this.player.getCurrentPlanet()?.getName() ?? 'earth');
         }
         return left === 0;
+      }, () => {
+        // Each cast is one use of the rod in hand (openspec tools-and-toolbox)
+        const rod = toolIndexFor(this.blockInteraction.getInventory(), 'rod');
+        if (rod !== null) this.blockInteraction.wearSlot(rod);
       });
 
       // Give block interaction access to tree manager for mining trees
@@ -931,8 +936,9 @@ class PlanetGame {
       this.rightClickHeld = input.rightClick;
 
       // Fishing takes the mouse buttons while the rod is in hand
-      const holdingRod = isGameActive &&
-        this.blockInteraction.getInventory().getSelectedItem().itemType === ItemType.FISHING_ROD;
+      // The rod in hand: a rod in the selected hotbar slot, or the toolbox rod taken out (0)
+      const inv = this.blockInteraction.getInventory();
+      const holdingRod = isGameActive && (toolOf(inv.getSelectedItem().itemType)?.kind === 'rod' || inv.isRodOut());
       const fishing = this.fishing?.update(
         deltaTime, holdingRod, this.player.getCurrentPlanet(), this.player.position,
         input.leftClick, input.rightClick

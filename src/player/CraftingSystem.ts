@@ -1,6 +1,9 @@
 import { emitGameEvent } from '../engine/GameEvents';
 import { recipeLockedBy, recipeOpen } from './RecipeGate';
-import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA, InventorySlot, toolOf, TOOLBOX_START, TOOLBOX_SLOTS, toolboxKindAt } from './Inventory';
+import { renderDurability, slotTooltip } from './ToolUI';
+import { showToast } from '../utils/toast';
+import { TOOLBOX } from '../config/ToolConfig';
 import { getAssetPath } from '../utils/assetPath';
 import { MenuManager } from './MenuManager';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -15,6 +18,33 @@ export interface CraftingRecipe {
   // An item handed back alongside the output (an emptied bucket)
   returns?: { itemType: ItemType; quantity: number };
 }
+
+// Tools (openspec tools-and-toolbox): each tier's material over two sticks
+//  MMM      MM.      .M.
+//  .S.      MS.      .S.
+//  .S.      .S.      .S.
+//  pickaxe  axe      shovel
+const TOOL_MATERIALS: [string, ItemType][] = [
+  ['ROCK', ItemType.STONE],
+  ['COPPER', ItemType.INGOT_COPPER],
+  ['IRON', ItemType.INGOT_IRON],
+  ['STEEL', ItemType.STEEL_INGOT],
+  ['TITANIUM', ItemType.INGOT_TITANIUM],
+];
+const TOOL_HEAD_SLOTS: [string, number[]][] = [['PICKAXE', [0, 1, 2]], ['AXE', [0, 1, 3]], ['SHOVEL', [1]]];
+export const TOOL_RECIPES: CraftingRecipe[] = TOOL_MATERIALS.flatMap(([tier, material]) =>
+  TOOL_HEAD_SLOTS.map(([kind, head]) => {
+    const output = ItemType[`${tier}_${kind}` as keyof typeof ItemType];
+    return {
+      name: ITEM_DATA[output].name,
+      inputs: [
+        ...head.map(slot => ({ itemType: material, quantity: 1, slot })),
+        { itemType: ItemType.STICK, quantity: 1, slot: 4 },
+        { itemType: ItemType.STICK, quantity: 1, slot: 7 },
+      ],
+      output: { itemType: output, quantity: 1 },
+    };
+  }));
 
 // All crafting recipes in the game
 // Grid layout (3x3):
@@ -450,6 +480,7 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.SPACE_SUIT, quantity: 1 },
   },
+  ...TOOL_RECIPES,
 ];
 
 export class CraftingSystem {
@@ -461,6 +492,9 @@ export class CraftingSystem {
   private craftBtnElement: HTMLButtonElement | null = null;
   private inventoryGridElement: HTMLElement | null = null;
   private inventoryHotbarElement: HTMLElement | null = null;
+  private inventoryToolboxElement: HTMLElement | null = null;
+  // The stack held on the cursor after a right-click split (drawn here, kept on the Inventory)
+  private heldEl: HTMLElement | null = null;
   // The suit slot (equipment): whether a suit is worn, and taking it off
   private suitSlotElement: HTMLElement | null = null;
   private suit: { worn: () => boolean; takeOff: () => void } | null = null;
@@ -519,6 +553,13 @@ export class CraftingSystem {
     this.craftBtnElement = document.getElementById('craft-btn') as HTMLButtonElement;
     this.inventoryGridElement = document.getElementById('inventory-grid');
     this.inventoryHotbarElement = document.getElementById('inventory-hotbar');
+    this.inventoryToolboxElement = document.getElementById('inventory-toolbox');
+    // The held stack follows the mouse
+    document.addEventListener('mousemove', (e) => {
+      if (!this.heldEl) return;
+      this.heldEl.style.left = `${e.clientX}px`;
+      this.heldEl.style.top = `${e.clientY}px`;
+    });
     this.suitSlotElement = document.getElementById('suit-slot');
     this.suitSlotElement?.addEventListener('click', () => {
       if (!this.suit?.worn()) return;
@@ -571,6 +612,20 @@ export class CraftingSystem {
         this.inventoryHotbarElement.appendChild(slot);
       }
     }
+
+    // The toolbox: one slot per tool kind (slots 36-39), same handlers
+    if (this.inventoryToolboxElement) {
+      this.inventoryToolboxElement.innerHTML = '';
+      for (let i = 0; i < TOOLBOX_SLOTS; i++) {
+        const slot = this.createSlotElement(TOOLBOX_START + i);
+        slot.classList.add('toolbox-slot');
+        const label = document.createElement('span');
+        label.className = 'toolbox-label';
+        label.textContent = TOOLBOX.LABELS[TOOLBOX.KINDS[i]];
+        slot.appendChild(label);
+        this.inventoryToolboxElement.appendChild(slot);
+      }
+    }
   }
 
   private createSlotElement(slotIndex: number): HTMLElement {
@@ -594,6 +649,11 @@ export class CraftingSystem {
     slot.addEventListener('dragover', (e) => this.handleDragOver(e));
     slot.addEventListener('dragleave', (e) => this.handleDragLeave(e));
     slot.addEventListener('drop', (e) => this.handleDrop(e, slotIndex));
+
+    // Right click: pick up half the stack (rounded up) onto the cursor, or
+    // put the held stack down; left click puts a held stack down
+    slot.addEventListener('contextmenu', (e) => { e.preventDefault(); this.handleSlotRightClick(slotIndex); });
+    slot.addEventListener('click', () => { if (this.inventory.getHeld()) this.placeHeldOn(slotIndex); });
 
     // Mobile touch drag handlers
     slot.addEventListener('touchstart', (e) => this.handleTouchStart(e, slotIndex), { passive: false });
@@ -695,8 +755,62 @@ export class CraftingSystem {
     this.touchDragSlotIndex = null;
   }
 
+  // ---- right-click split (openspec tools-and-toolbox, design 6) ----------
+
+  private handleSlotRightClick(slotIndex: number): void {
+    if (this.inventory.getHeld()) {
+      this.placeHeldOn(slotIndex);
+      return;
+    }
+    if (!this.inventory.takeHalf(slotIndex)) return;
+    this.afterHeldChange();
+  }
+
+  private placeHeldOn(slotIndex: number): void {
+    if (!this.inventory.placeHeld(slotIndex)) return;
+    this.afterHeldChange();
+  }
+
+  /** Put a held stack back (the panel closing). */
+  private returnHeld(): void {
+    if (!this.inventory.getHeld()) return;
+    const lost = this.inventory.returnHeld();
+    if (lost > 0) showToast(`No room: ${lost} dropped`, { duration: TOOLBOX.TOAST_MS });
+    this.afterHeldChange();
+  }
+
+  private afterHeldChange(): void {
+    this.renderHeld();
+    this.updateInventorySlots();
+    this.onUpdateHotbarCallback?.();
+    this.onSaveCallback?.();
+  }
+
+  // The held stack's icon on the cursor
+  private renderHeld(): void {
+    const held = this.inventory.getHeld();
+    if (!held) {
+      this.heldEl?.remove();
+      this.heldEl = null;
+      return;
+    }
+    if (!this.heldEl) {
+      this.heldEl = document.createElement('div');
+      this.heldEl.className = 'held-stack';
+      this.heldEl.innerHTML = '<img><span></span>';
+      document.body.appendChild(this.heldEl);
+    }
+    (this.heldEl.querySelector('img') as HTMLImageElement).src = getAssetPath(ITEM_DATA[held.itemType].texture);
+    (this.heldEl.querySelector('span') as HTMLElement).textContent = held.quantity > 1 ? String(held.quantity) : '';
+  }
+
   private handleDragStart(e: DragEvent, slotIndex: number): void {
     const slotData = this.inventory.getSlot(slotIndex);
+    // A stack on the cursor is put down by clicking, not dragged past
+    if (this.inventory.getHeld()) {
+      e.preventDefault();
+      return;
+    }
     if (!slotData || slotData.itemType === ItemType.NONE) {
       e.preventDefault();
       return;
@@ -778,6 +892,8 @@ export class CraftingSystem {
 
     // Check if this is a drop from a furnace slot
     const dragData = e.dataTransfer?.getData('text/plain');
+    // Machine and chest outputs go to the hotbar / bag, never the toolbox
+    if (toolboxKindAt(targetSlotIndex) !== null && dragData && dragData.includes(':')) return;
     if (dragData && dragData.startsWith('furnace:')) {
       const sourceSlotType = dragData.substring('furnace:'.length);
       if (this.onFurnaceDropCallback) {
@@ -925,6 +1041,9 @@ export class CraftingSystem {
       this.menuElement.classList.remove('active');
       this.isOpen = false;
 
+      // A stack held on the cursor goes back into the inventory
+      this.returnHeld();
+
       // The next open starts on the inventory
       this.panels.get(this.currentPanel)?.hide?.();
       if (this.currentPanel !== 'inventory') this.showPanel('inventory');
@@ -1038,6 +1157,14 @@ export class CraftingSystem {
     hotbarSlots?.forEach((slotEl, index) => {
       this.updateSlotElement(slotEl as HTMLElement, allSlots[index]);
     });
+
+    // Update the toolbox
+    const toolSlots = this.inventoryToolboxElement?.querySelectorAll('.inventory-slot');
+    toolSlots?.forEach((slotEl, index) => {
+      const slot = this.inventory.getSlot(TOOLBOX_START + index)!;
+      this.updateSlotElement(slotEl as HTMLElement, slot);
+      slotEl.classList.toggle('has-tool', slot.itemType !== ItemType.NONE);
+    });
   }
 
   private updateSlotElement(slotEl: HTMLElement, slot: InventorySlot): void {
@@ -1062,7 +1189,7 @@ export class CraftingSystem {
         tooltipEl.className = 'item-tooltip';
         slotEl.appendChild(tooltipEl);
       }
-      tooltipEl.textContent = itemData.name;
+      tooltipEl.textContent = slotTooltip(slot);
     } else {
       if (img) {
         img.style.display = 'none';
@@ -1073,6 +1200,8 @@ export class CraftingSystem {
       // Remove tooltip for empty slots
       if (tooltipEl) tooltipEl.remove();
     }
+    // A worn tool's durability bar
+    renderDurability(slotEl, slot);
   }
 
   // Apply CSS styling to show only a portion of an atlas texture
@@ -1450,8 +1579,19 @@ export class CraftingSystem {
       }
     }
 
-    // Add output items
-    this.inventory.addItem(this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
+    // Add output items. A tool equips itself in the toolbox when its slot
+    // is free, else joins the inventory (openspec tools-and-toolbox)
+    const out = this.selectedRecipe.output;
+    if (toolOf(out.itemType)) {
+      for (let n = 0; n < out.quantity; n++) {
+        const went = this.inventory.giveTool(out.itemType);
+        const name = ITEM_DATA[out.itemType].name;
+        showToast(went === 'toolbox' ? `${name} equipped in the toolbox`
+          : went === 'inventory' ? `${name} added to the inventory` : `No room for the ${name}`, { duration: TOOLBOX.TOAST_MS });
+      }
+    } else {
+      this.inventory.addItem(out.itemType, out.quantity);
+    }
     const returned = this.selectedRecipe.returns;
     if (returned) this.inventory.addItem(returned.itemType, returned.quantity);
     emitGameEvent('crafted', this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);

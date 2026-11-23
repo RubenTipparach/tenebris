@@ -15,6 +15,8 @@ export interface TileChange {
 export interface SavedInventorySlot {
   itemType: number;
   quantity: number;
+  // A tool's uses left; absent = fresh (saves from before tool wear)
+  uses?: number;
 }
 
 // Torch data (without planetId - stored per planet)
