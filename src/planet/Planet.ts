@@ -19,6 +19,10 @@ import {
 } from './ChunkGeometryBuilder';
 import { CityConfig, sampleCity, cityColumn, cityFloors, cityLodColor, cityMeanFloors } from '../shared/cityGen';
 import { PackedBlocks, PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
+import { Liquid, LiquidWorld, CELL_SOURCE, isFlowCode, isFallingCode } from '../water/Liquid';
+import { cellReader, meshLiquidColumn, cornerLevels, LiquidColumn } from '../water/LiquidMesh';
+import { edgeNeighbors } from '../shared/voxelLight';
+import { WaterConfig } from '../config/WaterConfig';
 import { surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_CRATER, VOLCANO_RIM } from '../shared/terrainShape';
 
 export interface PlanetConfig {
@@ -68,6 +72,7 @@ interface GeometryData {
   torchLight: number[]; // Torch light level (0-1.5) baked per vertex
   indices: number[];
   vertexOffset: number;
+  liquidPrev?: number[]; // water only: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
 }
 
 function createEmptyGeometryData(): GeometryData {
@@ -92,6 +97,15 @@ export class Planet {
     return this.polyhedronInstance;
   }
   private columns: Map<number, PlanetColumn> = new Map();
+  // Water flow (openspec water-flow): sources are WATER blocks, flowing
+  // water lives in the Liquid; one rule for every planet
+  private readonly liquidChangedTiles = new Set<number>();
+  private readonly liquid: Liquid = new Liquid(this.liquidWorld(), {
+    range: WaterConfig.RANGE,
+    renew: WaterConfig.RENEW_SOURCES,
+    dropBoost: WaterConfig.DROP_BOOST,
+    maxCellsPerTick: WaterConfig.MAX_CELLS_PER_TICK,
+  });
   private meshBuilder: HexBlockMeshBuilder;
   // Sun and fill by sun height (openspec sky-lighting); airless until the planet's own is set
   private skyLight: THREE.Texture = airlessSkyLight();
@@ -519,6 +533,8 @@ export class Planet {
 
     // The block data - the bulk of it
     this.columns.clear();
+    this.liquid.clear();
+    this.liquidChangedTiles.clear();
     this.tilesWithDetailedGeometry.clear();
     this.chunkDetailedTileCount.clear();
     this.cachedNearbyTiles = new Set();
@@ -665,6 +681,8 @@ export class Planet {
           };
 
           this.columns.set(tileIndex, column);
+          // Flowing water is not saved: saved edits re-derive it by ticking
+          if (edits) for (const depth of edits.keys()) this.liquid.touch(tileIndex, depth);
         }
       };
 
@@ -1757,6 +1775,7 @@ export class Planet {
           z: this.sunDirection.z
         },
         uvScale: PlayerConfig.TERRAIN_UV_SCALE,
+        flowCells: this.liquid.flowCells([...columns, ...neighborColumns].map(c => c.tile.index)),
         torches: relevantTorches
       }
     }, [...packedColumnSetTransferables(packedColumns), ...packedColumnSetTransferables(packedNeighbors)]);
@@ -1919,6 +1938,7 @@ export class Planet {
           z: this.sunDirection.z
         },
         uvScale: PlayerConfig.TERRAIN_UV_SCALE,
+        flowCells: this.liquid.flowCells([...tilesToRebuild, ...Object.keys(neighborData).map(Number)]),
         torches: relevantTorches
       }
     });
@@ -1993,6 +2013,7 @@ export class Planet {
           z: this.sunDirection.z
         },
         uvScale: PlayerConfig.TERRAIN_UV_SCALE,
+        liquid: this.liquid,
         torches: this.filterRelevantTorches(columns.map(c => ({
           tileIndex: c.tileIndex,
           tile: c.tile,
@@ -4073,103 +4094,6 @@ export class Planet {
       }
     }
 
-    // After filling oceans, cascade water down through air in each column
-    this.cascadeWaterInColumns();
-  }
-
-  // For each column, if there's water above air, the air should become water
-  // This handles underwater caves where water should flow down through air pockets
-  private cascadeWaterInColumns(): void {
-    let waterFilledCount = 0;
-
-    for (const [_, column] of this.columns) {
-      // Scan from top to bottom - if we see water, any air below should become water
-      // until we hit solid ground
-      let waterAbove = false;
-
-      for (let d = column.blocks.length - 1; d >= 0; d--) {
-        const block = column.blocks[d];
-
-        if (block === HexBlockType.WATER) {
-          waterAbove = true;
-        } else if (block === HexBlockType.AIR) {
-          if (waterAbove) {
-            // Air below water - fill with water
-            column.blocks[d] = HexBlockType.WATER;
-            column.isDirty = true;
-            waterFilledCount++;
-          }
-          // Air doesn't stop water flow, continue checking below
-        } else {
-          // Hit solid block - reset waterAbove since water can't flow through solid
-          waterAbove = false;
-        }
-      }
-    }
-
-    if (waterFilledCount > 0) {
-      console.log(`[Water cascade] Filled ${waterFilledCount} air blocks below water in columns`);
-    }
-  }
-
-  // Periodic water update - fixes water flow issues in nearby tiles
-  // Call this every few seconds to ensure water properly cascades
-  // Also removes trapped water (water between solid blocks with no sky access)
-  public updateWaterFlow(nearbyTiles: Set<number>): number {
-    let waterChangedCount = 0;
-
-    for (const tileIndex of nearbyTiles) {
-      const column = this.columns.get(tileIndex);
-      if (!column) continue;
-
-      // Two-pass algorithm:
-      // Pass 1: Scan from top to find sky access and remove trapped water
-      // Pass 2: Cascade water down through air below valid water
-
-      // Pass 1: Remove trapped water (water below solid blocks with no sky access)
-      let hasSkyAccess = true; // Start with sky access from the top
-
-      for (let d = column.blocks.length - 1; d >= 0; d--) {
-        const block = column.blocks[d];
-
-        if (block === HexBlockType.WATER) {
-          if (!hasSkyAccess) {
-            // Trapped water - no connection to sky, remove it
-            column.blocks[d] = HexBlockType.AIR;
-            column.isDirty = true;
-            waterChangedCount++;
-          }
-          // Water doesn't block sky access for blocks below (water is transparent)
-        } else if (block === HexBlockType.AIR) {
-          // Air doesn't affect sky access, continue
-        } else {
-          // Hit solid block - blocks below no longer have sky access
-          hasSkyAccess = false;
-        }
-      }
-
-      // Pass 2: Cascade water down through air (fill air below valid water)
-      let waterAbove = false;
-      for (let d = column.blocks.length - 1; d >= 0; d--) {
-        const block = column.blocks[d];
-
-        if (block === HexBlockType.WATER) {
-          waterAbove = true;
-        } else if (block === HexBlockType.AIR) {
-          if (waterAbove) {
-            // Air below water - fill with water
-            column.blocks[d] = HexBlockType.WATER;
-            column.isDirty = true;
-            waterChangedCount++;
-          }
-        } else {
-          // Hit solid block - water can't flow through
-          waterAbove = false;
-        }
-      }
-    }
-
-    return waterChangedCount;
   }
 
   // ---- live orbits (openspec navigation-and-orbits, orbital-motion) ----
@@ -4852,30 +4776,23 @@ export class Planet {
     // This allows full depth/height range to be visible
     for (let depth = 0; depth < column.blocks.length; depth++) {
       const blockType = column.blocks[depth];
-      if (blockType === HexBlockType.AIR) continue;
+      // Air, and water (drawn by meshLiquidColumn below)
+      if (blockType === HexBlockType.AIR || blockType === HexBlockType.WATER) continue;
 
-      const isWater = blockType === HexBlockType.WATER;
       // In new system: "above" = higher depth (toward sky), "below" = lower depth (toward bedrock)
       const blockAbove = depth >= column.blocks.length - 1 ? HexBlockType.AIR : column.blocks[depth + 1];
       const blockBelow = depth === 0 ? HexBlockType.AIR : column.blocks[depth - 1];
 
-      const hasTopExposed = blockAbove === HexBlockType.AIR || (!isWater && blockAbove === HexBlockType.WATER);
-      const hasBottomExposed = blockBelow === HexBlockType.AIR || (!isWater && blockBelow === HexBlockType.WATER);
-
-      if (isWater && blockAbove !== HexBlockType.AIR) continue;
+      const hasTopExposed = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
+      const hasBottomExposed = blockBelow === HexBlockType.AIR || blockBelow === HexBlockType.WATER;
 
       const hasSideExposed = this.hasExposedSide(column, depth);
 
-      if (!isWater && !hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
+      if (!hasTopExposed && !hasBottomExposed && !hasSideExposed) continue;
 
       // In new system: higher depth = larger radius (closer to surface)
-      let outerRadius = this.depthToRadius(depth);
-      let innerRadius = outerRadius - this.BLOCK_HEIGHT;
-
-      if (isWater) {
-        outerRadius -= PlayerConfig.WATER_SURFACE_OFFSET;
-        innerRadius -= PlayerConfig.WATER_SURFACE_OFFSET;
-      }
+      const outerRadius = this.depthToRadius(depth);
+      const innerRadius = outerRadius - this.BLOCK_HEIGHT;
 
       if (innerRadius <= 0) continue;
 
@@ -4895,9 +4812,9 @@ export class Planet {
         innerRadius,
         outerRadius,
         new THREE.Vector3(0, 0, 0),
-        isWater ? true : hasTopExposed,
-        isWater ? false : hasBottomExposed,
-        isWater ? false : hasSideExposed
+        hasTopExposed,
+        hasBottomExposed,
+        hasSideExposed
       );
 
       if (top) {
@@ -4907,13 +4824,13 @@ export class Planet {
         const indexAttr = top.getIndex();
         if (posAttr && normAttr && uvAttr && indexAttr) {
           const key = this.getBlockTopMaterialKey(blockType);
-          const light = isWater ? 1.0 : skyLightLevel;
+          const light = skyLightLevel;
           this.mergeGeometry((geometryData[key] ??= createEmptyGeometryData()), posAttr, normAttr, uvAttr, indexAttr, this.sunDirection, light);
         }
         top.dispose();
       }
 
-      if (bottom && !isWater) {
+      if (bottom) {
         const posAttr = bottom.getAttribute('position');
         const normAttr = bottom.getAttribute('normal');
         const uvAttr = bottom.getAttribute('uv');
@@ -4938,13 +4855,113 @@ export class Planet {
         sides.dispose();
       }
 
-      // Water side faces - generate per-edge only where neighbor is air
-      if (isWater) {
-        this.buildWaterSideFaces(column, depth, innerRadius, outerRadius, (geometryData["water"] ??= createEmptyGeometryData()));
-      }
+    }
+
+    // Its water (src/water/LiquidMesh.ts), the one water mesher
+    this.meshColumnLiquid(column, () => (geometryData['water'] ??= createEmptyGeometryData()), true);
+  }
+
+
+  // ---- water flow (openspec water-flow) ----
+
+  /** Planet's columns as the liquid rule's world. */
+  private liquidWorld(): LiquidWorld {
+    return {
+      neighbors: (tile) => this.columns.get(tile)?.tile.neighbors,
+      height: (tile) => this.columns.get(tile)?.blocks.length ?? 0,
+      block: (tile, depth) => this.columns.get(tile)!.blocks[depth],
+      // A renewed source (Luanti's infinite water) is derived like flowing
+      // water: written to the column, not to the edit log; the saved edits
+      // that made it re-make it on load
+      setSource: (tile, depth) => { this.columns.get(tile)!.blocks[depth] = HexBlockType.WATER; },
+      cellChanged: (tile) => { this.liquidChangedTiles.add(tile); },
+    };
+  }
+
+  /** Tick the water (every frame; it ticks every WaterConfig.TICK_SECONDS) and drive the smoothing clock. */
+  public updateLiquid(deltaTime: number): void {
+    if (this.columns.size === 0) return;
+    this.liquid.update(deltaTime, WaterConfig.TICK_SECONDS, WaterConfig.MAX_TICKS_PER_FRAME);
+    for (const tile of this.liquidChangedTiles) {
+      const column = this.columns.get(tile);
+      if (!column) continue;
+      column.isDirty = true;
+      this.queueDirtyColumnRebuild(tile);
+      for (const n of column.tile.neighbors) this.queueDirtyColumnRebuild(n);
+    }
+    this.liquidChangedTiles.clear();
+    const mat = this.meshBuilder.getWaterShaderMaterial();
+    if (mat?.uniforms.liquidT) {
+      mat.uniforms.liquidT.value = this.liquid.tickFraction(WaterConfig.TICK_SECONDS);
+      mat.uniforms.liquidTick.value = this.liquid.tickStamp;
     }
   }
 
+  /** The liquid rule, for tests and the debug console. */
+  public getLiquid(): Liquid {
+    return this.liquid;
+  }
+
+  private liquidColumn(column: PlanetColumn): LiquidColumn {
+    const verticesOf = (t: number) => this.columns.get(t)?.tile.vertices;
+    return {
+      tileIndex: column.tile.index,
+      vertices: column.tile.vertices,
+      center: column.tile.center,
+      edges: edgeNeighbors(column.tile.vertices, column.tile.neighbors, verticesOf),
+    };
+  }
+
+  private liquidReader() {
+    return cellReader(t => this.columns.get(t)?.blocks, (t, d) => this.liquid.flowAt(t, d));
+  }
+
+  /** One column's water into a water buffer (the fallback mesher; the chunk meshers call meshLiquidColumn directly). */
+  private meshColumnLiquid(column: PlanetColumn, target: () => GeometryData, smooth: boolean): void {
+    meshLiquidColumn(this.liquidColumn(column), column.blocks.length, this.liquidReader(),
+      smooth ? (t, d) => this.liquid.prevAt(t, d) : null, this.liquid.tickStamp,
+      { radius: this.radius, maxDepth: this.MAX_DEPTH, blockHeight: this.BLOCK_HEIGHT, waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET },
+      target);
+  }
+
+  /**
+   * The radius of the water surface in a cell, or -1 if the cell holds no
+   * water: the drawn surface (WATER_SURFACE_OFFSET under the top for a
+   * source, the sloped top of a flowing cell at this point, the cell's top
+   * when water is on it). The one answer for fog, swimming and depth.
+   */
+  public waterSurfaceRadiusAt(tileIndex: number, depth: number, point?: THREE.Vector3): number {
+    const column = this.columns.get(tileIndex);
+    if (!column || depth < 0 || depth >= column.blocks.length) return -1;
+    const read = this.liquidReader();
+    const code = read(tileIndex, depth);
+    if (code !== CELL_SOURCE && !isFlowCode(code)) return -1;
+    const top = this.depthToRadius(depth);
+    const above = read(tileIndex, depth + 1);
+    if (above === CELL_SOURCE || isFlowCode(above)) return top;
+    const surface = top - PlayerConfig.WATER_SURFACE_OFFSET;
+    if (code === CELL_SOURCE) return surface;
+    const floor = top - this.BLOCK_HEIGHT;
+    const lv = cornerLevels(this.liquidColumn(column), depth, read);
+    let level = lv.reduce((a, b) => a + b, 0) / lv.length;
+    if (point && !isFallingCode(code)) {
+      // the sloped top under the point: the triangle of the hex fan it falls in
+      const local = point.clone().sub(this.center).normalize();
+      const c = column.tile.center.clone().normalize();
+      const n = column.tile.vertices.length;
+      let best = 0, bestDot = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const v = column.tile.vertices[i].clone().normalize();
+        const d = v.dot(local);
+        if (d > bestDot) { bestDot = d; best = i; }
+      }
+      // blend the centre and the nearest corner by how far out the point is
+      const vb = column.tile.vertices[best].clone().normalize();
+      const out = Math.min(1, Math.max(0, local.clone().sub(c).length() / Math.max(1e-9, vb.sub(c).length())));
+      level = level + (lv[best] - level) * out;
+    }
+    return floor + level * (surface - floor);
+  }
   public updateWaterShader(time: number, isUnderwater: boolean = false): void {
     this.meshBuilder.updateWaterShader(time, this.center, isUnderwater);
     // Also update terrain shader underwater state for fog
@@ -5173,6 +5190,10 @@ export class Planet {
     if (data.colors.length > 0) {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
     }
+    // Water: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
+    if (data.liquidPrev && data.liquidPrev.length > 0) {
+      geometry.setAttribute('liquidPrev', new THREE.Float32BufferAttribute(data.liquidPrev, 4));
+    }
     // Add sky light attribute for depth-based lighting
     if (data.skyLight.length > 0) {
       geometry.setAttribute('skyLight', new THREE.Float32BufferAttribute(data.skyLight, 1));
@@ -5211,138 +5232,6 @@ export class Planet {
       }
     }
     return false;
-  }
-
-  // Build water side faces that extend from water surface down to exposed air
-  // This creates walls where water meets air gaps in neighboring columns
-  private buildWaterSideFaces(
-    column: PlanetColumn,
-    waterSurfaceDepth: number,
-    _innerRadius: number,
-    outerRadius: number,
-    waterData: GeometryData
-  ): void {
-    const tile = column.tile;
-    const numSides = tile.vertices.length;
-    const edgeThreshold = 0.001; // Tolerance for vertex matching
-
-    // Check each edge
-    for (let i = 0; i < numSides; i++) {
-      const next = (i + 1) % numSides;
-      const edgeV1 = tile.vertices[i];
-      const edgeV2 = tile.vertices[next];
-
-      // Find which neighbor shares this edge
-      let neighborColumn: PlanetColumn | undefined;
-      for (const neighborIndex of tile.neighbors) {
-        const candidate = this.columns.get(neighborIndex);
-        if (!candidate) continue;
-
-        const neighborTile = candidate.tile;
-
-        // Check if this neighbor has both edge vertices
-        let hasV1 = false;
-        let hasV2 = false;
-        for (const nv of neighborTile.vertices) {
-          if (nv.distanceTo(edgeV1) < edgeThreshold) hasV1 = true;
-          if (nv.distanceTo(edgeV2) < edgeThreshold) hasV2 = true;
-        }
-
-        if (hasV1 && hasV2) {
-          neighborColumn = candidate;
-          break;
-        }
-      }
-
-      if (!neighborColumn) continue;
-
-      // Find the depth range where we need water walls
-      // Only draw water walls where neighbor has AIR - solid blocks draw their own walls
-      // This prevents z-fighting between water walls and terrain walls
-
-      // Check if neighbor has air at water surface level - if not, skip this edge entirely
-      // (the terrain side wall will handle the visual boundary)
-      if (neighborColumn.blocks[waterSurfaceDepth] !== HexBlockType.AIR) continue;
-
-      // Find where this water column has solid blocks below the water
-      // Depth system: 0 = bedrock (bottom), higher = toward sky
-      // Solid blocks (ocean floor) are at LOWER depth values than water
-      let ownSolidDepth = 0;
-      for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
-        const ownBlock = column.blocks[d];
-        if (ownBlock !== HexBlockType.AIR && ownBlock !== HexBlockType.WATER) {
-          // Found our own solid - water wall stops here
-          ownSolidDepth = d;
-          break;
-        }
-      }
-
-      // Find the neighbor's first solid block depth (searching downward)
-      let neighborSolidDepth = 0;
-      for (let d = waterSurfaceDepth - 1; d >= 0; d--) {
-        const neighborBlock = neighborColumn.blocks[d];
-        if (neighborBlock !== HexBlockType.AIR && neighborBlock !== HexBlockType.WATER) {
-          // Found solid block - this is where neighbor's terrain starts
-          neighborSolidDepth = d;
-          break;
-        }
-      }
-
-      // Water wall extends to the maximum of own solid depth or neighbor solid depth
-      // (higher depth = closer to water surface, so we take max to get the shallowest floor)
-      const wallBottomDepth = Math.max(ownSolidDepth, neighborSolidDepth);
-
-      // Calculate wall geometry from water surface down to the limit
-      const wallTopRadius = outerRadius; // Water surface (already offset)
-      const wallBottomRadius = this.depthToRadius(wallBottomDepth);
-
-      if (wallBottomRadius >= wallTopRadius) continue; // No wall needed
-
-      // Scale vertices for top and bottom of wall
-      const dir1 = edgeV1.clone().normalize();
-      const dir2 = edgeV2.clone().normalize();
-
-      const topV1 = dir1.clone().multiplyScalar(wallTopRadius);
-      const topV2 = dir2.clone().multiplyScalar(wallTopRadius);
-      const bottomV1 = dir1.clone().multiplyScalar(wallBottomRadius);
-      const bottomV2 = dir2.clone().multiplyScalar(wallBottomRadius);
-
-      // Calculate side normal using cross product of quad edges
-      const edge1 = bottomV2.clone().sub(bottomV1);
-      const edge2 = topV1.clone().sub(bottomV1);
-      const sideNormal = edge1.clone().cross(edge2).normalize();
-
-      const baseIdx = waterData.vertexOffset;
-
-      // Four vertices for this side face (bottom-left, bottom-right, top-right, top-left)
-      waterData.positions.push(
-        bottomV1.x, bottomV1.y, bottomV1.z,
-        bottomV2.x, bottomV2.y, bottomV2.z,
-        topV2.x, topV2.y, topV2.z,
-        topV1.x, topV1.y, topV1.z
-      );
-
-      for (let j = 0; j < 4; j++) {
-        waterData.normals.push(sideNormal.x, sideNormal.y, sideNormal.z);
-      }
-
-      // UVs for side face
-      waterData.uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
-
-      // Sky light (water walls still get surface lighting)
-      waterData.skyLight.push(1.0, 1.0, 1.0, 1.0);
-
-      // Vertex colors (full brightness for water)
-      waterData.colors.push(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
-
-      // Indices for two triangles making the quad
-      waterData.indices.push(
-        baseIdx, baseIdx + 1, baseIdx + 2,
-        baseIdx, baseIdx + 2, baseIdx + 3
-      );
-
-      waterData.vertexOffset += 4;
-    }
   }
 
   public getBlock(tileIndex: number, depth: number): HexBlockType {
@@ -5397,9 +5286,8 @@ export class Planet {
       }
     }
 
-    if (this.meshBuilder.isSolid(oldBlockType) && blockType === HexBlockType.AIR) {
-      this.simulateWaterFlow(tileIndex, depth);
-    }
+    // Water flows from the edit on the next liquid ticks (src/water/Liquid.ts)
+    if (oldBlockType !== blockType) this.liquid.touch(tileIndex, depth);
   }
 
   // Track columns that need geometry rebuild
@@ -5642,130 +5530,6 @@ export class Planet {
         const boundaryMesh = new THREE.Mesh(geom, seaWallMaterial);
         boundaryMesh.renderOrder = 2;
         this.batchedMeshGroup.add(boundaryMesh);
-      }
-    }
-  }
-
-  private simulateWaterFlow(tileIndex: number, depth: number): void {
-    const column = this.columns.get(tileIndex);
-    if (!column) return;
-
-    let hasAdjacentWater = false;
-
-    // In new depth system: "below" is depth-1 (toward bedrock), "above" is depth+1 (toward sky)
-    // Check if there's water above (water falls down)
-    if (depth < column.blocks.length - 1 && column.blocks[depth + 1] === HexBlockType.WATER) {
-      hasAdjacentWater = true;
-    }
-
-    for (const neighborIndex of column.tile.neighbors) {
-      const neighbor = this.columns.get(neighborIndex);
-      if (neighbor && neighbor.blocks[depth] === HexBlockType.WATER) {
-        hasAdjacentWater = true;
-      }
-    }
-
-    if (!hasAdjacentWater) return;
-
-    this.rebalanceWaterBasin(tileIndex, depth);
-  }
-
-  private rebalanceWaterBasin(startTileIndex: number, startDepth: number): void {
-    const visited = new Set<string>();
-    const queue: { tileIndex: number, depth: number }[] = [{ tileIndex: startTileIndex, depth: startDepth }];
-    const basinCells: { tileIndex: number, depth: number, isWater: boolean }[] = [];
-
-    // Limit basin size to prevent freeze when digging into large bodies of water (like ocean)
-    const MAX_BASIN_CELLS = 500;
-
-    while (queue.length > 0) {
-      const { tileIndex, depth } = queue.shift()!;
-      const key = `${tileIndex}-${depth}`;
-
-      if (visited.has(key)) continue;
-      visited.add(key);
-
-      // Stop if basin is too large - likely connected to ocean
-      if (visited.size > MAX_BASIN_CELLS) {
-        return; // Abort water rebalancing for large bodies of water
-      }
-
-      const column = this.columns.get(tileIndex);
-      if (!column || depth < 0 || depth >= column.blocks.length) continue;
-
-      const blockType = column.blocks[depth];
-      if (blockType !== HexBlockType.AIR && blockType !== HexBlockType.WATER) continue;
-
-      basinCells.push({ tileIndex, depth, isWater: blockType === HexBlockType.WATER });
-
-      // In new depth system: "below" is depth-1 (toward bedrock), "above" is depth+1 (toward sky)
-      if (depth > 0) {
-        const belowType = column.blocks[depth - 1];
-        if (belowType === HexBlockType.AIR || belowType === HexBlockType.WATER) {
-          queue.push({ tileIndex, depth: depth - 1 });
-        }
-      }
-      if (depth < column.blocks.length - 1) {
-        const aboveType = column.blocks[depth + 1];
-        if (aboveType === HexBlockType.AIR || aboveType === HexBlockType.WATER) {
-          queue.push({ tileIndex, depth: depth + 1 });
-        }
-      }
-
-      for (const neighborIndex of column.tile.neighbors) {
-        const neighbor = this.columns.get(neighborIndex);
-        if (neighbor) {
-          const neighborType = neighbor.blocks[depth];
-          if (neighborType === HexBlockType.AIR || neighborType === HexBlockType.WATER) {
-            queue.push({ tileIndex: neighborIndex, depth });
-          }
-        }
-      }
-    }
-
-    const totalWater = basinCells.filter(c => c.isWater).length;
-    if (totalWater === 0) return;
-
-    // Sort by depth ascending - water settles at lowest depths (toward bedrock)
-    basinCells.sort((a, b) => a.depth - b.depth);
-
-    let waterToPlace = totalWater;
-    const cellsToFill: { tileIndex: number, depth: number }[] = [];
-    const cellsToEmpty: { tileIndex: number, depth: number }[] = [];
-
-    for (const cell of basinCells) {
-      if (waterToPlace > 0) {
-        cellsToFill.push(cell);
-        waterToPlace--;
-      } else {
-        cellsToEmpty.push(cell);
-      }
-    }
-
-    for (const cell of cellsToFill) {
-      const column = this.columns.get(cell.tileIndex);
-      // Only place water in AIR blocks - never overwrite solid blocks (prevents z-fighting)
-      if (column && column.blocks[cell.depth] === HexBlockType.AIR) {
-        column.blocks[cell.depth] = HexBlockType.WATER;
-        column.isDirty = true;
-        this.needsRebatch = true;
-        for (const neighborIndex of column.tile.neighbors) {
-          const neighbor = this.columns.get(neighborIndex);
-          if (neighbor) neighbor.isDirty = true;
-        }
-      }
-    }
-
-    for (const cell of cellsToEmpty) {
-      const column = this.columns.get(cell.tileIndex);
-      if (column && column.blocks[cell.depth] === HexBlockType.WATER) {
-        column.blocks[cell.depth] = HexBlockType.AIR;
-        column.isDirty = true;
-        this.needsRebatch = true;
-        for (const neighborIndex of column.tile.neighbors) {
-          const neighbor = this.columns.get(neighborIndex);
-          if (neighbor) neighbor.isDirty = true;
-        }
       }
     }
   }
@@ -6078,82 +5842,28 @@ export class Planet {
     return result;
   }
 
+  /** Is this point under water: below the drawn surface of a water cell (a source or flowing water). */
   public isInWater(position: THREE.Vector3): boolean {
     const tile = this.getTileAtPoint(position);
     if (!tile) return false;
-
-    const column = this.columns.get(tile.index);
-    if (!column) return false;
-
-    const playerDepth = this.getDepthAtPoint(position);
-
-    // Check if the block at the player's depth is actually water
-    // This properly handles air pockets below water (caves under the ocean)
-    if (playerDepth >= 0 && playerDepth < column.blocks.length) {
-      return column.blocks[playerDepth] === HexBlockType.WATER;
-    }
-
-    return false;
+    const r = position.distanceTo(this.center);
+    const depth = this.getDepthAtPoint(position);
+    const surface = this.waterSurfaceRadiusAt(tile.index, depth, position);
+    return surface >= 0 && r < surface;
   }
 
-  public getWaterDepth(position: THREE.Vector3): number {
-    const tile = this.getTileAtPoint(position);
-    if (!tile) return 0;
-
-    const column = this.columns.get(tile.index);
-    if (!column) return 0;
-
-    const currentDepth = this.getDepthAtPoint(position);
-
-    // First check: is the player actually in water at their current depth?
-    // If they're in an air pocket, return 0 (not underwater)
-    if (currentDepth >= 0 && currentDepth < column.blocks.length) {
-      if (column.blocks[currentDepth] !== HexBlockType.WATER) {
-        return 0; // In an air pocket, not underwater
-      }
-    }
-
-    // Find water surface above player (topmost water block, searching from top down)
-    let waterSurfaceDepth = -1;
-    for (let d = column.blocks.length - 1; d >= 0; d--) {
-      if (column.blocks[d] === HexBlockType.WATER) {
-        waterSurfaceDepth = d;
-        break;
-      }
-    }
-
-    if (waterSurfaceDepth < 0) return 0;
-
-    // Depth below water surface (lower depth = deeper underwater)
-    // Count as underwater if AT or BELOW surface
-    if (currentDepth <= waterSurfaceDepth) {
-      return (waterSurfaceDepth - currentDepth) * this.BLOCK_HEIGHT;
-    }
-
-    return 0;
-  }
-
-  // Returns the radius of the water surface at a given position, or -1 if no water
+  // The water surface over a point: the drawn surface (waterSurfaceRadiusAt)
+  // of the topmost water cell in its column, or -1 if the column holds none
   public getWaterSurfaceRadius(position: THREE.Vector3): number {
     const tile = this.getTileAtPoint(position);
     if (!tile) return -1;
-
     const column = this.columns.get(tile.index);
     if (!column) return -1;
-
-    // Find water surface (topmost water block, searching from top down)
-    let waterSurfaceDepth = -1;
     for (let d = column.blocks.length - 1; d >= 0; d--) {
-      if (column.blocks[d] === HexBlockType.WATER) {
-        waterSurfaceDepth = d;
-        break;
-      }
+      const r = this.waterSurfaceRadiusAt(tile.index, d, position);
+      if (r >= 0) return r;
     }
-
-    if (waterSurfaceDepth < 0) return -1;
-
-    // Water surface radius using new depth system
-    return this.depthToRadius(waterSurfaceDepth);
+    return -1;
   }
 
   public buildAllMeshes(): void {

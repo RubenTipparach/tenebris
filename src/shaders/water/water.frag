@@ -108,6 +108,12 @@ void main() {
   // Use baseUv for other effects
   vec2 finalUv = baseUv;
 
+  // The camera's distance to this fragment, exact per fragment (vDepth is
+  // interpolated per vertex, which overshoots badly when the camera is close
+  // to a big face: 0.3 m over the sea it read as metres, and the sea went
+  // opaque)
+  float fragDist = length(cameraPosition - vWorldPosition);
+
   // Fog factor and color based on whether camera is above or below water
   float depthFogFactor = 0.0;
   vec3 currentFogColor = aboveWaterFogColor;
@@ -133,8 +139,11 @@ void main() {
     // And: waterWorldDist = vDepth (we already have this from vertex shader)
     // Therefore: sceneWorldDist = vDepth * (sceneDepthZ / waterSurfaceDepthZ)
 
-    float sceneWorldDist = vDepth * (sceneDepthZ / max(waterSurfaceDepthZ, 0.001));
-    float underwaterWorldDist = max(0.0, sceneWorldDist - vDepth);
+    // The depth pass holds the nearer of the terrain and the water's own far
+    // side (GameEngine.waterBackDepth), so this is the water's thickness
+    // along the view ray
+    float sceneWorldDist = fragDist * (sceneDepthZ / max(waterSurfaceDepthZ, 0.001));
+    float underwaterWorldDist = max(0.0, sceneWorldDist - fragDist);
 
     if (isUnderwater < 0.5) {
       // Above water: fog based on distance light travels through water to reach terrain
@@ -142,7 +151,7 @@ void main() {
       currentFogColor = aboveWaterFogColor;
     } else {
       // Underwater: fog based on distance from camera to water surface
-      depthFogFactor = clamp((vDepth - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
+      depthFogFactor = clamp((fragDist - underwaterFogNear) / (underwaterFogFar - underwaterFogNear), 0.0, 1.0);
       currentFogColor = underwaterFogColor;
     }
   }
@@ -198,8 +207,11 @@ void main() {
   // Also dim specular/reflections on dark side (already calculated, apply reduction)
   // This prevents bright reflections on the night side
 
-  // Apply fog (each direction uses its own fog color)
-  finalColor = mix(finalColor, currentFogColor * dayNightFactor, depthFogFactor);
+  // Apply fog (each direction uses its own fog color). Under water the
+  // surface fades to the same fog colour as the terrain shader, the scene fog
+  // and the cleared background, so the view ends in one colour
+  vec3 fogTarget = isUnderwater > 0.5 ? currentFogColor : currentFogColor * dayNightFactor;
+  finalColor = mix(finalColor, fogTarget, depthFogFactor);
 
   // Make more opaque as fog increases
   finalOpacity = mix(finalOpacity, 1.0, depthFogFactor);

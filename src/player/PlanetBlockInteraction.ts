@@ -2943,62 +2943,10 @@ export class PlanetBlockInteraction {
     // Save tile change
     const planetId = this.getPlanetId(planet);
 
-    // Check if water can flow into this space from above or from neighbors
-    let hasWaterSource = false;
-    const maxDepth = planet.getMaxDepth();
-
-    // First check: search upward in same column for water with clear path
-    for (let d = depth + 1; d < maxDepth; d++) {
-      const blockAtDepth = planet.getBlock(tileIndex, d);
-      if (blockAtDepth === HexBlockType.WATER) {
-        hasWaterSource = true;
-        break;
-      } else if (blockAtDepth !== HexBlockType.AIR) {
-        // Hit solid block before finding water - can't flow from above
-        break;
-      }
-    }
-
-    // Second check: if no water above, check neighboring tiles for water at same depth or above
-    // Water flows horizontally from neighbors if they have water at this depth level
-    if (!hasWaterSource) {
-      const neighbors = planet.getTileNeighbors(tileIndex);
-      for (const neighborIndex of neighbors) {
-        // Check if neighbor has water at the broken block's depth
-        const neighborBlock = planet.getBlock(neighborIndex, depth);
-        if (neighborBlock === HexBlockType.WATER) {
-          hasWaterSource = true;
-          break;
-        }
-        // Also check if neighbor has water directly above (at depth + 1) that could flow over
-        const neighborBlockAbove = planet.getBlock(neighborIndex, depth + 1);
-        if (neighborBlockAbove === HexBlockType.WATER) {
-          hasWaterSource = true;
-          break;
-        }
-      }
-    }
-
-    const newBlockType = hasWaterSource ? HexBlockType.WATER : HexBlockType.AIR;
-
-    // Remove block from world (or fill with water if water above)
-    planet.setBlock(tileIndex, depth, newBlockType);
-    gameStorage.saveTileChange(planetId, tileIndex, depth, newBlockType);
-
-    // If water flowed in, cascade it downward through any air blocks below
-    if (newBlockType === HexBlockType.WATER) {
-      for (let d = depth - 1; d > 0; d--) {
-        const blockBelow = planet.getBlock(tileIndex, d);
-        if (blockBelow === HexBlockType.AIR) {
-          // Air block - water flows down into it
-          planet.setBlock(tileIndex, d, HexBlockType.WATER);
-          gameStorage.saveTileChange(planetId, tileIndex, d, HexBlockType.WATER);
-        } else {
-          // Hit solid ground or another block type, stop cascading
-          break;
-        }
-      }
-    }
+    // Remove the block; any water beside or above flows in on the next liquid
+    // ticks (src/water/Liquid.ts) - flowing water is derived, only the edit is saved
+    planet.setBlock(tileIndex, depth, HexBlockType.AIR);
+    gameStorage.saveTileChange(planetId, tileIndex, depth, HexBlockType.AIR);
   }
 
   private placeBlock(planet: Planet, tileIndex: number, depth: number): void {
