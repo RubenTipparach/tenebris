@@ -24,6 +24,16 @@ deterministic from the world seed.
 - **WHEN** a world is regenerated from the same seed
 - **THEN** every clay, oil, uranium and lava block is in the same place
 
+### Requirement: Shores stay sand, clay lies under the water
+
+Earth's clay SHALL form the top of shallow sea beds, and SHALL lie under the
+sand of a beach, never on top of it, so every shore shows sand at the
+waterline.
+
+#### Scenario: Walking a shore
+- **WHEN** a player walks along a beach on Earth
+- **THEN** the ground they stand on is sand, and digging one block down there or wading into the shallows may find clay
+
 ### Requirement: Every new block and item has its own look
 
 Each new block SHALL have its own drawn texture, never a tint of an
