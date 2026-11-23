@@ -24,6 +24,7 @@
   let I = null;          // ItemType
   let B = null;          // HexBlockType
   let RECIPES = null;    // CRAFTING_RECIPES
+  let SMELTS = null;     // furnace SMELTING_RECIPES
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -43,6 +44,8 @@
     const blocks = await import(`${BASE}/shared/blockTypes.ts`);
     const crafting = await import(`${BASE}/player/CraftingSystem.ts`);
     const cfg = await import(`${BASE}/config/PlayerConfig.ts`);
+    const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
+    SMELTS = smeltMod.SMELTING_RECIPES;
     I = inventory.ItemType;
     B = blocks.HexBlockType;
     RECIPES = crafting.CRAFTING_RECIPES;
@@ -986,6 +989,89 @@
     }
   }
 
+
+  // ---- a general planner: get any item the way a player would -------------------
+  // Craft it (getting the ingredients first), smelt it from its ore, or dig
+  // its block out of the ground. Returns true once `n` are held; false when
+  // this pass made progress but isn't done yet, so the mission loop comes back.
+  const itemName = (it) => Object.keys(I).find(k => I[k] === it);
+  async function obtain(item, n, depth = 0) {
+    if (count(item) >= n) return true;
+    if (depth > 6) return false;
+    const name = itemName(item);
+    if (item === I.LOG) { await chopTree(); return count(item) >= n; }
+    if (item === I.WATER_BUCKET) {
+      if (!(await obtain(I.BUCKET, 1, depth + 1))) return false;
+      await fillBucket(); return count(item) >= n;
+    }
+    // crafted
+    const recs = RECIPES.filter(r => r.output.itemType === item && tracker().recipeOpen(item));
+    for (const r of recs) {
+      const times = Math.ceil((n - count(item)) / r.output.quantity);
+      const need = {};
+      for (const inp of r.inputs) need[inp.itemType] = (need[inp.itemType] || 0) + inp.quantity * times;
+      for (const [k, q] of Object.entries(need)) {
+        if (count(+k) < q) { await obtain(+k, q, depth + 1); if (count(+k) < q) return false; }
+      }
+      await craft(item, Math.max(1, times));
+      return count(item) >= n;
+    }
+    // smelted
+    const sm = SMELTS && SMELTS.find(r => r.output === item);
+    if (sm) {
+      const runs = Math.ceil((n - count(item)) / sm.outputQuantity);
+      if (count(sm.input) < runs) { await obtain(sm.input, runs, depth + 1); if (count(sm.input) < runs) return false; }
+      if (count(I.COAL) < Math.ceil(runs / 8) + 1) { await getCoal(); if (count(I.COAL) < 1) return false; }
+      await smelt(sm.input, runs);
+      return count(item) >= n;
+    }
+    // dug out of the ground
+    const block = name !== undefined ? B[name] : undefined;
+    if (block !== undefined) {
+      if (name.startsWith('ORE_')) await goMining([block, B.ORE_COAL], () => count(item) >= n);
+      else if (block === B.STONE) await digForStone(n);
+      else await findAndDig([block], () => count(item) >= n);
+      return count(item) >= n;
+    }
+    say(`does not know how to get ${name}`);
+    st.unknown = (st.unknown || []).concat([item]);
+    return false;
+  }
+
+  // Play any mission whose objectives are holding, making, smelting or placing things
+  async function generic(m) {
+    const prog = tracker().progress(m);
+    for (let i = 0; i < m.objectives.length; i++) {
+      const o = m.objectives[i];
+      const left = o.count - (prog[i] || 0);
+      if (left <= 0) continue;
+      if ((st.unknown || []).includes(o.item)) { st.cannot = (st.cannot || []).concat([m.id]); return; }
+      if (o.kind === 'gained') { await obtain(o.item, count(o.item) + left); return; }
+      if (o.kind === 'crafted') {
+        const r = RECIPES.find(r => r.output.itemType === o.item);
+        const q = r ? r.output.quantity : 1;
+        await obtain(o.item, count(o.item) + Math.ceil(left / q) * q);
+        return;
+      }
+      if (o.kind === 'smelted') {
+        const sm = SMELTS.find(r => r.output === o.item);
+        if (!sm) { st.cannot = (st.cannot || []).concat([m.id]); return; }
+        if (count(sm.input) < left) { await obtain(sm.input, left); return; }
+        if (count(I.COAL) < 2) { await getCoal(); return; }
+        await smelt(sm.input, left); return;
+      }
+      if (o.kind === 'placed') {
+        if (!(await obtain(o.item, Math.min(left, 4)))) return;
+        for (let k = 0; k < left && count(o.item) > 0; k++) await placeNearby(o.item);
+        return;
+      }
+      say(`cannot play objective '${o.kind}' yet`);
+      st.cannot = (st.cannot || []).concat([m.id]);
+      return;
+    }
+  }
+  const PLAYABLE = ['gained', 'crafted', 'smelted', 'placed'];
+
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
     miner: ['logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
@@ -997,6 +1083,11 @@
     for (const id of ROLE_ORDER[st.role] ?? ROLE_ORDER.miner) if (open.has(id) && PLAYBOOK[id]) return id;
     // its own branches are done: help itself to the other's
     for (const order of Object.values(ROLE_ORDER)) for (const id of order) if (open.has(id) && PLAYBOOK[id]) return id;
+    // then anything the general planner can play
+    for (const m of tracker().openMissions()) {
+      if ((st.cannot || []).includes(m.id)) continue;
+      if (m.objectives.every(o => PLAYABLE.includes(o.kind))) return m.id;
+    }
     return null;
   }
 
@@ -1009,7 +1100,7 @@
         const m = tracker().openMissions().find(x => x.id === id);
         if (st.goal !== id) say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`);
         st.goal = id;
-        await PLAYBOOK[id]();
+        if (PLAYBOOK[id]) await PLAYBOOK[id](); else await generic(m);
       } catch (e) {
         st.errors++;
         say(`error: ${e && e.message}`);
