@@ -416,6 +416,14 @@
       if (feetDepth() > depthWanted) return true;
       const filler = [I.DIRT, I.STONE, I.SAND, I.WOOD].find(it => count(it) > 0);
       if (filler === undefined) { say('nothing to build a pillar with'); return false; }
+      // headroom: clear the two blocks over your head before jumping
+      {
+        const tile = myTile(), d = feetDepth();
+        for (const k of [d + 2, d + 3]) {
+          const b = P().getBlock(tile, k);
+          if (b !== B.AIR && b !== B.WATER) await mineBlock(tile, k, 8000);
+        }
+      }
       selectItem(filler);
       const pos = player().position.clone();
       const up = upAt(pos);
@@ -488,7 +496,7 @@
     const myDepth = feetDepth();
     const cands = tilesWithin(here, 2).filter(t => t !== here && p.isTileLoaded(t))
       .map(t => ({ t, g: p.groundDepthOf(t) }))
-      .filter(c => Math.abs(c.g + 1 - myDepth) <= 2 && p.getBlock(c.t, c.g + 1) === B.AIR && p.getBlock(c.t, c.g + 2) === B.AIR && p.getBlock(c.t, c.g) !== B.WATER)
+      .filter(c => !stationAt(c.t) && Math.abs(c.g + 1 - myDepth) <= 2 && p.getBlock(c.t, c.g + 1) === B.AIR && p.getBlock(c.t, c.g + 2) === B.AIR && p.getBlock(c.t, c.g) !== B.WATER)
       .sort((a, b) => blockTop(a.t, a.g).distanceTo(player().position) - blockTop(b.t, b.g).distanceTo(player().position));
     if (!cands.length) {
       // down a shaft: carve a pocket in the wall and set it on the floor there
@@ -499,12 +507,15 @@
         cands.push({ t: n, g: myDepth - 1 });
       }
     }
-    for (const c of cands.slice(0, 6)) {
+    for (const c of cands.slice(0, 10)) {
       selectItem(item);
       const before = count(item);
       await lookAtPoint(blockTop(c.t, c.g), 0.04, 1500);
+      const h = rayHit();
+      if (!h || h.tileIndex !== c.t) continue;          // something else in the line of sight
       await click(2, 80);
       await sleep(700);
+      closeMenus();                                      // clicked a machine instead of the ground
       if (count(item) < before) { say(`placed item ${item} on tile ${c.t}`); return c.t; }
     }
     say(`could not place item ${item} (${cands.length} spots tried, depth ${myDepth}, surface ${surfaceDepth()})`);
@@ -516,6 +527,26 @@
   async function toSurface() {
     const s = surfaceDepth();
     if (feetDepth() < s - 1) { say('climbing out to the surface'); await pillarUpTo(s - 1, 60); }
+  }
+
+  function stationAt(t) {
+    const b = bi();
+    return !!(b.furnaceManager.getFurnaceAtTile(t) || b.cookerManager.getAtTile(t) || b.storageChestManager.getChestAtTile(t));
+  }
+
+  // Get within reach of world point `target`: out of any hole, over to it,
+  // and up to its level if it stands higher
+  async function approach(target, arrive = 2.2) {
+    await toSurface();
+    await walkTo(target, arrive, 40000);
+    const pos = player().position;
+    const up = upAt(pos);
+    const above = target.clone().sub(pos).dot(up);
+    if (above > 2.2) {
+      say(`target is ${above.toFixed(1)} m up - building up to it`);
+      await pillarUpTo(P().getDepthAtPoint(target) - 1, 20);
+      await walkTo(target, arrive, 15000);
+    }
   }
 
   // ---- furnace --------------------------------------------------------------
@@ -532,7 +563,7 @@
     return bd < 12 ? best : null;
   }
   async function openFurnace(f) {
-    await walkTo(f.position, 2.2, 30000);
+    await approach(f.position, 2.2);
     const aim = f.position.clone().addScaledVector(upAt(f.position), 0.3);
     selectEmptyHand();
     await lookAtPoint(aim, 0.04, 2000);
@@ -612,8 +643,7 @@
     while (d > 0 && p.getBlock(w, d) !== B.WATER) d--;
     const water = blockCenter(w, d);
     st.task = 'walking to water';
-    await toSurface();
-    await walkTo(water, 1.8, 40000);
+    await approach(water, 1.8);
     closeMenus();
     for (const lift of [0, 0.3, -0.3]) {
       selectItem(I.BUCKET);
@@ -642,7 +672,7 @@
     const cm = bi().cookerManager;
     const pos = player().position;
     let c = cm.getPlaced().filter(x => x.kind === kind).sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
-    if (!c || c.position.distanceTo(pos) > 25) {
+    if (!c || c.position.distanceTo(pos) > 80) {
       const it = STATION_ITEM()[kind];
       if (count(it) === 0) { if (!canCraft(it)) { say(`need a ${kind}`); return false; } await craft(it, 1); }
       const t = await placeNearby(it);
@@ -651,7 +681,7 @@
       if (!c) return false;
     }
     st.task = `cooking at the ${kind}`;
-    await walkTo(c.position, 2.2, 30000);
+    await approach(c.position, 2.2);
     selectEmptyHand();
     await lookAtPoint(c.position.clone().addScaledVector(upAt(c.position), 0.3), 0.04, 2000);
     await click(2, 80);
@@ -840,7 +870,12 @@
       await cookAt('oven', ['fish', I.WATER_BUCKET, I.CLAY_POT], I.FISH_STEW);
     },
     eat: async () => {
-      if (count(I.FISH_STEW) < 1) { await PLAYBOOK.stew(); return; }
+      if (count(I.FISH_STEW) < 1) {
+        // a stew left in an oven?
+        const left = bi().cookerManager.getPlaced().find(c => c.slots.some(x => x.itemType === I.FISH_STEW && x.quantity > 0));
+        if (left) { await cookAt(left.kind, [], I.FISH_STEW); return; }
+        await PLAYBOOK.stew(); return;
+      }
       closeMenus();
       selectItem(I.FISH_STEW);
       // eyes on the sky so no machine takes the click
@@ -1009,6 +1044,7 @@
       };
     },
     // exposed for poking at a running bot from the runner's REPL
-    skills: { chopTree, walkTo, mineBlock, digDown, craft, placeNearby, smelt, goMining, pillarUpTo, fillBucket },
+    x: { P, I: () => I, B: () => B, rayHit, eye, lookDir, nearestWaterTile, blockCenter, blockTop, upAt, bi, count, lookAtPoint, click, sleep, closeMenus, selectItem, walkTo, st },
+    skills: { cookAt, chopTree, walkTo, mineBlock, digDown, craft, placeNearby, smelt, goMining, pillarUpTo, fillBucket },
   };
 })();

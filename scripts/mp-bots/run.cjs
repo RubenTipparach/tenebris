@@ -98,6 +98,17 @@ async function launchBot(bot) {
       catch (e) { status.bots[b.name] = { error: String(e).slice(0, 200) }; }
     }
     fs.writeFileSync(path.join(OUT, 'status.json'), JSON.stringify(status, null, 1));
+    // Debugging a live bot: drop OUT/cmd-<bot>.js (a function body) and the
+    // result lands in OUT/cmd-<bot>.out.json
+    for (const b of bots) {
+      const cmd = path.join(OUT, `cmd-${b.name}.js`);
+      if (!fs.existsSync(cmd)) continue;
+      const body = fs.readFileSync(cmd, 'utf8');
+      fs.rmSync(cmd);
+      let out;
+      try { out = await b.page.evaluate(`(async () => { ${body} })()`); } catch (e) { out = { error: String(e) }; }
+      fs.writeFileSync(path.join(OUT, `cmd-${b.name}.out.json`), JSON.stringify(out, null, 1));
+    }
     if (Date.now() - lastShot > 60000) {
       lastShot = Date.now();
       for (const b of bots) {
@@ -106,7 +117,7 @@ async function launchBot(bot) {
       shot++;
       log(Object.entries(status.bots).map(([n, s]) => `${n}: ${s.goal} [${(s.done || []).length} done] ${s.task}`).join(' | '));
     }
-    await sleep(10000);
+    await sleep(3000);
   }
   await stop();
 })().catch(e => { console.error('ABORT', e); process.exit(2); });
