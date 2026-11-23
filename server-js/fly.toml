@@ -18,6 +18,11 @@
 app = 'tenebris'
 primary_region = 'ord'
 
+# The admin portal (/admin) is OPEN: no token needed (owner, for now).
+# Delete this [env] block to require the ADMIN_TOKEN secret again.
+[env]
+  ADMIN_OPEN = '1'
+
 [build]
   dockerfile = 'Dockerfile'
 

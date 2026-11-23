@@ -60,6 +60,8 @@ const KEY = 'tenebris_admin_token';
 const $ = (s) => document.querySelector(s);
 let token = '';
 try { token = localStorage.getItem(KEY) || ''; } catch {}
+// The server may run with the admin open (ADMIN_OPEN): then no sign-in at all
+let open = false;
 let timer = null;
 
 const say = (t) => { $('#msg').textContent = t; };
@@ -156,7 +158,7 @@ function render(s) {
 }
 
 async function refresh() {
-  if (!token) return;
+  if (!token && !open) return;
   try { render(await api('status')); } catch (e) { if (token) say(e.message); }
 }
 
@@ -177,7 +179,11 @@ $('#login').addEventListener('submit', (e) => {
   start();
 });
 $('#logout').addEventListener('click', () => signOut('Signed out'));
-if (token) start(); else signOut();
+// Open server: straight in. Otherwise sign in with the token.
+fetch('/admin/api/status').then((r) => {
+  if (r.ok) { open = true; $('#logout').hidden = true; $('#login').hidden = true; refresh(); if (timer) clearInterval(timer); timer = setInterval(refresh, 5000); }
+  else if (token) start(); else signOut();
+}).catch(() => { if (token) start(); else signOut(); });
 </script>
 </body>
 </html>
