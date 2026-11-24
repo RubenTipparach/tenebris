@@ -176,7 +176,7 @@ export class Multiplayer {
           sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
         }, m.id, m.now, m.world?.created, m.world?.id);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
-          this.planets.get(planet)?.setBlock(tile, depth, block);
+          this.planets.get(planet)?.setBlock(tile, depth, block, true);
         }
         applySnapshot((m.records ?? []) as Array<[string, string, string, any]>);
         for (const p of m.players) this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
@@ -204,7 +204,7 @@ export class Multiplayer {
         this.upsert(m.id, undefined, m.planet, m.p, m.q);
         break;
       case 'edit':
-        this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block);
+        this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block, true);
         break;
       case 'rec':
         dispatchRecord(m.kind, m.planet, m.key, m.data);

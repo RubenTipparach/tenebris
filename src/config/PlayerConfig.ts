@@ -115,6 +115,11 @@ export const PlayerConfig = {
   TERRAIN_TILES_PER_FRAME: 20,        // Max tiles to process per frame during incremental rebuild
   TERRAIN_LOD_OFFSET: 0,              // LOD terrain height offset (0 = match actual terrain, polygonOffset handles z-fighting)
   IMMEDIATE_REBUILD_DISTANCE: 12,     // Chunks within this tile distance use immediate CPU rebuild (no worker delay)
+  // Nearby chunks changed by something other than this player's own hand
+  // (another player's edit, flowing water) rebuild one at a time, at most
+  // once per this many ms: a chunk rebuild is ~50 ms on the main thread, and
+  // a stream of remote edits or a settling flood rebuilt every one at once
+  THROTTLED_REBUILD_INTERVAL_MS: 250,
 
   // Terrain generation
   TERRAIN_SEED: 12345,                // Seed for terrain generation (change for different worlds)
