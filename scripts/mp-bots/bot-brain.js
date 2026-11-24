@@ -836,6 +836,35 @@
   // ---- fishing --------------------------------------------------------------
   // Phases (src/player/Fishing.ts): Ready 0, Charging 1, Flying 2, Floating 3,
   // Nibble 4, Bite 5 (the float goes under), Hooked 6
+  // Shear sheep for wool: shears in hand, walk up to a sheep, right-click it.
+  // A shorn sheep regrows its fleece (RANCHING.REGROW_S), so each is tried once a while.
+  const SHORN_RETRY_MS = 5 * 60 * 1000;
+  async function shearSheep(n) {
+    if (count(I.SHEARS) < 1) { if (!(await obtain(I.SHEARS, 1))) return; }
+    const fauna = bi().fauna;
+    if (!fauna) return;
+    st.shorn = st.shorn || {};
+    const pos = player().position;
+    const sheep = fauna.debugCreatures().filter(c => /sheep/i.test(c.id) && (st.shorn[c.uid] || 0) < Date.now())
+      .sort((a, b) => a.pos.distanceTo(pos) - b.pos.distanceTo(pos))[0];
+    if (!sheep) { say('no sheep to shear near by - exploring'); await wander(); return; }
+    st.task = `shearing a sheep (${sheep.pos.distanceTo(pos).toFixed(0)} m away)`;
+    const where = () => (fauna.debugCreatures().find(c => c.uid === sheep.uid) || {}).pos;
+    const t0 = performance.now();
+    while (performance.now() - t0 < 40000) {
+      const p = where();
+      if (!p) break;
+      if (p.distanceTo(player().position) > 2.5) { await walkTo(p, 2.2, 6000); continue; }
+      closeMenus(); selectItem(I.SHEARS);
+      await lookAtPoint(p.clone().addScaledVector(upAt(p), 0.6), 0.05, 1200);
+      const had = count(I.WOOL);
+      await click(2, 80);
+      await sleep(400);
+      if (count(I.WOOL) > had) { say(`collected ${count(I.WOOL) - had} wool from a sheep`); st.shorn[sheep.uid] = Date.now() + SHORN_RETRY_MS; return; }
+      if (performance.now() - t0 > 15000) break;
+    }
+    st.shorn[sheep.uid] = Date.now() + SHORN_RETRY_MS;
+  }
   async function goFishing(casts = 6) {
     const f = g().fishing;
     const w = nearestWaterTile(20);
@@ -908,6 +937,7 @@
     UPRIGHT_ALT: 6,                  // m: below this the thrust axis is held near the local up
     OFF_AXIS_CUT: 0.35,              // rad: throttle drops to zero this far off the wanted axis
     TIMEOUT_MS: 10 * 60 * 1000,
+    CHUTE_ALT: 40,                   // m: under this (PARACHUTE.deployAltitude is 50) a chute landing cuts the engines
     SITE_ARRIVE_M: 6,                // m from the point above the site where the descent starts
     SITE_GAIN: 0.4, SITE_MAX_DRIFT: 3, // sideways correction toward the site during the descent (1/s, m/s)
   };
@@ -915,7 +945,7 @@
   const rc = () => (fm() && fm().getRocketController ? fm().getRocketController() : null);
   const held = {};
   function hold(code, on) { if (!!held[code] !== on) { key(code, on); held[code] = on; } }
-  function releaseFlight() { for (const k of ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'KeyZ', 'Space', 'KeyN']) hold(k, false); }
+  function releaseFlight() { for (const k of ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'KeyZ', 'Space', 'KeyN', 'KeyP']) hold(k, false); }
   const bodyById = (id) => (rc().planets || []).find(p => p.id === id);
   const surfR = (b, dir) => (b.getSurfaceHeight ? b.getSurfaceHeight(dir) : b.radius);
   // One frame of turning the thrust axis (rocket local up) toward `dir`; returns the angle off
@@ -951,7 +981,7 @@
   // 'crashed', 'fuel' (ran dry), 'gone' or 'timeout'.
   // `siteDir`: where on the body to land, as a unit direction from its centre
   // (bodies don't spin); without one, the nearest ground straight below
-  async function flyTo(id, siteDir = null) {
+  async function flyTo(id, siteDir = null, useChute = false) {
     const V = T().Vector3;
     const t0 = performance.now();
     let last = performance.now(), lastCentre = null;
@@ -1017,6 +1047,16 @@
             vWant = toT.multiplyScalar(speed).add(tv);
           }
         }
+        // a chute landing (a body with air, a parachute fitted): engines off
+        // under its deploy height, the canopy opens and settles it down
+        if (useChute && b.hasAtmosphere && (phase === 'land' || phase === 'chute') && alt < FLY.CHUTE_ALT) {
+          if (phase !== 'chute') { phase = 'chute'; say(`chute landing on ${id}`); }
+          throttleTo(0);
+          thrustSwitch(false);
+          if (!r.isChuteOpen()) hold('KeyP', !held.KeyP); else hold('KeyP', false);
+          pointThrust(up);
+          continue;
+        }
         // the acceleration that reaches vWant, against gravity and the damping
         const a = vWant.clone().sub(v).multiplyScalar(FLY.KV).addScaledVector(v, FLY.LAMBDA).sub(grav);
         if (phase === 'land' && alt < FLY.UPRIGHT_ALT) {
@@ -1064,6 +1104,8 @@
     return (await fuelTable()).reduce((n, s) => n + count(s.itemType) * s.units, 0);
   }
   // Gather fuel items worth `units`: rocket fuel if it can be made here, else water buckets
+  // buckets kept going round for fuel (refuelling hands each one back empty)
+  const FUEL_BUCKETS = 8;
   async function gatherFuel(units) {
     if (await fuelUnitsHeld() >= units) return true;
     const noIce = [I.ROCKET_FUEL, I.ICE].some(x => (st.unknown || []).includes(x));
@@ -1074,7 +1116,7 @@
     }
     const want = Math.ceil((units - (await fuelUnitsHeld())) / 15);
     // four buckets go round: refuelling hands the empty bucket back
-    const buckets = Math.min(4, want);
+    const buckets = Math.min(FUEL_BUCKETS, want);
     if (count(I.BUCKET) + count(I.WATER_BUCKET) < buckets) { await obtain(I.BUCKET, buckets - count(I.WATER_BUCKET)); return false; }
     if (count(I.BUCKET) === 0) return true;
     st.task = 'filling buckets with water for fuel';
@@ -1137,7 +1179,7 @@
   async function fuelPad(pad) {
     let { have, cap } = await padFuel(pad);
     if (have >= cap - 0.5) return true;
-    if (!(await gatherFuel(Math.min(cap - have, 25)))) return false;
+    if (!(await gatherFuel(Math.min(cap - have, FUEL_BUCKETS * 15)))) return false;
     const ui = await openPad(pad);
     if (!ui) return false;
     ui.refuelBtn.click();
@@ -1197,7 +1239,7 @@
     // an upgraded (staged) rocket standing on our pad comes first
     const up = padHere();
     if (up && up.rocketParts.some(p => p.itemType === I.STAGE_SEPARATOR)) {
-      return { cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
+      return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
     }
     const lr = nearestLanded();
     if (lr && lr.position.distanceTo(player().position) < CRAFT_NEAR_M) {
@@ -1234,7 +1276,7 @@
     }
     const pad = rocketPad();
     if (!pad) return null;
-    return { cargo: () => pad.cargo, fuel: () => fuelPad(pad), load: (items) => loadCargo(pad, items), board: () => boardPad(pad) };
+    return { pad, cargo: () => pad.cargo, fuel: () => fuelPad(pad), load: (items) => loadCargo(pad, items), board: () => boardPad(pad) };
   }
   // Move every stack of `items` from the inventory into the open storage panel showing `slots`
   async function moveIntoStorage(slots, items) {
@@ -1255,6 +1297,43 @@
     say(`loaded ${moved} stack(s) into the cargo hold`);
     return true;
   }
+  // Only the cargo hold flies: boarding a parked rocket puts what the bot
+  // carries into its hold, or is refused if it doesn't fit. Leave the blocks
+  // dug up here behind (built into the ground) before boarding.
+  async function dumpJunk(rocket, maxMs) {
+    const keep = alwaysKeep();
+    const t0 = performance.now();
+    const junk = () => inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined);
+    if (!junk().length) return;
+    st.task = 'leaving the dug-up rock behind';
+    let placed = 0;
+    while (junk().length && performance.now() - t0 < maxMs) {
+      const it = junk()[0].itemType, before = count(it);
+      await placeNearby(it);
+      if (count(it) >= before) break;   // nowhere to put it
+      placed++;
+    }
+    if (placed) say(`left ${placed} dug-up blocks behind before boarding`);
+  }
+  // Back home: take what boarding left in the pad's stash
+  async function takeStashBack() {
+    let tile = st.stashPad;
+    if (tile == null) { try { tile = +localStorage.getItem('bot_stashPad'); } catch {} }
+    if (!tile) return false;
+    const pad = bi().launchPadManager.getLaunchPads().find(p => p.centerTileIndex === tile);
+    if (!pad || !(pad.stash || []).some(x => x.itemType && x.quantity)) { st.stashPad = null; try { localStorage.removeItem('bot_stashPad'); } catch {} return false; }
+    const ui = await openPad(pad);
+    if (!ui) return false;
+    const was = (pad.stash || []).filter(x => x.itemType && x.quantity).length;
+    ui.takeStashBtn.click();
+    await sleep(400);
+    closeMenus();
+    const left = (pad.stash || []).filter(x => x.itemType && x.quantity).length;
+    if (left === was) { st.stashPad = null; return false; }   // nothing fits: leave it for now
+    say(`took my things back from the pad's stash${left ? ` (${left} stacks did not fit)` : ''}`);
+    if (!left) { st.stashPad = null; try { localStorage.removeItem('bot_stashPad'); } catch {} }
+    return true;
+  }
   // Breath: with no suit on an airless world the bot has AIR.BREATH_S; it
   // heads back to the cabin while it still has time to walk there
   const BREATH_RESERVE_S = 40, WALK_M_PER_S = 2, CLIMB_S_PER_BLOCK = 3;
@@ -1272,6 +1351,7 @@
     const rocket = nearestLanded();
     if (!rocket) return;
     st.task = 'back to the rocket for air';
+    await dumpJunk(rocket, 20000);
     const ui = await openLanded(rocket);
     if (!ui) return;
     ui.boardButton.click();
@@ -1346,6 +1426,7 @@
     const m = tracker().openMissions().find(x => x.visit === target);
     const prog = m ? tracker().progress(m) : [];
     const beaconLeft = m ? m.objectives.some((o, i) => o.kind === 'surveyed' && (prog[i] || 0) < o.count) : false;
+    const needChute = m ? m.objectives.some((o, i) => o.kind === 'chuteLanded' && (prog[i] || 0) < o.count) : false;
     if (fm().isInFlight()) {
       // aboard (a restart mid-flight): finish the leg we were on
       const to = st.flyingTo || (here === target ? home : target);
@@ -1373,14 +1454,42 @@
       say(`rocket fuelled, ${inHold.toFixed(0)} units of fuel in the hold - boarding`);
       if (!launchWindowOpen(target)) { st.task = `waiting for ${target} to come round`; say(`${target} is behind this world - waiting for a launch window`); await sleep(30000); return; }
       rememberHomeSite();
+      if (beaconLeft && count(I.SURVEY_BEACON) > 0 && !(craft.cargo() || []).some(x => x.itemType === I.SURVEY_BEACON)) {
+        await craft.load([I.SURVEY_BEACON]);
+        return;
+      }
+      if (needChute && craft.pad && !(craft.pad.equipment || []).some(x => x.itemType === I.PARACHUTE && x.quantity)) {
+        if (count(I.PARACHUTE) < 1) { st.task = 'getting a parachute'; await obtain(I.PARACHUTE, 1); return; }
+        const ui = await openPad(craft.pad);
+        if (!ui) return;
+        const slot = inv().getAllSlots().findIndex(x => x.itemType === I.PARACHUTE && x.quantity);
+        if (slot >= 0 && ui.fitFromInventory(slot)) say('fitted a parachute to the rocket');
+        closeMenus();
+        return;
+      }
+      if (craft.pad) { st.stashPad = craft.pad.centerTileIndex; try { localStorage.setItem('bot_stashPad', String(st.stashPad)); } catch {} }
       if (!(await craft.board())) return;
       st.flyingTo = target;
-      const res = await flyTo(target);
+      const res = await flyTo(target, null, needChute);
       say(`flight to ${target}: ${res}${rc() ? `, fuel left ${rc().getFuelPercent().toFixed(0)}%` : ''}`);
       if (res === 'landed') { st.flyingTo = null; await climbOut(); }
       return;
     }
     // on the target body
+    if (beaconLeft && count(I.SURVEY_BEACON) === 0) {
+      // it flew in the cargo hold (only the hold flies)
+      const lr = nearestLanded();
+      if (lr && (lr.cargo || []).some(x => x.itemType === I.SURVEY_BEACON && x.quantity)) {
+        const ui = await openLanded(lr);
+        if (ui) {
+          ui.container.querySelector('.cargo-btn').click();
+          await sleep(500);
+          const sui = bi().storageUI;
+          if (sui.isMenuOpen()) for (let i = 0; i < lr.cargo.length; i++) if (lr.cargo[i].itemType === I.SURVEY_BEACON) { sui.handleShiftClick(i); await sleep(80); }
+          closeMenus();
+        }
+      }
+    }
     if (beaconLeft && count(I.SURVEY_BEACON) > 0) {
       await placeNearby(I.SURVEY_BEACON);
       return;
@@ -1397,6 +1506,7 @@
     if (ex && ex.body === target) { say(`got the ${itemName(ex.item)} it came for (${count(ex.item)})`); st.expedition = null; }
     const rocket = nearestLanded();
     if (!rocket) { say(`no rocket here on ${target} - stranded`); await wander(); return; }
+    await dumpJunk(rocket, 120000);
     const ui = await openLanded(rocket);
     if (!ui) return;
     ui.container.querySelector('.refuel-btn').click();
@@ -1471,7 +1581,7 @@
     if (pad.segmentCount < height && count(I.LAUNCH_PAD_SEGMENT) < height - pad.segmentCount) {
       if (!(await obtain(I.LAUNCH_PAD_SEGMENT, height - pad.segmentCount))) return 'working';
     }
-    const ui = await openPad(pad);
+    let ui = await openPad(pad);
     if (!ui) return false;
     st.task = 'upgrading the rocket';
     while (pad.segmentCount < height && count(I.LAUNCH_PAD_SEGMENT) > 0) {
@@ -1479,6 +1589,19 @@
       ui.handleSegmentSlotClick(h);
       await sleep(300);
       if (pad.segmentCount === h) break;
+    }
+    // a part with cargo in its hold won't come off: empty the hold first
+    if ((pad.cargo || []).some(x => x.itemType && x.quantity)) {
+      ui.cargoBtn.click();
+      await sleep(500);
+      const sui = bi().storageUI;
+      if (sui.isMenuOpen()) {
+        for (let i = 0; i < pad.cargo.length; i++) if (pad.cargo[i].itemType && pad.cargo[i].quantity) { sui.handleShiftClick(i); await sleep(80); }
+        say('emptied the cargo hold for the refit');
+      }
+      closeMenus();
+      ui = await openPad(pad);
+      if (!ui) return false;
     }
     // take off the parts above what stays (the top one each click)
     while (pad.rocketParts.length > keep) {
@@ -1781,6 +1904,8 @@
     // up (hold X) until it lifts off; then a short hop - thrust off, parachute
     // (P), wait for the ground, climb out (V)
     moon: async () => { await visitBody('moon'); },
+    sequoia: async () => { await visitBody('sequoia'); },
+    shear: async () => { await shearSheep(4); },
     moonmetal: async () => { await generic(tracker().openMissions().find(x => x.id === 'moonmetal')); },
     launch: async () => {
       const lp = bi().launchPadManager;
@@ -2385,6 +2510,7 @@
       if (!(await obtain(I.BUCKET, 1, depth + 1))) return false;
       await scoopOilSand(); return count(item) >= n;
     }
+    if (item === I.WOOL) { await shearSheep(n); return count(item) >= n; }
     if (item === I.WATER_BUCKET) {
       if (!(await obtain(I.BUCKET, 1, depth + 1))) return false;
       await fillBucket(); return count(item) >= n;
@@ -2519,7 +2645,7 @@
 
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
-    miner: ['pad', 'assemble', 'launch', 'moon', 'moonmetal', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    miner: ['pad', 'assemble', 'launch', 'moon', 'moonmetal', 'shear', 'sequoia', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
     builder: ['pad', 'assemble', 'launch', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
@@ -2565,6 +2691,7 @@
           else { await visitBody(st.expedition.body); continue; }
         }
         if (st.expedition && away === st.expedition.body) { await visitBody(away); continue; }
+        if (away === 'earth' && !st.expedition && await takeStashBack()) continue;
         if (away === 'earth' || !away) await ensureSpace();
         // after the vacuum engine: rebuild our rocket as a two-stage one, once
         if (doneIds().includes('vacuum') && !resting('upgrade') && (bodyId() === 'earth')) {
