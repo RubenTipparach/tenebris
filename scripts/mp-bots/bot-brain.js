@@ -1221,7 +1221,9 @@
     const s0 = slotOf(r.input); if (s0 >= 0) ui.handleDropFromInventory(s0, 'electric-furnace-input');
     say(`electric furnace loaded: ${ef.inputCount} ${itemName(r.input)}`);
     const t0 = performance.now();
-    while (performance.now() - t0 < 120000 && (ef.inputCount >= (r.inputQuantity || 1))) await sleep(1000);
+    // until it has finished: nothing left in the input and nothing smelting
+    // (the input count drops when a smelt starts, not when it ends)
+    while (performance.now() - t0 < 180000 && (ef.inputCount >= (r.inputQuantity || 1) || ef.smeltingItem != null)) await sleep(1000);
     ui.handleSlotClick('electric-furnace-output');
     await sleep(300);
     // leftovers back
