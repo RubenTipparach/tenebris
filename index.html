@@ -395,6 +395,44 @@
       font-size: 26px;
     }
 
+    /* Volume sliders (Settings: music, sound effects) */
+    .volume-slider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .volume-slider input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 160px;
+      height: 8px;
+      border-radius: 4px;
+      background: #444;
+      outline: none;
+      cursor: pointer;
+    }
+    .volume-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: 2px solid #fff;
+    }
+    .volume-slider input[type="range"]::-moz-range-thumb {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: 2px solid #fff;
+    }
+    .volume-value {
+      width: 48px;
+      text-align: right;
+      font-size: 22px;
+    }
+
     .toggle-switch {
       position: relative;
       width: 56px;
@@ -568,19 +606,21 @@
     /* Menu tabs */
     .menu-tabs {
       display: flex;
+      flex-wrap: wrap;
       justify-content: center;
       gap: 10px;
       margin-bottom: 20px;
     }
 
     .menu-tab {
-      padding: 8px 20px;
+      white-space: nowrap;
+      padding: 8px 12px;
       background: transparent;
       color: #888;
       border: 1px solid #555;
       border-radius: 5px;
       font-family: var(--game-font);
-      font-size: 24px;
+      font-size: 21px;
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -609,7 +649,48 @@
 
     .tab-content {
       display: none;
+      /* Long tabs (Options) scroll inside the menu instead of running off the
+         screen: the window less the title, the tab row and the menu's buttons */
+      max-height: clamp(200px, calc(100vh - 400px), 620px);
+      overflow-y: auto;
+      padding-right: 10px;
+      scrollbar-width: thin;
+      scrollbar-color: #4CAF50 rgba(255, 255, 255, 0.08);
     }
+    .tab-content::-webkit-scrollbar { width: 10px; }
+    .tab-content::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.08); border-radius: 5px; }
+    .tab-content::-webkit-scrollbar-thumb { background: #4CAF50; border-radius: 5px; }
+    .tab-content::-webkit-scrollbar-thumb:hover { background: #66BB6A; }
+
+    /* Players tab */
+    .players-count {
+      font-size: 22px;
+      color: #9fe0a5;
+      margin: 4px 0 10px;
+    }
+    .player-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 6px 0;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+      text-align: left;
+    }
+    .player-row.me { border: 1px solid rgba(76, 175, 80, 0.5); }
+    .player-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #29ADFF;
+      flex: none;
+    }
+    .player-row.me .player-dot { background: #4CAF50; }
+    .player-name { font-size: 24px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .player-you { font-size: 18px; color: #4CAF50; margin-left: 6px; }
+    .player-where { font-size: 20px; color: #9fb3c8; }
+    .players-empty { font-size: 20px; color: #9fb3c8; margin: 12px 0; }
 
     .tab-content.active {
       display: block;
@@ -1408,14 +1489,21 @@
     <h1>TENEBRIS</h1>
 
     <div class="menu-tabs">
-      <button class="menu-tab active" data-tab="settings">Settings</button>
+      <button class="menu-tab active" data-tab="settings">Options</button>
+      <button class="menu-tab" data-tab="players">Players</button>
       <button class="menu-tab" data-tab="controls">Controls</button>
       <button class="menu-tab" data-tab="flight">Space Flight</button>
       <a class="menu-tab wiki-link" href="wiki.html" target="_blank">Wiki &#x2197;</a>
       <button class="menu-tab" data-tab="debug">Debug</button>
     </div>
 
-    <!-- Settings Tab -->
+    <!-- Players Tab: who is in this world (multiplayer) -->
+    <div class="tab-content" id="tab-players">
+      <div class="players-count" id="players-count"></div>
+      <div id="players-list"></div>
+    </div>
+
+    <!-- Settings (Options) Tab -->
     <div class="tab-content active" id="tab-settings">
       <div class="settings-row">
         <label for="toggle-invert-y">Invert Y Axis</label>
@@ -1443,6 +1531,20 @@
         <div class="toggle-switch">
           <input type="checkbox" id="toggle-music">
           <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="volume-music">Music Volume</label>
+        <div class="volume-slider">
+          <input type="range" id="volume-music" min="0" max="100" step="1">
+          <span class="volume-value" id="volume-music-value"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="volume-sfx">Sound Effects Volume</label>
+        <div class="volume-slider">
+          <input type="range" id="volume-sfx" min="0" max="100" step="1">
+          <span class="volume-value" id="volume-sfx-value"></span>
         </div>
       </div>
       <div class="settings-row">
@@ -1503,6 +1605,8 @@
         <p><span class="key">1-9</span><span>Select hotbar</span></p>
         <p><span class="key">0</span><span>Fishing rod from the toolbox</span></p>
         <p><span class="key">E</span><span>Open inventory</span></p>
+        <p><span class="key">M</span><span>Open map</span></p>
+        <p><span class="key">G</span><span>Open missions</span></p>
         <p><span class="key">Rod + Left Click</span><span>Hold to cast, click on a bite, hold to reel</span></p>
         <p><span class="key">F3</span><span>Toggle profiler</span></p>
         <p><span class="key">F9</span><span>Screenshot (saves a PNG, no HUD)</span></p>

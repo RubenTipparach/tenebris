@@ -89,8 +89,9 @@ class AudioManagerSingleton {
       // Create audio context
       this.audioContext = new AudioContext();
 
-      // Create master gain node
+      // Create master gain node (at the volume set so far - the Settings slider may come first)
       this.masterGain = this.audioContext.createGain();
+      this.masterGain.gain.value = this.getMasterVolume();
       this.masterGain.connect(this.audioContext.destination);
 
       // Create gain nodes for each category
@@ -494,9 +495,10 @@ class AudioManagerSingleton {
    * Set master volume
    */
   public setMasterVolume(volume: number): void {
-    if (!this.masterGain) return;
-    this.masterGain.gain.value = Math.max(0, Math.min(1, volume));
-    this.volumes.set(SoundCategory.MASTER, volume);
+    const clamped = Math.max(0, Math.min(1, volume));
+    // Kept even before init (the Settings slider loads first); init applies it
+    this.volumes.set(SoundCategory.MASTER, clamped);
+    if (this.masterGain) this.masterGain.gain.value = clamped;
   }
 
   /**

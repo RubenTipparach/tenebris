@@ -31,6 +31,9 @@ export interface SavedFurnace {
   position: { x: number; y: number; z: number };
   rotation: number;
   fuelAmount: number;
+  /** Unburnt fuel stack in the slot (older saves have none) */
+  fuelItem?: number | null;
+  fuelCount?: number;
   smeltingItem: number | null;
   smeltingProgress: number;
   inputCount: number;
@@ -1098,6 +1101,8 @@ export class GameStorage {
             position: furnace.position,
             rotation: furnace.rotation,
             fuelAmount: furnace.fuelAmount,
+            fuelItem: (furnace as SavedFurnace).fuelItem ?? null,
+            fuelCount: (furnace as SavedFurnace).fuelCount ?? 0,
             smeltingItem: furnace.smeltingItem,
             smeltingProgress: furnace.smeltingProgress,
             inputCount: (furnace as SavedFurnace).inputCount ?? 0,

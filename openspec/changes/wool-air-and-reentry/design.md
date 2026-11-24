@@ -94,7 +94,7 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
 - **When heat applies:** a flight that has been outside every atmosphere
   since launch, and then enters one, is "re-entering" until it lands.
 - **Heating:** while re-entering, faster than `REENTRY.safeSpeed` (40 m/s,
-  above Earth's ~33 m/s free fall, so only a powered dive heats),
+  above Earth's ~37 m/s free fall, so only a powered dive heats),
   `heat += (speed - safeSpeed) * REENTRY.heatPerMs * dt`. Otherwise it cools
   at `REENTRY.coolPerS`.
 - **Overheating:**
@@ -140,7 +140,7 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
   - with a worn suit and an oxygen tank in the inventory (hotbar or bag),
     the suit draws from the tank. Each tank holds `TANK_AIR_S` = 300 s and
     is swapped for an empty tank when it runs out;
-  - otherwise the player holds their breath for `BREATH_S` = 10 s, then
+  - otherwise the player holds their breath for `BREATH_S` = 90 s, then
     dies.
 - **Dying:** a death screen, then respawn at the world's spawn on Earth with
   the inventory kept. A pilot who dies in a cabin with no power is taken out

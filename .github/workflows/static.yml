@@ -133,7 +133,27 @@ jobs:
         working-directory: server-js
         run: |
           npm ci --omit=dev
-          node --check server.js
+          for f in *.js; do node --check "$f"; done
+          # the admin monitor end to end: a fake client's pose, status
+          # frame and map reach the admin API (openspec admin-monitor)
+          node --test test/admin-monitor.test.mjs
+          # shared objects + chat (openspec mp-shared-objects): two clients
+          # moving items in one chest end with the right totals, a stale
+          # write is refused, chat is relayed / capped / rate-limited
+          node --test test/shared-objects.test.mjs
+
+      # The admin portal's game data (server-js/game-data.json) is generated
+      # from the game's config; this fails when it drifts (regenerate with
+      # npx tsx scripts/gen-admin-data.ts), and checks the server's map
+      # projection and status frame against the client's
+      - name: Admin monitor - game data drift, projection, status frame
+        run: npx --yes tsx scripts/admin-monitor.test.ts
+
+      # Shared objects + chat, client side (openspec mp-shared-objects): the
+      # compare-and-set write queue and its rollback, in-place panel refresh,
+      # one simulator per planet, chat line parsing / formatting
+      - name: Shared objects + chat - conflict rule, refresh, simulator, chat lines
+        run: npx --yes tsx scripts/shared-objects.test.ts
 
   # The experimental `webgpu-build` job (Stage 0 of the C tree's
   # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.

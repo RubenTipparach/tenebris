@@ -815,7 +815,7 @@ export class RocketFlightUI {
       this.launchBtn.textContent = rocket.isThrustOn() ? 'THRUST ON' : 'THRUST OFF';
     }
     if (this.exitBtn) {
-      this.exitBtn.disabled = !stateInfo.canExit;
+      this.exitBtn.disabled = !rocket.canExitNow();
     }
 
     // Update landing safety indicator

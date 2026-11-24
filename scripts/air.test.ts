@@ -3,8 +3,10 @@
 import { AIR } from '../src/config/SurvivalConfig';
 import { getBodyConfig } from '../src/config/SolarSystemConfig';
 import { newAirState, tickAir, isExposed, airGauge, ExposureInput } from '../src/player/Survival';
-import { Avatar, SUIT_ON, defaultLook, sanitizeLook } from '../src/net/Avatar';
+import './stub-shaders';
 import * as THREE from 'three';
+// Avatar is lit by the tech shader: loaded after the shader stub
+const { Avatar, SUIT_ON, defaultLook, sanitizeLook } = await import('../src/net/Avatar');
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 const DT = 0.1;
@@ -108,7 +110,9 @@ function run(s: ReturnType<typeof newAirState>, seconds: number, inp: { exposed:
   const meshes = (a: Avatar) => { const out: THREE.Mesh[] = []; a.group.traverse(o => { if ((o as THREE.Mesh).isMesh) out.push(o as THREE.Mesh); }); return out; };
   const plain = meshes(new Avatar(look));
   const suited = meshes(new Avatar({ ...look, suit: SUIT_ON }));
-  const white = (m: THREE.Mesh) => ((m.material as THREE.MeshLambertMaterial).color.getHexString() === 'fff1e8');
+  // an in-game avatar is lit by the tech shader (its colour is the techColor uniform); the preview uses Lambert
+  const colourOf = (m: THREE.Mesh) => { const mat = m.material as THREE.MeshLambertMaterial & THREE.ShaderMaterial; return (mat.color ?? mat.uniforms?.techColor?.value) as THREE.Color; };
+  const white = (m: THREE.Mesh) => colourOf(m).getHexString() === 'fff1e8';
   ok(suited.length === plain.length + 3, 'a suited avatar adds a helmet, a visor and an air pack');
   ok(suited.filter(white).length >= 5 && plain.filter(white).length === 0, 'its body is the white suit');
 }

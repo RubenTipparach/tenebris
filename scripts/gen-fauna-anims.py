@@ -412,8 +412,28 @@ SPECIES = {
         }),
     },
     # ---- Players (the multiplayer avatar, src/net/Avatar.ts) -----------
-    # Not fauna, but the same rig format: arms swing opposite the legs
+    # Not fauna, but the same rig format: arms swing opposite the legs.
+    # Arms hang down -Y from the shoulder: -angle lifts the hand forward
+    # (-pi = straight up). The action clips (openspec avatar-anims) are laid
+    # over idle / walk on the parts they have tracks for:
+    #   mine      looping chop: wind up over the head, strike down
+    #   place     one-shot: push the right hand forward and back
+    #   interact  one-shot: reach forward, hold, let go
     'player': {
+        'mine': (0.5, {
+            'armR': track(rot=seq([-0.9, -1.7, -2.5, -2.8, -2.1, -1.0, -0.45, -0.6]),
+                          dz=seq([0.0, 0.0, -0.02, -0.03, 0.0, 0.05, 0.06, 0.03])),
+            'armL': track(rot=seq([-0.3, -0.35, -0.4, -0.4, -0.35, -0.25, -0.2, -0.25])),
+            'head': track(rot=seq([0.0, -0.04, -0.06, -0.06, 0.0, 0.08, 0.1, 0.05])),
+        }),
+        'place': (0.35, {
+            'armR': track(rot=seq([-0.3, -0.9, -1.4, -1.55, -1.4, -1.0, -0.5, -0.1]),
+                          dz=seq([0.0, 0.03, 0.08, 0.1, 0.08, 0.05, 0.02, 0.0])),
+        }),
+        'interact': (0.6, {
+            'armR': track(rot=seq([-0.3, -0.9, -1.3, -1.4, -1.4, -1.25, -0.7, -0.15]),
+                          dz=seq([0.0, 0.04, 0.08, 0.09, 0.09, 0.07, 0.03, 0.0])),
+        }),
         'idle': (3.0, {
             'body': track(dy=wave(0.012)),
             'head': track(rot=seq([0, 0, 0.06, 0.06, 0, 0, -0.04, 0])),

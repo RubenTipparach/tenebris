@@ -1,0 +1,2343 @@
+{
+ "items": {
+  "1": {
+   "name": "Stone",
+   "icon": "/textures/rocks.png"
+  },
+  "2": {
+   "name": "Dirt",
+   "icon": "/textures/dirt.png"
+  },
+  "3": {
+   "name": "Grass",
+   "icon": "/textures/grass.png"
+  },
+  "4": {
+   "name": "Wood",
+   "icon": "/textures/wood.png"
+  },
+  "5": {
+   "name": "Leaves",
+   "icon": "/textures/icons/leaves.png"
+  },
+  "6": {
+   "name": "Log",
+   "icon": "/textures/icons/logs.png"
+  },
+  "7": {
+   "name": "Sand",
+   "icon": "/textures/sand.png"
+  },
+  "8": {
+   "name": "Coal Ore",
+   "icon": "/textures/minerals/earth/rocks_coal.png"
+  },
+  "9": {
+   "name": "Copper Ore",
+   "icon": "/textures/minerals/earth/rocks_copper.png"
+  },
+  "10": {
+   "name": "Iron Ore",
+   "icon": "/textures/minerals/earth/rocks_iron.png"
+  },
+  "11": {
+   "name": "Gold Ore",
+   "icon": "/textures/minerals/earth/rocks_gold.png"
+  },
+  "12": {
+   "name": "Lithium Ore",
+   "icon": "/textures/minerals/earth/rocks_lythium.png"
+  },
+  "13": {
+   "name": "Aluminum Ore",
+   "icon": "/textures/minerals/earth/rocks_aluminum.png"
+  },
+  "14": {
+   "name": "Cobalt Ore",
+   "icon": "/textures/minerals/earth/rocks_cobalt.png"
+  },
+  "15": {
+   "name": "Stick",
+   "icon": "/textures/sticks.png"
+  },
+  "16": {
+   "name": "Coal",
+   "icon": "/textures/coal.png"
+  },
+  "17": {
+   "name": "Torch",
+   "icon": "/textures/torch_sprite.png"
+  },
+  "18": {
+   "name": "Fishing Rod",
+   "icon": "/textures/fishing_rod.png",
+   "maxUses": 150
+  },
+  "19": {
+   "name": "Snow",
+   "icon": "/textures/snow.png"
+  },
+  "20": {
+   "name": "Ice",
+   "icon": "/textures/ice.png"
+  },
+  "21": {
+   "name": "Furnace",
+   "icon": "/textures/technology/furnace_face.png"
+  },
+  "22": {
+   "name": "Copper Ingot",
+   "icon": "/textures/minerals/earth/copper.png"
+  },
+  "23": {
+   "name": "Iron Ingot",
+   "icon": "/textures/minerals/earth/iron.png"
+  },
+  "24": {
+   "name": "Gold Ingot",
+   "icon": "/textures/minerals/earth/gold.png"
+  },
+  "25": {
+   "name": "Aluminum Ingot",
+   "icon": "/textures/minerals/earth/aluminum.png"
+  },
+  "26": {
+   "name": "Storage Chest",
+   "icon": "/textures/technology/storage_face.png"
+  },
+  "27": {
+   "name": "Steam Engine",
+   "icon": "/textures/technology/steam_engine_face.png"
+  },
+  "28": {
+   "name": "Hydro Generator",
+   "icon": "/textures/technology/hydro_generator_face.png"
+  },
+  "29": {
+   "name": "Copper Pipe",
+   "icon": "/textures/technology/copper_pipe.png"
+  },
+  "30": {
+   "name": "Electric Furnace",
+   "icon": "/textures/technology/electric_furnace_face.png"
+  },
+  "31": {
+   "name": "Cable",
+   "icon": "/textures/technology/cable.png"
+  },
+  "32": {
+   "name": "Lithium Ingot",
+   "icon": "/textures/minerals/earth/lythium.png"
+  },
+  "33": {
+   "name": "Cobalt Ingot",
+   "icon": "/textures/minerals/earth/cobalt.png"
+  },
+  "34": {
+   "name": "Electronics Workbench",
+   "icon": "/textures/technology/electronics_workbench_face.png"
+  },
+  "35": {
+   "name": "CPU Chip",
+   "icon": "/textures/technology/micro_chip.png"
+  },
+  "36": {
+   "name": "RAM Module",
+   "icon": "/textures/technology/ram_module.png"
+  },
+  "37": {
+   "name": "Motherboard",
+   "icon": "/textures/technology/mother_board.png"
+  },
+  "38": {
+   "name": "Glass",
+   "icon": "/textures/glass.png"
+  },
+  "39": {
+   "name": "Power Supply",
+   "icon": "/textures/technology/power_supply.png"
+  },
+  "40": {
+   "name": "Print Nozzle",
+   "icon": "/textures/technology/print_nozzle.png"
+  },
+  "41": {
+   "name": "Computer",
+   "icon": "/textures/technology/computer_face.png"
+  },
+  "42": {
+   "name": "3D Printer",
+   "icon": "/textures/technology/3d_printer_face.png"
+  },
+  "43": {
+   "name": "Launch Pad Block",
+   "icon": "/textures/technology/launch_pad_face.png"
+  },
+  "44": {
+   "name": "Launch Pad Segment",
+   "icon": "/textures/technology/launch_tower_face.png"
+  },
+  "45": {
+   "name": "Rocket Engine",
+   "icon": "/textures/rocket_parts/medium_engine_face.png"
+  },
+  "46": {
+   "name": "Fuel Tank (Legacy)",
+   "icon": "/textures/rocket_parts/medium_fuel_tank_face.png"
+  },
+  "47": {
+   "name": "Command Module",
+   "icon": "/textures/rocket_parts/command_module_face.png"
+  },
+  "48": {
+   "name": "Medium Fuel Tank",
+   "icon": "/textures/rocket_parts/medium_fuel_tank_face.png"
+  },
+  "49": {
+   "name": "Moon Rock",
+   "icon": "/textures/moon.png"
+  },
+  "50": {
+   "name": "Sequoia Soil",
+   "icon": "/textures/planet_seq/planet_seq_dirt.png"
+  },
+  "51": {
+   "name": "Sequoia Sand",
+   "icon": "/textures/planet_seq/planet_seq_sand.png"
+  },
+  "52": {
+   "name": "Sequoia Snow",
+   "icon": "/textures/planet_seq/planet_seq_snow.png"
+  },
+  "53": {
+   "name": "Rocket Fuel",
+   "icon": "/textures/icons/rocket_fuel.png"
+  },
+  "54": {
+   "name": "Minnow",
+   "icon": "/textures/fish/minnow.png"
+  },
+  "55": {
+   "name": "Silverfin",
+   "icon": "/textures/fish/silverfin.png"
+  },
+  "56": {
+   "name": "Banded Perch",
+   "icon": "/textures/fish/perch.png"
+  },
+  "57": {
+   "name": "Ray",
+   "icon": "/textures/fish/ray.png"
+  },
+  "58": {
+   "name": "Eel",
+   "icon": "/textures/fish/eel.png"
+  },
+  "59": {
+   "name": "Reef Fish",
+   "icon": "/textures/fish/reef.png"
+  },
+  "60": {
+   "name": "Deepback",
+   "icon": "/textures/fish/deepback.png"
+  },
+  "61": {
+   "name": "Sea Serpent",
+   "icon": "/textures/fish/serpent.png"
+  },
+  "62": {
+   "name": "Vacuum Engine",
+   "icon": "/textures/rocket_parts/vacuum_engine_face.png"
+  },
+  "63": {
+   "name": "Large Fuel Tank",
+   "icon": "/textures/rocket_parts/large_fuel_tank_face.png"
+  },
+  "64": {
+   "name": "Cargo Bay",
+   "icon": "/textures/rocket_parts/cargo_bay_face.png"
+  },
+  "65": {
+   "name": "Bucket",
+   "icon": "/textures/icons/bucket.png"
+  },
+  "66": {
+   "name": "Water Bucket",
+   "icon": "/textures/icons/water_bucket.png"
+  },
+  "67": {
+   "name": "Titanium Ore",
+   "icon": "/textures/moon/ore_titanium.png"
+  },
+  "68": {
+   "name": "Titanium Ingot",
+   "icon": "/textures/icons/ingot_titanium.png"
+  },
+  "72": {
+   "name": "Clay",
+   "icon": "/textures/resources/clay.png"
+  },
+  "73": {
+   "name": "Brick",
+   "icon": "/textures/icons/brick.png"
+  },
+  "74": {
+   "name": "Clay Pot",
+   "icon": "/textures/icons/clay_pot.png"
+  },
+  "75": {
+   "name": "Crude Oil Bucket",
+   "icon": "/textures/icons/crude_oil_bucket.png"
+  },
+  "76": {
+   "name": "Lava Bucket",
+   "icon": "/textures/icons/lava_bucket.png"
+  },
+  "77": {
+   "name": "Kerosene",
+   "icon": "/textures/icons/kerosene.png"
+  },
+  "78": {
+   "name": "Plastic",
+   "icon": "/textures/icons/plastic.png"
+  },
+  "79": {
+   "name": "Uranium Ore",
+   "icon": "/textures/resources/ore_uranium.png"
+  },
+  "80": {
+   "name": "Enriched Uranium",
+   "icon": "/textures/icons/enriched_uranium.png"
+  },
+  "81": {
+   "name": "Fuel Rod",
+   "icon": "/textures/icons/fuel_rod.png"
+  },
+  "82": {
+   "name": "Cooked Fish",
+   "icon": "/textures/icons/cooked_fish.png"
+  },
+  "83": {
+   "name": "Fish Stew",
+   "icon": "/textures/icons/fish_stew.png"
+  },
+  "84": {
+   "name": "Campfire",
+   "icon": "/textures/technology/campfire_face.png"
+  },
+  "85": {
+   "name": "Kiln",
+   "icon": "/textures/technology/kiln_face.png"
+  },
+  "86": {
+   "name": "Oven",
+   "icon": "/textures/technology/oven_face.png"
+  },
+  "87": {
+   "name": "Pump Jack",
+   "icon": "/textures/technology/pump_jack_face.png"
+  },
+  "88": {
+   "name": "Refinery",
+   "icon": "/textures/technology/refinery_face.png"
+  },
+  "89": {
+   "name": "Centrifuge",
+   "icon": "/textures/technology/centrifuge_face.png"
+  },
+  "90": {
+   "name": "Fission Reactor",
+   "icon": "/textures/technology/reactor_face.png"
+  },
+  "91": {
+   "name": "Nuclear Fabricator",
+   "icon": "/textures/technology/nuclear_fabricator_face.png"
+  },
+  "92": {
+   "name": "Lead-Acid Battery",
+   "icon": "/textures/technology/battery_lead_acid_face.png"
+  },
+  "93": {
+   "name": "Lithium-Ion Battery",
+   "icon": "/textures/technology/battery_lithium_face.png"
+  },
+  "94": {
+   "name": "Solid-State Battery",
+   "icon": "/textures/technology/battery_solid_state_face.png"
+  },
+  "95": {
+   "name": "Nuclear Thermal Engine",
+   "icon": "/textures/rocket_parts/nuclear_thermal_engine_face.png"
+  },
+  "96": {
+   "name": "Ion Drive",
+   "icon": "/textures/rocket_parts/ion_drive_face.png"
+  },
+  "97": {
+   "name": "Reactor Core",
+   "icon": "/textures/rocket_parts/reactor_core_face.png"
+  },
+  "98": {
+   "name": "Battery Pack",
+   "icon": "/textures/rocket_parts/battery_pack_face.png"
+  },
+  "99": {
+   "name": "Cement",
+   "icon": "/textures/icons/cement.png"
+  },
+  "100": {
+   "name": "Steel Ingot",
+   "icon": "/textures/icons/steel_ingot.png"
+  },
+  "101": {
+   "name": "Brick Block",
+   "icon": "/textures/building/brick_block.png"
+  },
+  "102": {
+   "name": "Concrete",
+   "icon": "/textures/building/concrete.png"
+  },
+  "103": {
+   "name": "Steel Girder",
+   "icon": "/textures/building/steel_girder.png"
+  },
+  "104": {
+   "name": "Steel Glass",
+   "icon": "/textures/building/steel_glass.png"
+  },
+  "105": {
+   "name": "Wool",
+   "icon": "/textures/icons/wool.png"
+  },
+  "106": {
+   "name": "Leather",
+   "icon": "/textures/icons/leather.png"
+  },
+  "107": {
+   "name": "Shears",
+   "icon": "/textures/icons/shears.png"
+  },
+  "108": {
+   "name": "Carpet",
+   "icon": "/textures/building/carpet.png"
+  },
+  "109": {
+   "name": "Wool Clothing",
+   "icon": "/textures/icons/wool_clothing.png"
+  },
+  "110": {
+   "name": "Parachute",
+   "icon": "/textures/rocket_parts/parachute_face.png"
+  },
+  "111": {
+   "name": "Empty Tank",
+   "icon": "/textures/icons/empty_tank.png"
+  },
+  "112": {
+   "name": "Oxygen Tank",
+   "icon": "/textures/icons/oxygen_tank.png"
+  },
+  "113": {
+   "name": "Gas Collector",
+   "icon": "/textures/technology/gas_collector_face.png"
+  },
+  "114": {
+   "name": "Space Suit",
+   "icon": "/textures/icons/space_suit.png"
+  },
+  "115": {
+   "name": "Solar Panel",
+   "icon": "/textures/technology/solar_panel_face.png"
+  },
+  "116": {
+   "name": "Solar Array",
+   "icon": "/textures/rocket_parts/solar_array_face.png"
+  },
+  "120": {
+   "name": "Rock Pickaxe",
+   "icon": "/textures/icons/tools/rock_pickaxe.png",
+   "maxUses": 200
+  },
+  "121": {
+   "name": "Rock Axe",
+   "icon": "/textures/icons/tools/rock_axe.png",
+   "maxUses": 200
+  },
+  "122": {
+   "name": "Rock Shovel",
+   "icon": "/textures/icons/tools/rock_shovel.png",
+   "maxUses": 200
+  },
+  "123": {
+   "name": "Copper Pickaxe",
+   "icon": "/textures/icons/tools/copper_pickaxe.png",
+   "maxUses": 300
+  },
+  "124": {
+   "name": "Copper Axe",
+   "icon": "/textures/icons/tools/copper_axe.png",
+   "maxUses": 300
+  },
+  "125": {
+   "name": "Copper Shovel",
+   "icon": "/textures/icons/tools/copper_shovel.png",
+   "maxUses": 300
+  },
+  "126": {
+   "name": "Iron Pickaxe",
+   "icon": "/textures/icons/tools/iron_pickaxe.png",
+   "maxUses": 500
+  },
+  "127": {
+   "name": "Iron Axe",
+   "icon": "/textures/icons/tools/iron_axe.png",
+   "maxUses": 500
+  },
+  "128": {
+   "name": "Iron Shovel",
+   "icon": "/textures/icons/tools/iron_shovel.png",
+   "maxUses": 500
+  },
+  "129": {
+   "name": "Steel Pickaxe",
+   "icon": "/textures/icons/tools/steel_pickaxe.png",
+   "maxUses": 800
+  },
+  "130": {
+   "name": "Steel Axe",
+   "icon": "/textures/icons/tools/steel_axe.png",
+   "maxUses": 800
+  },
+  "131": {
+   "name": "Steel Shovel",
+   "icon": "/textures/icons/tools/steel_shovel.png",
+   "maxUses": 800
+  },
+  "132": {
+   "name": "Titanium Pickaxe",
+   "icon": "/textures/icons/tools/titanium_pickaxe.png",
+   "maxUses": 1200
+  },
+  "133": {
+   "name": "Titanium Axe",
+   "icon": "/textures/icons/tools/titanium_axe.png",
+   "maxUses": 1200
+  },
+  "134": {
+   "name": "Titanium Shovel",
+   "icon": "/textures/icons/tools/titanium_shovel.png",
+   "maxUses": 1200
+  },
+  "170": {
+   "name": "Basalt",
+   "icon": "/textures/bodies/basalt_side.png"
+  },
+  "171": {
+   "name": "Sulfur",
+   "icon": "/textures/bodies/sulfur.png"
+  },
+  "190": {
+   "name": "Emerald Tetra",
+   "icon": "/textures/fish/tetra.png"
+  },
+  "191": {
+   "name": "Laterite Catfish",
+   "icon": "/textures/fish/catfish.png"
+  },
+  "192": {
+   "name": "Leaf Pike",
+   "icon": "/textures/fish/leaf_pike.png"
+  },
+  "193": {
+   "name": "Peat Eel",
+   "icon": "/textures/fish/peat_eel.png"
+  },
+  "194": {
+   "name": "Mire Gourami",
+   "icon": "/textures/fish/gourami.png"
+  },
+  "195": {
+   "name": "Violet Gar",
+   "icon": "/textures/fish/violet_gar.png"
+  },
+  "196": {
+   "name": "Glimmer Sprat",
+   "icon": "/textures/fish/sprat.png"
+  },
+  "197": {
+   "name": "Oil Sand",
+   "icon": "/textures/resources/oil_sand.png"
+  }
+ },
+ "slots": {
+  "hotbar": 9,
+  "pack": 36,
+  "toolbox": 4
+ },
+ "missions": [
+  {
+   "id": "logs",
+   "title": "Chop a tree",
+   "branch": "trunk",
+   "icon": 6,
+   "objectives": [
+    {
+     "label": "Logs",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "planks",
+   "title": "Make planks",
+   "branch": "trunk",
+   "icon": 4,
+   "objectives": [
+    {
+     "label": "Planks",
+     "count": 4
+    },
+    {
+     "label": "Sticks",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "stone",
+   "title": "Dig stone",
+   "branch": "trunk",
+   "icon": 1,
+   "objectives": [
+    {
+     "label": "Stone",
+     "count": 8
+    }
+   ]
+  },
+  {
+   "id": "furnace",
+   "title": "Build a furnace",
+   "branch": "trunk",
+   "icon": 21,
+   "objectives": [
+    {
+     "label": "Furnace made",
+     "count": 1
+    },
+    {
+     "label": "Furnace placed",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "iron",
+   "title": "Find ore",
+   "branch": "mining",
+   "icon": 10,
+   "objectives": [
+    {
+     "label": "Iron ore",
+     "count": 3
+    },
+    {
+     "label": "Coal",
+     "count": 8
+    }
+   ]
+  },
+  {
+   "id": "ingots",
+   "title": "Smelt iron",
+   "branch": "mining",
+   "icon": 23,
+   "objectives": [
+    {
+     "label": "Iron ingots",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "bucket",
+   "title": "Carry water",
+   "branch": "mining",
+   "icon": 66,
+   "objectives": [
+    {
+     "label": "Bucket",
+     "count": 1
+    },
+    {
+     "label": "Water bucket",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "copper",
+   "title": "Smelt copper",
+   "branch": "mining",
+   "icon": 22,
+   "objectives": [
+    {
+     "label": "Copper ingots",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "lightmetals",
+   "title": "Light metals",
+   "branch": "mining",
+   "icon": 25,
+   "objectives": [
+    {
+     "label": "Aluminum ingots",
+     "count": 3
+    },
+    {
+     "label": "Gold ingot",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "steam",
+   "title": "Steam power",
+   "branch": "power",
+   "icon": 27,
+   "objectives": [
+    {
+     "label": "Steam engine",
+     "count": 1
+    },
+    {
+     "label": "Copper pipes",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "cables",
+   "title": "Wire it up",
+   "branch": "power",
+   "icon": 31,
+   "objectives": [
+    {
+     "label": "Cables",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "efurnace",
+   "title": "Electric furnace",
+   "branch": "power",
+   "icon": 30,
+   "objectives": [
+    {
+     "label": "Electric furnace",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "raremetals",
+   "title": "Rare metals",
+   "branch": "power",
+   "icon": 33,
+   "objectives": [
+    {
+     "label": "Lithium ingots",
+     "count": 2
+    },
+    {
+     "label": "Cobalt ingots",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "hydro",
+   "title": "Water power",
+   "branch": "power",
+   "icon": 28,
+   "objectives": [
+    {
+     "label": "Hydro generator",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "workbench",
+   "title": "Electronics workbench",
+   "branch": "electronics",
+   "icon": 34,
+   "objectives": [
+    {
+     "label": "Workbench",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "chips",
+   "title": "Make chips",
+   "branch": "electronics",
+   "icon": 35,
+   "objectives": [
+    {
+     "label": "CPU chip",
+     "count": 1
+    },
+    {
+     "label": "RAM module",
+     "count": 1
+    },
+    {
+     "label": "Motherboard",
+     "count": 1
+    },
+    {
+     "label": "Power supply",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "printer",
+   "title": "Build a 3D printer",
+   "branch": "electronics",
+   "icon": 42,
+   "objectives": [
+    {
+     "label": "Print nozzle",
+     "count": 1
+    },
+    {
+     "label": "3D printer",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "glass",
+   "title": "Make glass",
+   "branch": "electronics",
+   "icon": 38,
+   "objectives": [
+    {
+     "label": "Glass",
+     "count": 8
+    }
+   ]
+  },
+  {
+   "id": "computer",
+   "title": "Build a computer",
+   "branch": "electronics",
+   "icon": 41,
+   "objectives": [
+    {
+     "label": "Computer",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "padblocks",
+   "title": "Print pad blocks",
+   "branch": "rocketry",
+   "icon": 43,
+   "objectives": [
+    {
+     "label": "Launch pad blocks",
+     "count": 7
+    }
+   ]
+  },
+  {
+   "id": "pad",
+   "title": "Lay a launch pad",
+   "branch": "rocketry",
+   "icon": 43,
+   "objectives": [
+    {
+     "label": "Launch pad",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "tower",
+   "title": "Raise the tower",
+   "branch": "rocketry",
+   "icon": 44,
+   "objectives": [
+    {
+     "label": "Tower segments",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "parts",
+   "title": "Print rocket parts",
+   "branch": "rocketry",
+   "icon": 45,
+   "objectives": [
+    {
+     "label": "Rocket engine",
+     "count": 1
+    },
+    {
+     "label": "Fuel tank",
+     "count": 1
+    },
+    {
+     "label": "Command module",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "assemble",
+   "title": "Build the rocket",
+   "branch": "rocketry",
+   "icon": 47,
+   "objectives": [
+    {
+     "label": "Rocket built",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "launch",
+   "title": "Launch",
+   "branch": "rocketry",
+   "icon": 53,
+   "objectives": [
+    {
+     "label": "Lift off",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "moon",
+   "title": "Land on the Moon",
+   "branch": "rocketry",
+   "icon": 49,
+   "objectives": [
+    {
+     "label": "Moon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "cargo",
+   "title": "Cargo bay",
+   "branch": "rocketry",
+   "icon": 64,
+   "objectives": [
+    {
+     "label": "Cargo bay",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "moonmetal",
+   "title": "Moon metal",
+   "branch": "moon",
+   "icon": 67,
+   "objectives": [
+    {
+     "label": "Titanium ore",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "titanium",
+   "title": "Smelt titanium",
+   "branch": "moon",
+   "icon": 68,
+   "objectives": [
+    {
+     "label": "Titanium ingots",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "vacuum",
+   "title": "Vacuum engine",
+   "branch": "moon",
+   "icon": 62,
+   "objectives": [
+    {
+     "label": "Vacuum engine",
+     "count": 1
+    },
+    {
+     "label": "Large fuel tank",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "icefuel",
+   "title": "Ice fuel",
+   "branch": "moon",
+   "icon": 20,
+   "objectives": [
+    {
+     "label": "Rocket fuel",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "sequoia",
+   "title": "Another world",
+   "branch": "moon",
+   "icon": 50,
+   "objectives": [
+    {
+     "label": "Sequoia",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "explorer",
+   "title": "Explorer",
+   "branch": "moon",
+   "icon": 45,
+   "objectives": [
+    {
+     "label": "Worlds",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "torches",
+   "title": "Light the night",
+   "branch": "light",
+   "icon": 17,
+   "objectives": [
+    {
+     "label": "Torches",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "chest",
+   "title": "Store things",
+   "branch": "light",
+   "icon": 26,
+   "objectives": [
+    {
+     "label": "Storage chest",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "rod",
+   "title": "Make a fishing rod",
+   "branch": "fishing",
+   "icon": 18,
+   "objectives": [
+    {
+     "label": "Fishing rod",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "fish",
+   "title": "Catch fish",
+   "branch": "fishing",
+   "icon": 54,
+   "objectives": [
+    {
+     "label": "Fish",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "fishkinds",
+   "title": "Three kinds of fish",
+   "branch": "fishing",
+   "icon": 56,
+   "objectives": [
+    {
+     "label": "Kinds",
+     "count": 3
+    }
+   ]
+  },
+  {
+   "id": "alienfish",
+   "title": "Fish another world",
+   "branch": "fishing",
+   "icon": 61,
+   "objectives": [
+    {
+     "label": "Alien fish",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "map",
+   "title": "Read the map",
+   "branch": "about",
+   "icon": 3,
+   "objectives": [
+    {
+     "label": "Waypoint",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "clay",
+   "title": "Find clay",
+   "branch": "cooking",
+   "icon": 72,
+   "objectives": [
+    {
+     "label": "Clay",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "bricks",
+   "title": "Fire bricks",
+   "branch": "cooking",
+   "icon": 73,
+   "objectives": [
+    {
+     "label": "Bricks",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "campfire",
+   "title": "Light a campfire",
+   "branch": "cooking",
+   "icon": 84,
+   "objectives": [
+    {
+     "label": "Campfire",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "cookfish",
+   "title": "Cook a fish",
+   "branch": "cooking",
+   "icon": 82,
+   "objectives": [
+    {
+     "label": "Cooked fish",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "kiln",
+   "title": "Build a kiln",
+   "branch": "cooking",
+   "icon": 85,
+   "objectives": [
+    {
+     "label": "Kiln",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "pot",
+   "title": "Make a pot",
+   "branch": "cooking",
+   "icon": 74,
+   "objectives": [
+    {
+     "label": "Clay pot",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "oven",
+   "title": "Build an oven",
+   "branch": "cooking",
+   "icon": 86,
+   "objectives": [
+    {
+     "label": "Oven",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "stew",
+   "title": "Make fish stew",
+   "branch": "cooking",
+   "icon": 83,
+   "objectives": [
+    {
+     "label": "Fish stew",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "eat",
+   "title": "Eat well",
+   "branch": "cooking",
+   "icon": 83,
+   "objectives": [
+    {
+     "label": "Stew eaten",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "clayblock",
+   "title": "Build with clay",
+   "branch": "construction",
+   "icon": 72,
+   "objectives": [
+    {
+     "label": "Clay blocks",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "brickwall",
+   "title": "Brick wall",
+   "branch": "construction",
+   "icon": 101,
+   "objectives": [
+    {
+     "label": "Brick blocks",
+     "count": 8
+    }
+   ]
+  },
+  {
+   "id": "cement",
+   "title": "Make cement",
+   "branch": "construction",
+   "icon": 99,
+   "objectives": [
+    {
+     "label": "Cement",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "concrete",
+   "title": "Pour concrete",
+   "branch": "construction",
+   "icon": 102,
+   "objectives": [
+    {
+     "label": "Concrete blocks",
+     "count": 8
+    }
+   ]
+  },
+  {
+   "id": "steel",
+   "title": "Make steel",
+   "branch": "construction",
+   "icon": 100,
+   "objectives": [
+    {
+     "label": "Steel ingots",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "girders",
+   "title": "Steel frame",
+   "branch": "construction",
+   "icon": 103,
+   "objectives": [
+    {
+     "label": "Girders",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "steelglass",
+   "title": "Framed glass",
+   "branch": "construction",
+   "icon": 104,
+   "objectives": [
+    {
+     "label": "Steel glass",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "crude",
+   "title": "Strike oil",
+   "branch": "oil",
+   "icon": 75,
+   "objectives": [
+    {
+     "label": "Crude oil",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "pumpjack",
+   "title": "Pump jack",
+   "branch": "oil",
+   "icon": 87,
+   "objectives": [
+    {
+     "label": "Pump jack",
+     "count": 1
+    },
+    {
+     "label": "Oil pumped",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "refinery",
+   "title": "Refinery",
+   "branch": "oil",
+   "icon": 88,
+   "objectives": [
+    {
+     "label": "Refinery",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "kerosene",
+   "title": "Refine crude",
+   "branch": "oil",
+   "icon": 77,
+   "objectives": [
+    {
+     "label": "Refined",
+     "count": 1
+    },
+    {
+     "label": "Plastic",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "kerofuel",
+   "title": "Kerosene rocket",
+   "branch": "oil",
+   "icon": 77,
+   "objectives": [
+    {
+     "label": "Kerosene",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "leadacid",
+   "title": "Store power",
+   "branch": "storage",
+   "icon": 92,
+   "objectives": [
+    {
+     "label": "Lead-acid battery",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "onbattery",
+   "title": "Run on battery",
+   "branch": "storage",
+   "icon": 92,
+   "objectives": [
+    {
+     "label": "On battery",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "solar",
+   "title": "Solar power",
+   "branch": "storage",
+   "icon": 115,
+   "objectives": [
+    {
+     "label": "Solar panels",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "lithium",
+   "title": "Lithium-ion",
+   "branch": "storage",
+   "icon": 93,
+   "objectives": [
+    {
+     "label": "Lithium-ion battery",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "solidstate",
+   "title": "Solid-state",
+   "branch": "storage",
+   "icon": 94,
+   "objectives": [
+    {
+     "label": "Solid-state battery",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "uranium",
+   "title": "Find uranium",
+   "branch": "nuclear",
+   "icon": 79,
+   "objectives": [
+    {
+     "label": "Uranium ore",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "centrifuge",
+   "title": "Enrich uranium",
+   "branch": "nuclear",
+   "icon": 89,
+   "objectives": [
+    {
+     "label": "Centrifuge",
+     "count": 1
+    },
+    {
+     "label": "Enriched",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "fuelrods",
+   "title": "Fuel rods",
+   "branch": "nuclear",
+   "icon": 81,
+   "objectives": [
+    {
+     "label": "Fuel rods",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "reactor",
+   "title": "Reactor off-world",
+   "branch": "nuclear",
+   "icon": 90,
+   "objectives": [
+    {
+     "label": "Reactor",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "fabricator",
+   "title": "Nuclear fabricator",
+   "branch": "nuclear",
+   "icon": 91,
+   "objectives": [
+    {
+     "label": "Fabricator",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "ntr",
+   "title": "Nuclear engine",
+   "branch": "nuclear",
+   "icon": 95,
+   "objectives": [
+    {
+     "label": "Nuclear engine",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "ntrlaunch",
+   "title": "Nuclear launch",
+   "branch": "nuclear",
+   "icon": 95,
+   "objectives": [
+    {
+     "label": "Nuclear launch",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "ioncore",
+   "title": "Ion drive",
+   "branch": "nuclear",
+   "icon": 97,
+   "objectives": [
+    {
+     "label": "Reactor core",
+     "count": 1
+    },
+    {
+     "label": "Ion drive",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "ionflight",
+   "title": "Fly the ion drive",
+   "branch": "nuclear",
+   "icon": 96,
+   "objectives": [
+    {
+     "label": "Ion flight",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "shear",
+   "title": "Shear a sheep",
+   "branch": "ranching",
+   "icon": 105,
+   "objectives": [
+    {
+     "label": "Sheep shorn",
+     "count": 1
+    },
+    {
+     "label": "Wool",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "carpet",
+   "title": "Lay a carpet",
+   "branch": "ranching",
+   "icon": 108,
+   "objectives": [
+    {
+     "label": "Carpet",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "hide",
+   "title": "Tan a hide",
+   "branch": "ranching",
+   "icon": 106,
+   "objectives": [
+    {
+     "label": "Leather",
+     "count": 4
+    }
+   ]
+  },
+  {
+   "id": "clothes",
+   "title": "Make clothes",
+   "branch": "ranching",
+   "icon": 109,
+   "objectives": [
+    {
+     "label": "Wool clothing",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "bottle",
+   "title": "Bottle air",
+   "branch": "air",
+   "icon": 112,
+   "objectives": [
+    {
+     "label": "Gas collector",
+     "count": 1
+    },
+    {
+     "label": "Oxygen tanks",
+     "count": 2
+    }
+   ]
+  },
+  {
+   "id": "suit",
+   "title": "Suit up",
+   "branch": "air",
+   "icon": 114,
+   "objectives": [
+    {
+     "label": "Space suit",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "spacewalk",
+   "title": "Walk in space",
+   "branch": "air",
+   "icon": 49,
+   "objectives": [
+    {
+     "label": "Seconds on tank air",
+     "count": 60
+    }
+   ]
+  },
+  {
+   "id": "chute",
+   "title": "Safe return",
+   "branch": "rocketry",
+   "icon": 110,
+   "objectives": [
+    {
+     "label": "Landed under a chute",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "recharge",
+   "title": "Fresh battery",
+   "branch": "rocketry",
+   "icon": 93,
+   "objectives": [
+    {
+     "label": "Battery swapped",
+     "count": 1
+    }
+   ]
+  }
+ ],
+ "branches": [
+  {
+   "id": "trunk",
+   "name": "Hands to fire"
+  },
+  {
+   "id": "mining",
+   "name": "Mining and smelting"
+  },
+  {
+   "id": "cooking",
+   "name": "Clay and cooking"
+  },
+  {
+   "id": "power",
+   "name": "Power"
+  },
+  {
+   "id": "storage",
+   "name": "Power storage"
+  },
+  {
+   "id": "electronics",
+   "name": "Electronics"
+  },
+  {
+   "id": "oil",
+   "name": "Oil"
+  },
+  {
+   "id": "rocketry",
+   "name": "Rocketry"
+  },
+  {
+   "id": "moon",
+   "name": "The Moon and beyond"
+  },
+  {
+   "id": "nuclear",
+   "name": "Nuclear"
+  },
+  {
+   "id": "light",
+   "name": "Light and storage"
+  },
+  {
+   "id": "construction",
+   "name": "Construction"
+  },
+  {
+   "id": "fishing",
+   "name": "Fishing"
+  },
+  {
+   "id": "about",
+   "name": "Getting about"
+  },
+  {
+   "id": "ranching",
+   "name": "Wool and leather"
+  },
+  {
+   "id": "air",
+   "name": "Air and suits"
+  }
+ ],
+ "bodies": [
+  {
+   "id": "sun",
+   "name": "Sun",
+   "kind": "star",
+   "landable": false,
+   "radius": 500,
+   "colour": "#ffdd44",
+   "parent": null,
+   "position": {
+    "x": 2300,
+    "y": 0,
+    "z": 700
+   },
+   "orbitRadius": 0,
+   "startAngle": 0
+  },
+  {
+   "id": "earth",
+   "name": "Earth",
+   "kind": "planet",
+   "landable": true,
+   "radius": 100,
+   "colour": "#4488ff",
+   "parent": "sun",
+   "position": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "orbitRadius": 2404.163,
+   "startAngle": -2.846
+  },
+  {
+   "id": "moon",
+   "name": "Moon",
+   "kind": "moon",
+   "landable": true,
+   "radius": 50,
+   "colour": "#aaaaaa",
+   "parent": "earth",
+   "position": {
+    "x": 400,
+    "y": 0,
+    "z": 0
+   },
+   "orbitRadius": 400,
+   "startAngle": 0
+  },
+  {
+   "id": "sequoia",
+   "name": "Sequoia",
+   "kind": "planet",
+   "landable": true,
+   "radius": 200,
+   "colour": "#558844",
+   "parent": "sun",
+   "position": {
+    "x": 800,
+    "y": 100,
+    "z": 400
+   },
+   "orbitRadius": 1529.706,
+   "startAngle": -2.944
+  },
+  {
+   "id": "ferrum",
+   "name": "Metropole Prime",
+   "kind": "planet",
+   "landable": true,
+   "radius": 200,
+   "colour": "#5d778d",
+   "parent": "sun",
+   "position": {
+    "x": 2600,
+    "y": 300,
+    "z": 2200
+   },
+   "orbitRadius": 1529.706,
+   "startAngle": 1.373
+  },
+  {
+   "id": "cinder",
+   "name": "Cinder",
+   "kind": "planet",
+   "landable": true,
+   "radius": 130,
+   "colour": "#5a3a30",
+   "parent": "sun",
+   "position": {
+    "x": -1600,
+    "y": 150,
+    "z": 900
+   },
+   "orbitRadius": 3905.125,
+   "startAngle": 3.09
+  },
+  {
+   "id": "vesper",
+   "name": "Vesper",
+   "kind": "planet",
+   "landable": true,
+   "radius": 280,
+   "colour": "#d6a96c",
+   "parent": "sun",
+   "position": {
+    "x": 2800,
+    "y": -100,
+    "z": -1200
+   },
+   "orbitRadius": 1964.688,
+   "startAngle": -1.313
+  },
+  {
+   "id": "halcyon",
+   "name": "Halcyon",
+   "kind": "planet",
+   "landable": true,
+   "radius": 120,
+   "colour": "#3f8577",
+   "parent": "sun",
+   "position": {
+    "x": -1100,
+    "y": -250,
+    "z": -2000
+   },
+   "orbitRadius": 4341.659,
+   "startAngle": -2.47
+  },
+  {
+   "id": "tessaly",
+   "name": "Tessaly",
+   "kind": "planet",
+   "landable": true,
+   "radius": 160,
+   "colour": "#c3dff0",
+   "parent": "sun",
+   "position": {
+    "x": -2800,
+    "y": 400,
+    "z": -600
+   },
+   "orbitRadius": 5263.079,
+   "startAngle": -2.892
+  },
+  {
+   "id": "nerith",
+   "name": "Nerith",
+   "kind": "planet",
+   "landable": true,
+   "radius": 90,
+   "colour": "#61708a",
+   "parent": "sun",
+   "position": {
+    "x": 300,
+    "y": -500,
+    "z": -2600
+   },
+   "orbitRadius": 3858.756,
+   "startAngle": -2.116
+  },
+  {
+   "id": "kessel",
+   "name": "Kessel",
+   "kind": "planet",
+   "landable": true,
+   "radius": 80,
+   "colour": "#655d77",
+   "parent": "sun",
+   "position": {
+    "x": -300,
+    "y": 600,
+    "z": 2400
+   },
+   "orbitRadius": 3106.445,
+   "startAngle": 2.563
+  },
+  {
+   "id": "umbra",
+   "name": "Umbra",
+   "kind": "planet",
+   "landable": true,
+   "radius": 110,
+   "colour": "#2e3560",
+   "parent": "sun",
+   "position": {
+    "x": 4000,
+    "y": -200,
+    "z": 600
+   },
+   "orbitRadius": 1702.939,
+   "startAngle": -0.059
+  },
+  {
+   "id": "verdance",
+   "name": "Verdance",
+   "kind": "moon",
+   "landable": true,
+   "radius": 70,
+   "colour": "#2f7a3a",
+   "parent": "brontes",
+   "position": {
+    "x": -3700,
+    "y": 800,
+    "z": -2900
+   },
+   "orbitRadius": 1655.295,
+   "startAngle": 0.437
+  },
+  {
+   "id": "mirewood",
+   "name": "Mirewood",
+   "kind": "moon",
+   "landable": true,
+   "radius": 70,
+   "colour": "#4f8a44",
+   "parent": "aurelia",
+   "position": {
+    "x": 3900,
+    "y": -100,
+    "z": 4000
+   },
+   "orbitRadius": 1431.782,
+   "startAngle": -2.709
+  },
+  {
+   "id": "ember",
+   "name": "Ember",
+   "kind": "moon",
+   "landable": true,
+   "radius": 45,
+   "colour": "#3a2622",
+   "parent": "sequoia",
+   "position": {
+    "x": 1250,
+    "y": 100,
+    "z": 600
+   },
+   "orbitRadius": 492.443,
+   "startAngle": 0.418
+  },
+  {
+   "id": "rime",
+   "name": "Rime",
+   "kind": "moon",
+   "landable": true,
+   "radius": 30,
+   "colour": "#cfe6f2",
+   "parent": "sequoia",
+   "position": {
+    "x": 900,
+    "y": 450,
+    "z": 100
+   },
+   "orbitRadius": 316.228,
+   "startAngle": -1.249
+  },
+  {
+   "id": "sable",
+   "name": "Sable",
+   "kind": "moon",
+   "landable": true,
+   "radius": 35,
+   "colour": "#5d5246",
+   "parent": "vesper",
+   "position": {
+    "x": 2600,
+    "y": 500,
+    "z": -1800
+   },
+   "orbitRadius": 632.456,
+   "startAngle": -1.893
+  },
+  {
+   "id": "glint",
+   "name": "Glint",
+   "kind": "moon",
+   "landable": true,
+   "radius": 28,
+   "colour": "#9fd3e6",
+   "parent": "halcyon",
+   "position": {
+    "x": -700,
+    "y": -100,
+    "z": -2250
+   },
+   "orbitRadius": 471.699,
+   "startAngle": -0.559
+  },
+  {
+   "id": "nyx",
+   "name": "Nyx",
+   "kind": "moon",
+   "landable": true,
+   "radius": 45,
+   "colour": "#7f8fc0",
+   "parent": "umbra",
+   "position": {
+    "x": 4000,
+    "y": 250,
+    "z": 850
+   },
+   "orbitRadius": 250,
+   "startAngle": 1.571
+  },
+  {
+   "id": "brand",
+   "name": "Brand",
+   "kind": "moon",
+   "landable": true,
+   "radius": 30,
+   "colour": "#4a2a24",
+   "parent": "umbra",
+   "position": {
+    "x": 4250,
+    "y": -500,
+    "z": 250
+   },
+   "orbitRadius": 430.116,
+   "startAngle": -0.951
+  },
+  {
+   "id": "scoria",
+   "name": "Scoria",
+   "kind": "moon",
+   "landable": true,
+   "radius": 32,
+   "colour": "#6b4a3c",
+   "parent": "cinder",
+   "position": {
+    "x": -2050,
+    "y": 230,
+    "z": 1100
+   },
+   "orbitRadius": 492.443,
+   "startAngle": 2.723
+  },
+  {
+   "id": "lodestone",
+   "name": "Lodestone",
+   "kind": "moon",
+   "landable": true,
+   "radius": 40,
+   "colour": "#5b5f66",
+   "parent": "ferrum",
+   "position": {
+    "x": 3300,
+    "y": 400,
+    "z": 2050
+   },
+   "orbitRadius": 715.891,
+   "startAngle": -0.211
+  },
+  {
+   "id": "pyrra",
+   "name": "Pyrra",
+   "kind": "moon",
+   "landable": true,
+   "radius": 60,
+   "colour": "#c9a640",
+   "parent": "brontes",
+   "position": {
+    "x": -6500,
+    "y": 300,
+    "z": -2600
+   },
+   "orbitRadius": 1640.122,
+   "startAngle": 2.486
+  },
+  {
+   "id": "glacia",
+   "name": "Glacia",
+   "kind": "moon",
+   "landable": true,
+   "radius": 70,
+   "colour": "#e3eef2",
+   "parent": "brontes",
+   "position": {
+    "x": -5000,
+    "y": 1100,
+    "z": -5300
+   },
+   "orbitRadius": 1711.724,
+   "startAngle": -1.454
+  },
+  {
+   "id": "obol",
+   "name": "Obol",
+   "kind": "moon",
+   "landable": true,
+   "radius": 35,
+   "colour": "#7a6a5c",
+   "parent": "brontes",
+   "position": {
+    "x": -6100,
+    "y": 1500,
+    "z": -4900
+   },
+   "orbitRadius": 1581.139,
+   "startAngle": -2.176
+  },
+  {
+   "id": "calyx",
+   "name": "Calyx",
+   "kind": "moon",
+   "landable": true,
+   "radius": 55,
+   "colour": "#a8d8e8",
+   "parent": "aurelia",
+   "position": {
+    "x": 6100,
+    "y": 100,
+    "z": 5500
+   },
+   "orbitRadius": 1272.792,
+   "startAngle": 0.785
+  },
+  {
+   "id": "ashfall",
+   "name": "Ashfall",
+   "kind": "moon",
+   "landable": true,
+   "radius": 45,
+   "colour": "#3d3b3f",
+   "parent": "aurelia",
+   "position": {
+    "x": 5700,
+    "y": -1100,
+    "z": 3400
+   },
+   "orbitRadius": 1300,
+   "startAngle": -1.176
+  },
+  {
+   "id": "ingot",
+   "name": "Ingot",
+   "kind": "moon",
+   "landable": true,
+   "radius": 30,
+   "colour": "#8a7f70",
+   "parent": "aurelia",
+   "position": {
+    "x": 4800,
+    "y": 500,
+    "z": 5700
+   },
+   "orbitRadius": 1170.47,
+   "startAngle": 1.92
+  },
+  {
+   "id": "talus",
+   "name": "Talus",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 10,
+   "colour": "#6e6258",
+   "parent": "sun",
+   "position": {
+    "x": 4700,
+    "y": 300,
+    "z": -2200
+   },
+   "orbitRadius": 3764.306,
+   "startAngle": -0.879
+  },
+  {
+   "id": "ferrite",
+   "name": "Ferrite",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 12,
+   "colour": "#77736c",
+   "parent": "sun",
+   "position": {
+    "x": 1500,
+    "y": -400,
+    "z": -4900
+   },
+   "orbitRadius": 5656.854,
+   "startAngle": -1.713
+  },
+  {
+   "id": "hailstone",
+   "name": "Hailstone",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 9,
+   "colour": "#c8e4ef",
+   "parent": "sun",
+   "position": {
+    "x": -2600,
+    "y": 500,
+    "z": -4300
+   },
+   "orbitRadius": 7000.714,
+   "startAngle": -2.346
+  },
+  {
+   "id": "clinker",
+   "name": "Clinker",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 14,
+   "colour": "#5a5048",
+   "parent": "sun",
+   "position": {
+    "x": -4600,
+    "y": -300,
+    "z": -1200
+   },
+   "orbitRadius": 7156.815,
+   "startAngle": -2.873
+  },
+  {
+   "id": "nickel",
+   "name": "Nickel",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 11,
+   "colour": "#837f77",
+   "parent": "sun",
+   "position": {
+    "x": -4400,
+    "y": 200,
+    "z": 2300
+   },
+   "orbitRadius": 6888.396,
+   "startAngle": 2.907
+  },
+  {
+   "id": "sleet",
+   "name": "Sleet",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 13,
+   "colour": "#b4d6e4",
+   "parent": "sun",
+   "position": {
+    "x": -1900,
+    "y": -600,
+    "z": 4400
+   },
+   "orbitRadius": 5597.321,
+   "startAngle": 2.419
+  },
+  {
+   "id": "grit",
+   "name": "Grit",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 8,
+   "colour": "#665a50",
+   "parent": "sun",
+   "position": {
+    "x": 5000,
+    "y": -300,
+    "z": 1900
+   },
+   "orbitRadius": 2954.657,
+   "startAngle": 0.418
+  },
+  {
+   "id": "magnetite",
+   "name": "Magnetite",
+   "kind": "asteroid",
+   "landable": true,
+   "radius": 15,
+   "colour": "#5f5c58",
+   "parent": "sun",
+   "position": {
+    "x": 3600,
+    "y": 600,
+    "z": -3600
+   },
+   "orbitRadius": 4492.215,
+   "startAngle": -1.277
+  },
+  {
+   "id": "brontes",
+   "name": "Brontes",
+   "kind": "gasGiant",
+   "landable": false,
+   "radius": 480,
+   "colour": "#d9b38c",
+   "parent": "sun",
+   "position": {
+    "x": -5200,
+    "y": 600,
+    "z": -3600
+   },
+   "orbitRadius": 8645.23,
+   "startAngle": -2.621
+  },
+  {
+   "id": "aurelia",
+   "name": "Aurelia",
+   "kind": "gasGiant",
+   "landable": false,
+   "radius": 380,
+   "colour": "#e0c068",
+   "parent": "sun",
+   "position": {
+    "x": 5200,
+    "y": -400,
+    "z": 4600
+   },
+   "orbitRadius": 4860.041,
+   "startAngle": 0.931
+  }
+ ]
+}

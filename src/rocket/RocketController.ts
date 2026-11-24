@@ -18,6 +18,7 @@ import {
 } from './RocketPerformance';
 import { showToast } from '../utils/toast';
 import { createHeatGlow, setHeatGlow, createCanopy, disposeObject } from './RocketReentryVisuals';
+import { rcsJets, createRcsLines, setRcsLines } from './RocketRcsVisuals';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -132,6 +133,9 @@ export class RocketController {
 
   // Stack center offset (local space, for camera targeting)
   private stackCenterOffset: THREE.Vector3 = new THREE.Vector3();
+  // The turn WASD / Q / E commanded this frame (sign per local axis: x pitch, y spin, z roll) and its RCS lines
+  private rcsCommand = new THREE.Vector3();
+  private rcsLines: THREE.LineSegments | null = null;
 
   // Input tracking
   private lastThrustToggle: boolean = false;
@@ -712,7 +716,7 @@ export class RocketController {
     this.rocketCamera = new RocketCamera(camera);
     // Use stack center instead of pivot position for camera focus
     const stackCenter = this.getStackCenter();
-    this.rocketCamera.setRocketTransform(stackCenter, this.groundNormal);
+    this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
     this.rocketCamera.reset();
     this.rocketCamera.snap();
 
@@ -723,9 +727,24 @@ export class RocketController {
   /**
    * Exit the rocket (player leaves)
    */
+  /**
+   * Can the pilot climb out right now: wherever the state allows it (on the
+   * ground, landed), and in flight once the rocket is out of every gravity
+   * well - in space the ship parks where it floats and the player floats
+   * out beside it.
+   */
+  public canExitNow(): boolean {
+    if (this.stateMachine.getStateInfo().canExit) return true;
+    return this.isInSpace();
+  }
+
+  /** In flight with no planet's gravity on the rocket */
+  public isInSpace(): boolean {
+    return this.stateMachine.getState() === RocketState.IN_FLIGHT && !this.isInGravityWell;
+  }
+
   public exit(): boolean {
-    const stateInfo = this.stateMachine.getStateInfo();
-    if (!stateInfo.canExit) {
+    if (!this.canExitNow()) {
       return false;
     }
 
@@ -735,7 +754,7 @@ export class RocketController {
     const state = this.stateMachine.getState();
     if (state === RocketState.BOARDED_GROUNDED) {
       return this.stateMachine.transitionTo(RocketState.DOCKED);
-    } else if (state === RocketState.LANDED) {
+    } else if (state === RocketState.LANDED || state === RocketState.IN_FLIGHT) {
       return this.stateMachine.transitionTo(RocketState.DOCKED);
     }
 
@@ -771,11 +790,13 @@ export class RocketController {
     this.pivot.position.copy(this.position);
     this.pivot.quaternion.copy(this.orientation);
 
+    // RCS thruster lines for the turn commanded this frame
+    this.updateRcsLines();
+
     // Update camera
     if (this.rocketCamera) {
-      const upVector = this.getLocalUp();
       const stackCenter = this.getStackCenter();
-      this.rocketCamera.setRocketTransform(stackCenter, upVector);
+      this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
       this.rocketCamera.update(deltaTime);
     }
 
@@ -810,6 +831,8 @@ export class RocketController {
    * Process control inputs
    */
   private processControls(deltaTime: number, input: RocketInputState, stateInfo: typeof STATE_INFO[RocketState]): void {
+    // No turn unless the steering below commands one (no power, can't steer: no jets)
+    this.rcsCommand.set(0, 0, 0);
     // Throttle control
     if (stateInfo.canThrust) {
       if (input.throttleUp) {
@@ -839,6 +862,12 @@ export class RocketController {
       if (input.yawRight) this.applyTorque(this.getLocalUp(), -cfg.yawSpeed * deltaTime);
       if (input.rollLeft) this.applyTorque(this.getLocalForward(), -cfg.rollSpeed * deltaTime);
       if (input.rollRight) this.applyTorque(this.getLocalForward(), cfg.rollSpeed * deltaTime);
+      // The same turn, per local axis, for the RCS thruster lines
+      this.rcsCommand.set(
+        (input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0),
+        (input.yawLeft ? 1 : 0) - (input.yawRight ? 1 : 0),
+        (input.rollRight ? 1 : 0) - (input.rollLeft ? 1 : 0),
+      );
 
       // Strafe thrusters (Arrow keys + C for descent - always available)
       const strafeDir = new THREE.Vector3();
@@ -1583,8 +1612,22 @@ export class RocketController {
     }
   }
 
-  /** Remove the re-entry visuals (landing, despawn) */
+  /** Draw the RCS jets of this frame's commanded turn (made the first time one fires) */
+  private updateRcsLines(): void {
+    if (!this.rcsLines) {
+      if (this.rcsCommand.lengthSq() === 0) return;
+      this.rcsLines = createRcsLines();
+      this.pivot.add(this.rcsLines);
+    }
+    setRcsLines(this.rcsLines, rcsJets(this.rcsCommand, this.stackHeight(), this.stackCenterOffset));
+  }
+
+  /** Remove the re-entry visuals and the RCS lines (landing, despawn) */
   private disposeReentryVisuals(): void {
+    if (this.rcsLines) {
+      disposeObject(this.rcsLines);
+      this.rcsLines = null;
+    }
     this.closeChute();
     if (this.heatGlow) {
       disposeObject(this.heatGlow);
@@ -1713,6 +1756,19 @@ export class RocketController {
   }
 
   /**
+   * Hand the parts back to the launch pad they were boarded from (an exit
+   * before launch): each keeps its world pose under the pad's mesh, and the
+   * controller lets go of them, so a dispose() after this can't remove or
+   * dispose the rocket still standing on the pad.
+   */
+  public returnPartsTo(padMesh: THREE.Object3D): void {
+    this.pivot.updateMatrixWorld(true);
+    padMesh.updateMatrixWorld(true);
+    for (const part of this.parts) padMesh.attach(part.mesh);
+    this.parts = [];
+  }
+
+  /**
    * Clean up non-visual resources only (for when rocket becomes a landed rocket)
    * Keeps the pivot and parts intact but cleans up particle systems, camera, etc.
    */
@@ -1807,8 +1863,10 @@ export class RocketController {
     // But for re-boarding, we need to go from DOCKED -> LANDED equivalent
     // Actually, we need to force the state to LANDED since that's where we are
 
-    // Force state to LANDED (we're resuming from a landed position)
-    this.stateMachine.forceState(RocketState.LANDED);
+    // Resume as it was left: LANDED on a surface, or IN_FLIGHT (at rest)
+    // when it was parked in space, out of every gravity well
+    this.updateClosestPlanet();
+    this.stateMachine.forceState(this.isInGravityWell ? RocketState.LANDED : RocketState.IN_FLIGHT);
 
     // Store boarded position for respawn
     this.lastBoardedPosition.copy(this.position);
@@ -1818,7 +1876,7 @@ export class RocketController {
     this.rocketCamera = new RocketCamera(camera);
     // Use stack center instead of pivot position for camera focus
     const stackCenter = this.getStackCenter();
-    this.rocketCamera.setRocketTransform(stackCenter, this.groundNormal);
+    this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
     this.rocketCamera.reset();
     this.rocketCamera.snap();
 

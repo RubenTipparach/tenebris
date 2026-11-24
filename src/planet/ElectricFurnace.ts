@@ -342,10 +342,13 @@ export class ElectricFurnaceManager {
     }
   }
 
-  public update(deltaTime: number): void {
+  // `simulates`: does this client advance that furnace? (multiplayer: the
+  // planet's host only - openspec mp-shared-objects)
+  public update(deltaTime: number, simulates: (position: THREE.Vector3) => boolean = () => true): void {
     let anySmeltCompleted = false;
 
     for (const furnace of this.furnaces) {
+      if (!simulates(furnace.position)) continue;
       // Only smelt if powered (connected to running steam engine), and only
       // while the load covers a whole batch (an alloy waits for its additive)
       const recipe = electricRecipeFor(furnace.smeltingItem, furnace.additiveItem);

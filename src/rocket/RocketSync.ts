@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { withMachineLight } from '../planet/MachineLight';
 import { netSync } from '../net/NetSync';
 import { RocketPart } from '../planet/RocketPart';
 import { ITEM_DATA, InventorySlot, ItemType } from '../player/Inventory';
@@ -220,8 +221,8 @@ export class RocketSync {
       if (!info) continue;
       const assets = await this.loadAssets(itemType as ItemType);
       if (!assets) continue;
-      const material = assets.material.clone();
-      if (material.uniforms.sunBrightness) material.uniforms.sunBrightness.value = 1;
+      // A clone keeps the shared sky light and torches (MachineLight.ts)
+      const material = withMachineLight(assets.material.clone());
       const group = new THREE.Group();
       group.add(new THREE.Mesh(assets.geometry, material));
       group.position.set(x, y, z);

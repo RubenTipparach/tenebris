@@ -37,29 +37,11 @@ export class RocketPart {
   }
 
   /**
-   * Update the torch lighting for this rocket part
-   */
-  public setTorchLight(value: number): void {
-    if (this.material.uniforms && this.material.uniforms.torchLight) {
-      this.material.uniforms.torchLight.value = value;
-    }
-  }
-
-  /**
    * Update the sun direction uniform
    */
   public setSunDirection(direction: THREE.Vector3): void {
     if (this.material.uniforms && this.material.uniforms.sunDirection) {
       this.material.uniforms.sunDirection.value.copy(direction);
-    }
-  }
-
-  /**
-   * Update the sun brightness uniform (pre-calculated from launch pad position)
-   */
-  public setSunBrightness(value: number): void {
-    if (this.material.uniforms && this.material.uniforms.sunBrightness) {
-      this.material.uniforms.sunBrightness.value = value;
     }
   }
 

@@ -3,7 +3,7 @@ import { planetObjectScene } from '../world/PlanetFrames';
 import { RocketController, PlanetGravitySource, RocketInputState } from './RocketController';
 import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
-import { ROCKET_INPUTS } from '../config/RocketConfig';
+import { ROCKET_INPUTS, ROCKET_CONFIG } from '../config/RocketConfig';
 import { PlacedLaunchPad } from '../planet/LaunchPad';
 import { InputManager, lockPointer } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
@@ -45,7 +45,7 @@ export class RocketFlightManager {
   }
 
   // Callbacks
-  private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null) => void) | null = null;
+  private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null, inSpace?: boolean) => void) | null = null;
   private onRespawnCallback: ((position: THREE.Vector3) => void) | null = null;
   private onBoardRocketCallback: (() => void) | null = null;
 
@@ -235,7 +235,8 @@ export class RocketFlightManager {
   /**
    * Set callback for when flight mode ends
    */
-  public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null) => void): void {
+  /** `inSpace`: the pilot climbed out in space - `exitPosition` is then where they float, beside the ship */
+  public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null, inSpace?: boolean) => void): void {
     this.onExitFlightCallback = callback;
   }
 
@@ -262,6 +263,8 @@ export class RocketFlightManager {
     if (!this.rocketController) return;
 
     const respawnPosition = this.rocketController.getPosition().clone();
+    // The pad keeps what the flight burnt (it relaunches with what is left)
+    this.recordActiveRocket();
 
     // Clean up rocket
     this.flightUI.hide();
@@ -358,8 +361,7 @@ export class RocketFlightManager {
     }
 
     // Check if we can exit
-    const stateInfo = this.rocketController.getStateMachine().getStateInfo();
-    if (!stateInfo.canExit && !force) {
+    if (!this.rocketController.canExitNow() && !force) {
       console.log('Cannot exit rocket in current state');
       return;
     }
@@ -367,8 +369,13 @@ export class RocketFlightManager {
     // Check if rocket has ever launched - if so, it should persist
     const hasLaunched = this.rocketController.getHasLaunched();
 
-    // Get rocket position BEFORE exiting (for player spawn)
-    const rocketPosition = hasLaunched ? this.rocketController.getPosition().clone() : null;
+    // Get rocket position BEFORE exiting (for player spawn). In space the
+    // player floats out beside the ship, off its side, clear of the hull
+    const inSpace = this.rocketController.isInSpace();
+    const rocketPosition = !hasLaunched ? null : inSpace
+      ? this.rocketController.getStackCenter().clone().add(
+          new THREE.Vector3(1, 0, 0).applyQuaternion(this.rocketController.getOrientation()).multiplyScalar(ROCKET_CONFIG.EVA_EXIT_DISTANCE_M))
+      : this.rocketController.getPosition().clone();
 
     // The pad keeps the rocket's fuel record
     this.recordActiveRocket();
@@ -401,7 +408,11 @@ export class RocketFlightManager {
       this.rocketController.disposeNonVisual();
       console.log('Rocket persisted in world as landed rocket');
     } else {
-      // Never launched - clean up completely (rocket stays on launch pad as DOCKED)
+      // Never launched: the rocket stays on its launch pad as DOCKED. Its
+      // parts go back under the pad's mesh first - boarding moved them onto
+      // the flight pivot, and disposing that pivot with them on it left the
+      // rocket invisible while the pad still listed it (boardable, unseen).
+      if (this.activePad) this.rocketController.returnPartsTo(this.activePad.mesh);
       this.rocketController.dispose();
     }
 
@@ -411,7 +422,7 @@ export class RocketFlightManager {
 
     // Call exit callback with position (null if exiting at launch pad, position if landed elsewhere)
     if (this.onExitFlightCallback) {
-      this.onExitFlightCallback(rocketPosition);
+      this.onExitFlightCallback(rocketPosition, inSpace);
     }
 
     console.log('Exited flight mode');
@@ -526,6 +537,13 @@ export class RocketFlightManager {
 
     // Update rocket controller
     this.rocketController.update(deltaTime, this.inputState);
+
+    // Taking off burns the pad's fuel: keep its record in step with the
+    // tanks, so a relaunch from the pad never starts on fuel already burnt
+    if (this.activePad) {
+      const burnt = (this.activePad.fuel ?? Infinity) - this.rocketController.getFuelUnits();
+      if (burnt >= ROCKET_CONFIG.PAD_FUEL_RECORD_STEP) this.recordActiveRocket();
+    }
 
     // Update explosion particles if crashed
     const state = this.rocketController.getState();

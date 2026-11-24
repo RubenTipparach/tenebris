@@ -27,8 +27,8 @@ import { computeRocketStats, slotStore, splitLegacyStack, stowLegacyEquipment } 
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
-import { HeldTorch, TorchManager } from '../planet/Torch';
-import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
+import { HeldTorch, PlacedTorch, TorchManager } from '../planet/Torch';
+import { FurnaceManager, PlacedFurnace, furnaceHasFuel } from '../planet/Furnace';
 import { SMELTS_PER_COAL } from '../config/SmeltingRecipes';
 import { bucketFill } from '../config/BucketFills';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
@@ -40,7 +40,7 @@ import { CableNodeManager, PlacedCable } from '../planet/CableNode';
 import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/ElectricFurnace';
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { ComputerManager, PlacedComputer } from '../planet/Computer';
-import { Printer3DManager, PlacedPrinter3D } from '../planet/Printer3D';
+import { Printer3DManager, PlacedPrinter3D, PrinterOutputSlot } from '../planet/Printer3D';
 import { LaunchPadManager, PlacedLaunchPad, PlatformTile } from '../planet/LaunchPad';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
@@ -56,7 +56,8 @@ import { StorageUI } from './StorageUI';
 import { getAssetPath } from '../utils/assetPath';
 import { planetObjectScene } from '../world/PlanetFrames';
 import { gameStorage, torchKey, SavedCooker, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
-import { netSync } from '../net/NetSync';
+import { diffCounts, netSync } from '../net/NetSync';
+import { copySlotsInPlace } from '../net/SharedState';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
 import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine, panelSunlight } from '../planet/Machines';
@@ -65,6 +66,7 @@ import { MACHINE_CONFIG, MACHINE_KIND_OF, POWER_CONFIG } from '../config/PowerCo
 import { solveNetwork, GridResult, GridGenerator, GridConsumer, GridBattery } from '../power/PowerGrid';
 import { MachineUI } from './MachineUI';
 import { AudioManager } from '../engine/AudioManager';
+import { ActionFrame, LocalAction, ShotAction } from '../net/AvatarPose';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
 import { setTorchLights } from '../planet/TorchLightUniforms';
 
@@ -149,11 +151,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.BLUE_ICE: return ItemType.ICE;
     case HexBlockType.IRON_NICKEL: return ItemType.ORE_IRON;
     // Industry resources: clay (Earth's, and Vesper's clay ground - it is
-    // clay), uranium ore; oil sand gives nothing dug (oil is pumped or
-    // scooped with a bucket)
+    // clay), uranium ore; oil sand comes out whole, for the refinery (a
+    // bucket still scoops crude straight from it)
     case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
     case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
-    case HexBlockType.OIL_SAND: return ItemType.NONE;
+    case HexBlockType.OIL_SAND: return ItemType.OIL_SAND;
     // Building materials come back as themselves
     case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
     case HexBlockType.CARPET: return ItemType.CARPET;
@@ -195,6 +197,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.BASALT: return HexBlockType.BASALT;
     case ItemType.SULFUR: return HexBlockType.SULFUR;
     case ItemType.CLAY: return HexBlockType.CLAY;
+    case ItemType.OIL_SAND: return HexBlockType.OIL_SAND;
     case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
     case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
     case ItemType.CARPET: return HexBlockType.CARPET;
@@ -222,6 +225,43 @@ function electricFurnaceSave(f: PlacedElectricFurnace): Omit<SavedElectricFurnac
 
 // Every kind of saved world object, in load order (machines before the
 // cables that connect them), with where its saves live
+/**
+ * A list with the object an open panel shows first: a panel action saves
+ * every machine of its kind, and the action's inventory trade goes on the
+ * first record that changed (openspec mp-shared-objects) - which must be the
+ * one the player used, not one the planet's host just advanced.
+ */
+function openFirst<T>(list: T[], open: T | null): T[] {
+  return open && list.includes(open) ? [open, ...list.filter(o => o !== open)] : list;
+}
+
+// A placed object as the multiplayer record appliers handle it
+type WorldObject = { position: THREE.Vector3 };
+
+/** A 3D printer's jobs and output tray from its saved record (a load and an MP record both read it here). */
+function printerStateFromSave(saved: SavedPrinter3D): Pick<PlacedPrinter3D, 'currentJob' | 'printQueue'> & { outputInventory: PrinterOutputSlot[] | null } {
+  const ingredients = (obj?: Record<string, number>): Map<ItemType, number> =>
+    new Map<ItemType, number>(Object.entries(obj ?? {}).map(([k, v]) => [parseInt(k) as ItemType, v]));
+  const job = saved.currentJob;
+  return {
+    currentJob: job ? {
+      itemType: job.itemType as ItemType,
+      progress: job.progress,
+      totalTime: job.totalTime,
+      startTime: job.startTime,
+      outputQuantity: job.outputQuantity || 1,
+      ingredients: ingredients(job.ingredients),
+    } : null,
+    printQueue: saved.printQueue?.map(q => ({
+      itemType: q.itemType as ItemType,
+      totalTime: q.totalTime,
+      outputQuantity: q.outputQuantity,
+      ingredients: ingredients(q.ingredients),
+    })) ?? [],
+    outputInventory: saved.outputInventory?.map(sl => ({ itemType: sl.itemType as ItemType | null, quantity: sl.quantity })) ?? null,
+  };
+}
+
 const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['torch', () => gameStorage.getTorches()],
   ['furnace', () => gameStorage.getFurnaces()],
@@ -336,11 +376,22 @@ export class PlanetBlockInteraction {
   // Multiplayer: object records being applied, per record address, and the
   // save load they wait for
   private remoteApplies = new Map<string, Promise<void>>();
+  // The player's item counts when their current action began (null: no
+  // player action now - a machine tick); the trade ledger (openspec mp-shared-objects)
+  private tradeBaseline: Map<number, number> | null = null;
+  /**
+   * Does this client advance the machine at `position`? Online, exactly one
+   * client per planet does - the planet's host (the same host that runs its
+   * animals) - and publishes the result; offline, always.
+   */
+  private simulatesAt = (position: THREE.Vector3): boolean => !netSync.online() || netSync.isHost(this.planetIdAt(position));
   private loadDone: Promise<unknown> = Promise.resolve();
   private miningLaunchPadTarget: { launchPad: PlacedLaunchPad; tileIndex: number } | null = null;
 
   private rightClickCooldown: number = 0;
   private readonly CLICK_COOLDOWN = 0.25;
+  // What this player is doing, for other players' view of them (openspec avatar-anims)
+  private readonly action = new LocalAction();
   // Ranching: the animals round the player (set by the game once it has them)
   private fauna: Fauna | null = null;
   private animalHitCooldown = 0;
@@ -1014,7 +1065,25 @@ export class PlanetBlockInteraction {
     return false;
   }
 
+  /**
+   * A right-click action happened (a place or an interact): start the click
+   * cooldown and show the one-shot to other players. Every right-click
+   * action goes through here.
+   */
+  private usedRightClick(kind: ShotAction): void {
+    this.rightClickCooldown = this.CLICK_COOLDOWN;
+    this.action.shot(kind);
+  }
+
+  /** This player's action for the pose frame: mining, the last one-shot, the held item. */
+  public getActionFrame(): ActionFrame {
+    const held = this.inventory.getSelectedItem();
+    return this.action.frame(performance.now() / 1000, held.quantity > 0 ? held.itemType : ItemType.NONE);
+  }
+
+  // Every kind of mining shows its progress here, so this is where mining is noticed
   private updateMiningUI(progress: number): void {
+    if (progress > 0) this.action.mining(performance.now() / 1000);
     if (this.miningProgressContainer && this.miningProgressBar) {
       if (progress > 0) {
         this.miningProgressContainer.classList.add('active');
@@ -1290,7 +1359,11 @@ export class PlanetBlockInteraction {
   }
 
   public update(deltaTime: number, leftClick: boolean, rightClick: boolean, wheelDelta: number = 0): void {
+    // A machine's own tick below moves nothing of the player's: no trade
+    // ledger open until the interaction part of the frame (openspec mp-shared-objects)
+    this.tradeBaseline = null;
     this.rightClickCooldown = Math.max(0, this.rightClickCooldown - deltaTime);
+    this.action.frameAt(performance.now() / 1000);
 
     // Handle mouse wheel for hotbar scrolling
     if (wheelDelta !== 0) {
@@ -1322,17 +1395,19 @@ export class PlanetBlockInteraction {
     this.torchManager.update(deltaTime);
 
     // Update furnace smelting progress
-    this.furnaceManager.update(deltaTime);
+    // (multiplayer: only the planet's host advances a machine - simulatesAt)
+    const simulates = this.simulatesAt;
+    this.furnaceManager.update(deltaTime, simulates);
 
     // Cooking stations, and the well-fed clock
-    this.cookerManager.update(deltaTime);
+    this.cookerManager.update(deltaTime, simulates);
     this.updateWellFed(deltaTime);
 
     // Update electric furnace smelting progress
-    this.electricFurnaceManager.update(deltaTime);
+    this.electricFurnaceManager.update(deltaTime, simulates);
 
     // Update 3D printer print jobs and refresh UI progress
-    this.printer3DManager.updatePrintJobs(deltaTime);
+    this.printer3DManager.updatePrintJobs(deltaTime, simulates);
     if (this.printer3DUI.isMenuOpen()) {
       this.printer3DUI.updateProgress();
     }
@@ -1374,6 +1449,11 @@ export class PlanetBlockInteraction {
       return;
     }
 
+    // From here on the frame is the player's own doing (mining a machine,
+    // placing one): what it moves in or out of the inventory is a trade a
+    // refused record undoes
+    this.beginTrade();
+
     // Raycast to find targeted block or tree
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
@@ -1381,7 +1461,7 @@ export class PlanetBlockInteraction {
     // An empty bucket fills at water (right click)
     if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.BUCKET &&
         this.tryFillBucket(origin, direction)) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
 
@@ -1552,13 +1632,13 @@ export class PlanetBlockInteraction {
     if (rightClick && this.rightClickCooldown === 0 && isFood(selectedItem.itemType) && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity) {
       this.eatSelected();
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
     // A space suit in hand: right click puts it on (the suit slot takes it)
     if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.SPACE_SUIT && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity && this.airSystem?.wearSuitInHand()) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       return;
     }
 
@@ -1573,7 +1653,7 @@ export class PlanetBlockInteraction {
       const cooker = this.cookerManager.getByMesh(cookerHit.object);
       if (rightClick && this.rightClickCooldown === 0 && cooker) {
         this.storageUI.openCooker(cooker, cooker.kind);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && cooker) {
         this.handleCookerMining(deltaTime, cooker);
       } else {
@@ -1635,7 +1715,7 @@ export class PlanetBlockInteraction {
       const machine = this.machineManager.getByMesh(machineHit.object);
       if (rightClick && this.rightClickCooldown === 0 && machine) {
         this.machineUI.openFor(machine);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && machine) {
         this.handleMachineMining(deltaTime, machine);
       } else {
@@ -1665,7 +1745,7 @@ export class PlanetBlockInteraction {
               break;
             }
           }
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.PLACE);
         }
         // No UI for cables when not holding cable item
       } else if (leftClick && cable) {
@@ -1686,7 +1766,7 @@ export class PlanetBlockInteraction {
       // Handle electric furnace interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && electricFurnace) {
         this.electricFurnaceUI.open(electricFurnace);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && electricFurnace) {
         this.handleElectricFurnaceMining(deltaTime, electricFurnace);
       } else {
@@ -1705,7 +1785,7 @@ export class PlanetBlockInteraction {
       // Handle electronics workbench interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && electronicsWorkbench) {
         this.electronicsWorkbenchUI.open(electronicsWorkbench);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && electronicsWorkbench) {
         this.handleElectronicsWorkbenchMining(deltaTime, electronicsWorkbench);
       } else {
@@ -1724,7 +1804,7 @@ export class PlanetBlockInteraction {
       // Handle computer interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && computer) {
         this.computerUI.open(computer);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && computer) {
         this.handleComputerMining(deltaTime, computer);
       } else {
@@ -1743,7 +1823,7 @@ export class PlanetBlockInteraction {
       // Handle 3D printer interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && printer) {
         this.printer3DUI.open(printer);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && printer) {
         this.handlePrinter3DMining(deltaTime, printer);
       } else {
@@ -1782,10 +1862,11 @@ export class PlanetBlockInteraction {
       if (rightClick && this.rightClickCooldown === 0 && launchPad) {
         if (this.inventory.getSelectedItem()?.itemType === ItemType.LAUNCH_PAD_SEGMENT && hitHex !== undefined && hitHex >= 0) {
           this.placeTowerSegmentByHand(launchPad, hitHex);
+          this.usedRightClick(ShotAction.PLACE);
         } else {
           this.launchPadUI.open(launchPad);
+          this.usedRightClick(ShotAction.INTERACT);
         }
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
       } else if (leftClick && launchPad && hitHex !== undefined && hitHex >= 0) {
         this.handleLaunchPadMining(deltaTime, launchPad, hitHex);
       } else {
@@ -1815,12 +1896,12 @@ export class PlanetBlockInteraction {
               break;
             }
           }
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.PLACE);
         } else {
           // Open UI when not holding pipe
           const network = this.copperPipeManager.getPipeNetwork(pipe.id);
           this.copperPipeUI.openPipe(pipe, network);
-          this.rightClickCooldown = this.CLICK_COOLDOWN;
+          this.usedRightClick(ShotAction.INTERACT);
         }
       } else if (leftClick && pipe) {
         this.handleCopperPipeMining(deltaTime, pipe);
@@ -1840,7 +1921,7 @@ export class PlanetBlockInteraction {
       // Handle hydro generator interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && hydroGenerator) {
         this.hydroGeneratorUI.open(hydroGenerator);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && hydroGenerator) {
         this.handleHydroGeneratorMining(deltaTime, hydroGenerator);
       } else {
@@ -1859,7 +1940,7 @@ export class PlanetBlockInteraction {
       // Handle steam engine interaction (right click to open UI, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && steamEngine) {
         this.steamEngineUI.open(steamEngine);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && steamEngine) {
         this.handleSteamEngineMining(deltaTime, steamEngine);
       } else {
@@ -1878,7 +1959,7 @@ export class PlanetBlockInteraction {
       // Handle storage chest interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && chest) {
         this.storageUI.open(chest);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && chest) {
         this.handleStorageChestMining(deltaTime, chest);
       } else {
@@ -1897,7 +1978,7 @@ export class PlanetBlockInteraction {
       // Handle garbage pile interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && pile) {
         this.storageUI.open(pile);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && pile) {
         this.handleGarbagePileMining(deltaTime, pile);
       } else {
@@ -1916,7 +1997,7 @@ export class PlanetBlockInteraction {
       // Handle furnace interaction (right click to open, left click to mine)
       if (rightClick && this.rightClickCooldown === 0 && furnace) {
         this.furnaceUI.open(furnace);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.INTERACT);
       } else if (leftClick && furnace) {
         this.handleFurnaceMining(deltaTime, furnace);
       } else {
@@ -1972,7 +2053,7 @@ export class PlanetBlockInteraction {
       // Use the previous air block position for placement (supports horizontal placement)
       if (rightClick && this.rightClickCooldown === 0) {
         this.placeBlock(closestBlockPlanet, prevTileIndex, prevDepth);
-        this.rightClickCooldown = this.CLICK_COOLDOWN;
+        this.usedRightClick(ShotAction.PLACE);
       }
     } else {
       // Hide wireframe highlight
@@ -2114,7 +2195,11 @@ export class PlanetBlockInteraction {
     if (furnace.outputItem !== null && furnace.outputCount > 0) {
       this.inventory.addItem(furnace.outputItem as ItemType, furnace.outputCount);
     }
-    // Convert fuel back to coal (approximately)
+    // The unburnt fuel stack comes back as it went in
+    if (furnace.fuelItem !== null && furnace.fuelCount > 0) {
+      this.inventory.addItem(furnace.fuelItem as ItemType, furnace.fuelCount);
+    }
+    // Convert the burning remainder back to coal (approximately)
     if (furnace.fuelAmount > 0) {
       const coalToReturn = Math.ceil(furnace.fuelAmount / SMELTS_PER_COAL);
       this.inventory.addItem(ItemType.COAL, coalToReturn);
@@ -3149,6 +3234,8 @@ export class PlanetBlockInteraction {
           position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
           rotation: placedFurnace.rotation,
           fuelAmount: placedFurnace.fuelAmount,
+          fuelItem: placedFurnace.fuelItem,
+          fuelCount: placedFurnace.fuelCount,
           smeltingItem: placedFurnace.smeltingItem,
           smeltingProgress: placedFurnace.smeltingProgress,
           inputCount: placedFurnace.inputCount,
@@ -4075,11 +4162,12 @@ export class PlanetBlockInteraction {
     }
     this.resetMining();
     if (rightClick && this.rightClickCooldown === 0 && held === ItemType.SHEARS) {
-      this.rightClickCooldown = this.CLICK_COOLDOWN;
+      this.usedRightClick(ShotAction.INTERACT);
       if (this.fauna.shear(pick.uid) > 0) emitGameEvent('sheared');
     } else if (leftClick && this.animalHitCooldown === 0) {
       this.animalHitCooldown = RANCHING.HIT_COOLDOWN_S;
       this.fauna.hit(pick.uid, this.player.position);
+      this.action.shot(ShotAction.SWING);
     }
     return true;
   }
@@ -4263,7 +4351,7 @@ export class PlanetBlockInteraction {
 
   // Save all furnace states to local storage
   private saveAllFurnaceStates(): void {
-    const furnaces = this.furnaceManager.getPlacedFurnaces();
+    const furnaces = openFirst(this.furnaceManager.getPlacedFurnaces(), this.furnaceUI.getCurrentFurnace());
     for (const furnace of furnaces) {
       const planetId = this.planetIdAt(furnace.position);
 
@@ -4271,6 +4359,8 @@ export class PlanetBlockInteraction {
         position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
         rotation: furnace.rotation,
         fuelAmount: furnace.fuelAmount,
+        fuelItem: furnace.fuelItem,
+        fuelCount: furnace.fuelCount,
         smeltingItem: furnace.smeltingItem,
         smeltingProgress: furnace.smeltingProgress,
         inputCount: furnace.inputCount,
@@ -4282,7 +4372,7 @@ export class PlanetBlockInteraction {
 
   // Save all electric furnace states to local storage
   private saveAllElectricFurnaceStates(): void {
-    const furnaces = this.electricFurnaceManager.getPlacedElectricFurnaces();
+    const furnaces = openFirst(this.electricFurnaceManager.getPlacedElectricFurnaces(), this.electricFurnaceUI.getCurrentFurnace());
     for (const furnace of furnaces) {
       const planetId = this.planetIdAt(furnace.position);
 
@@ -4378,6 +4468,7 @@ export class PlanetBlockInteraction {
     if (saveAll) this.machineSaveTimer = 0;
     for (const m of machines) {
       m.powered = this.nodePowered(m.tileIndex);
+      if (!this.simulatesAt(m.position)) continue;  // another player's client runs it
       const fx = tickMachine(m, dt, { oilBelow: oil.get(m) ?? false, reactorPower: (grid.get(m.tileIndex)?.nuclearW ?? 0) > 0 });
       if (fx.pumpedCell) this.drainOilBelow(m);
       if (fx.event === 'fabricated') {
@@ -4551,7 +4642,7 @@ export class PlanetBlockInteraction {
 
   // Save all 3D printer states to local storage
   private saveAllPrinter3DStates(): void {
-    const printers = this.printer3DManager.getAllPrinters();
+    const printers = openFirst(this.printer3DManager.getAllPrinters(), this.printer3DUI.getCurrentPrinter());
     for (const printer of printers) {
       const planetId = this.planetIdAt(printer.position);
 
@@ -4650,6 +4741,15 @@ export class PlanetBlockInteraction {
     const addr = `${kind}|${planetId}|${key}`;
     const prev = this.remoteApplies.get(addr) ?? this.loadDone;
     const next = prev.then(async () => {
+      // The object is here and only its contents / state changed (another
+      // player used it, or the planet's host ran it): update it in place, so
+      // a panel showing it stays open and redraws (openspec mp-shared-objects)
+      const here = data ? this.findWorldObject(kind, planetId, key) : undefined;
+      if (here && data && this.applySavedState(kind, here, data)) {
+        gameStorage.applyRecord(kind, planetId, key, data);
+        this.refreshPanelsFor(here);
+        return;
+      }
       const removedAt = this.removeWorldObject(kind, planetId, key);
       gameStorage.applyRecord(kind, planetId, key, data);
       if (data) await this.restoreSavedObject(kind, { ...data, planetId });
@@ -4663,8 +4763,44 @@ export class PlanetBlockInteraction {
     this.remoteApplies.set(addr, next);
   }
 
+  /** Start measuring a player action's inventory trade (online only). */
+  private beginTrade(): void {
+    this.tradeBaseline = netSync.online() ? this.inventory.itemCounts() : null;
+  }
+
+  /**
+   * The trade ledger NetSync charges a record write to: a panel click / drop /
+   * key (a DOM input event) or the interaction part of a frame is a player
+   * action, and what it moved between the inventory and the object is undone
+   * if the server refuses the write (someone else changed the object first).
+   */
+  private registerTradeLedger(): void {
+    for (const type of ['mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'dragstart', 'drop', 'dragend', 'keydown', 'pointerup', 'touchend']) {
+      document.addEventListener(type, () => this.beginTrade(), { capture: true });
+    }
+    netSync.setTradeLedger({
+      take: () => {
+        if (!this.tradeBaseline) return null;
+        const now = this.inventory.itemCounts();
+        const delta = diffCounts(this.tradeBaseline, now);
+        this.tradeBaseline = now;   // one write per action carries it
+        return delta;
+      },
+      refund: (delta) => {
+        const { missing, overflow } = this.inventory.undoTrade(delta);
+        this.updateHotbarUI();
+        this.craftingSystem.updateInventorySlotsPublic();
+        this.saveInventory();
+        const note = missing > 0 ? ` (${missing} already used)` : overflow > 0 ? ` (${overflow} did not fit)` : '';
+        showToast(`Someone else used that first - your change was undone${note}`, { duration: 3000 });
+        if (overflow > 0) console.warn('[MP] trade undo: no room for', overflow, 'item(s)');
+      },
+    });
+  }
+
   /** Register the multiplayer appliers for every placed-object kind. */
   private registerRemoteRecords(): void {
+    this.registerTradeLedger();
     for (const [kind] of SAVED_OBJECT_KINDS) {
       netSync.onRecord(kind, (planetId, key, data) => this.applyRemoteRecord(kind, planetId, key, data), () => gameStorage.listRecords(kind));
     }
@@ -4675,62 +4811,178 @@ export class PlanetBlockInteraction {
     }, () => gameStorage.listRecords('removedTree'));
   }
 
-  /**
-   * Take one placed object out of the world (not the save) by its record
-   * key. Returns where it stood, or null if there was nothing there.
-   */
-  private removeWorldObject(kind: string, planetId: string, key: string): THREE.Vector3 | null {
+  /** One placed object in the world by its record address, or undefined. */
+  private findWorldObject(kind: string, planetId: string, key: string): WorldObject | undefined {
     const tile = Number(key);
     const on = (o: { position: THREE.Vector3 }) => this.planetIdAt(o.position) === planetId;
     const at = <T extends { position: THREE.Vector3; tileIndex: number }>(list: T[]) => list.find(o => o.tileIndex === tile && on(o));
     const atDepth = <T extends { position: THREE.Vector3; tileIndex: number; depth: number }>(list: T[]) =>
       list.find(o => `${o.tileIndex}:${o.depth}` === key && on(o));
-    let found: { position: THREE.Vector3 } | undefined;
     switch (kind) {
-      case 'torch': {
-        const t = this.torchManager.getPlacedTorches().find(o => torchKey(o.position) === key && on(o));
-        if (t) this.torchManager.removeTorch(t);
-        found = t;
-        break;
-      }
-      case 'furnace': { const o = at(this.furnaceManager.getPlacedFurnaces()); if (o) this.furnaceManager.removeFurnace(o); found = o; break; }
-      case 'electricFurnace': { const o = at(this.electricFurnaceManager.getPlacedElectricFurnaces()); if (o) this.electricFurnaceManager.removeElectricFurnace(o); found = o; break; }
-      case 'workbench': { const o = at(this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()); if (o) this.electronicsWorkbenchManager.removeElectronicsWorkbench(o); found = o; break; }
-      case 'computer': { const o = at(this.computerManager.getAllComputers()); if (o) this.computerManager.removeComputer(o); found = o; break; }
-      case 'printer3D': { const o = at(this.printer3DManager.getAllPrinters()); if (o) this.printer3DManager.removePrinter3D(o); found = o; break; }
-      case 'machine': {
-        const o = at(this.machineManager.getAll());
-        if (o) { if (this.machineUI.getMachine() === o) this.machineUI.close(); this.machineManager.remove(o); }
-        found = o;
-        break;
-      }
-      case 'chest': { const o = at(this.storageChestManager.getPlacedChests()); if (o) this.storageChestManager.removeChest(o); found = o; break; }
+      case 'torch': return this.torchManager.getPlacedTorches().find(o => torchKey(o.position) === key && on(o));
+      case 'furnace': return at(this.furnaceManager.getPlacedFurnaces());
+      case 'electricFurnace': return at(this.electricFurnaceManager.getPlacedElectricFurnaces());
+      case 'workbench': return at(this.electronicsWorkbenchManager.getPlacedElectronicsWorkbenches());
+      case 'computer': return at(this.computerManager.getAllComputers());
+      case 'printer3D': return at(this.printer3DManager.getAllPrinters());
+      case 'machine': return at(this.machineManager.getAll());
+      case 'chest': return at(this.storageChestManager.getPlacedChests());
+      case 'cooker': return at(this.cookerManager.getPlaced());
+      case 'garbagePile': return at(this.garbagePileManager.getPlacedPiles());
+      case 'steamEngine': return at(this.steamEngineManager.getPlacedSteamEngines());
+      case 'hydroGenerator': return at(this.hydroGeneratorManager.getPlacedHydroGenerators());
+      case 'copperPipe': return atDepth(this.copperPipeManager.getPlacedPipes());
+      case 'cable': return atDepth(this.cableNodeManager.getPlacedCables());
+      case 'launchPad': return this.launchPadManager.getLaunchPads().find(p => p.centerTileIndex === tile && this.padPlanetId(p) === planetId);
+    }
+    return undefined;
+  }
+
+  /**
+   * Take one placed object out of the world (not the save) by its record
+   * key. Returns where it stood, or null if there was nothing there. A panel
+   * showing it closes (it would edit an object that is gone).
+   */
+  private removeWorldObject(kind: string, planetId: string, key: string): THREE.Vector3 | null {
+    const o = this.findWorldObject(kind, planetId, key);
+    if (!o) return null;
+    this.closePanelsFor(o);
+    switch (kind) {
+      case 'torch': this.torchManager.removeTorch(o as PlacedTorch); break;
+      case 'furnace': this.furnaceManager.removeFurnace(o as PlacedFurnace); break;
+      case 'electricFurnace': this.electricFurnaceManager.removeElectricFurnace(o as PlacedElectricFurnace); break;
+      case 'workbench': this.electronicsWorkbenchManager.removeElectronicsWorkbench(o as PlacedElectronicsWorkbench); break;
+      case 'computer': this.computerManager.removeComputer(o as PlacedComputer); break;
+      case 'printer3D': this.printer3DManager.removePrinter3D(o as PlacedPrinter3D); break;
+      case 'machine': this.machineManager.remove(o as PlacedMachine); break;
+      case 'chest': this.storageChestManager.removeChest(o as PlacedStorageChest); break;
+      case 'cooker': this.cookerManager.remove(o as PlacedCooker); break;
+      case 'garbagePile': this.garbagePileManager.removePile(o as PlacedGarbagePile); break;
+      case 'steamEngine': this.steamEngineManager.removeSteamEngine(o as PlacedSteamEngine); break;
+      case 'hydroGenerator': this.hydroGeneratorManager.removeHydroGenerator(o as PlacedHydroGenerator); break;
+      case 'copperPipe': this.copperPipeManager.removePipe(o as PlacedCopperPipe); break;
+      case 'cable': this.cableNodeManager.removeCable(o as PlacedCable); break;
+      case 'launchPad': this.launchPadManager.removeLaunchPad(o as PlacedLaunchPad); break;
+    }
+    return o.position.clone();
+  }
+
+  /** Every item panel that can show a placed object, with what it shows now. */
+  private objectPanels(): Array<{ shows: () => unknown; refresh: () => void; close: () => void }> {
+    return [
+      { shows: () => this.storageUI.getCurrentStorage(), refresh: () => this.storageUI.refresh(), close: () => this.storageUI.close() },
+      { shows: () => this.furnaceUI.getCurrentFurnace(), refresh: () => this.furnaceUI.refresh(), close: () => this.furnaceUI.close() },
+      { shows: () => this.electricFurnaceUI.getCurrentFurnace(), refresh: () => this.electricFurnaceUI.refresh(), close: () => this.electricFurnaceUI.close() },
+      { shows: () => this.steamEngineUI.getCurrentSteamEngine(), refresh: () => this.steamEngineUI.refresh(), close: () => this.steamEngineUI.close() },
+      { shows: () => this.printer3DUI.getCurrentPrinter(), refresh: () => this.printer3DUI.updateProgress(), close: () => this.printer3DUI.close() },
+      { shows: () => this.machineUI.getMachine(), refresh: () => this.machineUI.refresh(), close: () => this.machineUI.close() },
+      { shows: () => this.launchPadUI.getCurrentLaunchPad(), refresh: () => this.launchPadUI.refresh(), close: () => this.launchPadUI.close() },
+    ];
+  }
+
+  // Is a panel's object this one? (a rocket's cargo hold is its pad's slot array)
+  private panelShows(shown: unknown, o: WorldObject): boolean {
+    if (!shown) return false;
+    if (shown === o) return true;
+    const pad = o as Partial<PlacedLaunchPad>;
+    const slots = (shown as { slots?: unknown }).slots;
+    return !!pad.cargo && (slots === pad.cargo || slots === pad.equipment);
+  }
+
+  /** Redraw any open panel showing `o` - in place: the viewer's held stack and cursor stay. */
+  private refreshPanelsFor(o: WorldObject): void {
+    for (const p of this.objectPanels()) if (this.panelShows(p.shows(), o)) p.refresh();
+  }
+
+  private closePanelsFor(o: WorldObject): void {
+    for (const p of this.objectPanels()) if (this.panelShows(p.shows(), o)) p.close();
+  }
+
+  /**
+   * Put a saved record's state (contents, fuel, progress, jobs) on an object
+   * already in the world. The one place a record's state reaches an object:
+   * a save load does it right after the object is rebuilt, another player's
+   * record does it in place. False when the record changes more than state
+   * (a different machine, a rebuilt rocket stack) - the object is rebuilt.
+   */
+  private applySavedState(kind: string, o: WorldObject, saved: object): boolean {
+    const copySlots = copySlotsInPlace;
+    switch (kind) {
+      case 'chest': return copySlots((o as PlacedStorageChest).slots, (saved as SavedStorageChest).slots);
+      case 'garbagePile': return copySlots((o as PlacedGarbagePile).slots, (saved as SavedGarbagePile).slots);
       case 'cooker': {
-        const o = at(this.cookerManager.getPlaced());
-        if (o) {
-          if (this.storageUI.getCurrentStorage() === o) this.storageUI.close();
-          this.cookerManager.remove(o);
-        }
-        found = o;
-        break;
+        const c = o as PlacedCooker, r = saved as SavedCooker;
+        if (r.kind !== c.kind || !copySlots(c.slots, r.slots)) return false;
+        c.progress = r.progress ?? 0;
+        return true;
       }
-      case 'garbagePile': { const o = at(this.garbagePileManager.getPlacedPiles()); if (o) this.garbagePileManager.removePile(o); found = o; break; }
-      case 'steamEngine': { const o = at(this.steamEngineManager.getPlacedSteamEngines()); if (o) this.steamEngineManager.removeSteamEngine(o); found = o; break; }
-      case 'hydroGenerator': { const o = at(this.hydroGeneratorManager.getPlacedHydroGenerators()); if (o) this.hydroGeneratorManager.removeHydroGenerator(o); found = o; break; }
-      case 'copperPipe': { const o = atDepth(this.copperPipeManager.getPlacedPipes()); if (o) this.copperPipeManager.removePipe(o); found = o; break; }
-      case 'cable': { const o = atDepth(this.cableNodeManager.getPlacedCables()); if (o) this.cableNodeManager.removeCable(o); found = o; break; }
+      case 'furnace': {
+        const f = o as PlacedFurnace, r = saved as SavedFurnace;
+        f.fuelAmount = r.fuelAmount;
+        f.fuelItem = r.fuelItem ?? null;
+        f.fuelCount = r.fuelCount ?? 0;
+        f.smeltingItem = r.smeltingItem;
+        f.smeltingProgress = r.smeltingProgress;
+        f.inputCount = r.inputCount ?? 0;
+        f.outputItem = r.outputItem;
+        f.outputCount = r.outputCount;
+        return true;
+      }
+      case 'electricFurnace': {
+        const f = o as PlacedElectricFurnace, r = saved as SavedElectricFurnace;
+        f.smeltingItem = r.smeltingItem;
+        f.smeltingProgress = r.smeltingProgress;
+        f.inputCount = r.inputCount;
+        f.additiveItem = r.additiveItem ?? null;
+        f.additiveCount = r.additiveCount ?? 0;
+        f.outputItem = r.outputItem;
+        f.outputCount = r.outputCount;
+        return true;
+      }
+      case 'machine': {
+        const m = o as PlacedMachine, r = saved as SavedMachine;
+        if (r.itemType !== m.itemType) return false;
+        const fresh = machineFromRecord(r);
+        fresh.inputs.forEach((sl, i) => { m.inputs[i] = sl; });
+        fresh.outputs.forEach((sl, i) => { m.outputs[i] = sl; });
+        m.tank = fresh.tank;
+        m.progressS = fresh.progressS;
+        m.chargeWh = fresh.chargeWh;
+        fresh.rodLifeS.forEach((l, i) => { m.rodLifeS[i] = l; });
+        m.job = fresh.job;
+        return true;
+      }
+      case 'steamEngine': {
+        const r = saved as SavedSteamEngine;
+        this.steamEngineUI.restoreState((o as PlacedSteamEngine).tileIndex, {
+          hasFuel: r.hasFuel ?? false, fuelAmount: r.fuelAmount ?? 0, isRunning: false, waterInput: 0, steamOutput: 0,
+        });
+        return true;
+      }
+      case 'printer3D': {
+        const pr = o as PlacedPrinter3D;
+        const st = printerStateFromSave(saved as SavedPrinter3D);
+        pr.currentJob = st.currentJob;
+        pr.printQueue = st.printQueue;
+        if (st.outputInventory) st.outputInventory.forEach((sl, i) => { if (pr.outputInventory[i]) pr.outputInventory[i] = sl; });
+        return true;
+      }
       case 'launchPad': {
-        const pad = this.launchPadManager.getLaunchPads().find(p => p.centerTileIndex === tile && this.padPlanetId(p) === planetId);
-        if (pad) {
-          // a UI showing this pad would edit a pad that's gone
-          if (this.launchPadUI.getCurrentLaunchPad() === pad) this.launchPadUI.close();
-          this.launchPadManager.removeLaunchPad(pad);
-          found = pad;
-        }
-        break;
+        const pad = o as PlacedLaunchPad, r = saved as SavedLaunchPad;
+        // the tower, the pad blocks or the rocket stack changed: rebuild it
+        const parts = (r.rocketParts ?? []).map(p => p.itemType).join(',');
+        if (r.segmentCount !== pad.segmentCount || parts !== pad.rocketParts.map(p => p.itemType).join(',')
+            || (r.tiles && r.tiles.length !== pad.hexes.size)) return false;
+        pad.fuel = r.fuel ?? null;
+        pad.engineMode = typeof r.engineMode === 'number' ? r.engineMode as ItemType : null;
+        const slotsOf = (list: Array<{ itemType: number; quantity: number }> | undefined, n: number) =>
+          Array.from({ length: n }, (_, i) => list?.[i] && ITEM_DATA[list[i].itemType as ItemType] ? list[i] : { itemType: ItemType.NONE, quantity: 0 });
+        copySlots(pad.cargo, slotsOf(r.cargo, pad.cargo.length));
+        copySlots(pad.equipment, slotsOf(r.equipment, pad.equipment.length));
+        return true;
       }
     }
-    return found ? found.position.clone() : null;
+    return false;
   }
 
   /**
@@ -4773,14 +5025,7 @@ export class PlanetBlockInteraction {
         );
         // Restore the furnace at exact saved position (no offset recalculation)
         pending = this.furnaceManager.restoreFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
-          if (placedFurnace) {
-            placedFurnace.fuelAmount = savedFurnace.fuelAmount;
-            placedFurnace.smeltingItem = savedFurnace.smeltingItem;
-            placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
-            placedFurnace.inputCount = savedFurnace.inputCount ?? 0;
-            placedFurnace.outputItem = savedFurnace.outputItem;
-            placedFurnace.outputCount = savedFurnace.outputCount;
-          }
+          if (placedFurnace) this.applySavedState('furnace', placedFurnace, savedFurnace);
         });
         break;
       }
@@ -4833,13 +5078,7 @@ export class PlanetBlockInteraction {
         pending = this.steamEngineManager.restoreSteamEngine(savedPosition, planet.configuredCenter, savedSteamEngine.tileIndex, savedSteamEngine.rotation);
 
         // Restore fuel state to UI
-        this.steamEngineUI.restoreState(savedSteamEngine.tileIndex, {
-          hasFuel: savedSteamEngine.hasFuel ?? false,
-          fuelAmount: savedSteamEngine.fuelAmount ?? 0,
-          isRunning: false,
-          waterInput: 0,
-          steamOutput: 0,
-        });
+        pending = (pending as Promise<PlacedSteamEngine | null>).then(engine => { if (engine) this.applySavedState('steamEngine', engine, savedSteamEngine); });
         break;
       }
       case 'hydroGenerator': {
@@ -4884,15 +5123,7 @@ export class PlanetBlockInteraction {
         );
         // Restore the electric furnace
         pending = this.electricFurnaceManager.restoreElectricFurnace(savedPosition, planet.configuredCenter, savedFurnace.tileIndex, savedFurnace.rotation).then(placedFurnace => {
-          if (placedFurnace) {
-            placedFurnace.smeltingItem = savedFurnace.smeltingItem;
-            placedFurnace.smeltingProgress = savedFurnace.smeltingProgress;
-            placedFurnace.inputCount = savedFurnace.inputCount;
-            placedFurnace.additiveItem = savedFurnace.additiveItem ?? null;
-            placedFurnace.additiveCount = savedFurnace.additiveCount ?? 0;
-            placedFurnace.outputItem = savedFurnace.outputItem;
-            placedFurnace.outputCount = savedFurnace.outputCount;
-          }
+          if (placedFurnace) this.applySavedState('electricFurnace', placedFurnace, savedFurnace);
         });
         break;
       }
@@ -4926,36 +5157,8 @@ export class PlanetBlockInteraction {
           savedPrinter.position.z
         );
 
-        // Helper to deserialize ingredients from Record to Map
-        const deserializeIngredients = (obj?: Record<string, number>): Map<ItemType, number> => {
-          if (!obj) return new Map<ItemType, number>();
-          return new Map<ItemType, number>(Object.entries(obj).map(([k, v]) => [parseInt(k) as ItemType, v]));
-        };
-
-        // Restore the 3D printer with its job state
-        const savedJob = savedPrinter.currentJob as { itemType: number; progress: number; totalTime: number; startTime: number; outputQuantity?: number; ingredients?: Record<string, number> } | null;
-        const currentJob = savedJob ? {
-          itemType: savedJob.itemType as ItemType,
-          progress: savedJob.progress,
-          totalTime: savedJob.totalTime,
-          startTime: savedJob.startTime,
-          outputQuantity: savedJob.outputQuantity || 1,
-          ingredients: deserializeIngredients(savedJob.ingredients)
-        } : null;
-
-        // Restore print queue
-        const printQueue = savedPrinter.printQueue?.map(job => ({
-          itemType: job.itemType as ItemType,
-          totalTime: job.totalTime,
-          outputQuantity: job.outputQuantity,
-          ingredients: deserializeIngredients(job.ingredients)
-        })) || [];
-
-        // Restore output inventory
-        const outputInventory = savedPrinter.outputInventory?.map(slot => ({
-          itemType: slot.itemType as ItemType | null,
-          quantity: slot.quantity
-        })) || null;
+        // Its jobs and output tray (the same reading an MP record's in-place update uses)
+        const { currentJob, printQueue, outputInventory } = printerStateFromSave(savedPrinter);
 
         pending = this.printer3DManager.restorePrinter3D(
           savedPosition,
@@ -5039,9 +5242,9 @@ export class PlanetBlockInteraction {
           tileIndex: furnace.tileIndex,
           position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
           getStatus: () => {
-            if (furnace.smeltingItem !== null && furnace.fuelAmount > 0) {
+            if (furnace.smeltingItem !== null && furnaceHasFuel(furnace)) {
               return `Smelting ${Math.round(furnace.smeltingProgress * 100)}%`;
-            } else if (furnace.smeltingItem !== null && furnace.fuelAmount === 0) {
+            } else if (furnace.smeltingItem !== null) {
               return 'No Fuel';
             } else if (furnace.outputCount > 0) {
               return `Output: ${furnace.outputCount}`;

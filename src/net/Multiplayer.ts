@@ -4,7 +4,11 @@ import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
 import { clearWorldSave } from '../engine/GameStorage';
 import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
-import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
+import { ActionFrame, IDLE_ACTION, LoopAction, OneShotTracker, ShotAction, avatarTransforms, decodeAction, encodeAction } from './AvatarPose';
+import { ITEM_DATA, ItemType } from '../player/Inventory';
+import { serverHttpBase } from './WorldSession';
+import { ackRecord, applySnapshot, attachTransport, dispatchChat, dispatchLive, dispatchRecord, nackRecord, setPeer } from './NetSync';
+import { parseChatLine, systemLine } from './Chat';
 
 /**
  * Online play against server-js/ (deployed to the 'tenebris' Fly app).
@@ -40,7 +44,24 @@ interface Remote {
   lastTarget: THREE.Vector3 | null;
   lastPoseAt: number;
   speed: number;
+  // What they're doing (openspec avatar-anims): the last action frame, and
+  // the one-shot counter seen so far
+  action: ActionFrame;
+  shots: OneShotTracker;
 }
+
+// The local player's pose for the pose frame
+export interface LocalPose {
+  planet: string;
+  p: THREE.Vector3;
+  q: THREE.Quaternion;
+  /** What they're doing (mining, the last one-shot, the held item). */
+  a: ActionFrame;
+}
+
+const _up = new THREE.Vector3();
+const _shown = new THREE.Vector3();
+const _xf = { body: new THREE.Quaternion(), headPitch: 0 };
 
 export class Multiplayer {
   private ws: WebSocket | null = null;
@@ -53,7 +74,7 @@ export class Multiplayer {
   constructor(
     private scene: THREE.Scene,
     private planets: Map<string, Planet>,
-    private getPose: () => { planet: string; p: THREE.Vector3; q: THREE.Quaternion },
+    private getPose: () => LocalPose,
     private name: string,
     private look: Look,
   ) {
@@ -147,9 +168,16 @@ export class Multiplayer {
     for (const r of this.remotes.values()) {
       // A pose is in the sender's frame, where their planet sits at its
       // configured position; shift it to where that planet is in ours
-      const shown = this.frameOffset ? r.target.clone().add(this.frameOffset(r.planet)) : r.target;
+      const shown = _shown.copy(r.target);
+      if (this.frameOffset) shown.add(this.frameOffset(r.planet));
       r.group.position.lerp(shown, k);
-      r.group.quaternion.slerp(r.targetQ, k);
+      // Body upright on the planet, the look pitch on the head only
+      const planet = this.planets.get(r.planet);
+      if (planet) _up.subVectors(r.group.position, planet.center);
+      if (!planet || _up.lengthSq() === 0) _up.set(0, 1, 0).applyQuaternion(r.targetQ);
+      avatarTransforms(r.targetQ, _up.normalize(), _xf);
+      r.group.quaternion.slerp(_xf.body, k);
+      r.avatar.setHeadPitch(_xf.headPitch);
       r.avatar.animate(dt, r.speed);
     }
     if (!this.isConnected()) return;
@@ -157,7 +185,21 @@ export class Multiplayer {
     if (this.poseTimer <= 0) {
       this.poseTimer = POSE_INTERVAL_S;
       const pose = this.getPose();
-      this.sendJson({ t: 'pose', planet: pose.planet, p: pose.p.toArray(), q: pose.q.toArray() });
+      this.sendJson({ t: 'pose', planet: pose.planet, p: pose.p.toArray(), q: pose.q.toArray(), a: encodeAction(pose.a) });
+    }
+  }
+
+  // A planet map picture for the admin portal: POST /maps/<world>/<planet>,
+  // signed with this connection's upload key (server-js/server.js)
+  private async uploadMap(worldId: string, planet: string, image: Blob, key: string): Promise<boolean> {
+    if (!worldId || !key) return false;
+    const q = new URLSearchParams({ player: String(this.myId), key });
+    const url = `${serverHttpBase()}/maps/${encodeURIComponent(worldId)}/${encodeURIComponent(planet)}?${q}`;
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': image.type }, body: image });
+      return r.ok;
+    } catch {
+      return false;
     }
   }
 
@@ -172,43 +214,66 @@ export class Multiplayer {
       case 'welcome':
         this.myId = m.id;
         attachTransport({
-          sendRecord: (kind, planet, key, data) => this.sendJson({ t: 'rec', kind, planet, key, data }),
+          sendRecord: (kind, planet, key, data, base) => this.sendJson({ t: 'rec', kind, planet, key, data, base }),
+          sendChat: (text) => this.sendJson({ t: 'chat', text }),
           sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
-        }, m.id, m.now, m.world?.created, m.world?.id);
+          uploadMap: (planet, image) => this.uploadMap(String(m.world?.id ?? ''), planet, image, String(m.uploadKey ?? '')),
+        }, m.id, m.now, m.world?.created, m.world?.id, m.maps);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
           this.planets.get(planet)?.setBlock(tile, depth, block, true);
         }
-        applySnapshot((m.records ?? []) as Array<[string, string, string, any]>);
-        for (const p of m.players) this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
+        applySnapshot((m.records ?? []) as Array<[string, string, string, any, number?]>);
+        // the world's last few chat lines, so a joiner sees the conversation
+        for (const line of (m.chat ?? []) as unknown[]) {
+          const l = parseChatLine(line);
+          if (l) dispatchChat(l);
+        }
+        for (const p of m.players) {
+          this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
+          this.applyAction(p.id, p.a);
+        }
         console.log(`[MP] joined as ${this.myId}: ${m.edits.length} edits, ${m.records?.length ?? 0} objects, ${m.players.length} other player(s)`);
         break;
       case 'join': {
         // also sent when a player changes their name or look
         const isNew = !this.remotes.has(m.id);
         this.upsert(m.id, m.name, undefined, undefined, undefined, m.look);
-        if (isNew) showToast(`${m.name} joined`, { duration: 2000 });
+        if (isNew) dispatchChat(systemLine(`${String(m.name ?? 'Someone')} joined`));
         break;
       }
       case 'notice':
-        showToast(`Server: ${String(m.text ?? '').slice(0, 200)}`, { duration: 8000 });
+        dispatchChat(systemLine(`Server: ${String(m.text ?? '')}`));
         break;
       case 'leave': {
         const r = this.remotes.get(m.id);
         if (r) {
-          showToast(`${r.name} left`, { duration: 2000 });
+          dispatchChat(systemLine(`${r.name} left`));
           this.removeRemote(m.id);
         }
         break;
       }
       case 'pose':
         this.upsert(m.id, undefined, m.planet, m.p, m.q);
+        // no `a` (an older client): idle, empty-handed
+        this.applyAction(m.id, m.a);
         break;
       case 'edit':
         this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block, true);
         break;
       case 'rec':
-        dispatchRecord(m.kind, m.planet, m.key, m.data);
+        dispatchRecord(m.kind, m.planet, m.key, m.data, m.v);
         break;
+      case 'recAck':
+        ackRecord(m.kind, m.planet, m.key, m.v);
+        break;
+      case 'recNack':
+        nackRecord(m.kind, m.planet, m.key, m.v, m.data ?? null);
+        break;
+      case 'chat': {
+        const l = parseChatLine(m);
+        if (l) dispatchChat(l);
+        break;
+      }
       case 'live':
         dispatchLive(m.ch, m.id, m.data);
         break;
@@ -221,7 +286,7 @@ export class Multiplayer {
       const nm = name ?? `Player ${id}`;
       const look = sanitizeLook(rawLook, id);
       const avatar = new Avatar(look, nm);
-      r = { name: nm, look, planet: planet ?? 'earth', avatar, group: avatar.group, target: new THREE.Vector3(), targetQ: new THREE.Quaternion(), lastTarget: null, lastPoseAt: 0, speed: 0 };
+      r = { name: nm, look, planet: planet ?? 'earth', avatar, group: avatar.group, target: new THREE.Vector3(), targetQ: new THREE.Quaternion(), lastTarget: null, lastPoseAt: 0, speed: 0, action: { ...IDLE_ACTION }, shots: new OneShotTracker() };
       this.remotes.set(id, r);
       this.scene.add(r.group);
       if (p) r.group.position.fromArray(p);
@@ -239,6 +304,7 @@ export class Multiplayer {
       r.group.position.copy(pos);
       r.group.quaternion.copy(quat);
       this.scene.add(r.group);
+      this.showAction(r);
     }
     if (p) {
       // walking speed from how far the reported pose moved
@@ -255,6 +321,23 @@ export class Multiplayer {
     setPeer(id, r.planet, p);
     if (p) r.target.fromArray(p);
     if (q) r.targetQ.fromArray(q);
+  }
+
+  /** A remote player's action frame from the network (missing = idle). */
+  private applyAction(id: number, raw: unknown): void {
+    const r = this.remotes.get(id);
+    if (!r) return;
+    r.action = decodeAction(raw);
+    const shot = r.shots.next(r.action);
+    this.showAction(r);
+    if (shot !== ShotAction.NONE) r.avatar.playShot(shot);
+  }
+
+  /** Put a remote's continuous action and held item on their avatar. */
+  private showAction(r: Remote): void {
+    r.avatar.setLoopAction(r.action.loop === LoopAction.MINE ? LoopAction.MINE : LoopAction.IDLE);
+    const item = r.action.held ? ITEM_DATA[r.action.held as ItemType] : undefined;
+    r.avatar.setHeldItem(item?.texture ? { texture: item.texture, atlasRegion: item.atlasRegion } : null);
   }
 
   private removeRemote(id: number): void {

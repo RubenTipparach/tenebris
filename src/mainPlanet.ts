@@ -1,3 +1,4 @@
+import { ChatUI } from './net/ChatUI';
 import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
@@ -27,6 +28,7 @@ import { toolIndexFor } from './player/Tools';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
+import { AdminReport } from './net/AdminReport';
 import { MissionHud } from './player/MissionHud';
 import { emitGameEvent, onGameEvent } from './engine/GameEvents';
 import { advanceGameTime, Frame, framePositionAt, frameVelocityAt, frameYawAt, gameTimeS, nextFrame, orbitOf, setLocalGameTime, spinOf, spinYawAt, useNetworkClock } from './world/Orbits';
@@ -42,19 +44,18 @@ import { SolarSystemMockup } from './mockups/SolarSystemMockup';
 import { GroundClutter } from './mockups/GroundClutter';
 import { Fauna } from './planet/Fauna';
 import { netSync } from './net/NetSync';
+import { AVATAR_FROM_WALKER, IDLE_ACTION } from './net/AvatarPose';
 import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
+import { MUSIC_SETTINGS, VOLUME_SLIDERS } from './config/AudioConfig';
 import { showToast } from './utils/toast';
 import { AirSystem } from './player/AirSystem';
 import type { ExposureInput } from './player/Survival';
 
 // Setting: new games start with a ready-to-fly rocket on a launch pad
 const START_WITH_ROCKET_KEY = 'tenebris_start_with_rocket';
-// Walker orientation -> avatar frame (the avatar looks down -Z, the walker
-// camera along +Z): half a turn about up. See setupMultiplayer getPose.
-const AVATAR_FROM_WALKER = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
 function startWithRocket(): boolean {
   try {
     return localStorage.getItem(START_WITH_ROCKET_KEY) === '1';
@@ -78,6 +79,8 @@ function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition
 
 // Background loading holds the main thread at most this long between frames
 const DEFERRED_SLICE_MS = 30;
+// The pause menu's Players tab refreshes this often while it is shown (joins, leaves, planet changes)
+const PLAYERS_TAB_REFRESH_MS = 1000;
 
 class PlanetGame {
   private engine: GameEngine;
@@ -109,6 +112,8 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+  // the chat panel (public: the ?debug console and the MP e2e harness reach it)
+  public chat: ChatUI | null = null;
   private navigation: Navigation | null = null;
   private rocketSync: RocketSync | null = null;
 
@@ -129,6 +134,7 @@ class PlanetGame {
   private releaseTimer = 0;
   private missions: MissionsPanel | null = null;
   private missionHud: MissionHud | null = null;
+  private adminReport: AdminReport | null = null;
   // Air and the space suit (openspec wool-air-and-reentry, design 4)
   private air: AirSystem | null = null;
   // Live orbits: the body whose frame the player is in (it never moves),
@@ -490,7 +496,7 @@ class PlanetGame {
       });
 
       // Set up exit flight callback
-      this.rocketFlightManager.setOnExitFlightCallback((exitPosition) => {
+      this.rocketFlightManager.setOnExitFlightCallback((exitPosition, inSpace) => {
         // The walker takes the rocket camera's view, so climbing out does
         // not snap the look (openspec player-heading; PBD drop_walker)
         const cam = this.engine.camera;
@@ -498,8 +504,12 @@ class PlanetGame {
           forward: cam.getWorldDirection(new THREE.Vector3()),
           up: new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion),
         };
-        // If we landed somewhere (not at launch pad), move player to rocket position
-        if (exitPosition) {
+        if (exitPosition && inSpace) {
+          // Climbed out in space: float beside the parked ship (space mode,
+          // no surface to stand on)
+          this.player.placeAt(exitPosition, view);
+        } else if (exitPosition) {
+          // Landed somewhere (not at launch pad): move player to rocket position
           // Position player slightly above the rocket position, on the surface
           // of the body it landed on (radial from that body's centre)
           const bodyId = this.sphereOfInfluence(exitPosition);
@@ -598,6 +608,8 @@ class PlanetGame {
       this.inputManager.setInventoryToggleCallback(() => {
         this.blockInteraction.getCraftingSystem().toggle();
       });
+      // G opens Missions except in flight, where G is the engine mode
+      this.blockInteraction.getCraftingSystem().setFlyingCheck(() => !!this.rocketFlightManager?.isInFlight());
 
       // Setup mobile pause callback - shows the main menu
       this.inputManager.setPauseToggleCallback(() => {
@@ -850,6 +862,7 @@ class PlanetGame {
     }
     this.navigation.update();
     this.multiplayer?.update(deltaTime);
+    this.updateAdminReport(deltaTime);
     this.rocketSync?.update(deltaTime);
     // Ground clutter (pixel grass tufts, rocks) on every world
     if (!this.groundClutter) {
@@ -1283,8 +1296,13 @@ class PlanetGame {
         const tabName = tab.getAttribute('data-tab');
         const content = document.getElementById(`tab-${tabName}`);
         if (content) content.classList.add('active');
+        if (tabName === 'players') this.renderPlayersTab();
       });
     });
+    // The Players tab keeps up with joins, leaves and planet changes while it is shown
+    window.setInterval(() => {
+      if (document.getElementById('tab-players')?.classList.contains('active')) this.renderPlayersTab();
+    }, PLAYERS_TAB_REFRESH_MS);
 
     if (!atmosphereToggle || !cloudsToggle) return;
 
@@ -1343,6 +1361,30 @@ class PlanetGame {
         MusicManager.setEnabled(musicToggle.checked);
       });
     }
+
+    // Volume sliders: music and sound effects, 0-100 on screen, saved 0-1 per browser
+    const volumeSlider = (id: string, key: string, fallback: number, apply: (v: number) => void): void => {
+      const input = document.getElementById(id) as HTMLInputElement | null;
+      const label = document.getElementById(`${id}-value`);
+      let v = fallback;
+      try {
+        const saved = parseFloat(localStorage.getItem(key) ?? '');
+        if (Number.isFinite(saved)) v = Math.max(0, Math.min(1, saved));
+      } catch { /* no storage: the default */ }
+      apply(v);
+      if (!input) return;
+      const show = () => { if (label) label.textContent = `${input.value}%`; };
+      input.value = String(Math.round(v * 100));
+      show();
+      input.addEventListener('input', () => {
+        const next = Number(input.value) / 100;
+        apply(next);
+        show();
+        try { localStorage.setItem(key, String(next)); } catch { /* not saved */ }
+      });
+    };
+    volumeSlider('volume-music', VOLUME_SLIDERS.MUSIC_KEY, MUSIC_SETTINGS.DEFAULT_VOLUME, v => MusicManager.setVolume(v));
+    volumeSlider('volume-sfx', VOLUME_SLIDERS.SFX_KEY, VOLUME_SLIDERS.SFX_DEFAULT, v => AudioManager.setMasterVolume(v));
 
     // Screenshot button: the game view without the menu over it (as F9)
     document.getElementById('screenshot-btn')?.addEventListener('click', () => this.engine.saveScreenshot());
@@ -1569,6 +1611,56 @@ class PlanetGame {
     this.engine.setStarVisibility(visibility);
   }
 
+  /**
+   * The pause menu's Players tab: everyone in this multiplayer world (you
+   * first), with the body each is on. Offline it says how to play with
+   * others. Names are other players' own text: set as text, never HTML.
+   */
+  private renderPlayersTab(): void {
+    const list = document.getElementById('players-list');
+    const count = document.getElementById('players-count');
+    if (!list || !count) return;
+    const bodyName = (id: string | null) => (id ? getBodyConfig(id)?.name ?? id : 'In space');
+    const row = (name: string, where: string, me: boolean) => {
+      const r = document.createElement('div');
+      r.className = `player-row${me ? ' me' : ''}`;
+      const dot = document.createElement('span');
+      dot.className = 'player-dot';
+      const n = document.createElement('span');
+      n.className = 'player-name';
+      n.textContent = name;
+      if (me) {
+        const you = document.createElement('span');
+        you.className = 'player-you';
+        you.textContent = '(you)';
+        n.appendChild(you);
+      }
+      const w = document.createElement('span');
+      w.className = 'player-where';
+      w.textContent = where;
+      r.append(dot, n, w);
+      return r;
+    };
+    list.replaceChildren();
+    const online = !!this.multiplayer?.isConnected();
+    if (!online) {
+      count.textContent = 'Single player';
+      const empty = document.createElement('div');
+      empty.className = 'players-empty';
+      empty.textContent = 'Not in a multiplayer world. Press MULTIPLAYER below to join or start one.';
+      list.appendChild(empty);
+      return;
+    }
+    const others = this.multiplayer!.getRemotePlayers();
+    count.textContent = `${others.length + 1} player${others.length ? 's' : ''} in this world`;
+    let myName = 'You';
+    try { myName = localStorage.getItem('tenebris_mp_name') || myName; } catch { /* default */ }
+    list.appendChild(row(myName, bodyName(this.sphereOfInfluence(this.player.position)), true));
+    for (const p of [...others].sort((a, b) => a.name.localeCompare(b.name))) {
+      list.appendChild(row(p.name, bodyName(p.planet), false));
+    }
+  }
+
   private setupMultiplayer(): void {
     const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
     const write = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* blocked */ } };
@@ -1622,7 +1714,9 @@ class PlanetGame {
       // (net/Avatar.ts). Turn half a revolution about up so other players
       // see this player's face, not the back of their head.
       const q = new THREE.Quaternion(o.x, o.y, o.z, o.w).multiply(AVATAR_FROM_WALKER);
-      return { planet, p, q };
+      // What this player is doing, so others see them mine / place / interact
+      const a = flying ? { ...IDLE_ACTION } : this.blockInteraction.getActionFrame();
+      return { planet, p, q, a };
     }, name, creator.getLook());
     this.multiplayer.setFrameOffset((planetId) => {
       const o = orbitOf(planetId);
@@ -1630,6 +1724,8 @@ class PlanetGame {
       const p = framePositionAt(planetId, this.frame, gameTimeS());
       return new THREE.Vector3(p.x - o.configured.x, p.y - o.configured.y, p.z - o.configured.z);
     });
+    // Chat (openspec mp-shared-objects): only in a server world
+    this.chat = new ChatUI();
     this.multiplayer.connect(worldSocketUrl(world.id));
     // Online, the orbits run on the server's world clock (everyone's sky agrees)
     useNetworkClock(() => {
@@ -1790,6 +1886,33 @@ class PlanetGame {
       this.player.setEnabled(true);
       void this.teleportToPlanet(SOLAR_SYSTEM.startingBody);
     });
+  }
+
+  // Online: tell the server what the admin portal shows - items, suit,
+  // missions, and a map of the planet underfoot (openspec admin-monitor)
+  private updateAdminReport(dt: number): void {
+    if (!this.multiplayer || !this.navigation) return;
+    if (!this.adminReport) {
+      const nav = this.navigation;
+      this.adminReport = new AdminReport({
+        status: () => {
+          const tracker = this.missions?.getTracker();
+          const now = tracker?.now() ?? null;
+          const air = this.air?.getState();
+          return {
+            slots: this.blockInteraction.getInventory().exportForSave(),
+            suit: air ? { worn: air.worn, tankS: air.tankS } : null,
+            riding: this.rocketFlightManager?.isInFlight() ?? false,
+            missions: tracker ? { done: tracker.save().done, now: now?.id ?? null, prog: now ? tracker.progress(now) : [] } : null,
+          };
+        },
+        planet: () => (this.rocketFlightManager?.isInFlight() ? null : this.player.getCurrentPlanet()?.getName() ?? null),
+        mapImage: (planet, w, h) => nav.mapImage(planet, w, h),
+        onEdit: (planet, fn) => { this.planets.get(planet)?.onBlockEdit(fn); },
+        planets: () => this.planets.keys(),
+      });
+    }
+    this.adminReport.update(dt);
   }
 
   // Missions: the Missions tab of the E panel, counted from play
