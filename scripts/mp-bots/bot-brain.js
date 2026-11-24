@@ -1136,6 +1136,47 @@
       }
       closeMenus();
     },
+    // Launch: board our rocket from its pad panel, thrust on (Space), throttle
+    // up (hold X) until it lifts off; then a short hop - thrust off, parachute
+    // (P), wait for the ground, climb out (V)
+    launch: async () => {
+      const lp = bi().launchPadManager;
+      let mySites = [];
+      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      const pad = lp.getLaunchPads().find(p => p.rocketParts.length > 0 && [...p.hexes.keys()].some(t => mySites.includes(t)));
+      if (!pad) { say('no rocket of my own on a pad'); st.cannot = (st.cannot || []).concat(['launch']); return; }
+      const centre = blockTop(pad.centerTileIndex, P().groundDepthOf(pad.centerTileIndex));
+      st.task = 'boarding the rocket';
+      await approach(centre, 3);
+      closeMenus(); selectEmptyHand();
+      await aimAtMachine(centre.clone().addScaledVector(upAt(centre), 0.2)); selectEmptyHand();
+      await click(2, 80);
+      await sleep(600);
+      const ui = bi().launchPadUI;
+      if (!ui.isMenuOpen()) { say('could not open the launch pad'); closeMenus(); return; }
+      ui.handleBoardRocket();
+      await sleep(2500);
+      const fm = g().rocketFlightManager;
+      if (!fm || !fm.isInFlight()) { say('could not board the rocket'); closeMenus(); return; }
+      say('aboard - thrust on, throttle up');
+      const rc = () => fm.getRocketController();
+      await tap('Space', 120);                       // thrust on
+      key('KeyX', true);                              // throttle up
+      const t0 = performance.now();
+      while (performance.now() - t0 < 12000 && rc() && rc().getState() !== 'LAUNCHING' && rc().getState() !== 'IN_FLIGHT') await sleep(200);
+      await sleep(2000);                              // a short climb
+      key('KeyX', false);
+      say(`rocket state: ${rc() ? rc().getState() : 'gone'}`);
+      await tap('Space', 120);                       // thrust off
+      await sleep(400);
+      await tap('KeyP', 120);                        // parachute
+      const t1 = performance.now();
+      while (performance.now() - t1 < 120000 && rc() && !['LANDED', 'BOARDED_GROUNDED', 'CRASHED', 'DOCKED'].includes(rc().getState())) await sleep(500);
+      say(`came down: ${rc() ? rc().getState() : 'gone'}`);
+      await sleep(1000);
+      if (fm.isInFlight()) await tap('KeyV', 150);  // climb out
+      await sleep(1500);
+    },
     hydro: async () => {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return;
       const w = nearestWaterTile(30);
@@ -1766,8 +1807,8 @@
 
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
-    miner: ['pad', 'assemble', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
-    builder: ['pad', 'assemble', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
+    miner: ['pad', 'assemble', 'launch', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    builder: ['pad', 'assemble', 'launch', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
   // A mission with no progress for STALL_MS is set aside for REST_MS
