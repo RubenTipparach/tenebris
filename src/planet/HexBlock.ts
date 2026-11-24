@@ -4,7 +4,7 @@ import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TilesetConfig, EARTH_TILESET, MOON_TILESET, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { getAssetPath } from '../utils/assetPath';
-import { LIGHTING_CONFIG } from '../config/LightingConfig';
+import { LIGHTING_CONFIG, SURFACE_RELIEF } from '../config/LightingConfig';
 import waterVert from '../shaders/water/water.vert';
 import { flowTile, FlowTile } from '../water/FlowTile';
 import { WaterConfig } from '../config/WaterConfig';
@@ -371,6 +371,10 @@ export class HexBlockMeshBuilder {
           underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
           underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
           underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          reliefStrength: { value: SURFACE_RELIEF.DEFAULT },
+          reliefCavity: { value: SURFACE_RELIEF.CAVITY },
+          reliefHexTilt: { value: SURFACE_RELIEF.HEX_TILT },
+          reliefHexTone: { value: SURFACE_RELIEF.HEX_TONE },
         },
         vertexShader: terrainVert,
         fragmentShader: terrainFrag,
@@ -620,6 +624,10 @@ export class HexBlockMeshBuilder {
           underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
           underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
           underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          reliefStrength: { value: SURFACE_RELIEF.DEFAULT },
+          reliefCavity: { value: SURFACE_RELIEF.CAVITY },
+          reliefHexTilt: { value: SURFACE_RELIEF.HEX_TILT },
+          reliefHexTone: { value: SURFACE_RELIEF.HEX_TONE },
         },
         vertexShader: terrainVert,
         fragmentShader: terrainFrag,
@@ -652,6 +660,7 @@ export class HexBlockMeshBuilder {
     waterLODMat.side = THREE.DoubleSide;
     waterLODMat.transparent = false;
     this.materials.set('waterLOD', waterLODMat);
+    this.applyRelief();
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {
@@ -680,6 +689,21 @@ export class HexBlockMeshBuilder {
     });
     textureCache.set(fullPath, promise);
     return promise;
+  }
+
+  /** Surface relief for a terrain material by its key (LightingConfig SURFACE_RELIEF) */
+  private static reliefFor(key: string): number {
+    if (SURFACE_RELIEF.SOFT_KEYS.test(key)) return SURFACE_RELIEF.SOFT;
+    if (SURFACE_RELIEF.ROCK_KEYS.test(key)) return SURFACE_RELIEF.ROCK;
+    return SURFACE_RELIEF.DEFAULT;
+  }
+
+  /** Give every terrain material its relief by the key it is stored under */
+  private applyRelief(): void {
+    for (const [key, mat] of this.materials) {
+      const u = (mat as THREE.ShaderMaterial).uniforms;
+      if (u?.reliefStrength) u.reliefStrength.value = HexBlockMeshBuilder.reliefFor(key.replace(/LOD$/, ''));
+    }
   }
 
   public getMaterial(faceType: string): THREE.Material {

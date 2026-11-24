@@ -4,6 +4,8 @@ uniform vec3 sunDirection;
 
 attribute vec3 color;
 attribute float torchLight; // Pre-baked torch light per vertex (0-1)
+attribute float water;      // 1 on sea tiles
+varying float vWater;
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
@@ -13,6 +15,7 @@ varying float vTorchLight;
 
 void main() {
   vColor = color;
+  vWater = water;
   // Clamp torchLight to valid range - protects against invalid attribute values
   vTorchLight = clamp(torchLight, 0.0, 1.0);
 

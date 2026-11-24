@@ -27,6 +27,38 @@ uniform float blockLightNight;
 uniform float blockLightDay;
 uniform vec3 blockLightTint;
 
+// Surface relief (LightingConfig SURFACE_RELIEF): the block's own pixel
+// art is its height - a texel's brightness - so each face is lit through a
+// per-pixel normal built from it (stronger on rock, softer on sand and snow)
+uniform float reliefStrength;
+uniform float reliefCavity;
+uniform float reliefHexTilt;  // each hex leans its own way, this far (per unit of relief)
+uniform float reliefHexTone;  // and is a little lighter or darker
+varying vec3 vHexSeed;
+
+float reliefHeight(vec2 uv) {
+  return dot(texture2D(terrainTexture, uv).rgb, vec3(0.299, 0.587, 0.114));
+}
+
+// The face normal tilted by the texture's height steps, in a tangent frame
+// worked out from screen-space derivatives (no tangents in the mesh)
+vec3 reliefNormal(vec3 N, vec3 pos, vec2 uv, out float h) {
+  h = reliefHeight(uv);
+  if (reliefStrength <= 0.0) return N;
+  vec2 px = 1.0 / vec2(textureSize(terrainTexture, 0));
+  float gx = reliefHeight(uv + vec2(px.x, 0.0)) - reliefHeight(uv - vec2(px.x, 0.0));
+  float gy = reliefHeight(uv + vec2(0.0, px.y)) - reliefHeight(uv - vec2(0.0, px.y));
+  vec3 dp1 = dFdx(pos), dp2 = dFdy(pos);
+  vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, N), dp1perp = cross(N, dp1);
+  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+  float len = max(dot(T, T), dot(B, B));
+  if (len < 1e-20) return N;
+  float inv = inversesqrt(len);
+  return normalize(N - reliefStrength * 0.5 * (gx * T + gy * B) * inv);
+}
+
 // Torch light color (warm orange)
 const vec3 TORCH_LIGHT_COLOR = vec3(1.0, 0.7, 0.3);
 
@@ -45,8 +77,23 @@ void main() {
   // Sample the texture
   vec4 texColor = texture2D(terrainTexture, vUv);
 
-  // Standard Lambert diffuse lighting on the mesh face
-  float meshDiffuse = max(0.0, dot(vNormal, sunDirection));
+  // Lambert through the relief normal; a face turned from the sun stays
+  // dark whatever its relief, and low texels sit a little in shadow
+  float height;
+  vec3 N = reliefNormal(normalize(vNormal), vWorldPosition, vUv, height);
+  // Each hex its own lean and tone (its seed; none on meshes without one)
+  float hexTone = 1.0;
+  if (reliefStrength > 0.0 && dot(vHexSeed, vHexSeed) > 1e-6 && dot(vHexSeed, vec3(1.0)) < 2.999) {
+    vec3 n0 = normalize(vNormal);
+    vec3 a = normalize(cross(n0, abs(n0.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+    vec3 b = cross(n0, a);
+    float k = reliefHexTilt * reliefStrength;
+    N = normalize(N + k * ((vHexSeed.g * 2.0 - 1.0) * a + (vHexSeed.b * 2.0 - 1.0) * b));
+    hexTone = 1.0 + reliefHexTone * (vHexSeed.r * 2.0 - 1.0);
+  }
+  float faceLit = smoothstep(-0.05, 0.15, dot(vNormal, sunDirection));
+  float meshDiffuse = max(0.0, dot(N, sunDirection)) * faceLit;
+  float cavity = 1.0 - reliefCavity * (1.0 - smoothstep(0.15, 0.6, height)) * step(0.001, reliefStrength);
 
   // The sky light table at this spot's sun height
   vec3 sunLight = skySun(vSunHeight);
@@ -60,7 +107,7 @@ void main() {
   // still lights the ground, starlight at night
   vec3 ambient = fill * ambientIntensity * vSkyLight;
 
-  vec3 finalColor = texColor.rgb * (ambient + directional);
+  vec3 finalColor = texColor.rgb * hexTone * (ambient + directional) * cavity;
 
   // Apply vertex-baked torch light with warm orange color
   // vTorchLight is pre-calculated per vertex based on nearby torches
