@@ -634,6 +634,17 @@
   // Aim at a machine and mine any block between the eye and it (a pillar
   // block left in the way, a wall), so the right-click reaches the machine
   async function aimAtMachine(target) {
+    // standing on top of it (or inside it) the line of sight misses it: step back
+    for (let k = 0; k < 3 && hdist(player().position, target) < 1.4; k++) {
+      const pos = player().position;
+      const up = upAt(pos);
+      const away = pos.clone().sub(target); away.addScaledVector(up, -away.dot(up));
+      if (away.lengthSq() < 1e-4) away.set(1, 0, 0).addScaledVector(up, -up.x);
+      away.normalize();
+      await lookAtPoint(pos.clone().addScaledVector(away, -3).addScaledVector(up, 0.5), 0.1, 800);
+      key('KeyS', true); key('Space', true); await sleep(450); key('Space', false); await sleep(200); key('KeyS', false);
+      await sleep(250);
+    }
     for (let k = 0; k < 4; k++) {
       await lookAtPoint(target, 0.03, 2000);
       const h = rayHit();
