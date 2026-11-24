@@ -638,9 +638,69 @@ def mirewood_rock(rng):
     return t.px
 
 
+# ---- Thalassa (openspec space-exploration, ocean-world) ----------------------
+# A sea world: salt-meadow turf on its few islands, tide moss where it is
+# wet, white shell sand on its beaches and its whole sea bed, slate soil
+# and black columnar basalt.
+
+THAL = {
+    'turf': R('#0c2f44', '#204f63', '#53998b', '#84e3b5', '#c1f1d8'),
+    'tide': R('#011c34', '#0c2f44', '#204f63', '#297537', '#559642'),
+    'pinks': R('#561c27', '#c34988', '#dd576d', '#eab798'),
+    'shell': R('#a09f91', '#cfaa81', '#eab798', '#fffefe'),
+    'slate': R('#170916', '#2b1f35', '#3e3551', '#522b2f', '#7d4636'),
+    'basalt': R('#010e1a', '#191954', '#1f3b52', '#3e586e', '#5d778d'),
+}
+
+
+def thalassa_turf(rng):
+    """Salt meadow: tufts of blue-green sea grass"""
+    t = Tile(THAL['turf'], 1)
+    t.ground(rng, THAL['turf'], [0, 1, 2], [2, 3, 2])
+    cushions(t, rng, THAL['turf'], 12, [2, 3], ((2, 3), (2, 2), (3, 2)))
+    return t.px
+
+
+def thalassa_moss(rng):
+    """Tide moss: dark wet cushions with sea-pink flowers"""
+    t = Tile(THAL['tide'], 2)
+    t.ground(rng, THAL['tide'], [1, 2], [3, 2])
+    cushions(t, rng, THAL['tide'], 9, [2, 3], ((3, 2), (3, 3), (2, 2)))
+    for _ in range(4):
+        x, y = rng.randrange(N), rng.randrange(N)
+        t.put(x, y, THAL['pinks'][2]); t.put(x + 1, y, THAL['pinks'][1]); t.put(x, y + 1, THAL['pinks'][1])
+    return t.px
+
+
+def thalassa_bank(rng):
+    """Shell sand: pale grains with broken shells, pink and white"""
+    t = Tile(THAL['shell'], 1)
+    t.ground(rng, THAL['shell'], [1, 2], [3, 2])
+    cushions(t, rng, THAL['shell'], 4, [2], ((2, 2), (3, 2)))
+    cushions(t, rng, THAL['pinks'], 3, [2], ((2, 2),))
+    specks(t, rng, THAL['shell'][3], 4)
+    return t.px
+
+
+def thalassa_soil(rng):
+    t = Tile(THAL['slate'], 2)
+    t.ground(rng, THAL['slate'], [1, 2, 3], [2, 4, 2])
+    cushions(t, rng, THAL['slate'], 5, [2, 3], ((2, 2), (3, 2)))
+    return t.px
+
+
+def thalassa_rock(rng):
+    """Columnar basalt: tight plates, a dark joint round each"""
+    t = Tile(THAL['basalt'], 2)
+    plates(t, rng, THAL['basalt'][1:], 4, THAL['basalt'][0])
+    return t.px
+
+
 JUNGLE_MOONS = {
     'verdance': (verdance_soil, verdance_rock, verdance_bank, [('jungle', verdance_jungle), ('swamp', verdance_swamp)]),
     'mirewood': (mirewood_soil, mirewood_rock, mirewood_bank, [('jungle', mirewood_jungle), ('swamp', mirewood_swamp)]),
+    # last, so the moons above draw from the shared rng unchanged
+    'thalassa': (thalassa_soil, thalassa_rock, thalassa_bank, [('turf', thalassa_turf), ('moss', thalassa_moss)]),
 }
 
 

@@ -118,9 +118,10 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // The jungle moons: their grounds and soil drop dirt, their rock stone
     case HexBlockType.VERD_JUNGLE: case HexBlockType.VERD_SWAMP: case HexBlockType.VERD_SOIL:
     case HexBlockType.MIRE_JUNGLE: case HexBlockType.MIRE_SWAMP: case HexBlockType.MIRE_SOIL:
+    case HexBlockType.THAL_TURF: case HexBlockType.THAL_MOSS: case HexBlockType.THAL_SOIL:
       return ItemType.DIRT;
-    case HexBlockType.VERD_BANK: case HexBlockType.MIRE_BANK: return ItemType.SAND;
-    case HexBlockType.VERD_ROCK: case HexBlockType.MIRE_ROCK: return ItemType.STONE;
+    case HexBlockType.VERD_BANK: case HexBlockType.MIRE_BANK: case HexBlockType.THAL_BANK: return ItemType.SAND;
+    case HexBlockType.VERD_ROCK: case HexBlockType.MIRE_ROCK: case HexBlockType.THAL_ROCK: return ItemType.STONE;
     // The Moon's minerals give the ordinary ores
     case HexBlockType.MOON_ORE_IRON: return ItemType.ORE_IRON;
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;

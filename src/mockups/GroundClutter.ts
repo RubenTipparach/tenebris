@@ -289,6 +289,11 @@ const ALIEN_CLUTTER: Partial<Record<number, AlienPlan>> = {
   [T.MIRE_SWAMP]: alien(3, 4, 0.04, 1, [0x161612, 0x559642, 0x9bb675], 0x2b1f35),
   [T.MIRE_BANK]: alien(1, 3, 0.25, 2, [0x204f63, 0x53998b, 0x84e3b5], 0x69608b),
   [T.MIRE_ROCK]: alien(0, 0, 0.5, 3, null, 0x3e3551),
+  // Thalassa: sea-grass tufts on the turf, sea pinks on the tide moss, shells on the sand
+  [T.THAL_TURF]: alien(6, 5, 0.04, 1, [0x204f63, 0x53998b, 0x84e3b5], 0x3e3551),
+  [T.THAL_MOSS]: alien(3, 4, 0.05, 1, [0x0c2f44, 0x297537, 0xdd576d], 0x2b1f35),
+  [T.THAL_BANK]: alien(1, 2, 0.3, 2, [0xcfaa81, 0xeab798, 0xdd576d], 0xa09f91),
+  [T.THAL_ROCK]: alien(0, 0, 0.5, 3, null, 0x1f3b52),
 };
 
 function isSequoiaBlock(block: number): boolean {

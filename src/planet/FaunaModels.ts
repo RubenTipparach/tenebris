@@ -719,6 +719,20 @@ const MODELS: Record<FaunaCreatureId, () => FaunaModel> = {
     b.box('tail', [0.02, 0.06, 0.36], [0, 0.17, -0.42], 0x9a6ad8, { glow: 0.5 });
     return b.build();
   },
+  // ---- Thalassa: a chain salp - clear barrels in a row, each with a glowing
+  // gut, the chain swaying as it drifts --------------------------------------
+  chainSalp: () => {
+    const barrel = 0xc2f0ff, gut = 0x74effe, ring = 0x29adff;
+    const b = new ModelBuilder();
+    const links: [string, number][] = [['body', 0], ['skirtA', 0.34], ['skirtB', -0.34], ['arms', 0.68], ['tentacles', -0.68]];
+    for (const [part, z] of links) {
+      if (part !== 'body') b.part(part, [0, 0, z * 0.5], part === 'skirtA' || part === 'arms' ? [0, 1, 0] : [1, 0, 0]);
+      b.add(part, new THREE.CylinderGeometry(0.13, 0.13, 0.3, 6, 1, true), barrel, { glow: 0.35, at: [0, 0, z], rot: [Math.PI / 2, 0, 0] });
+      b.ball(part, 0.05, [0, 0.02, z], gut, { glow: 1 });
+      b.box(part, [0.28, 0.02, 0.02], [0, 0, z + 0.14], ring, { glow: 0.6 });
+    }
+    return b.build();
+  },
 };
 
 export function buildFaunaModel(id: FaunaSpeciesId): FaunaModel {

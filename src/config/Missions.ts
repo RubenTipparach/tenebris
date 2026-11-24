@@ -143,9 +143,10 @@ export const VISIT_ROUTE: Visit[] = [
   V('umbra', 'visit_ferrum', 'sunward'), V('nyx', 'visit_umbra', 'sunward'), V('brand', 'visit_umbra', 'sunward'), V('grit', 'visit_umbra', 'sunward'),
   V('vesper', 'visit_umbra', 'sunward'), V('sable', 'visit_vesper', 'sunward'), V('talus', 'visit_vesper', 'sunward'), V('magnetite', 'visit_vesper', 'sunward'),
   V('sun', 'visit_vesper', 'sunward'),
-  // outward: Kessel, Aurelia, Cinder, Nerith, Halcyon, Tessaly, Brontes
+  // outward: Kessel, Thalassa, Aurelia, Cinder, Nerith, Halcyon, Tessaly, Brontes
   V('kessel', 'moon', 'outward'), V('sleet', 'visit_kessel', 'outward'),
-  V('aurelia', 'visit_kessel', 'outward'),
+  V('thalassa', 'visit_kessel', 'outward'),
+  V('aurelia', 'visit_thalassa', 'outward'),
   V('mirewood', 'visit_aurelia', 'outward'), V('ashfall', 'visit_aurelia', 'outward'), V('ingot', 'visit_aurelia', 'outward'), V('calyx', 'visit_aurelia', 'outward'),
   V('cinder', 'visit_aurelia', 'outward'), V('scoria', 'visit_cinder', 'outward'), V('nickel', 'visit_cinder', 'outward'),
   V('nerith', 'visit_cinder', 'outward'), V('ferrite', 'visit_nerith', 'outward'),

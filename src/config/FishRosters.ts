@@ -82,6 +82,16 @@ export const FISH_ROSTERS: Record<string, FishSpecies[]> = {
     { item: ItemType.FISH_GAR, name: 'Violet gar', lengthM: 1.1, minDepth: 3, bite: 0.15, pull: 1.4, strength: 4,
       look: { shape: 'fish', body: 0x83769c, back: 0x7e2553, belly: 0xfff1e8, fin: 0xff77a8, bands: 0x7e2553, height: 0.15, school: [1, 2] } },
   ],
+  // Thalassa (space-exploration, ocean-world): shell-sand shallows, kelp
+  // forests, the deep floor
+  thalassa: [
+    { item: ItemType.FISH_MULLET, name: 'Pearl mullet', lengthM: 0.3, minDepth: 1, bite: 0.55, pull: 0.55, strength: 2,
+      look: { shape: 'fish', body: 0xfff1e8, back: 0x83769c, belly: 0xffccaa, fin: 0xff77a8, stripe: 0xc2c3c7, height: 0.3, school: [6, 10] } },
+    { item: ItemType.FISH_KELPEEL, name: 'Kelp eel', lengthM: 1.2, minDepth: 3, bite: 0.25, pull: 1.25, strength: 3,
+      look: { shape: 'eel', body: 0x008751, back: 0x1d2b53, belly: 0x00e436, fin: 0x7e2553, school: [1, 2] } },
+    { item: ItemType.FISH_GROUPER, name: 'Abyss grouper', lengthM: 1.4, minDepth: 6, bite: 0.12, pull: 1.5, strength: 5,
+      look: { shape: 'fish', body: 0x7e2553, back: 0x1d2b53, belly: 0xff77a8, fin: 0x83769c, bands: 0x1d2b53, height: 0.42, school: [1, 1] } },
+  ],
 };
 
 

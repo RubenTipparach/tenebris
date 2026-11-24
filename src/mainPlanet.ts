@@ -191,6 +191,7 @@ class PlanetGame {
           blockRemap: bodyConfig.terrain.blockRemap,
           maxDepth: bodyConfig.terrain.maxDepth,
           volcanoes: bodyConfig.terrain.volcanoes,
+          seaBias: bodyConfig.terrain.seaBias,
           iceCover: bodyConfig.terrain.iceCover,
           metalRich: bodyConfig.terrain.metalRich,
           extraOres: bodyConfig.terrain.extraOres,

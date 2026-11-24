@@ -126,6 +126,8 @@ export interface TerrainConfig {
   blockRemap?: Partial<Record<number, HexBlockType>>;
   /** Rock worlds: volcano cones with molten craters (count) */
   volcanoes?: number;
+  /** An ocean world: lowers the height field so the sea covers most of it, leaving islands (terrainShape seaBias) */
+  seaBias?: number;
   /** Rock worlds: a frozen crust (frost over glacier ice, blue ice on slopes) */
   iceCover?: boolean;
   /** Rock worlds: meteoric iron at the surface, extra ore veins */
@@ -408,11 +410,11 @@ function rockWorld(w: RockWorld): CelestialBodyConfig {
   };
 }
 
-/** What makes one jungle moon different from the next */
-interface JungleWorld {
+/** What makes one sea world (a jungle moon, the ocean planet) different from the next */
+interface SeaWorld {
   id: string;
   name: string;
-  parent: string;        // the gas giant it orbits
+  parent?: string;       // the body it orbits (a jungle moon's gas giant); none = a planet of the Sun
   radius: number;
   subdivisions: number;
   position: { x: number; y: number; z: number };
@@ -427,26 +429,34 @@ interface JungleWorld {
   floraDensity: number;
   seaFlora: SeaFloraTable;
   dayMin?: number;       // solar day, minutes (default by type)
+  gravity?: number;      // 1 = Earth (default a jungle moon's 0.8)
+  seaBias?: number;      // an ocean world: how far the sea floods its land (terrainShape seaBias)
+  extraOres?: Deposit[]; // its deposits (default the jungle moons' oil)
+  maxDepth?: number;     // blocks below sea level (default PlayerConfig.TERRAIN_MAX_DEPTH): a deep ocean needs more
+  /** Its two grounds' texture names, mild then wet (public/textures/alien/<id>_<name>.png; default the jungle moons' jungle / swamp) */
+  grounds?: [string, string];
 }
 
 /**
- * A lush jungle moon: Earth's generator (oceans and lakes, beaches, climate
- * biomes) in the moon's own blocks - deep jungle where Earth has grassland,
- * savanna or desert, swamp where it is wet or cold, river bank on the
- * shores, its own soil and rock - and its own jungle species
+ * A living sea world - a lush jungle moon, or Thalassa the ocean planet:
+ * Earth's generator (oceans and lakes, beaches, climate biomes) in the
+ * world's own blocks - its mild ground where Earth has grassland, savanna
+ * or desert, its wet ground where it is wet or cold, its bank on the shores
+ * (and the sea bed), its own soil and rock - and its own species
  * (public/textures/alien/<id>_*.png).
  */
-function jungleMoon(w: JungleWorld): CelestialBodyConfig {
+function seaWorld(w: SeaWorld): CelestialBodyConfig {
   const [jungle, swamp, bank, soil, rock] = w.blocks;
   const tex = (name: string) => `/textures/alien/${w.id}_${name}.png`;
+  const [mild, wet] = w.grounds ?? ['jungle', 'swamp'];
   return {
     id: w.id,
     name: w.name,
-    type: CelestialBodyType.MOON,
+    type: w.parent ? CelestialBodyType.MOON : CelestialBodyType.PLANET,
     radius: w.radius,
     subdivisions: w.subdivisions,
     position: w.position,
-    orbit: { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 },
+    orbit: w.parent ? { parent: w.parent, distance: 0, orbitalPeriod: 0, initialAngle: 0 } : undefined,
     dayMin: w.dayMin,
     visual: {
       heightVariation: 0.8,
@@ -455,7 +465,7 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
       atmosphereTint: w.atmosphereTint,
       lodColors: { land: w.land, water: w.water, ice: '#b8e0f0', snow: w.land, rock: '#5d778d' },
     },
-    gravity: { strength: 0.8, fullRadiusMultiplier: 1.3, falloffRadiusMultiplier: 1.8 },
+    gravity: { strength: w.gravity ?? 0.8, fullRadiusMultiplier: 1.3, falloffRadiusMultiplier: 1.8 },
     terrain: {
       hasWater: true,
       seaLevel: 12,
@@ -463,7 +473,9 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
       waterColor: w.water,
       waterDeepColor: w.waterDeep,
       biomes: true,
-      extraOres: [DEPOSITS.OIL],   // the jungle moons hold oil
+      seaBias: w.seaBias,
+      maxDepth: w.maxDepth,
+      extraOres: w.extraOres ?? [DEPOSITS.OIL],   // the jungle moons hold oil
       blockRemap: {
         [HexBlockType.GRASS]: jungle,
         [HexBlockType.DRY_GRASS]: jungle,
@@ -478,8 +490,8 @@ function jungleMoon(w: JungleWorld): CelestialBodyConfig {
     // Its blocks' own textures, so its distant LOD wears them too
     tileset: {
       basePath: '/textures/alien',
-      stone: tex('rock'), dirt: tex('soil'), grass: tex('jungle'), dirtGrass: tex('jungle_side'),
-      sand: tex('bank'), wood: tex('soil'), snow: tex('swamp'), dirtSnow: tex('swamp'),
+      stone: tex('rock'), dirt: tex('soil'), grass: tex(mild), dirtGrass: tex(`${mild}_side`),
+      sand: tex('bank'), wood: tex('soil'), snow: tex(wet), dirtSnow: tex(wet),
       ice: '/textures/ice.png', water: '/textures/water.png', glass: '/textures/glass.png',
       mineralsPath: '/textures/minerals/earth',
     },
@@ -563,6 +575,8 @@ export const BODY_ENVIRONMENTS: Record<string, BodyEnvironment> = {
   aurelia: env('cold', 'high', 4),
   verdance: env('temperate', 'none', 1.5),
   mirewood: env('temperate', 'none', 1.5),
+  // Thalassa (ocean-world): thick, breathable sea air
+  thalassa: env('temperate', 'none', 2.5),
   pyrra: env('scorching', 'high'),
   glacia: env('frozen', 'high'),
   obol: env('frozen', 'high'),
@@ -1156,7 +1170,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // Verdance: emerald deep jungle under giant buttressed canopy trees hung
     // with lianas, olive mangrove swamps on stilt roots, fan palms on the
     // pale river banks; red laterite soil
-    jungleMoon({ id: 'verdance', name: 'Verdance', dayMin: 22, parent: 'brontes', radius: 70, subdivisions: 6, position: { x: -3700, y: 800, z: -2900 },
+    seaWorld({ id: 'verdance', name: 'Verdance', dayMin: 22, parent: 'brontes', radius: 70, subdivisions: 6, position: { x: -3700, y: 800, z: -2900 },
       seed: 909, water: '#2f6b52', waterDeep: '#18402f', land: '#2f7a3a', atmosphereTint: '#c8ffd0',
       blocks: [HexBlockType.VERD_JUNGLE, HexBlockType.VERD_SWAMP, HexBlockType.VERD_BANK, HexBlockType.VERD_SOIL, HexBlockType.VERD_ROCK],
       flora: {
@@ -1183,7 +1197,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
     // Mirewood: lime-and-teal jungle of giant elephant-ear plants, black peat
     // swamps of bottle-trunked swamp cypress, and grey silt banks under
     // drooping weeping ferns; dark peat soil, banded violet rock
-    jungleMoon({ id: 'mirewood', name: 'Mirewood', dayMin: 26, parent: 'aurelia', radius: 70, subdivisions: 6, position: { x: 3900, y: -100, z: 4000 },
+    seaWorld({ id: 'mirewood', name: 'Mirewood', dayMin: 26, parent: 'aurelia', radius: 70, subdivisions: 6, position: { x: 3900, y: -100, z: 4000 },
       seed: 1010, water: '#3a5a40', waterDeep: '#1d2f22', land: '#4f8a44', atmosphereTint: '#e0ffc0',
       blocks: [HexBlockType.MIRE_JUNGLE, HexBlockType.MIRE_SWAMP, HexBlockType.MIRE_BANK, HexBlockType.MIRE_SOIL, HexBlockType.MIRE_ROCK],
       flora: {
@@ -1204,6 +1218,37 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
           { species: 'bladderwort', depth: [1, 2], patch: -0.3, chance: 0.85, perTile: [1, 3] },
           { species: 'bogtress', depth: [4, 20], patch: -0.3, chance: 0.85, perTile: [1, 3] },
           { species: 'swampweed', depth: [2, 20], patch: -0.25, chance: 0.85, perTile: [2, 3] },
+        ],
+      },
+    }),
+    // Thalassa (openspec space-exploration, ocean-world): the ocean planet on
+    // the outward route between Kessel and Aurelia - nine-tenths sea over a
+    // deep shell-sand floor, a scatter of salt-meadow islands under bent
+    // salt palms, brine bush on the tide moss, black basalt. Thick, breathable
+    // air (BODY_ENVIRONMENTS). Its deep water holds deuterium (DEPTH_BANDS)
+    seaWorld({ id: 'thalassa', name: 'Thalassa', dayMin: 30, radius: 150, subdivisions: 7, position: { x: 1500, y: -200, z: 4200 },
+      seed: 1212, water: '#15578a', waterDeep: '#011c34', land: '#53998b', atmosphereTint: '#b8e8ff',
+      // seaBias 0.6: 92-96% sea; 24 blocks below sea level: a median 11 m
+      // of water, a sixth of the planet 16 m or deeper (the deuterium band)
+      gravity: 0.9, seaBias: 0.6, maxDepth: 24, extraOres: [], grounds: ['turf', 'moss'],
+      blocks: [HexBlockType.THAL_TURF, HexBlockType.THAL_MOSS, HexBlockType.THAL_BANK, HexBlockType.THAL_SOIL, HexBlockType.THAL_ROCK],
+      flora: {
+        [HexBlockType.THAL_TURF]: { species: 'saltpalm', chance: 0.8 },
+        [HexBlockType.THAL_MOSS]: { species: 'brinebush', chance: 1 },
+      },
+      floraDensity: 2.5,
+      // Pearl anemones on the basalt (and in a few patches), surf grass in
+      // the island shallows, bone coral on the shelves, and giant kelp
+      // forests rising from the deep floor
+      seaFlora: {
+        patchScale: 2.5, // a bigger world than the jungle moons: broader beds
+        rock: [HexBlockType.THAL_ROCK],
+        zones: [
+          { species: 'pearlanemone', depth: [1, 4], rocky: true, chance: 0.6, perTile: [2, 3] },
+          { species: 'pearlanemone', depth: [1, 3], patch: 0.55, chance: 0.6, perTile: [2, 3] },
+          { species: 'surfgrass', depth: [1, 2], patch: -0.3, chance: 0.85, perTile: [3, 4] },
+          { species: 'bonecoral', depth: [2, 5], patch: 0.15, chance: 0.7, perTile: [1, 2] },
+          { species: 'giantkelp', depth: [4, 40], patch: -0.4, chance: 0.85, perTile: [1, 3] },
         ],
       },
     }),

@@ -807,6 +807,10 @@ JUNGLE_FISH = [
     ("violet_gar", "fish", "indigo", "plum", "white", "pink", "black", 7.0, 2.6, {"bands": "plum"}),
     # Sequoia's schooling fish (openspec underwater-life)
     ("sprat", "fish", "lgrey", "blue", "white", "blue", "navy", 5.0, 2.6, {"stripe": "navy"}),
+    # Thalassa (openspec space-exploration, ocean-world)
+    ("pearl_mullet", "fish", "white", "indigo", "peach", "pink", "navy", 5.5, 2.8, {"stripe": "lgrey"}),
+    ("kelp_eel", "eel", "green", "navy", "lime", "plum", "black", 0, 0, {}),
+    ("abyss_grouper", "fish", "plum", "navy", "pink", "indigo", "black", 7.0, 4.2, {"bands": "navy"}),
 ]
 
 

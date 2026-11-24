@@ -779,6 +779,18 @@
   "250": {
    "name": "Fuel Rod Mk2",
    "icon": "/textures/icons/fuel_rod_mk2.png"
+  },
+  "251": {
+   "name": "Pearl Mullet",
+   "icon": "/textures/fish/pearl_mullet.png"
+  },
+  "252": {
+   "name": "Kelp Eel",
+   "icon": "/textures/fish/kelp_eel.png"
+  },
+  "253": {
+   "name": "Abyss Grouper",
+   "icon": "/textures/fish/abyss_grouper.png"
   }
  },
  "slots": {
@@ -2120,6 +2132,22 @@
    ]
   },
   {
+   "id": "visit_thalassa",
+   "title": "Visit Thalassa",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Chute landing",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
    "id": "visit_aurelia",
    "title": "Skim Aurelia",
    "branch": "outward",
@@ -2735,6 +2763,22 @@
    },
    "orbitRadius": 1431.782,
    "startAngle": -2.709
+  },
+  {
+   "id": "thalassa",
+   "name": "Thalassa",
+   "kind": "planet",
+   "landable": true,
+   "radius": 150,
+   "colour": "#53998b",
+   "parent": "sun",
+   "position": {
+    "x": 1500,
+    "y": -200,
+    "z": 4200
+   },
+   "orbitRadius": 3590.265,
+   "startAngle": 1.796
   },
   {
    "id": "ember",

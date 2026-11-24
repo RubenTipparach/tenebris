@@ -52,9 +52,9 @@
 
 ## 7. Thalassa
 
-- [ ] 7.1 Add Thalassa to `SOLAR_SYSTEM` (design §9) with its own blocks; verify `bodyClearanceProblems` passes, and a headless from-orbit shot shows at least 90% ocean with islands.
-- [ ] 7.2 Give Thalassa its own sea flora, fish and island tree, extending the roster disjointness asserts; verify the asserts pass and a headless underwater shot shows its species.
-- [ ] 7.3 Add the deep deuterium band; verify a test that the band yields deuterium only below its depth. Ask the owner to check Thalassa in game.
+- [x] 7.1 Add Thalassa to `SOLAR_SYSTEM` (design §9) with its own blocks; verify `bodyClearanceProblems` passes, and a headless from-orbit shot shows at least 90% ocean with islands.
+- [x] 7.2 Give Thalassa its own sea flora, fish and island tree, extending the roster disjointness asserts; verify the asserts pass and a headless underwater shot shows its species.
+- [x] 7.3 Add the deep deuterium band; verify a test that the band yields deuterium only below its depth. Ask the owner to check Thalassa in game.
 
 ## 8. Submarine and gas-giant diver
 

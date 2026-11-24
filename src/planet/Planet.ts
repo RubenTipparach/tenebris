@@ -47,6 +47,7 @@ export interface PlanetConfig {
   maxDepth?: number;    // Blocks below sea level (default PlayerConfig.TERRAIN_MAX_DEPTH); small bodies need fewer
   // Rock-world landforms and crusts (single-texture bodies)
   volcanoes?: number;   // volcano cones with a crater
+  seaBias?: number;     // an ocean world: lowers the height field so the sea covers most of it (terrainShape)
   iceCover?: boolean;   // frozen crust: frost over glacier ice
   metalRich?: boolean;  // meteoric iron at the surface, extra ore below
   extraOres?: Deposit[];  // deposits beyond the common ores (ResourceConfig)
@@ -4200,6 +4201,7 @@ export class Planet {
         oceanDepthPower: PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER,
         terrainMaxDepth: this.MAX_DEPTH - this.SEA_LEVEL,
         volcanoes: this.config.volcanoes ?? 0,
+        seaBias: this.config.seaBias ?? 0,
         radius: this.radius,
         spawnDir: d ? { x: d.x, y: d.y, z: d.z } : undefined,
       };
