@@ -34,6 +34,7 @@
   let SMELTS = null;     // furnace SMELTING_RECIPES
   let ESMELTS = null;    // electric furnace ELECTRIC_SMELTING_RECIPES
   let COOKS = null;      // campfire / kiln / oven recipes, with their station kind
+  let BENCH = null;      // electronics workbench recipes
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -56,6 +57,8 @@
     const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
     SMELTS = smeltMod.SMELTING_RECIPES;
     ESMELTS = smeltMod.ELECTRIC_SMELTING_RECIPES;
+    const benchMod = await import(`${BASE}/player/ElectronicsWorkbenchUI.ts`);
+    BENCH = benchMod.ELECTRONICS_RECIPES;
     const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
     COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
     I = inventory.ItemType;
@@ -481,6 +484,8 @@
   function closeMenus() {
     const b = bi();
     try { if (b.furnaceUI.isMenuOpen()) b.furnaceUI.close(); } catch {}
+    try { if (b.electricFurnaceUI.isMenuOpen()) b.electricFurnaceUI.close(); } catch {}
+    try { if (b.electronicsWorkbenchUI.isMenuOpen()) b.electronicsWorkbenchUI.close(); } catch {}
     try { if (b.storageUI.isMenuOpen()) b.storageUI.close(); } catch {}
     try { if (b.machineUI && b.machineUI.isOpen()) b.machineUI.close(); } catch {}
     try { const cs = b.getCraftingSystem(); if (cs.isMenuOpen()) cs.close(); } catch {}
@@ -587,6 +592,21 @@
     }
   }
 
+  // Aim at a machine and mine any block between the eye and it (a pillar
+  // block left in the way, a wall), so the right-click reaches the machine
+  async function aimAtMachine(target) {
+    for (let k = 0; k < 4; k++) {
+      await lookAtPoint(target, 0.03, 2000);
+      const h = rayHit();
+      const far = target.distanceTo(eye());
+      if (!h || h.point.distanceTo(eye()) >= far - 0.35) return;
+      const b = P().getBlock(h.tileIndex, h.depth);
+      if (b === B.AIR || b === B.WATER || h.depth <= 0) return;
+      say(`a block is in the way of the machine - mining it`);
+      await mineBlock(h.tileIndex, h.depth, 8000);
+    }
+  }
+
   // ---- furnace --------------------------------------------------------------
   function myFurnace() {
     const fm = bi().furnaceManager;
@@ -604,7 +624,8 @@
     await approach(f.position, 2.2);
     const aim = f.position.clone().addScaledVector(upAt(f.position), 0.3);
     selectEmptyHand();
-    await lookAtPoint(aim, 0.04, 2000);
+    await aimAtMachine(aim);
+    selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     return bi().furnaceUI.isMenuOpen();
@@ -721,7 +742,7 @@
     st.task = `cooking at the ${kind}`;
     await approach(c.position, 2.2);
     selectEmptyHand();
-    await lookAtPoint(c.position.clone().addScaledVector(upAt(c.position), 0.3), 0.04, 2000);
+    await aimAtMachine(c.position.clone().addScaledVector(upAt(c.position), 0.3)); selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     const ui = bi().storageUI;
@@ -1022,6 +1043,16 @@
     }
     if (feetDepth() < surface - 1) await pillarUpTo(surface - 1, 60);
     void seaLevel;
+    if (!done()) {
+      // nothing of it round here: new ground, well away, before the next try
+      const names = wanted.map(b => Object.keys(B).find(k => B[k] === b)).join('/');
+      say(`no ${names} here - heading for new ground`);
+      const pos = player().position;
+      const up = upAt(pos);
+      const r = new (T().Vector3)(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+      r.addScaledVector(up, -r.dot(up)).normalize();
+      await walkTo(pos.clone().addScaledVector(r, 80), 4, 60000);
+    }
     return done();
   }
   // Find a surface block of type `kinds` within range, walk there, dig it
@@ -1136,7 +1167,7 @@
     st.task = 'electric smelting';
     await approach(ef.position, 2.2);
     closeMenus(); selectEmptyHand();
-    await lookAtPoint(ef.position.clone().addScaledVector(upAt(ef.position), 0.3), 0.03, 2000);
+    await aimAtMachine(ef.position.clone().addScaledVector(upAt(ef.position), 0.3)); selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     const ui = bi().electricFurnaceUI;
@@ -1154,6 +1185,49 @@
     closeMenus();
     say(`took ${count(output)} ${itemName(output)} from the electric furnace`);
     return count(output) >= n;
+  }
+
+
+  // ---- the electronics workbench (needs power) --------------------------------------
+  function nearestWorkbench() {
+    const pos = player().position;
+    // a powered one: an unpowered bench can't make anything
+    return bi().electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()
+      .filter(w => bi().nodePowered(w.tileIndex))
+      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
+  }
+  // Craft `times` of recipe `idx` at a powered workbench
+  async function benchCraft(idx, times) {
+    let wb = nearestWorkbench();
+    if (!wb || wb.position.distanceTo(player().position) > 150) {
+      // build one by the power plant
+      const ef = await buildPowerPlant();
+      if (!ef) return false;
+      if (!(await obtain(I.ELECTRONICS_WORKBENCH, 1))) return false;
+      const cable = bi().cableNodeManager.getPlacedCables().find(c => c.position.distanceTo(ef.position) < 4);
+      const t = cable && neighbors(cable.tileIndex).find(isDryTile);
+      if (t === undefined || !(await placeOnTile(I.ELECTRONICS_WORKBENCH, t))) return false;
+      wb = nearestWorkbench();
+      if (!wb) return false;
+    }
+    st.task = 'at the workbench';
+    await approach(wb.position, 2.2);
+    closeMenus(); selectEmptyHand();
+    await aimAtMachine(wb.position.clone().addScaledVector(upAt(wb.position), 0.3)); selectEmptyHand();
+    await click(2, 80);
+    await sleep(600);
+    const ui = bi().electronicsWorkbenchUI;
+    if (!ui.isMenuOpen()) { say('could not open the workbench'); closeMenus(); st.badPlace = (st.badPlace || []).concat([wb.tileIndex]); return false; }
+    if (!ui.isPowered) { say('the workbench has no power'); closeMenus(); return false; }
+    ui.selectedRecipeIndex = idx;
+    try { ui.updateUI(); } catch {}
+    const out = BENCH[idx].output.itemType;
+    const before = count(out);
+    for (let k = 0; k < times; k++) { ui.handleCraftButtonClick(); await sleep(250); }
+    closeMenus();
+    const made = count(out) - before;
+    say(made > 0 ? `made ${made} ${itemName(out)} at the workbench` : `the workbench made nothing (${BENCH[idx].name})`);
+    return made > 0;
   }
 
   // ---- a general planner: get any item the way a player would -------------------
@@ -1180,6 +1254,19 @@
         if (count(+k) < q) { await obtain(+k, q, depth + 1); if (count(+k) < q) return false; }
       }
       await craft(item, Math.max(1, times));
+      return count(item) >= n;
+    }
+    // made at the electronics workbench
+    const bidx = BENCH ? BENCH.findIndex(r => r.output.itemType === item && tracker().recipeOpen(item)) : -1;
+    if (bidx >= 0) {
+      const r = BENCH[bidx];
+      const times = Math.ceil((n - count(item)) / r.output.quantity);
+      const need = {};
+      for (const inp of r.inputs) need[inp.itemType] = (need[inp.itemType] || 0) + inp.quantity * times;
+      for (const [k, q] of Object.entries(need)) {
+        if (count(+k) < q) { await obtain(+k, q, depth + 1); if (count(+k) < q) return false; }
+      }
+      await benchCraft(bidx, times);
       return count(item) >= n;
     }
     // smelted
@@ -1234,7 +1321,7 @@
       if ((st.unknown || []).includes(o.item)) { st.cannot = (st.cannot || []).concat([m.id]); return; }
       if (o.kind === 'gained') { await obtain(o.item, count(o.item) + left); return; }
       if (o.kind === 'crafted') {
-        const r = RECIPES.find(r => r.output.itemType === o.item);
+        const r = RECIPES.find(r => r.output.itemType === o.item) || (BENCH || []).find(r => r.output.itemType === o.item);
         const q = r ? r.output.quantity : 1;
         await obtain(o.item, count(o.item) + Math.ceil(left / q) * q);
         return;

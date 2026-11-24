@@ -1,0 +1,32 @@
+{
+ "role": "Fluid gear",
+ "mass_kg": 430,
+ "pump_rate_l_s": 300,
+ "tier": "T4",
+ "recipe": "iron 12 + bronze 7 + circuit 2 + wire 2",
+ "blurb": "Cryo Trunk. Transfers 300 L/s. Fits a Fluid mount - Tanker Bridge only.",
+ "label": "Cryo Trunk",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Fluid"
+  }
+ ],
+ "texture": "ship_cryo_trunk.png",
+ "atlas_px": 256,
+ "uv_islands": 10
+}

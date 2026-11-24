@@ -1,0 +1,33 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 170,
+ "torque_nm": 5500,
+ "cargo": 2,
+ "tier": "T3",
+ "recipe": "copper 3 + iron 2 + glass 4 + circuit 1",
+ "blurb": "Lightest crew module and the best visibility - 170 kg, and nothing between you and the sky.",
+ "label": "Bubble Cockpit",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_bubble_cockpit.png",
+ "atlas_px": 256,
+ "uv_islands": 17
+}

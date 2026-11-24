@@ -1,0 +1,72 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 420,
+ "torque_nm": 10000,
+ "cargo": 6,
+ "tier": "T4",
+ "recipe": "copper 7 + iron 5 + glass 4 + circuit 3",
+ "blurb": "Laboratory cab. Two sensor mounts, a lit sample bay and stowage under the floor.",
+ "label": "Laboratory Cab",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0.6664,
+    0.8
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Sensor"
+  },
+  {
+   "pos": [
+    0,
+    0.6664,
+    1.8
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Sensor"
+  },
+  {
+   "pos": [
+    0,
+    -0.4764,
+    1.3
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Cargo"
+  }
+ ],
+ "texture": "ship_lab_cockpit.png",
+ "atlas_px": 384,
+ "uv_islands": 21
+}

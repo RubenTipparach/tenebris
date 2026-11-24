@@ -1,0 +1,109 @@
+{
+ "role": "Structure",
+ "mass_kg": 180,
+ "tier": "T3",
+ "recipe": "iron 7 + bronze 3",
+ "blurb": "Four engine stations spread wide but ON the thrust axis - stack-mounted drives here push straight, not up.",
+ "label": "Thrust Spar",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0.34
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -0.986,
+    0.0,
+    -0.34
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0.986,
+    0.0,
+    -0.34
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -2.9,
+    0.0,
+    -0.34
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    2.9,
+    0.0,
+    -0.34
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -1.914,
+    -0.49,
+    -0.1
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    1.914,
+    -0.49,
+    -0.1
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  }
+ ],
+ "texture": "ship_thrust_spar.png",
+ "atlas_px": 320,
+ "uv_islands": 12
+}

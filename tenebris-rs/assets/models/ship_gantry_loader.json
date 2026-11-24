@@ -1,0 +1,33 @@
+{
+ "role": "Cargo gear",
+ "mass_kg": 480,
+ "load_rate_t_s": 2.4,
+ "cargo": 12,
+ "tier": "T4",
+ "recipe": "iron 14 + bronze 5 + circuit 2 + wire 3",
+ "blurb": "Gantry Loader. Moves 2.4 t/s and carries 12 slots. Fits a Cargo mount - Freight and Laboratory cabs.",
+ "label": "Gantry Loader",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Cargo"
+  }
+ ],
+ "texture": "ship_gantry_loader.png",
+ "atlas_px": 256,
+ "uv_islands": 8
+}

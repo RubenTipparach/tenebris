@@ -1,0 +1,96 @@
+{
+ "role": "Structure",
+ "mass_kg": 160,
+ "tier": "T3",
+ "recipe": "iron 8 + bronze 4",
+ "blurb": "Splits one spine into three. The only part that lets a hull grow sideways.",
+ "label": "Hull Junction",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0.0,
+    0,
+    1.8
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    1.28,
+    0,
+    1.8
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -1.28,
+    0,
+    1.8
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -0.8142,
+    -0.49,
+    0.9
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  },
+  {
+   "pos": [
+    0.8142,
+    -0.49,
+    0.9
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Gear"
+  }
+ ],
+ "texture": "ship_hull_junction.png",
+ "atlas_px": 256,
+ "uv_islands": 7
+}
