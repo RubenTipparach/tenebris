@@ -63,19 +63,37 @@ async function launchBot(bot) {
   page.on('pageerror', e => log(bot.name, 'PAGEERR', e.message.slice(0, 200)));
   page.on('console', m => { const t = m.text(); if (t.startsWith('[bot]') || /\[MP\]/.test(t)) log(bot.name, t.slice(0, 220)); });
   const q = `?debug&world=${encodeURIComponent(WORLD)}${SERVER ? `&server=${encodeURIComponent(SERVER)}` : ''}`;
-  await page.goto(CLIENT_URL + q);
-  await waitFor(() => page.evaluate(() => window.__mp && window.__mp.ready()), 240000, `${bot.name} joined`);
+  try {
+    // the dev server can take a while (re-optimising after a source change)
+    await page.goto(CLIENT_URL + q, { timeout: 120000 });
+    await waitFor(() => page.evaluate(() => window.__mp && window.__mp.ready()), 240000, `${bot.name} joined`);
+  } catch (e) {
+    await ctx.close().catch(() => {});
+    throw e;
+  }
   await sleep(4000); // terrain round the spawn
   await page.evaluate((role) => window.__bot.start(role), bot.role);
   log(bot.name, `joined ${WORLD} as a ${bot.role}`);
   return { ...bot, ctx, page };
 }
 
+// A bot that fails to come up is tried again, not the end of the run
+async function launchBotRetrying(bot, tries = 3) {
+  for (let i = 1; ; i++) {
+    try { return await launchBot(bot); }
+    catch (e) {
+      log(bot.name, `launch failed (${i}/${tries}): ${String(e).split('\n')[0].slice(0, 160)}`);
+      if (i >= tries) throw e;
+      await sleep(15000);
+    }
+  }
+}
+
 (async () => {
   const t0 = Date.now();
   const bots = [];
   for (const b of BOTS) {
-    bots.push(await launchBot(b));
+    bots.push(await launchBotRetrying(b));
     await sleep(3000);
   }
   let shot = 0;
@@ -96,6 +114,18 @@ async function launchBot(bot) {
     for (const b of bots) {
       try { status.bots[b.name] = await b.page.evaluate(() => window.__bot.status()); }
       catch (e) { status.bots[b.name] = { error: String(e).slice(0, 200) }; }
+      // The page reloaded (the dev server picked up a source change, or the
+      // server dropped it): once the game is back in the world, start the bot again
+      if (!status.bots[b.name].role) {
+        const ready = await b.page.evaluate(() => !!(window.__mp && window.__mp.ready() && window.__bot)).catch(() => false);
+        if (ready && !b.restarting) {
+          b.restarting = true;
+          log(b.name, 'page reloaded - starting the bot again');
+          await sleep(4000);
+          await b.page.evaluate((role) => window.__bot.start(role), b.role).catch(e => log(b.name, 'restart failed', String(e).slice(0, 120)));
+          b.restarting = false;
+        }
+      }
     }
     fs.writeFileSync(path.join(OUT, 'status.json'), JSON.stringify(status, null, 1));
     // Debugging a live bot: drop OUT/cmd-<bot>.js (a function body) and the
@@ -107,7 +137,9 @@ async function launchBot(bot) {
       fs.rmSync(cmd);
       let out;
       try { out = await b.page.evaluate(`(async () => { ${body} })()`); } catch (e) { out = { error: String(e) }; }
-      fs.writeFileSync(path.join(OUT, `cmd-${b.name}.out.json`), JSON.stringify(out, null, 1));
+      let text;
+      try { text = JSON.stringify(out, null, 1); } catch (e) { text = JSON.stringify({ error: 'result not serialisable: ' + String(e).slice(0, 200) }); }
+      fs.writeFileSync(path.join(OUT, `cmd-${b.name}.out.json`), text);
     }
     if (Date.now() - lastShot > 60000) {
       lastShot = Date.now();
