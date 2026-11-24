@@ -79,6 +79,8 @@ function calculateSunDirectionForPlanet(planetCenter: THREE.Vector3, sunPosition
 
 // Background loading holds the main thread at most this long between frames
 const DEFERRED_SLICE_MS = 30;
+// The pause menu's Players tab refreshes this often while it is shown (joins, leaves, planet changes)
+const PLAYERS_TAB_REFRESH_MS = 1000;
 
 class PlanetGame {
   private engine: GameEngine;
@@ -1294,8 +1296,13 @@ class PlanetGame {
         const tabName = tab.getAttribute('data-tab');
         const content = document.getElementById(`tab-${tabName}`);
         if (content) content.classList.add('active');
+        if (tabName === 'players') this.renderPlayersTab();
       });
     });
+    // The Players tab keeps up with joins, leaves and planet changes while it is shown
+    window.setInterval(() => {
+      if (document.getElementById('tab-players')?.classList.contains('active')) this.renderPlayersTab();
+    }, PLAYERS_TAB_REFRESH_MS);
 
     if (!atmosphereToggle || !cloudsToggle) return;
 
@@ -1602,6 +1609,56 @@ class PlanetGame {
       visibility = Math.min(visibility, 1 - 0.97 * inside * day);
     }
     this.engine.setStarVisibility(visibility);
+  }
+
+  /**
+   * The pause menu's Players tab: everyone in this multiplayer world (you
+   * first), with the body each is on. Offline it says how to play with
+   * others. Names are other players' own text: set as text, never HTML.
+   */
+  private renderPlayersTab(): void {
+    const list = document.getElementById('players-list');
+    const count = document.getElementById('players-count');
+    if (!list || !count) return;
+    const bodyName = (id: string | null) => (id ? getBodyConfig(id)?.name ?? id : 'In space');
+    const row = (name: string, where: string, me: boolean) => {
+      const r = document.createElement('div');
+      r.className = `player-row${me ? ' me' : ''}`;
+      const dot = document.createElement('span');
+      dot.className = 'player-dot';
+      const n = document.createElement('span');
+      n.className = 'player-name';
+      n.textContent = name;
+      if (me) {
+        const you = document.createElement('span');
+        you.className = 'player-you';
+        you.textContent = '(you)';
+        n.appendChild(you);
+      }
+      const w = document.createElement('span');
+      w.className = 'player-where';
+      w.textContent = where;
+      r.append(dot, n, w);
+      return r;
+    };
+    list.replaceChildren();
+    const online = !!this.multiplayer?.isConnected();
+    if (!online) {
+      count.textContent = 'Single player';
+      const empty = document.createElement('div');
+      empty.className = 'players-empty';
+      empty.textContent = 'Not in a multiplayer world. Press MULTIPLAYER below to join or start one.';
+      list.appendChild(empty);
+      return;
+    }
+    const others = this.multiplayer!.getRemotePlayers();
+    count.textContent = `${others.length + 1} player${others.length ? 's' : ''} in this world`;
+    let myName = 'You';
+    try { myName = localStorage.getItem('tenebris_mp_name') || myName; } catch { /* default */ }
+    list.appendChild(row(myName, bodyName(this.sphereOfInfluence(this.player.position)), true));
+    for (const p of [...others].sort((a, b) => a.name.localeCompare(b.name))) {
+      list.appendChild(row(p.name, bodyName(p.planet), false));
+    }
   }
 
   private setupMultiplayer(): void {
