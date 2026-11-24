@@ -1091,6 +1091,51 @@
         return;
       }
     },
+    // Build the rocket on our own finished launch pad: tower segments as tall
+    // as the stack, then engine, fuel tank and command module, bottom up -
+    // through the pad panel (what dragging a part onto the tower does)
+    assemble: async () => {
+      const parts = [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE];
+      for (const it of parts) if (count(it) < 1 && !(await obtain(it, 1))) return;
+      const lp = bi().launchPadManager;
+      let mySites = [];
+      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      const pos = player().position;
+      const pad = lp.getLaunchPads()
+        .filter(p => p.isComplete && p.rocketParts.length === 0 && [...p.hexes.keys()].some(t => mySites.includes(t)))
+        .sort((a, b) => a.mesh.getWorldPosition(new (T().Vector3)()).distanceTo(pos) - b.mesh.getWorldPosition(new (T().Vector3)()).distanceTo(pos))[0];
+      if (!pad) { say('no finished launch pad of my own to build on'); st.unknown = (st.unknown || []).concat([I.LAUNCH_PAD_BLOCK]); return; }
+      const P0 = P();
+      const centre = blockTop(pad.centerTileIndex, P0.groundDepthOf(pad.centerTileIndex));
+      const need = parts.length;   // each part is one height unit
+      if (pad.segmentCount < need && count(I.LAUNCH_PAD_SEGMENT) < need - pad.segmentCount) {
+        if (!(await obtain(I.LAUNCH_PAD_SEGMENT, need - pad.segmentCount))) return;
+      }
+      st.task = 'building the rocket';
+      await approach(centre, 3);
+      closeMenus(); selectEmptyHand();
+      await aimAtMachine(centre.clone().addScaledVector(upAt(centre), 0.2)); selectEmptyHand();
+      await click(2, 80);
+      await sleep(600);
+      const ui = bi().launchPadUI;
+      if (!ui.isMenuOpen()) { say('could not open the launch pad'); closeMenus(); return; }
+      while (pad.segmentCount < need && count(I.LAUNCH_PAD_SEGMENT) > 0) {
+        const h = pad.segmentCount;
+        ui.handleSegmentSlotClick(h);
+        await sleep(300);
+        if (pad.segmentCount === h) break;
+      }
+      for (const it of parts) {
+        if (pad.rocketParts.some(r => r.itemType === it) || count(it) < 1) continue;
+        if (await ui.onAddRocketPartCallback(pad, it)) {
+          inv().removeItem(it, 1);
+          try { ui.updateUI(); ui.notifyChanges(); } catch {}
+          say(`added ${itemName(it)} to the rocket`);
+        } else say(`the pad would not take the ${itemName(it)}`);
+        await sleep(400);
+      }
+      closeMenus();
+    },
     hydro: async () => {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return;
       const w = nearestWaterTile(30);
@@ -1458,6 +1503,8 @@
     await sleep(500);
     const ui = bi().storageUI;
     if (!ui.isMenuOpen()) { say('could not open the chest'); closeMenus(); return; }
+    // the click may have opened something else nearby (a cooker, another chest)
+    if (ui.getCurrentStorage && ui.getCurrentStorage() !== chest) { say('opened the wrong storage - trying again later'); closeMenus(); return; }
     let moved = 0;
     for (const i of spare) {
       const slot = chest.slots.findIndex(x => !x.itemType || !x.quantity);
@@ -1719,8 +1766,8 @@
 
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
-    miner: ['pad', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
-    builder: ['pad', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
+    miner: ['pad', 'assemble', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    builder: ['pad', 'assemble', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
   // A mission with no progress for STALL_MS is set aside for REST_MS
