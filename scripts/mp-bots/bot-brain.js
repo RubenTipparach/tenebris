@@ -913,8 +913,28 @@
       if (count(I.STONE) < 2) { await digForStone(4); return; }
       await cookAt('kiln', [I.CLAY, I.STONE], I.CEMENT);
     },
-    hydro: async () => { await buildPowerPlant(); },
-    efurnace: async () => { await buildPowerPlant(); },
+    // These missions count what THIS player places: build its own, even if
+    // someone else's power plant is already running nearby
+    hydro: async () => {
+      if (!(await obtain(I.HYDRO_GENERATOR, 1))) return;
+      const w = nearestWaterTile(30);
+      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return; }
+      if (!(await placeOnTile(I.HYDRO_GENERATOR, w, P().groundDepthOf(w)))) st.badWater = (st.badWater || []).concat([w]);
+    },
+    efurnace: async () => {
+      if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return;
+      const pos = player().position;
+      const cable = bi().cableNodeManager.getPlacedCables()
+        .sort((a, c) => a.position.distanceTo(pos) - c.position.distanceTo(pos))
+        .find(c => neighbors(c.tileIndex).some(isDryTile));
+      if (!cable) {
+        if (!(await obtain(I.CABLE, 1))) return;
+        await placeNearby(I.CABLE);
+        return;
+      }
+      const t = neighbors(cable.tileIndex).find(isDryTile);
+      await placeOnTile(I.ELECTRIC_FURNACE, t);
+    },
     cookfish: async () => {
       if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return; }
       await cookAt('campfire', ['fish'], I.COOKED_FISH);
