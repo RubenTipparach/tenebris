@@ -20,7 +20,11 @@
 //   client -> server
 //     { t: 'hello', name, look }   look = the avatar's colours / hair style
 //         (the client checks values against its palette); resent on change
-//     { t: 'pose', planet, p: [x,y,z], q: [x,y,z,w] }
+//     { t: 'pose', planet, p: [x,y,z], q: [x,y,z,w], a? }
+//         a = [loop, shotKind, shotSeq, held]: what the player is doing
+//         (src/net/AvatarPose.ts; openspec avatar-anims). Optional (older
+//         clients omit it); relayed when it is four small integers, else
+//         dropped - never the pose
 //     { t: 'edit', planet, tile, depth, block }
 //     { t: 'rec', kind, planet, key, data }   placed objects (torches, felled
 //         trees, machines and their contents, launch pads and their rockets,
@@ -37,14 +41,14 @@
 //         renderer; kept per world + planet in DATA_DIR/maps/ for the portal
 //   server -> client
 //     { t: 'welcome', id, now, world: { id, name, seed, created }, edits: [[planet, tile, depth, block], ...],
-//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q }],
+//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q, a? }],
 //       uploadKey, maps: { planet: madeAtMs } }
 //         uploadKey signs this connection's map uploads; maps says which
 //         planets of the world have a map and when it was made
 //         now is the server clock (ms): every client derives the world's time
 //         of day from (now - created) so the sun is the same for everyone
 //     { t: 'join', id, name, look }   { t: 'leave', id }
-//     { t: 'pose', id, planet, p, q }
+//     { t: 'pose', id, planet, p, q, a? }
 //     { t: 'edit', id, planet, tile, depth, block }
 //     { t: 'rec', id, kind, planet, key, data }   { t: 'live', id, ch, data }
 //     { t: 'notice', text }   an operator message (admin portal)
@@ -335,6 +339,12 @@ function broadcast(w, msg, exceptId) {
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const isVec = (v, n) => Array.isArray(v) && v.length === n && v.every(isNum);
+// The pose frame's action field: four integers, each within a 16-bit
+// protocol bound (the client decodes the exact ranges)
+const ACTION_LEN = 4;
+const ACTION_MAX = 0xffff;
+const isAction = (v) => Array.isArray(v) && v.length === ACTION_LEN
+  && v.every(x => Number.isInteger(x) && x >= 0 && x <= ACTION_MAX);
 // An avatar look: a few short string fields (the client validates the values)
 function cleanLook(v) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
@@ -360,8 +370,9 @@ function onMessage(id, raw) {
     pl.look = cleanLook(m.look) ?? pl.look;
     broadcast(w, { t: 'join', id, name: pl.name, look: pl.look }, id);
   } else if (m.t === 'pose' && isPlanetId(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
-    pl.planet = m.planet; pl.p = m.p; pl.q = m.q;
-    broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q }, id);
+    const a = isAction(m.a) ? m.a : undefined;
+    pl.planet = m.planet; pl.p = m.p; pl.q = m.q; pl.a = a;
+    broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q, a }, id);
   } else if (m.t === 'edit' && isPlanetId(m.planet) && Number.isInteger(m.tile) && Number.isInteger(m.depth) && Number.isInteger(m.block)
              && m.tile >= 0 && m.tile < 1_000_000 && m.depth >= 0 && m.depth < 256 && m.block >= 0 && m.block < 256) {
     if (!allow(pl, 'edit', MAX_EDITS_PER_SECOND)) return;
@@ -500,7 +511,7 @@ wss.on('connection', (ws, req) => {
     edits: [...w.edits.values()],
     records: [...w.records.values()],
     players: [...w.players].map(pid => [pid, players.get(pid)]).filter(([, p]) => p)
-      .map(([pid, p]) => ({ id: pid, name: p.name, look: p.look, planet: p.planet, p: p.p, q: p.q })),
+      .map(([pid, p]) => ({ id: pid, name: p.name, look: p.look, planet: p.planet, p: p.p, q: p.q, a: p.a })),
     uploadKey,
     maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
   });

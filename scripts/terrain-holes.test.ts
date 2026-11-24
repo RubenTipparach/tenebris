@@ -12,19 +12,10 @@
 // side of the planet.
 //
 // Run: npx tsx scripts/terrain-holes.test.ts
-import { register } from 'node:module';
 import * as THREE from 'three';
 
 // Planet's shader imports (?raw, .vert/.frag through vite) are stubbed
-register('data:text/javascript,' + encodeURIComponent(`
-export async function resolve(spec, ctx, next) {
-  if (/\\.(vert|frag|glsl)(\\?raw)?$/.test(spec) || spec.endsWith('?raw')) return { url: 'stub:' + spec, shortCircuit: true };
-  return next(spec, ctx);
-}
-export async function load(url, ctx, next) {
-  if (url.startsWith('stub:')) return { format: 'module', source: 'export default "";', shortCircuit: true };
-  return next(url, ctx);
-}`));
+import './stub-shaders';
 
 const ok = (c: boolean, m: string) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 

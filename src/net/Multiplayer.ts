@@ -4,6 +4,8 @@ import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
 import { clearWorldSave } from '../engine/GameStorage';
 import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
+import { ActionFrame, IDLE_ACTION, LoopAction, OneShotTracker, ShotAction, avatarTransforms, decodeAction, encodeAction } from './AvatarPose';
+import { ITEM_DATA, ItemType } from '../player/Inventory';
 import { serverHttpBase } from './WorldSession';
 import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
@@ -41,7 +43,24 @@ interface Remote {
   lastTarget: THREE.Vector3 | null;
   lastPoseAt: number;
   speed: number;
+  // What they're doing (openspec avatar-anims): the last action frame, and
+  // the one-shot counter seen so far
+  action: ActionFrame;
+  shots: OneShotTracker;
 }
+
+// The local player's pose for the pose frame
+export interface LocalPose {
+  planet: string;
+  p: THREE.Vector3;
+  q: THREE.Quaternion;
+  /** What they're doing (mining, the last one-shot, the held item). */
+  a: ActionFrame;
+}
+
+const _up = new THREE.Vector3();
+const _shown = new THREE.Vector3();
+const _xf = { body: new THREE.Quaternion(), headPitch: 0 };
 
 export class Multiplayer {
   private ws: WebSocket | null = null;
@@ -54,7 +73,7 @@ export class Multiplayer {
   constructor(
     private scene: THREE.Scene,
     private planets: Map<string, Planet>,
-    private getPose: () => { planet: string; p: THREE.Vector3; q: THREE.Quaternion },
+    private getPose: () => LocalPose,
     private name: string,
     private look: Look,
   ) {
@@ -148,9 +167,16 @@ export class Multiplayer {
     for (const r of this.remotes.values()) {
       // A pose is in the sender's frame, where their planet sits at its
       // configured position; shift it to where that planet is in ours
-      const shown = this.frameOffset ? r.target.clone().add(this.frameOffset(r.planet)) : r.target;
+      const shown = _shown.copy(r.target);
+      if (this.frameOffset) shown.add(this.frameOffset(r.planet));
       r.group.position.lerp(shown, k);
-      r.group.quaternion.slerp(r.targetQ, k);
+      // Body upright on the planet, the look pitch on the head only
+      const planet = this.planets.get(r.planet);
+      if (planet) _up.subVectors(r.group.position, planet.center);
+      if (!planet || _up.lengthSq() === 0) _up.set(0, 1, 0).applyQuaternion(r.targetQ);
+      avatarTransforms(r.targetQ, _up.normalize(), _xf);
+      r.group.quaternion.slerp(_xf.body, k);
+      r.avatar.setHeadPitch(_xf.headPitch);
       r.avatar.animate(dt, r.speed);
     }
     if (!this.isConnected()) return;
@@ -158,7 +184,7 @@ export class Multiplayer {
     if (this.poseTimer <= 0) {
       this.poseTimer = POSE_INTERVAL_S;
       const pose = this.getPose();
-      this.sendJson({ t: 'pose', planet: pose.planet, p: pose.p.toArray(), q: pose.q.toArray() });
+      this.sendJson({ t: 'pose', planet: pose.planet, p: pose.p.toArray(), q: pose.q.toArray(), a: encodeAction(pose.a) });
     }
   }
 
@@ -195,7 +221,10 @@ export class Multiplayer {
           this.planets.get(planet)?.setBlock(tile, depth, block);
         }
         applySnapshot((m.records ?? []) as Array<[string, string, string, any]>);
-        for (const p of m.players) this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
+        for (const p of m.players) {
+          this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
+          this.applyAction(p.id, p.a);
+        }
         console.log(`[MP] joined as ${this.myId}: ${m.edits.length} edits, ${m.records?.length ?? 0} objects, ${m.players.length} other player(s)`);
         break;
       case 'join': {
@@ -218,6 +247,8 @@ export class Multiplayer {
       }
       case 'pose':
         this.upsert(m.id, undefined, m.planet, m.p, m.q);
+        // no `a` (an older client): idle, empty-handed
+        this.applyAction(m.id, m.a);
         break;
       case 'edit':
         this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block);
@@ -237,7 +268,7 @@ export class Multiplayer {
       const nm = name ?? `Player ${id}`;
       const look = sanitizeLook(rawLook, id);
       const avatar = new Avatar(look, nm);
-      r = { name: nm, look, planet: planet ?? 'earth', avatar, group: avatar.group, target: new THREE.Vector3(), targetQ: new THREE.Quaternion(), lastTarget: null, lastPoseAt: 0, speed: 0 };
+      r = { name: nm, look, planet: planet ?? 'earth', avatar, group: avatar.group, target: new THREE.Vector3(), targetQ: new THREE.Quaternion(), lastTarget: null, lastPoseAt: 0, speed: 0, action: { ...IDLE_ACTION }, shots: new OneShotTracker() };
       this.remotes.set(id, r);
       this.scene.add(r.group);
       if (p) r.group.position.fromArray(p);
@@ -255,6 +286,7 @@ export class Multiplayer {
       r.group.position.copy(pos);
       r.group.quaternion.copy(quat);
       this.scene.add(r.group);
+      this.showAction(r);
     }
     if (p) {
       // walking speed from how far the reported pose moved
@@ -271,6 +303,23 @@ export class Multiplayer {
     setPeer(id, r.planet, p);
     if (p) r.target.fromArray(p);
     if (q) r.targetQ.fromArray(q);
+  }
+
+  /** A remote player's action frame from the network (missing = idle). */
+  private applyAction(id: number, raw: unknown): void {
+    const r = this.remotes.get(id);
+    if (!r) return;
+    r.action = decodeAction(raw);
+    const shot = r.shots.next(r.action);
+    this.showAction(r);
+    if (shot !== ShotAction.NONE) r.avatar.playShot(shot);
+  }
+
+  /** Put a remote's continuous action and held item on their avatar. */
+  private showAction(r: Remote): void {
+    r.avatar.setLoopAction(r.action.loop === LoopAction.MINE ? LoopAction.MINE : LoopAction.IDLE);
+    const item = r.action.held ? ITEM_DATA[r.action.held as ItemType] : undefined;
+    r.avatar.setHeldItem(item?.texture ? { texture: item.texture, atlasRegion: item.atlasRegion } : null);
   }
 
   private removeRemote(id: number): void {

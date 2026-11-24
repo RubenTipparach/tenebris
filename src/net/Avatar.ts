@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
+import { AvatarConfig } from '../config/AvatarConfig';
+import { LoopAction, ShotAction } from './AvatarPose';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { machineLightUniforms } from '../planet/MachineLight';
 import techVert from '../shaders/tech/tech.vert';
@@ -85,6 +87,40 @@ interface AnimFile {
   frames: number;
   clips: Record<string, { duration: number; tracks: Record<string, number[][]> }>;
 }
+type Clip = AnimFile['clips'][string];
+// The arm clip each one-shot plays (a swing is one cycle of the mine chop)
+const SHOT_CLIP: Record<ShotAction, string | null> = {
+  [ShotAction.NONE]: null,
+  [ShotAction.SWING]: 'mine',
+  [ShotAction.PLACE]: 'place',
+  [ShotAction.INTERACT]: 'interact',
+};
+const MINE_CLIP = 'mine';
+
+// Held-item textures, shared by every avatar (pixel art: nearest filtering)
+export interface HeldItemArt {
+  texture: string;
+  atlasRegion?: { x: number; y: number; width: number; height: number; atlasWidth: number; atlasHeight: number };
+}
+const heldTextures = new Map<string, THREE.Texture>();
+function heldTexture(art: HeldItemArt): THREE.Texture {
+  const r = art.atlasRegion;
+  const key = r ? `${art.texture}|${r.x},${r.y},${r.width},${r.height}` : art.texture;
+  let tex = heldTextures.get(key);
+  if (!tex) {
+    tex = new THREE.TextureLoader().load(getAssetPath(art.texture));
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    if (r) {
+      tex.repeat.set(r.width / r.atlasWidth, r.height / r.atlasHeight);
+      tex.offset.set(r.x / r.atlasWidth, 1 - (r.y + r.height) / r.atlasHeight);
+    }
+    heldTextures.set(key, tex);
+  }
+  return tex;
+}
+
 let animFile: AnimFile | null = null;
 let animLoading = false;
 function loadAnim(): void {
@@ -104,6 +140,16 @@ export class Avatar {
   private geometries: THREE.BufferGeometry[] = [];
   private time = Math.random() * 10;
   private walk = 0;  // 0 = idle .. 1 = walking
+  // The look pitch the head shows (radians above the horizon)
+  private headPitch = 0;
+  private headPitchTarget = 0;
+  // Arm actions (openspec avatar-anims): the mine loop, a one-shot clip
+  private loop = LoopAction.IDLE;
+  private loopTime = 0;
+  private shot: { clip: string; t: number } | null = null;
+  private actionWeight = 0;
+  private lastActionClip: string | null = null;
+  private held: { key: string; mesh: THREE.Mesh } | null = null;
 
   /**
    * `lighting`: 'world' (an avatar in the game) is lit like the ground and
@@ -243,32 +289,112 @@ export class Avatar {
     return tag;
   }
 
+  /** The look pitch for the head (radians above the horizon, already clamped). */
+  public setHeadPitch(pitch: number): void {
+    this.headPitchTarget = pitch;
+  }
+
+  /** What the player is doing continuously (the mine loop). */
+  public setLoopAction(loop: LoopAction): void {
+    if (loop === LoopAction.MINE && this.loop !== LoopAction.MINE) this.loopTime = 0;
+    this.loop = loop;
+  }
+
+  /** Start a one-shot arm animation (a place, an interact, a swing). */
+  public playShot(kind: ShotAction): void {
+    const clip = SHOT_CLIP[kind];
+    if (clip) this.shot = { clip, t: 0 };
+  }
+
+  /**
+   * The item in the right hand (null = empty): a flat icon for icon art, a
+   * small cube for a block's texture.
+   */
+  public setHeldItem(art: HeldItemArt | null): void {
+    const key = art ? `${art.texture}|${JSON.stringify(art.atlasRegion ?? null)}` : '';
+    if ((this.held?.key ?? '') === key) return;
+    if (this.held) {
+      this.held.mesh.removeFromParent();
+      this.held.mesh.geometry.dispose();
+      (this.held.mesh.material as THREE.Material).dispose();
+      this.held = null;
+    }
+    if (!art || !art.texture) return;
+    const icon = art.texture.includes('/icons/');
+    const map = heldTexture(art);
+    const geo = icon
+      ? new THREE.PlaneGeometry(AvatarConfig.HELD_ICON_SIZE, AvatarConfig.HELD_ICON_SIZE)
+      : new THREE.BoxGeometry(AvatarConfig.HELD_BLOCK_SIZE, AvatarConfig.HELD_BLOCK_SIZE, AvatarConfig.HELD_BLOCK_SIZE);
+    const mat = new THREE.MeshLambertMaterial({
+      map, transparent: false, alphaTest: icon ? AvatarConfig.HELD_ICON_ALPHA_TEST : 0, side: icon ? THREE.DoubleSide : THREE.FrontSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    const [x, y, z] = AvatarConfig.HELD_OFFSET;
+    mesh.position.set(x, y, z);
+    // An icon stands in the hand edge-on to the side, like a held tool
+    if (icon) mesh.rotation.y = Math.PI / 2;
+    this.parts.armR.add(mesh);
+    this.held = { key, mesh };
+  }
+
   /** Advance the clips. `speed` = ground speed (m/s) picks idle .. walk. */
   public animate(dt: number, speed: number): void {
     this.time += dt;
     const target = Math.min(1, speed / R.WALK_SPEED);
     this.walk += (target - this.walk) * Math.min(1, dt * 8);
+    this.headPitch += (this.headPitchTarget - this.headPitch) * Math.min(1, dt * AvatarConfig.HEAD_FOLLOW_RATE);
     if (!animFile) return;
-    const idle = animFile.clips.idle, move = animFile.clips.move;
-    const sample = (clip: typeof idle, part: string): number[] | null => {
+    const file = animFile;
+    const idle = file.clips.idle, move = file.clips.move;
+    const sampleAt = (clip: Clip | undefined, part: string, phase: number): number[] | null => {
       const tr = clip?.tracks[part];
       if (!tr) return null;
-      const f = ((this.time / clip.duration) % 1) * animFile!.frames;
+      const f = phase * file.frames;
       const i = Math.floor(f), k = f - i;
       const a = tr[i % tr.length], b = tr[(i + 1) % tr.length];
       return a.map((v, j) => v + (b[j] - v) * k);
     };
+    const looped = (clip: Clip | undefined, t: number) => clip ? (t / clip.duration) % 1 : 0;
+
+    // The arm action: a one-shot outranks the mine loop
+    let action: Clip | undefined;
+    let actionPhase = 0;
+    if (this.shot) {
+      const clip = file.clips[this.shot.clip];
+      this.shot.t += dt;
+      if (!clip || this.shot.t >= clip.duration) {
+        this.shot = null;
+      } else {
+        action = clip;
+        actionPhase = this.shot.t / clip.duration;
+        this.lastActionClip = this.shot.clip;
+      }
+    }
+    if (this.loop === LoopAction.MINE) this.loopTime += dt;
+    if (!action && this.loop === LoopAction.MINE) {
+      action = file.clips[MINE_CLIP];
+      actionPhase = looped(action, this.loopTime);
+      this.lastActionClip = MINE_CLIP;
+    }
+    const want = action ? 1 : 0;
+    this.actionWeight += (want - this.actionWeight) * Math.min(1, dt * AvatarConfig.ACTION_BLEND_RATE);
+    // Blending out: hold the last clip's rest frame while the weight falls
+    if (!action && this.actionWeight > 0 && this.lastActionClip) action = file.clips[this.lastActionClip];
+
     for (const [name, obj] of Object.entries(this.parts)) {
-      const a = sample(idle, name) ?? [0, 0, 0, 0];
-      const b = sample(move, name) ?? [0, 0, 0, 0];
-      const v = a.map((x, j) => x + (b[j] - x) * this.walk);
-      obj.rotation.x = v[0];
+      const a = sampleAt(idle, name, looped(idle, this.time)) ?? [0, 0, 0, 0];
+      const b = sampleAt(move, name, looped(move, this.time)) ?? [0, 0, 0, 0];
+      let v = a.map((x, j) => x + (b[j] - x) * this.walk);
+      const c = action ? sampleAt(action, name, actionPhase) : null;
+      if (c) v = v.map((x, j) => x + (c[j] - x) * this.actionWeight);
+      obj.rotation.x = v[0] + (name === 'head' ? -this.headPitch : 0);
       const rest = this.rest.get(obj)!;
       obj.position.set(rest.x + v[1], rest.y + v[2], rest.z + v[3]);
     }
   }
 
   public dispose(): void {
+    this.setHeldItem(null);
     for (const g of this.geometries) g.dispose();
     for (const m of this.materials) {
       (m as THREE.SpriteMaterial).map?.dispose();
