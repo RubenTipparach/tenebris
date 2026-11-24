@@ -164,7 +164,7 @@ export class RocketFlightUI {
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | ${ROCKET_INPUTS.STAGE.replace('Key', '')}: Stage | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">
@@ -756,13 +756,17 @@ export class RocketFlightUI {
       }
     }
 
-    // Update fuel bar
-    const fuelPercent = rocket.getFuelPercent();
+    // Update fuel bar: with stages, the active stage's tanks and the stages left
+    const stage = rocket.getStageInfo();
+    const staged = stage.count > 1;
+    const fuelPercent = staged
+      ? (stage.activeCapacity > 0 ? (stage.activeFuel / stage.activeCapacity) * 100 : 0)
+      : rocket.getFuelPercent();
     if (this.fuelBarEl) {
       this.fuelBarEl.style.width = `${fuelPercent}%`;
     }
     if (this.fuelPercentEl) {
-      this.fuelPercentEl.textContent = `${fuelPercent.toFixed(0)}%`;
+      this.fuelPercentEl.textContent = staged ? `${fuelPercent.toFixed(0)}% (${stage.count} stg)` : `${fuelPercent.toFixed(0)}%`;
     }
 
     // Battery (openspec wool-air-and-reentry, design 2): charge share and

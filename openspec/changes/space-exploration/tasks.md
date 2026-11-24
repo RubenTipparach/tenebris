@@ -24,10 +24,10 @@
 
 ## 3. Staging
 
-- [ ] 3.1 Add the `STAGE_SEPARATOR` part (icon, model, part type) and a pure `stagesOf(parts)`; verify unit tests: no separator gives one stage, and two separators give three.
-- [ ] 3.2 Make `computeRocketStats` per stage plus the total, and show stages on the pad readout; verify tests that a stack with no separator has the same stats as before, and a headless pad screenshot.
-- [ ] 3.3 Move fuel to `stageFuel[]` on rockets, pads and parked rockets, loading old `fuel` as one stage; verify an old-save fixture loads unchanged, and a test that only the active stage's tanks drain.
-- [ ] 3.4 Add `ROCKET_INPUTS.STAGE` (B): drop the active stage as falling debris and recompute the rocket; refuse on the last stage; keep only attached parts on the pad record; verify tests for drop and refusal, plus a headless flight that stages and keeps flying. Ask the owner to stage in game.
+- [x] 3.1 Add the `STAGE_SEPARATOR` part (icon, model, part type) and a pure `stagesOf(parts)`; verify unit tests: no separator gives one stage, and two separators give three.
+- [x] 3.2 Make `computeRocketStats` per stage plus the total, and show stages on the pad readout; verify tests that a stack with no separator has the same stats as before, and a headless pad screenshot.
+- [x] 3.3 Per-stage fuel without a new save field: only the active (lowest) stage burns and refuelling fills from the bottom, so the existing single fuel total, filled into the stages bottom first (`fillStages`), is always the exact per-stage state; old saves load unchanged. Verify a test that only the active stage's tanks drain and the upper stage stays full.
+- [x] 3.4 Add `ROCKET_INPUTS.STAGE` (N; B is Respawn): drop the active stage as falling debris and recompute the rocket; refuse on the last stage; keep only attached parts on the pad record; verify tests for drop and refusal, plus a headless flight that stages and keeps flying. Ask the owner to stage in game.
 
 ## 4. Refit
 
@@ -38,11 +38,11 @@
 
 ## 5. Engine ladder
 
-- [ ] 5.1 Add the solar-electric ion thruster: it draws charge while firing, with no reactor needed; verify `rocket-power` tests that it thrusts on charge and stops when the charge is empty.
-- [ ] 5.2 Add the gas-core engine, fission-fragment drive (requires a reactor core and magnets) and nuclear pulse drive (pulse units from cargo); verify tests of the specs' orderings (more Isp and thrust than nuclear thermal; refused without a reactor core; TWR above 1 for heavy stacks; pulse units consumed).
-- [ ] 5.3 Add the D-He3 fusion drive and magnetic fusion torch, drawing helium-3 and deuterium from cargo through the fuel-source path; verify tests that the torch has the highest delta-v and TWR above 1 on Earth.
+- [x] 5.1 Add the solar-electric ion thruster: it draws charge while firing, with no reactor needed; verify `rocket-power` tests that it thrusts on charge and stops when the charge is empty.
+- [x] 5.2 Add the gas-core engine, fission-fragment drive (requires a reactor core and magnets) and nuclear pulse drive (pulse units from cargo); verify tests of the specs' orderings (more Isp and thrust than nuclear thermal; refused without a reactor core; TWR above 1 for heavy stacks; pulse units consumed).
+- [x] 5.3 Add the D-He3 fusion drive and magnetic fusion torch, drawing helium-3 and deuterium from cargo through the fuel-source path; verify tests that the torch has the highest delta-v and TWR above 1 on Earth.
 - [ ] 5.4 Extend `scripts/rocket-tech-report.ts` with every tier and tune the config numbers until each route's next hop is reachable with that tier; verify the report output is committed in the PR description.
-- [ ] 5.5 Add a gating test: each new engine is unlocked by one visit mission and uses a resource from that body or an earlier body on its route; verify it passes.
+- [x] 5.5 Add a gating test: each new engine is unlocked by one visit mission and uses a resource from that body or an earlier body on its route; verify it passes.
 
 ## 6. Resources and suits
 

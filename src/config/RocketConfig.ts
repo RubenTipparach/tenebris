@@ -37,6 +37,12 @@ export interface RocketPartStats {
   // drive needs a reactor core). Unmet: the part gives no thrust, and the
   // stack's stats carry the reason (RocketStats.problems)
   requires?: ItemType[];
+  // An engine that draws the rocket's charge while it fires, W at full
+  // throttle (the solar-electric ion thruster): no charge, no thrust
+  firingDrawW?: number;
+  // An engine that uses items from the cargo hold as it fires (pulse units,
+  // helium-3, deuterium): per second at full throttle. None left: it can't fire
+  consumes?: { itemType: ItemType; perS: number }[];
 }
 
 /**
@@ -51,9 +57,21 @@ export interface RocketEquipmentStats {
   solarW?: number;       // what each charges in full sun (solar array)
   chutes?: number;       // parachutes each gives (one opens per descent and is used up)
   heatShield?: number;   // heat each heat shield soaks up before it is worn through (REENTRY heat units)
+  refit?: 'once' | 'reusable'; // a refit kit: changes a parked rocket's stack (once: used up per refit)
 }
 
 export const ROCKET_CONFIG = {
+  // === REFITS (space-exploration, rocket-refit) ===
+  REFIT: {
+    // A parked rocket docks onto a free, complete pad this close (m) on the same body
+    DOCK_RADIUS_M: 25,
+  },
+
+  // === STAGING (space-exploration, rocket-staging) ===
+  // A dropped stage falls away under gravity for this long (s), then is
+  // gone; it is never saved
+  STAGE_DEBRIS_LIFE_S: 20,
+
   // === RESPAWN ===
   // After a crash, respawn beside the pad the flight took off from: this far
   // (m) from its middle, on the side away from the tower
@@ -123,6 +141,8 @@ export const ROCKET_CONFIG = {
     // 3 equipment slots: a parachute, a solar array and a battery pack at once
     [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, equipmentSlots: 3, batteryWh: CELL_WH, powerDrawW: CELL_DRAW_W },
     [ItemType.CARGO_BAY]: { tier: 1, dryMass: 80, cargoSlots: 8 },
+    // splits the stack into stages; it drops with the stage below (rocket-staging)
+    [ItemType.STAGE_SEPARATOR]: { tier: 1, dryMass: 30 },
     // Tier 3 (uranium, built off-world): the nuclear thermal engine - the
     // same tank fuel at more than twice the vacuum engine's efficiency
     [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
@@ -130,6 +150,22 @@ export const ROCKET_CONFIG = {
     // an in-space engine that only fires with a reactor core aboard
     [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },
     [ItemType.REACTOR_CORE]: { tier: 4, dryMass: 400 },
+    // ---- the engine ladder (space-exploration, rocket-tiers; design 3) ----
+    // The Moon's solar-electric ion thruster: no reactor, runs on the charge
+    [ItemType.ION_THRUSTER]: { tier: 2, dryMass: 60, thrust: 600, specificImpulse: 2000, firingDrawW: 6000 },
+    // Ember: the gas-core nuclear engine ("nuclear lightbulb")
+    [ItemType.GAS_CORE_ENGINE]: { tier: 3, dryMass: 500, thrust: 60000, specificImpulse: 1200 },
+    // Lodestone: the fission-fragment drive (magnetic fission) - needs a reactor core
+    [ItemType.FISSION_FRAGMENT_DRIVE]: { tier: 4, dryMass: 300, thrust: 4000, specificImpulse: 9000, requires: [ItemType.REACTOR_CORE] },
+    // Brand: the nuclear pulse drive ("Orion") - fission charges from the cargo
+    [ItemType.NUCLEAR_PULSE_DRIVE]: { tier: 4, dryMass: 1500, thrust: 400000, specificImpulse: 2500,
+      consumes: [{ itemType: ItemType.PULSE_UNIT, perS: 2 }] },
+    // Aurelia: the D-He3 fusion drive - helium-3 from the cargo
+    [ItemType.FUSION_DRIVE]: { tier: 5, dryMass: 600, thrust: 25000, specificImpulse: 12000,
+      consumes: [{ itemType: ItemType.HELIUM_3, perS: 0.2 }] },
+    // Brontes: the magnetic fusion torch - helium-3 and deuterium
+    [ItemType.FUSION_TORCH]: { tier: 6, dryMass: 900, thrust: 120000, specificImpulse: 30000,
+      consumes: [{ itemType: ItemType.HELIUM_3, perS: 0.3 }, { itemType: ItemType.DEUTERIUM, perS: 0.3 }] },
   } as Partial<Record<ItemType, RocketPartStats>>,
 
   // === CARGO HOLD ===
@@ -157,6 +193,10 @@ export const ROCKET_CONFIG = {
     // the heat gained until `heatShield` units have gone into it, then it is
     // worn through and leaves the equipment
     [ItemType.HEAT_SHIELD]: { mass: 120, heatShield: 400 },
+    // refit kits (rocket-refit): open the stack editor on a parked rocket;
+    // the plain kit is used up by each refit, the mk2 is not
+    [ItemType.REFIT_KIT]: { mass: 25, refit: 'once' },
+    [ItemType.REFIT_KIT_MK2]: { mass: 40, refit: 'reusable' },
   } as Partial<Record<ItemType, RocketEquipmentStats>>,
 
   // === GAS GIANTS (space-exploration, design 7) ===
@@ -371,4 +411,5 @@ export const ROCKET_INPUTS = {
   RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
   PARACHUTE: 'KeyP',              // P - open the parachute (Shift+P stays the screenshot key)
   SELF_DESTRUCT: 'KeyK',          // K - hold to self-destruct (X is throttle up)
+  STAGE: 'KeyN',                  // N - drop the spent stage (next stage)
 };

@@ -10,7 +10,7 @@
 //
 // No three.js here: the report script runs this file under plain node.
 
-import { ItemType, ITEM_DATA, InventorySlot } from '../player/Inventory';
+import { ItemType, ITEM_DATA, InventorySlot, RocketPartType } from '../player/Inventory';
 import { ROCKET_CONFIG, GRAVITY_WELL, RocketPartStats, RocketEquipmentStats } from '../config/RocketConfig';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { POWER_CONFIG } from '../config/PowerConfig';
@@ -149,11 +149,181 @@ export function computeRocketStats(
   return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, tier, problems, mode: firing };
 }
 
+// ---- Staging (openspec space-exploration, rocket-staging) ----
+
+/**
+ * What the firing engines of a stage need besides tank fuel (rocket-tiers):
+ * the charge they draw (W) and the cargo items they use (per second), both
+ * at full throttle, in the engine mode.
+ */
+export function engineNeeds(itemTypes: readonly ItemType[], mode: EngineMode = null): { drawW: number; consumes: Map<ItemType, number> } {
+  const firing = validEngineMode(itemTypes, mode);
+  let drawW = 0;
+  const consumes = new Map<ItemType, number>();
+  for (const t of itemTypes) {
+    const s = partStats(t);
+    if (!s?.thrust || (firing != null && t !== firing)) continue;
+    drawW += s.firingDrawW ?? 0;
+    for (const c of s.consumes ?? []) consumes.set(c.itemType, (consumes.get(c.itemType) ?? 0) + c.perS);
+  }
+  return { drawW, consumes };
+}
+
+/** Is this part a stage separator? */
+export function isSeparator(itemType: ItemType): boolean {
+  return ITEM_DATA[itemType]?.rocketPart?.partType === RocketPartType.SEPARATOR;
+}
+
+/**
+ * A stack (bottom to top) split into stages at its separators, bottom stage
+ * first. A separator belongs to the stage below it - it drops with that
+ * stage. No separator: one stage, the whole stack.
+ */
+export function stagesOf<T>(parts: readonly T[], typeOf: (p: T) => ItemType): T[][] {
+  const stages: T[][] = [[]];
+  for (const p of parts) {
+    stages[stages.length - 1].push(p);
+    if (isSeparator(typeOf(p))) stages.push([]);
+  }
+  if (stages.length > 1 && stages[stages.length - 1].length === 0) stages.pop();
+  return stages;
+}
+
+export interface StageStats {
+  fuelCapacity: number;     // this stage's tanks
+  thrust: number;           // its engines (in the engine mode)
+  fuelFlow: number;
+  exhaustVelocity: number;
+  deltaV: number;           // with full tanks, the stages above it as payload
+}
+
+/**
+ * Each stage's numbers and the whole rocket's delta-v (their sum). Every
+ * stage burns its own tanks carrying everything above it; the cargo and
+ * equipment ride the top stage. A one-stage stack gives computeRocketStats's
+ * delta-v exactly.
+ */
+export function stagedStats(
+  itemTypes: readonly ItemType[],
+  extraDryMass = 0,
+  mode: EngineMode = null,
+  equipment: readonly InventorySlot[] | null = null,
+): { stages: StageStats[]; deltaV: number } {
+  const groups = stagesOf(itemTypes, t => t);
+  const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
+  const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  // the payload's fixed mass (cargo, equipment) sits on top
+  const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
+  const stages: StageStats[] = [];
+  let total = 0;
+  for (let k = 0; k < groups.length; k++) {
+    let wet = extras;
+    for (let j = k; j < groups.length; j++) wet += parts[j].dryMass + parts[j].fuelCapacity * kg;
+    const dry = wet - parts[k].fuelCapacity * kg;
+    const dv = dry > 0 && parts[k].exhaustVelocity > 0 ? parts[k].exhaustVelocity * Math.log(wet / dry) : 0;
+    stages.push({ fuelCapacity: parts[k].fuelCapacity, thrust: parts[k].thrust, fuelFlow: parts[k].fuelFlow, exhaustVelocity: parts[k].exhaustVelocity, deltaV: dv });
+    total += dv;
+  }
+  return { stages, deltaV: total };
+}
+
+/**
+ * Delta-v left with `fuelUnits` aboard (filled into the stages bottom first,
+ * fillStages): each stage burns its own fuel carrying everything above it.
+ * One stage: deltaVWith's number. The pad readout and the flight HUD both
+ * use this.
+ */
+export function stagedDeltaVWith(
+  itemTypes: readonly ItemType[],
+  extraDryMass: number,
+  mode: EngineMode,
+  equipment: readonly InventorySlot[] | null,
+  fuelUnits: number,
+): number {
+  const groups = stagesOf(itemTypes, t => t);
+  const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  const fuels = fillStages(fuelUnits, parts.map(p => p.fuelCapacity));
+  const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
+  const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
+  let dv = 0;
+  for (let k = 0; k < groups.length; k++) {
+    let wet = extras;
+    for (let j = k; j < groups.length; j++) wet += parts[j].dryMass + fuels[j] * kg;
+    const dry = wet - fuels[k] * kg;
+    if (dry > 0 && parts[k].exhaustVelocity > 0) dv += parts[k].exhaustVelocity * Math.log(wet / dry);
+  }
+  return dv;
+}
+
+/**
+ * Share a fuel total out over stages, the bottom (active) stage first, each
+ * up to its capacity. Only the active stage burns and refuelling fills from
+ * the bottom, so the total alone always gives the exact per-stage state.
+ */
+export function fillStages(total: number, capacities: readonly number[]): number[] {
+  let left = Math.max(0, total);
+  return capacities.map(cap => {
+    const f = Math.min(cap, left);
+    left -= f;
+    return f;
+  });
+}
+
+/**
+ * Why a stack (bottom to top) can't fly, or [] if it can: an engine, a fuel
+ * tank and a command module aboard, an engine at the bottom, every part's
+ * needs met, each engine's own requirements, and with stages, an engine in
+ * every stage. The one set of rules the launch pad, docking and refits all
+ * use (rocket-refit).
+ */
+export function stackProblems(itemTypes: readonly ItemType[]): string[] {
+  if (itemTypes.length === 0) return ['No rocket parts installed'];
+  const errors: string[] = [];
+  const typeOf = (t: ItemType) => ITEM_DATA[t]?.rocketPart?.partType;
+  const engines = itemTypes.filter(t => typeOf(t) === RocketPartType.ENGINE);
+  const tanks = itemTypes.filter(t => typeOf(t) === RocketPartType.FUEL_TANK);
+  const capsules = itemTypes.filter(t => typeOf(t) === RocketPartType.CAPSULE);
+  if (engines.length === 0) errors.push('Missing: Engine required');
+  if (tanks.length === 0) errors.push('Missing: Fuel Tank required');
+  if (capsules.length === 0) errors.push('Missing: Command Module required');
+  if (engines.length > 0 && typeOf(itemTypes[0]) !== RocketPartType.ENGINE) errors.push('Engine must be at the bottom of the stack');
+  // Parts that need another part aboard (an ion drive with no reactor core):
+  // the same reasons the stats model gives, so the flight and this agree
+  errors.push(...computeRocketStats(itemTypes).problems);
+  for (const engine of engines) {
+    const reqs = ITEM_DATA[engine]?.rocketPart?.engineRequirements;
+    if (!reqs) continue;
+    if (tanks.length < reqs.minFuelTanks) errors.push(`${ITEM_DATA[engine].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
+    if (reqs.requiresCommandModule && capsules.length === 0) errors.push(`${ITEM_DATA[engine].name} requires a Command Module`);
+  }
+  // Staged: every stage needs an engine of its own, or dropping the stage
+  // below leaves a rocket that cannot fly
+  const stages = stagesOf(itemTypes, t => t);
+  if (stages.length > 1) {
+    stages.forEach((stage, i) => {
+      if (!stage.some(t => typeOf(t) === RocketPartType.ENGINE)) errors.push(`Stage ${i + 1} has no engine`);
+    });
+  }
+  return [...new Set(errors)];
+}
+
 // ---- Power, re-entry heat and the parachute (openspec wool-air-and-reentry) ----
 
 /** Charge after drawing `drawW` for `dt` seconds (never below 0) */
 export function drainCharge(chargeWh: number, drawW: number, dt: number): number {
   return Math.max(0, chargeWh - (drawW * dt) / 3600);
+}
+
+/**
+ * One step of an electric engine's charge draw (rocket-tiers: the ion
+ * thruster): the charge left, and whether the engines may fire. An engine
+ * that draws charge can't fire on an empty battery; one that draws none
+ * always can.
+ */
+export function feedCharge(chargeWh: number, drawW: number, throttle: number, dt: number): { chargeWh: number; firing: boolean } {
+  if (drawW <= 0 || throttle <= 0) return { chargeWh, firing: true };
+  if (chargeWh <= 0) return { chargeWh: 0, firing: false };
+  return { chargeWh: drainCharge(chargeWh, drawW * throttle, dt), firing: true };
 }
 
 /** Seconds of flight a charge gives at `drawW` (Infinity with no draw) */
@@ -585,6 +755,15 @@ export function compactCargo(cargo: InventorySlot[], slots: number): boolean {
     const c = copies[i];
     cargo[i] = c ? c : { itemType: ItemType.NONE, quantity: 0 };
   }
+  return true;
+}
+
+/** Make a slot row exactly `n` long, items packed to the front (false if they don't fit) */
+export function fitSlots(slots: InventorySlot[], n: number): boolean {
+  const items = slots.filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).map(s => ({ ...s }));
+  if (items.length > n) return false;
+  slots.length = 0;
+  for (let i = 0; i < n; i++) slots.push(items[i] ?? { itemType: ItemType.NONE, quantity: 0 });
   return true;
 }
 

@@ -205,8 +205,9 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
       m.progressS += dtS;
       m.status = 'Building';
       if (m.progressS >= recipe.timeS) {
-        if (!addToSlots(m.outputs, recipe.output, 1)) { m.status = 'Output full'; m.progressS = recipe.timeS; break; }
-        fx.made = [{ itemType: recipe.output, quantity: 1 }];
+        const made = recipe.outputQuantity ?? 1;
+        if (!addToSlots(m.outputs, recipe.output, made)) { m.status = 'Output full'; m.progressS = recipe.timeS; break; }
+        fx.made = [{ itemType: recipe.output, quantity: made }];
         fx.event = 'fabricated';
         m.job = null;
         m.progressS = 0;

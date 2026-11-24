@@ -202,6 +202,134 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 20,
   },
+  // Stage separator (rocket-staging): an iron ring with copper bolts - I I I / . C . / I I .
+  {
+    name: 'Stage Separator',
+    inputs: [
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+    ],
+    output: ItemType.STAGE_SEPARATOR,
+    outputQuantity: 1,
+    printTime: 15,
+  },
+  // ---- the engine ladder and body resources (space-exploration) ----
+  {
+    name: 'Ion Thruster',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_LITHIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 7 },
+    ],
+    output: ItemType.ION_THRUSTER,
+    outputQuantity: 1,
+    printTime: 40,
+  },
+  {
+    name: 'Ceramic Plating',
+    inputs: [
+      { itemType: ItemType.BASALT, quantity: 1, slot: 0 },
+      { itemType: ItemType.BASALT, quantity: 1, slot: 1 },
+      { itemType: ItemType.BASALT, quantity: 1, slot: 3 },
+      { itemType: ItemType.BASALT, quantity: 1, slot: 4 },
+    ],
+    output: ItemType.CERAMIC_PLATING,
+    outputQuantity: 2,
+    printTime: 15,
+  },
+  {
+    name: 'Superconductor',
+    inputs: [
+      { itemType: ItemType.SALVAGE, quantity: 1, slot: 0 },
+      { itemType: ItemType.SALVAGE, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+    ],
+    output: ItemType.SUPERCONDUCTOR,
+    outputQuantity: 1,
+    printTime: 20,
+  },
+  {
+    name: 'Magnet',
+    inputs: [
+      { itemType: ItemType.RARE_EARTH_ORE, quantity: 1, slot: 0 },
+      { itemType: ItemType.RARE_EARTH_ORE, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 4 },
+    ],
+    output: ItemType.MAGNET,
+    outputQuantity: 1,
+    printTime: 15,
+  },
+  {
+    name: 'Laser Crystal',
+    inputs: [
+      { itemType: ItemType.CRYSTAL, quantity: 1, slot: 0 },
+      { itemType: ItemType.CRYSTAL, quantity: 1, slot: 1 },
+      { itemType: ItemType.GLASS, quantity: 1, slot: 4 },
+    ],
+    output: ItemType.LASER_CRYSTAL,
+    outputQuantity: 1,
+    printTime: 25,
+  },
+  {
+    name: 'Aerogel',
+    inputs: [
+      { itemType: ItemType.SILICA, quantity: 1, slot: 0 },
+      { itemType: ItemType.SILICA, quantity: 1, slot: 1 },
+      { itemType: ItemType.SILICA, quantity: 1, slot: 3 },
+      { itemType: ItemType.SILICA, quantity: 1, slot: 4 },
+    ],
+    output: ItemType.AEROGEL,
+    outputQuantity: 2,
+    printTime: 20,
+  },
+  {
+    name: 'Magnetic Coil',
+    inputs: [
+      { itemType: ItemType.CORONAL_DATA, quantity: 1, slot: 4 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 1, slot: 0 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 1, slot: 2 },
+      { itemType: ItemType.MAGNET, quantity: 1, slot: 6 },
+      { itemType: ItemType.MAGNET, quantity: 1, slot: 8 },
+    ],
+    output: ItemType.MAGNETIC_COIL,
+    outputQuantity: 1,
+    printTime: 60,
+  },
+  // Refit kit (rocket-refit): titanium tools in an iron case - T . T / I C I
+  {
+    name: 'Refit Kit',
+    inputs: [
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 5 },
+    ],
+    output: ItemType.REFIT_KIT,
+    outputQuantity: 2,
+    printTime: 20,
+  },
+  // Refit kit mk2 (rocket-refit): reusable - a kit with a computer to plan the work
+  {
+    name: 'Refit Kit Mk2',
+    inputs: [
+      { itemType: ItemType.REFIT_KIT, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 7 },
+    ],
+    output: ItemType.REFIT_KIT_MK2,
+    outputQuantity: 1,
+    printTime: 40,
+  },
   // Heat shield (space-exploration): fired ceramic tiles on a titanium frame - B B B / T T T
   {
     name: 'Heat Shield',

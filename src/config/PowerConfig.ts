@@ -105,6 +105,8 @@ export interface FabricatorRecipe {
   output: ItemType;
   inputs: { itemType: ItemType; quantity: number }[];
   timeS: number;
+  /** Items one job makes (default 1) */
+  outputQuantity?: number;
 }
 
 export const FABRICATOR_RECIPES: FabricatorRecipe[] = [
@@ -147,6 +149,67 @@ export const FABRICATOR_RECIPES: FabricatorRecipe[] = [
       { itemType: ItemType.POWER_SUPPLY, quantity: 2 },
     ],
     timeS: 90,
+  },
+  // ---- the engine ladder (space-exploration, rocket-tiers): reactor-built ----
+  {
+    output: ItemType.GAS_CORE_ENGINE,
+    inputs: [
+      { itemType: ItemType.NUCLEAR_THERMAL_ENGINE, quantity: 1 },
+      { itemType: ItemType.FUEL_ROD, quantity: 3 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 10 },
+    ],
+    timeS: 120,
+  },
+  {
+    output: ItemType.FISSION_FRAGMENT_DRIVE,
+    inputs: [
+      { itemType: ItemType.FUEL_ROD, quantity: 4 },
+      { itemType: ItemType.MAGNET, quantity: 6 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 8 },
+    ],
+    timeS: 150,
+  },
+  {
+    output: ItemType.PULSE_UNIT,
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1 },
+      { itemType: ItemType.SULFUR, quantity: 2 },
+    ],
+    timeS: 20,
+    outputQuantity: 4,
+  },
+  {
+    output: ItemType.NUCLEAR_PULSE_DRIVE,
+    inputs: [
+      { itemType: ItemType.STEEL_INGOT, quantity: 10 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 20 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 6 },
+      { itemType: ItemType.CPU_CHIP, quantity: 2 },
+    ],
+    timeS: 180,
+  },
+  {
+    output: ItemType.FUSION_DRIVE,
+    inputs: [
+      { itemType: ItemType.REACTOR_CORE, quantity: 1 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 8 },
+      { itemType: ItemType.CPU_CHIP, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 12 },
+    ],
+    timeS: 200,
+  },
+  {
+    output: ItemType.FUSION_TORCH,
+    inputs: [
+      { itemType: ItemType.FUSION_DRIVE, quantity: 1 },
+      { itemType: ItemType.MAGNETIC_COIL, quantity: 2 },
+      { itemType: ItemType.CRYO_COOLANT, quantity: 4 },
+      { itemType: ItemType.METALLIC_HYDROGEN, quantity: 2 },
+      { itemType: ItemType.LASER_CRYSTAL, quantity: 2 },
+    ],
+    timeS: 300,
   },
 ];
 

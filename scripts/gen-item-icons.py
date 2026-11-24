@@ -534,6 +534,108 @@ def survey_beacon_face():
     return px
 
 
+def refit_kit(mk2=False):
+    """A refit kit (rocket-refit): a tool case with a wrench on its lid, lit
+    from the top left; the mk2 in titanium blue with a green status light"""
+    px, c = _canvas()
+    body, light, dark = ("blue", "lgrey", "navy") if mk2 else ("orange", "yellow", "brown")
+    for y in range(5, 14):
+        for x in range(1, 15):
+            edge = x in (1, 14) or y in (5, 13)
+            px[y][x] = c["black"] if edge else c[light] if (y == 6 or x == 2) else c[dark] if (y == 12 or x == 13) else c[body]
+    for x in range(5, 11):                      # the handle
+        px[3][x] = c["dgrey"]
+    px[4][5] = px[4][10] = c["dgrey"]
+    for i in range(6):                          # the wrench across the lid
+        px[11 - i][4 + i] = c["lgrey"] if i % 2 else c["white"]
+    px[6][9] = px[6][11] = px[5][10] = c["lgrey"]
+    if mk2:
+        px[8][12] = c["lime"]
+    return px
+
+
+def resource_icon(shape, base, light, dark, accent=None):
+    """A body resource or part (space-exploration): one of a few shapes in its
+    own colours, lit from the top left, outlined black"""
+    px, c = _canvas()
+    b, l, d = c[base], c[light], c[dark]
+    a = c[accent] if accent else l
+    if shape == "canister":                 # a gas bottle: helium-3, deuterium, coolant
+        for y in range(3, 15):
+            for x in range(5, 11):
+                px[y][x] = l if x == 6 else d if x == 9 else b
+        for x in range(6, 10):
+            px[2][x] = c["lgrey"]
+        for x in range(5, 11):
+            px[7][x] = a                    # its label band
+    elif shape == "crystal":                # a crystal cluster
+        for (cx, top, h) in ((5, 4, 9), (8, 2, 11), (11, 5, 8)):
+            for y in range(top, top + h):
+                w = 1 if y < top + 2 else 2
+                for x in range(cx - w, cx + w):
+                    px[y][x] = l if x < cx - (w - 1) else b if x < cx else d
+    elif shape == "lump":                   # an ore or organic lump: resin, fungus, silica, salvage
+        for y in range(4, 14):
+            for x in range(3, 13):
+                if (x - 7.5) ** 2 / 25 + (y - 9) ** 2 / 20 > 1:
+                    continue
+                px[y][x] = l if (x + y) < 13 else d if (x + y) > 19 else b
+        for (x, y) in ((6, 8), (9, 10), (7, 12)):
+            px[y][x] = a
+    elif shape == "plate":                  # a processed plate: ceramic, aerogel, superconductor, magnet
+        for y in range(5, 12):
+            for x in range(2, 14):
+                px[y][x] = l if y == 5 or x == 2 else d if y == 11 or x == 13 else b
+        for x in range(4, 12, 3):
+            px[8][x] = a
+    elif shape == "chip":                   # a data chip: coronal field data
+        for y in range(4, 12):
+            for x in range(3, 13):
+                px[y][x] = l if y == 4 else d if y == 11 else b
+        for x in range(4, 13, 2):
+            px[12][x] = c["lgrey"]
+            px[3][x] = c["lgrey"]
+        px[7][7] = px[7][8] = px[8][7] = px[8][8] = a
+    elif shape == "coil":                   # a magnet coil
+        for y in range(3, 14):
+            for x in range(4, 12):
+                ring = (y % 2 == 0)
+                px[y][x] = (l if x < 7 else d) if ring else b
+        for y in range(3, 14):
+            px[y][7] = c["dgrey"]
+    elif shape == "bomb":                   # a pulse unit: a squat charge with a trefoil
+        for y in range(4, 14):
+            for x in range(3, 13):
+                if (x - 7.5) ** 2 / 25 + (y - 9) ** 2 / 25 > 1:
+                    continue
+                px[y][x] = l if (x + y) < 13 else d if (x + y) > 19 else b
+        px = trefoil(px, accent or "yellow")
+    return _outline(px, c["black"])
+
+
+RESOURCE_ICONS = [
+    # name, shape, base, light, dark, accent
+    ("resin", "lump", "orange", "yellow", "brown", "peach"),
+    ("salvage", "lump", "dgrey", "lgrey", "navy", "red"),
+    ("superconductor", "plate", "indigo", "lgrey", "navy", "blue"),
+    ("rare_earth_ore", "crystal", "plum", "pink", "navy", None),
+    ("magnet", "plate", "red", "pink", "plum", "lgrey"),
+    ("radiotrophic_fungus", "lump", "green", "lime", "black", "white"),
+    ("silica", "lump", "peach", "white", "lgrey", "yellow"),
+    ("aerogel", "plate", "blue", "white", "indigo", "white"),
+    ("crystal", "crystal", "blue", "white", "indigo", None),
+    ("laser_crystal", "crystal", "red", "pink", "plum", None),
+    ("cryo_coolant", "canister", "blue", "white", "navy", "white"),
+    ("coronal_data", "chip", "dgrey", "lgrey", "black", "orange"),
+    ("pulse_unit", "bomb", "dgrey", "lgrey", "black", "yellow"),
+    ("helium_3", "canister", "yellow", "white", "orange", "navy"),
+    ("deuterium", "canister", "indigo", "lgrey", "navy", "blue"),
+    ("metallic_hydrogen", "canister", "lgrey", "white", "dgrey", "plum"),
+    ("ceramic_plating", "plate", "brown", "peach", "black", "orange"),
+    ("magnetic_coil", "coil", "orange", "yellow", "brown", None),
+]
+
+
 def heat_shield_face():
     """A heat shield (space-exploration): a dome of dark ceramic tiles, its
     rim glowing where the heat meets it, lit from the top left"""
@@ -824,6 +926,34 @@ if __name__ == "__main__":
     # ---- Space exploration (openspec space-exploration) ----
     write("technology/survey_beacon_face.png", survey_beacon_face())
     write("rocket_parts/heat_shield_face.png", heat_shield_face())
+    write("icons/refit_kit.png", refit_kit())
+    for name, shape, base, light, dark, accent in RESOURCE_ICONS:
+        write(f"icons/{name}.png", resource_icon(shape, base, light, dark, accent))
+    # The engine ladder: the medium engine redrawn in each engine's colours
+    ladder = [
+        ("ion_thruster", ("black", "navy", "blue", "lgrey", "white")),
+        ("gas_core_engine", ("black", "plum", "red", "orange", "yellow")),
+        ("fission_fragment_drive", ("black", "navy", "green", "lime", "white")),
+        ("nuclear_pulse_drive", ("black", "dgrey", "lgrey", "yellow", "white")),
+        ("fusion_drive", ("black", "indigo", "pink", "peach", "white")),
+        ("fusion_torch", ("black", "navy", "indigo", "pink", "white")),
+    ]
+    for name, keys in ladder:
+        ramp = [P8[k] for k in keys]
+        write(f"rocket_parts/{name}.png", recolour(read_png(os.path.join(parts, "medium_engine.png")), ramp))
+        face = recolour(read_png(os.path.join(parts, "medium_engine_face.png")), ramp)
+        write(f"rocket_parts/{name}_face.png", trefoil(face) if name in ("gas_core_engine", "fission_fragment_drive", "nuclear_pulse_drive") else face)
+    write("icons/refit_kit_mk2.png", refit_kit(True))
+    # Stage separator (rocket-staging): the tank's shape in hazard yellow,
+    # a black-and-yellow stripe band round its middle on the icon
+    sep = [P8[k] for k in ("black", "dgrey", "orange", "yellow", "white")]
+    write("rocket_parts/stage_separator.png", recolour(read_png(os.path.join(parts, "medium_fuel_tank.png")), sep))
+    sep_face = recolour(read_png(os.path.join(parts, "medium_fuel_tank_face.png")), sep)
+    for y in range(6, 10):
+        for x in range(len(sep_face[y])):
+            if sep_face[y][x][3] > 0:
+                sep_face[y][x] = P8["black"] + (255,) if ((x + y) // 2) % 2 else P8["yellow"] + (255,)
+    write("rocket_parts/stage_separator_face.png", sep_face)
     # ---- Solar power (wool-air-and-reentry, design 6) ----
     sol = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/solar_panel.png", recolour(read_png(os.path.join(techd, "computer.png")), sol))

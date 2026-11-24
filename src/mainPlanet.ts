@@ -587,6 +587,15 @@ class PlanetGame {
       this.rocketFlightManager.setOnRocketChangedCallback(() => {
         this.blockInteraction.saveLaunchPadStates();
       });
+      // Docking and refits away from home: the pads, and the player's own items
+      {
+        const inv = () => this.blockInteraction.getInventory();
+        this.rocketFlightManager.setRefitSupport(this.blockInteraction.getLaunchPadManager(), {
+          count: (t) => inv().getItemCount(t),
+          take: (t, n) => { const got = inv().removeItem(t, n); this.blockInteraction.onInventoryChanged(); return got; },
+          give: (t, n) => { const left = inv().addItem(t, n); this.blockInteraction.onInventoryChanged(); return left; },
+        });
+      }
       this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
         this.blockInteraction.openRocketCargo(slots, title, accepts);
       });

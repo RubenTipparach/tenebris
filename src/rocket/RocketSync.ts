@@ -236,7 +236,8 @@ export class RocketSync {
   // ---- landed ---------------------------------------------------------
 
   private landedState(rocket: LandedRocket): string {
-    return JSON.stringify([r3(rocket.fuelPercent), slotsToWire(rocket.cargo), rocket.engineMode ?? null,
+    // the parts too: a refit changes the stack (rocket-refit)
+    return JSON.stringify([rocket.parts.map(p => p.itemType), r3(rocket.fuelPercent), slotsToWire(rocket.cargo), rocket.engineMode ?? null,
       rocket.chargeWh === undefined ? null : Math.round(rocket.chargeWh), slotsToWire(rocket.equipment)]);
   }
 

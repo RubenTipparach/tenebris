@@ -90,10 +90,21 @@ const STACKS: [string, ItemType[]][] = [
   ['Tier 4: two Rocket Engines (lift) + Ion Drive + Reactor Core + Medium Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 4: Ion Drive + Reactor Core + Large Tank (in space)', [ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Ion Drive with no Reactor Core (cannot fire)', [ItemType.ION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  // ---- the engine ladder past the Moon (space-exploration, design 3) ----
+  ['Moon: Ion Thruster (solar-electric) + Large Tank', [ItemType.ION_THRUSTER, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Moon: Rocket Engine (lift) + separator + Ion Thruster + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.STAGE_SEPARATOR, ItemType.ION_THRUSTER, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Ember: Gas-Core Engine + two Large Tanks', [ItemType.GAS_CORE_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Lodestone: Rocket Engine (lift) + Fission-Fragment Drive + Reactor Core + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.FISSION_FRAGMENT_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Brand: Nuclear Pulse Drive + three Large Tanks + Cargo Bay', [ItemType.NUCLEAR_PULSE_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Aurelia: D-He3 Fusion Drive + two Large Tanks + Cargo Bay', [ItemType.FUSION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Brontes: Magnetic Fusion Torch + two Large Tanks + Cargo Bay', [ItemType.FUSION_TORCH, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
 ];
 const TRIPS: [string, string][] = [
   ['earth', 'moon'], ['moon', 'earth'], ['earth', 'sequoia'], ['moon', 'sequoia'],
   ['earth', 'cinder'], ['cinder', 'earth'], ['moon', 'cinder'], ['moon', 'nerith'], ['moon', 'kessel'], ['moon', 'vesper'],
+  // each route's hops (space-exploration): sunward, then outward
+  ['sequoia', 'ferrum'], ['ferrum', 'umbra'], ['umbra', 'vesper'],
+  ['kessel', 'cinder'], ['cinder', 'nerith'], ['nerith', 'halcyon'], ['halcyon', 'tessaly'],
 ];
 
 for (const [label, parts] of STACKS) {

@@ -575,6 +575,114 @@
   "199": {
    "name": "Heat Shield",
    "icon": "/textures/rocket_parts/heat_shield_face.png"
+  },
+  "200": {
+   "name": "Stage Separator",
+   "icon": "/textures/rocket_parts/stage_separator_face.png"
+  },
+  "201": {
+   "name": "Refit Kit",
+   "icon": "/textures/icons/refit_kit.png"
+  },
+  "202": {
+   "name": "Refit Kit Mk2",
+   "icon": "/textures/icons/refit_kit_mk2.png"
+  },
+  "203": {
+   "name": "Ion Thruster",
+   "icon": "/textures/rocket_parts/ion_thruster_face.png"
+  },
+  "204": {
+   "name": "Gas-Core Engine",
+   "icon": "/textures/rocket_parts/gas_core_engine_face.png"
+  },
+  "205": {
+   "name": "Fission-Fragment Drive",
+   "icon": "/textures/rocket_parts/fission_fragment_drive_face.png"
+  },
+  "206": {
+   "name": "Nuclear Pulse Drive",
+   "icon": "/textures/rocket_parts/nuclear_pulse_drive_face.png"
+  },
+  "207": {
+   "name": "D-He3 Fusion Drive",
+   "icon": "/textures/rocket_parts/fusion_drive_face.png"
+  },
+  "208": {
+   "name": "Magnetic Fusion Torch",
+   "icon": "/textures/rocket_parts/fusion_torch_face.png"
+  },
+  "209": {
+   "name": "Resin",
+   "icon": "/textures/icons/resin.png"
+  },
+  "210": {
+   "name": "Salvage",
+   "icon": "/textures/icons/salvage.png"
+  },
+  "211": {
+   "name": "Superconductor",
+   "icon": "/textures/icons/superconductor.png"
+  },
+  "212": {
+   "name": "Rare-Earth Ore",
+   "icon": "/textures/icons/rare_earth_ore.png"
+  },
+  "213": {
+   "name": "Magnet",
+   "icon": "/textures/icons/magnet.png"
+  },
+  "214": {
+   "name": "Radiotrophic Fungus",
+   "icon": "/textures/icons/radiotrophic_fungus.png"
+  },
+  "215": {
+   "name": "Silica",
+   "icon": "/textures/icons/silica.png"
+  },
+  "216": {
+   "name": "Aerogel",
+   "icon": "/textures/icons/aerogel.png"
+  },
+  "217": {
+   "name": "Crystal",
+   "icon": "/textures/icons/crystal.png"
+  },
+  "218": {
+   "name": "Laser Crystal",
+   "icon": "/textures/icons/laser_crystal.png"
+  },
+  "219": {
+   "name": "Cryo Coolant",
+   "icon": "/textures/icons/cryo_coolant.png"
+  },
+  "220": {
+   "name": "Coronal Field Data",
+   "icon": "/textures/icons/coronal_data.png"
+  },
+  "221": {
+   "name": "Pulse Unit",
+   "icon": "/textures/icons/pulse_unit.png"
+  },
+  "222": {
+   "name": "Helium-3",
+   "icon": "/textures/icons/helium_3.png"
+  },
+  "223": {
+   "name": "Deuterium",
+   "icon": "/textures/icons/deuterium.png"
+  },
+  "224": {
+   "name": "Metallic Hydrogen",
+   "icon": "/textures/icons/metallic_hydrogen.png"
+  },
+  "225": {
+   "name": "Ceramic Plating",
+   "icon": "/textures/icons/ceramic_plating.png"
+  },
+  "226": {
+   "name": "Magnetic Coil",
+   "icon": "/textures/icons/magnetic_coil.png"
   }
  },
  "slots": {

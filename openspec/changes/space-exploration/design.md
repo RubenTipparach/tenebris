@@ -152,8 +152,8 @@ Real propulsion concepts, scaled to game stats. They are new entries in `ROCKET_
 
 `STAGE_SEPARATOR` is a part (type `SEPARATOR`) in the existing stack list.
 - **Stages:** a pure `stagesOf(parts)` splits the bottom-to-top list at separators. `computeRocketStats` runs per stage and sums the results.
-- **Fuel:** the active stage's tanks feed its engines. Fuel moves from one number to `stageFuel: number[]`. An old save's single `fuel` loads as a one-stage array, so old saves are unchanged.
-- **Dropping a stage:** `ROCKET_INPUTS.STAGE` (B) detaches the active stage's part meshes into a debris group. The debris inherits the rocket's velocity and falls under gravity until it hits the ground or times out, and is then disposed. It is never saved.
+- **Fuel:** the active stage's tanks feed its engines. The saved fuel stays one total: only the active (lowest) stage burns and refuelling fills from the bottom, so the total filled into the stages bottom first (`fillStages`) is always the exact per-stage state. Old saves are unchanged.
+- **Dropping a stage:** `ROCKET_INPUTS.STAGE` (N; B is Respawn) detaches the active stage's part meshes into a debris group. The debris inherits the rocket's velocity and falls under gravity until it hits the ground or times out, and is then disposed. It is never saved.
 - **Saves and sync:** the pad and parked-rocket records keep only attached parts. Multiplayer already rebuilds a remote ship when its part list changes (`RocketSync` restack).
 
 Alternative considered: separate physics bodies for dropped stages that can be recovered. That was rejected as too much for its value; the spec makes dropped stages gone for good.

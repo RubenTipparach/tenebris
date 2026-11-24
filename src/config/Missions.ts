@@ -171,12 +171,54 @@ export function visitCoverageProblems(bodyIds: string[], missions: { visit?: str
   return out;
 }
 
+/**
+ * What visiting a body unlocks (design 2). The Moon's and Sequoia's live on
+ * their own missions above; rewards arrive here phase by phase as their
+ * items are built.
+ */
+/**
+ * What each body yields that no other body does (space-exploration,
+ * resources): the one table for where a body resource is gathered. The
+ * gating test (scripts/engine-gating.test.ts) checks every engine past
+ * the Moon is built from what its route has reached.
+ */
+export const BODY_RESOURCES: Partial<Record<string, ItemType[]>> = {
+  moon: [I.ORE_TITANIUM],
+  sequoia: [I.RESIN],
+  ferrum: [I.SALVAGE],
+  lodestone: [I.RARE_EARTH_ORE],
+  umbra: [I.RADIOTROPHIC_FUNGUS],
+  vesper: [I.SILICA],
+  sun: [I.CORONAL_DATA],
+  thalassa: [I.DEUTERIUM],
+  aurelia: [I.HELIUM_3],
+  halcyon: [I.CRYSTAL],
+  tessaly: [I.CRYO_COOLANT],
+  brontes: [I.METALLIC_HYDROGEN],
+};
+
+export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
+  // sunward
+  rime: [I.REFIT_KIT],
+  ember: [I.CERAMIC_PLATING, I.GAS_CORE_ENGINE],
+  ferrum: [I.SUPERCONDUCTOR],
+  lodestone: [I.MAGNET, I.FISSION_FRAGMENT_DRIVE],
+  brand: [I.PULSE_UNIT, I.NUCLEAR_PULSE_DRIVE],
+  vesper: [I.AEROGEL],
+  sun: [I.MAGNETIC_COIL],
+  // outward
+  aurelia: [I.FUSION_DRIVE],
+  halcyon: [I.LASER_CRYSTAL],
+  clinker: [I.REFIT_KIT_MK2],
+  brontes: [I.FUSION_TORCH],
+};
+
 /** A body's visit mission: land and survey it (a chute landing where there is air), skim a gas giant, pass the Sun. */
 function visitMission(v: Visit): Mission {
   const giant = GAS_GIANTS.find(g => g.id === v.body);
   const body = SOLAR_SYSTEM.bodies.find(b => b.id === v.body);
   const name = giant?.name ?? body?.name ?? v.body;
-  const base = { id: VISIT_OF(v.body), branch: v.branch, icon: I.SURVEY_BEACON, parent: v.parent, unlocks: [] as ItemType[], visit: v.body };
+  const base = { id: VISIT_OF(v.body), branch: v.branch, icon: I.SURVEY_BEACON, parent: v.parent, unlocks: [...(VISIT_REWARDS[v.body] ?? [])], visit: v.body };
   if (v.body === 'sun') {
     return { ...base, title: 'Pass the Sun', help: 'Fly close past the Sun with a heat shield and get out alive.',
       objectives: [{ kind: 'closePass', body: 'sun', count: 1, label: 'Close pass' }] };
@@ -370,7 +412,8 @@ export const MISSIONS: Mission[] = [
       { kind: 'landed', body: 'moon', count: 1, label: 'Moon' },
       { kind: 'surveyed', body: 'moon', count: 1, label: 'Beacon' },
     ],
-    unlocks: [I.VACUUM_ENGINE, I.LARGE_FUEL_TANK],
+    // the Moon's rewards: the vacuum tier and stage separators (rocket-staging)
+    unlocks: [I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.STAGE_SEPARATOR, I.ION_THRUSTER],
     visit: 'moon',
   },
   {

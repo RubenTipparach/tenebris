@@ -132,7 +132,7 @@ ok(heavier.dryMass - computeRocketStats(STACK, 0, null, row([[ItemType.PARACHUTE
 // ---- equipment slots
 ok(equipmentSlotsFor(STACK) === ROCKET_CONFIG.PARTS[cm]!.equipmentSlots && equipmentSlotsFor([ItemType.ROCKET_ENGINE]) === 0, 'the command module gives the equipment slots');
 const onlyThree = Object.keys(ROCKET_CONFIG.EQUIPMENT).map(Number).sort();
-ok(JSON.stringify(onlyThree) === JSON.stringify([ItemType.PARACHUTE, ItemType.SOLAR_ARRAY, ItemType.BATTERY_PACK, ItemType.HEAT_SHIELD].sort()), 'equipment is the parachute, solar array, battery pack and heat shield');
+ok(JSON.stringify(onlyThree) === JSON.stringify([ItemType.PARACHUTE, ItemType.SOLAR_ARRAY, ItemType.BATTERY_PACK, ItemType.HEAT_SHIELD, ItemType.REFIT_KIT, ItemType.REFIT_KIT_MK2].sort()), 'equipment is the parachute, solar array, battery pack, heat shield and refit kits');
 for (const t of [ItemType.PARACHUTE, ItemType.SOLAR_ARRAY, ItemType.BATTERY_PACK]) {
   ok(isEquipment(t) && !ITEM_DATA[t].rocketPart && !ROCKET_CONFIG.PARTS[t], `${ITEM_DATA[t].name} is equipment, not a stack part`);
 }
