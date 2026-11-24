@@ -455,8 +455,10 @@ export class Printer3DManager {
     return result;
   }
 
-  public updatePrintJobs(deltaTime: number): void {
+  public updatePrintJobs(deltaTime: number, simulates: (position: THREE.Vector3) => boolean = () => true): void {
     for (const printer of this.printers) {
+      // multiplayer: only the planet's host prints (openspec mp-shared-objects)
+      if (!simulates(printer.position)) continue;
       // If no current job but queue has items, start next job
       if (!printer.currentJob && printer.printQueue.length > 0) {
         const nextJob = printer.printQueue[0];

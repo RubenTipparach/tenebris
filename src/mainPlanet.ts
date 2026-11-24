@@ -1,3 +1,4 @@
+import { ChatUI } from './net/ChatUI';
 import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
@@ -108,6 +109,8 @@ class PlanetGame {
 
   // Online play (Settings toggle, or ?mp in the URL; ?server=ws://... overrides)
   private multiplayer: Multiplayer | null = null;
+  // the chat panel (public: the ?debug console and the MP e2e harness reach it)
+  public chat: ChatUI | null = null;
   private navigation: Navigation | null = null;
   private rocketSync: RocketSync | null = null;
 
@@ -1633,6 +1636,8 @@ class PlanetGame {
       const p = framePositionAt(planetId, this.frame, gameTimeS());
       return new THREE.Vector3(p.x - o.configured.x, p.y - o.configured.y, p.z - o.configured.z);
     });
+    // Chat (openspec mp-shared-objects): only in a server world
+    this.chat = new ChatUI();
     this.multiplayer.connect(worldSocketUrl(world.id));
     // Online, the orbits run on the server's world clock (everyone's sky agrees)
     useNetworkClock(() => {

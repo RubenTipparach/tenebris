@@ -848,6 +848,37 @@ export class Inventory {
     return false;
   }
 
+  /**
+   * How many of each item the player has: hotbar, bag, toolbox and a held
+   * stack (multiplayer's trade ledger measures a panel action by these -
+   * openspec mp-shared-objects).
+   */
+  public itemCounts(): Map<number, number> {
+    const out = new Map<number, number>();
+    const add = (s: InventorySlot) => {
+      if (s.itemType !== ItemType.NONE && s.quantity > 0) out.set(s.itemType, (out.get(s.itemType) ?? 0) + s.quantity);
+    };
+    for (const s of this.everySlot()) add(s);
+    if (this.held) add(this.held.stack);
+    return out;
+  }
+
+  /**
+   * Undo a trade (itemType -> count the player gained; negative = gave):
+   * take back what they gained, give back what they gave (hotbar first, then
+   * the bag). Returns what could not be taken back (already used) and what
+   * did not fit.
+   */
+  public undoTrade(gained: Record<number, number>): { missing: number; overflow: number } {
+    let missing = 0, overflow = 0;
+    for (const [k, n] of Object.entries(gained)) {
+      const type = Number(k) as ItemType;
+      if (n > 0) missing += n - this.removeItem(type, n);
+      else if (n < 0) overflow += this.addItem(type, -n);
+    }
+    return { missing, overflow };
+  }
+
   // Get all hotbar + bag slots (for inventory UI)
   public getAllSlots(): InventorySlot[] {
     return this.slots;

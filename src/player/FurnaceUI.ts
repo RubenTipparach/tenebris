@@ -795,6 +795,11 @@ export class FurnaceUI {
     }
   }
 
+  /** Redraw the open panel (its object changed under it - another player's record). */
+  public refresh(): void {
+    if (this.isMenuOpen()) this.updateUI();
+  }
+
   public isMenuOpen(): boolean {
     return this.isOpen;
   }

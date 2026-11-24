@@ -381,11 +381,14 @@ export class FurnaceManager {
     return this.furnaces.find(f => f.tileIndex === tileIndex);
   }
 
-  public update(deltaTime: number): void {
+  // `simulates`: does this client advance that furnace? (multiplayer: only the
+  // planet's host does - openspec mp-shared-objects; always offline)
+  public update(deltaTime: number, simulates: (position: THREE.Vector3) => boolean = () => true): void {
     // Update smelting progress for all furnaces with fuel and items
     let anySmeltCompleted = false;
 
     for (const furnace of this.furnaces) {
+      if (!simulates(furnace.position)) continue;
       // A smelt a mission has not unlocked yet waits (src/player/RecipeGate)
       if (furnace.smeltingItem !== null && !smeltOpen(furnace.smeltingItem)) continue;
       if (furnace.fuelAmount > 0 && furnace.smeltingItem !== null) {

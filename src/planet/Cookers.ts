@@ -137,8 +137,10 @@ export class CookerManager {
   }
 
   /** Cook. Called every frame; announces each dish made. */
-  public update(dt: number): void {
+  public update(dt: number, simulates: (position: THREE.Vector3) => boolean = () => true): void {
     for (const c of this.cookers) {
+      // multiplayer: only the planet's host cooks (openspec mp-shared-objects)
+      if (!simulates(c.position)) continue;
       const made = tickCooker(c, dt);
       if (made !== null) this.onCooked?.(c, made);
     }
