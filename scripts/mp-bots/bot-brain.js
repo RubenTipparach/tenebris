@@ -1263,6 +1263,73 @@
     return made > 0;
   }
 
+
+  // ---- keeping room in the inventory ------------------------------------------------
+  // A full inventory drops everything mined on the floor (well, nowhere): when
+  // fewer than MIN_FREE slots are left, put the spare stacks in a chest - the
+  // second and later stacks of anything, and snow - keeping the first stack
+  const MIN_FREE = 4;
+  const freeSlots = () => inv().getAllSlots().filter(x => !x.itemType || !x.quantity).length;
+  async function ensureSpace() {
+    if (freeSlots() >= MIN_FREE) return;
+    const all = inv().getAllSlots();
+    const seen = new Set();
+    const spare = [];
+    all.forEach((x, i) => {
+      if (!x.itemType || !x.quantity) return;
+      if (seen.has(x.itemType) || x.itemType === I.SNOW) spare.push(i);
+      seen.add(x.itemType);
+    });
+    if (!spare.length) { say('inventory full and nothing spare to store'); return; }
+    say(`inventory full - storing ${spare.length} spare stack(s) in a chest`);
+    const sm = bi().storageChestManager;
+    const pos = player().position;
+    // only this bot's own chests - never another player's
+    let mine = [];
+    try { mine = JSON.parse(localStorage.getItem('bot_myChests') || '[]'); } catch {}
+    let chest = sm.getPlacedChests()
+      .filter(c => mine.includes(c.tileIndex) && c.position.distanceTo(pos) < 40 && c.slots.some(x => !x.itemType || !x.quantity))
+      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
+    if (!chest) {
+      // a crafted chest needs a free slot to land in: build with the smallest
+      // stack of a placeable block until one slot is empty
+      for (let k = 0; k < 3 && freeSlots() === 0 && count(I.STORAGE_CHEST) === 0; k++) {
+        const small = inv().getAllSlots()
+          .filter(x => x.itemType && x.quantity && x.quantity <= 8 && B[itemName(x.itemType)] !== undefined)
+          .sort((a, b) => a.quantity - b.quantity)[0];
+        if (!small) break;
+        const it = small.itemType, q = small.quantity;
+        say(`making room: building with ${q} ${itemName(it)}`);
+        for (let j = 0; j < q && count(it) > 0; j++) await placeNearby(it);
+      }
+      if (count(I.STORAGE_CHEST) === 0 && !(await obtain(I.STORAGE_CHEST, 1))) return;
+      const t = await placeNearby(I.STORAGE_CHEST);
+      if (t === false) return;
+      chest = sm.getChestAtTile(t);
+      if (!chest) return;
+      mine.push(t);
+      try { localStorage.setItem('bot_myChests', JSON.stringify(mine)); } catch {}
+    }
+    await approach(chest.position, 2.2);
+    selectEmptyHand();
+    await aimAtMachine(chest.position.clone().addScaledVector(upAt(chest.position), 0.3));
+    selectEmptyHand();
+    await click(2, 80);
+    await sleep(500);
+    const ui = bi().storageUI;
+    if (!ui.isMenuOpen()) { say('could not open the chest'); closeMenus(); return; }
+    let moved = 0;
+    for (const i of spare) {
+      const slot = chest.slots.findIndex(x => !x.itemType || !x.quantity);
+      if (slot < 0) break;
+      ui.transferFromInventory(i, slot);
+      moved++;
+      await sleep(80);
+    }
+    closeMenus();
+    say(`stored ${moved} stack(s); ${freeSlots()} slots free`);
+  }
+
   // ---- a general planner: get any item the way a player would -------------------
   // Craft it (getting the ingredients first), smelt it from its ore, or dig
   // its block out of the ground. Returns true once `n` are held; false when
@@ -1411,6 +1478,7 @@
       st.iterAt = Date.now();
       try {
         closeMenus();
+        await ensureSpace();
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
         const m = tracker().openMissions().find(x => x.id === id);
