@@ -1651,7 +1651,11 @@
     const ui = bi().printer3DUI;
     if (!ui.isMenuOpen()) { say('could not open the 3D printer'); closeMenus(); return false; }
     const before = count(r.output);
-    for (let k = 0; k < jobs; k++) ui.queueRecipe(r);
+    // jobs for it already queued or printing (a printer that isn't run here
+    // yet - multiplayer host) are still coming: don't pay for them twice
+    const pending = pr.printQueue.filter(q => q.itemType === r.output).length + (pr.currentJob && pr.currentJob.itemType === r.output ? 1 : 0);
+    for (let k = 0; k < jobs - pending; k++) ui.queueRecipe(r);
+    if (pending) say(`${pending} ${r.name} job(s) already waiting at the printer`);
     say(`printing ${jobs} x ${r.name}`);
     // wait for the queue to run (printTime each), collecting as it goes
     const t0 = performance.now();
