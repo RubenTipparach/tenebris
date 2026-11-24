@@ -46,7 +46,7 @@ export class RocketFlightManager {
 
   // Callbacks
   private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null, inSpace?: boolean) => void) | null = null;
-  private onRespawnCallback: ((position: THREE.Vector3) => void) | null = null;
+  private onRespawnCallback: ((position: THREE.Vector3, pad: PlacedLaunchPad | null) => void) | null = null;
   private onBoardRocketCallback: (() => void) | null = null;
 
   // Input state
@@ -243,7 +243,8 @@ export class RocketFlightManager {
   /**
    * Set callback for respawning player after crash
    */
-  public setOnRespawnCallback(callback: (position: THREE.Vector3) => void): void {
+  /** `pad`: the launch pad the flight took off from (respawn beside it), null if none */
+  public setOnRespawnCallback(callback: (position: THREE.Vector3, pad: PlacedLaunchPad | null) => void): void {
     this.onRespawnCallback = callback;
   }
 
@@ -263,6 +264,7 @@ export class RocketFlightManager {
     if (!this.rocketController) return;
 
     const respawnPosition = this.rocketController.getPosition().clone();
+    const pad = this.activePad;
     // The pad keeps what the flight burnt (it relaunches with what is left)
     this.recordActiveRocket();
 
@@ -275,7 +277,7 @@ export class RocketFlightManager {
 
     // Call respawn callback with position
     if (this.onRespawnCallback) {
-      this.onRespawnCallback(respawnPosition);
+      this.onRespawnCallback(respawnPosition, pad);
     }
 
     // Also call exit callback (null position since crash = respawn at original location)
@@ -687,6 +689,7 @@ export class RocketFlightManager {
     this.inputState.fuel = this.keysPressed.has(ROCKET_INPUTS.FUEL_ROCKET);
     this.inputState.exit = this.keysPressed.has(ROCKET_INPUTS.EXIT_ROCKET);
     this.inputState.eject = this.keysPressed.has(ROCKET_INPUTS.EJECT_CAPSULE);
+    this.inputState.selfDestruct = this.keysPressed.has(ROCKET_INPUTS.SELF_DESTRUCT);
   }
 
   /**

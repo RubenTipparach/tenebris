@@ -354,7 +354,8 @@ export class GameEngine {
     profiler.beginFrame();
     profiler.begin('Frame Total');
 
-    const deltaTime = this.clock.getDelta();
+    // Capped: a stall must not become one giant physics step
+    const deltaTime = Math.min(this.clock.getDelta(), PlayerConfig.MAX_FRAME_DELTA_S);
 
     // Update FPS counter
     this.frameCount++;

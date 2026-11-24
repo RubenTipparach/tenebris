@@ -1451,8 +1451,11 @@ class TreeBatcher {
     merged.computeBoundingSphere();
 
     const mesh = new THREE.Mesh(merged, this.material);
+    // Its own matrix stays identity (the trees are baked in), but its WORLD
+    // matrix must follow its parent: the planet's attach root moves it round
+    // the orbit (src/world/PlanetFrames.ts). Freezing it left a moving
+    // planet's forest hanging in space where it was built.
     mesh.matrixAutoUpdate = false;
-    mesh.matrixWorldAutoUpdate = false;
     mesh.visible = false;
     this.scene.add(mesh);
     this.meshes.set(chunk, mesh);

@@ -46,3 +46,33 @@ test('a ship parked in space re-boards in flight; one on a surface re-boards lan
     assert.equal(i.stateMachine.getState(), want);
   }
 });
+
+// ---- self-destruct: hold the key for SELF_DESTRUCT_HOLD_S; letting go cancels
+const { ROCKET_CONFIG } = await import('../src/config/RocketConfig');
+type SD = { hasLaunched: boolean; updateSelfDestruct: (dt: number, input: { selfDestruct?: boolean }) => void };
+const HOLD = ROCKET_CONFIG.SELF_DESTRUCT_HOLD_S;
+
+test('holding self-destruct for the hold time blows the rocket up', () => {
+  const c = flying(false);
+  const sd = c as unknown as SD;
+  sd.hasLaunched = true;
+  sd.updateSelfDestruct(HOLD * 0.6, { selfDestruct: true });
+  assert.ok(c.getSelfDestructProgress() > 0.5 && internals(c).stateMachine.getState() === RocketState.IN_FLIGHT);
+  sd.updateSelfDestruct(HOLD * 0.5, { selfDestruct: true });
+  assert.equal(internals(c).stateMachine.getState(), RocketState.CRASHED);
+  assert.equal(c.getCrashReason(), 'selfDestruct');
+});
+
+test('letting go cancels, and it never fires on the pad', () => {
+  const c = flying(false);
+  const sd = c as unknown as SD;
+  sd.hasLaunched = true;
+  sd.updateSelfDestruct(HOLD * 0.9, { selfDestruct: true });
+  sd.updateSelfDestruct(0.016, { selfDestruct: false });
+  assert.equal(c.getSelfDestructProgress(), 0);
+  sd.updateSelfDestruct(HOLD * 0.5, { selfDestruct: true });
+  assert.equal(internals(c).stateMachine.getState(), RocketState.IN_FLIGHT, 'the hold starts over');
+  const pad = flying(false);
+  (pad as unknown as SD).updateSelfDestruct(HOLD * 2, { selfDestruct: true });
+  assert.equal(pad.getSelfDestructProgress(), 0, 'not launched: no self-destruct');
+});

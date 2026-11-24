@@ -147,11 +147,14 @@ export class InputManager {
       }
     }, { passive: false });
 
-    // Prevent context menu
+    // No browser right-click menu anywhere in the game (it popped up over
+    // panels like the landed rocket's) - except in text boxes, where the
+    // player may want copy / paste (chat, names, world names)
     document.addEventListener('contextmenu', (e) => {
-      if (this.isPointerLocked) {
-        e.preventDefault();
-      }
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.tagName === 'TEXTAREA' || t.isContentEditable ||
+        (t.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button', 'submit'].includes((t as HTMLInputElement).type)));
+      if (!typing) e.preventDefault();
     });
 
     // Pointer lock

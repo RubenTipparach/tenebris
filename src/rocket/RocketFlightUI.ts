@@ -147,6 +147,11 @@ export class RocketFlightUI {
         </div>
       </div>
 
+      <div class="self-destruct" id="self-destruct" style="display: none;">
+        <span class="self-destruct-label">SELF DESTRUCT</span>
+        <div class="self-destruct-track"><div class="self-destruct-fill" id="self-destruct-fill"></div></div>
+      </div>
+
       <div class="landing-indicator" id="landing-indicator">
         <span class="landing-label">LANDING:</span>
         <span class="landing-status" id="landing-status">SAFE</span>
@@ -159,7 +164,7 @@ export class RocketFlightUI {
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">
@@ -527,6 +532,29 @@ export class RocketFlightUI {
         font-weight: bold;
       }
 
+      .self-destruct {
+        align-items: center;
+        gap: 10px;
+        justify-content: center;
+        margin: 6px 0;
+      }
+      .self-destruct-label {
+        color: #FF004D;
+        font-weight: bold;
+        letter-spacing: 2px;
+      }
+      .self-destruct-track {
+        width: 160px;
+        height: 10px;
+        background: #1D2B53;
+        border: 1px solid #FF004D;
+      }
+      .self-destruct-fill {
+        height: 100%;
+        width: 0;
+        background: #FF004D;
+      }
+
       .landing-status {
         font-size: 14px;
         font-weight: bold;
@@ -642,16 +670,29 @@ export class RocketFlightUI {
     const state = rocket.getState();
     const stateInfo = STATE_INFO[state];
 
+    // The self-destruct countdown, while its key is held
+    const destruct = rocket.getSelfDestructProgress();
+    const destructEl = document.getElementById('self-destruct');
+    if (destructEl) {
+      destructEl.style.display = destruct > 0 ? 'flex' : 'none';
+      const fill = document.getElementById('self-destruct-fill');
+      if (fill) fill.style.width = `${Math.round(destruct * 100)}%`;
+    }
+
     // Check for crash state and show overlay after delay
     if (state === RocketState.CRASHED) {
       const timeSinceCrash = rocket.getTimeSinceCrash();
       // Show crash overlay after 2 seconds to let player watch explosion
       if (timeSinceCrash > 2.0 && this.crashOverlay) {
-        const burned = rocket.getCrashReason() === 'burnedUp';
-        if (this.crashTitleEl) this.crashTitleEl.textContent = burned ? 'BURNED UP' : 'YOU CRASHED';
-        if (this.crashTextEl) this.crashTextEl.textContent = burned
-          ? 'Your rocket burned up on re-entry. Slow down before the air.'
-          : 'Your rocket was destroyed.';
+        const reason = rocket.getCrashReason();
+        const titles = { impact: 'YOU CRASHED', burnedUp: 'BURNED UP', selfDestruct: 'SELF DESTRUCTED' };
+        const texts = {
+          impact: 'Your rocket was destroyed.',
+          burnedUp: 'Your rocket burned up on re-entry. Slow down before the air.',
+          selfDestruct: 'You blew up your rocket.',
+        };
+        if (this.crashTitleEl) this.crashTitleEl.textContent = titles[reason];
+        if (this.crashTextEl) this.crashTextEl.textContent = texts[reason];
         this.crashOverlay.style.display = 'flex';
       }
       return; // Don't update other UI elements when crashed
