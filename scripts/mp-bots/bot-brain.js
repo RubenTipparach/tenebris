@@ -25,6 +25,7 @@
   let B = null;          // HexBlockType
   let RECIPES = null;    // CRAFTING_RECIPES
   let SMELTS = null;     // furnace SMELTING_RECIPES
+  let ESMELTS = null;    // electric furnace ELECTRIC_SMELTING_RECIPES
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -46,6 +47,7 @@
     const cfg = await import(`${BASE}/config/PlayerConfig.ts`);
     const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
     SMELTS = smeltMod.SMELTING_RECIPES;
+    ESMELTS = smeltMod.ELECTRIC_SMELTING_RECIPES;
     I = inventory.ItemType;
     B = blocks.HexBlockType;
     RECIPES = crafting.CRAFTING_RECIPES;
@@ -893,6 +895,8 @@
       if (count(I.STONE) < 2) { await digForStone(4); return; }
       await cookAt('kiln', [I.CLAY, I.STONE], I.CEMENT);
     },
+    hydro: async () => { await buildPowerPlant(); },
+    efurnace: async () => { await buildPowerPlant(); },
     cookfish: async () => {
       if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return; }
       await cookAt('campfire', ['fish'], I.COOKED_FISH);
@@ -993,6 +997,111 @@
   }
 
 
+
+  // ---- power: a hydro generator in a pond, a cable, an electric furnace ------------
+  // Place `item` on tile `tile`, aiming at block (tile, depth) (default: its ground)
+  async function placeOnTile(item, tile, depth) {
+    const p = P();
+    const d = depth ?? p.groundDepthOf(tile);
+    const target = depth != null ? blockCenter(tile, d) : blockTop(tile, d);
+    await approach(target, 2.6);
+    closeMenus();
+    if (!selectItem(item)) return false;
+    const before = count(item);
+    await lookAtPoint(target, 0.03, 1500);
+    await click(2, 80);
+    await sleep(900);
+    closeMenus();
+    const ok = count(item) < before;
+    say(ok ? `placed item ${item} on tile ${tile}` : `could not place item ${item} on tile ${tile}`);
+    return ok;
+  }
+  const isWaterTile = (t) => P().topBlockOf(t) === B.WATER;
+  const isDryTile = (t) => { const p = P(); return p.isTileLoaded(t) && !isWaterTile(t) && !stationAt(t) && p.getBlock(t, p.groundDepthOf(t) + 1) === B.AIR && p.getBlock(t, p.groundDepthOf(t) + 2) === B.AIR; };
+
+  function poweredEFurnace() {
+    const pos = player().position;
+    return bi().electricFurnaceManager.getPlacedElectricFurnaces()
+      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120)
+      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
+  }
+
+  // Build (or finish) a small power plant by a pond; returns a powered electric furnace or null
+  async function buildPowerPlant() {
+    const done = poweredEFurnace();
+    if (done) return done;
+    const b = bi(), p = P();
+    st.task = 'building a power plant';
+    // 1. an active hydro generator (ours, or a new one in the nearest pond)
+    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive)
+      .sort((a, c) => a.position.distanceTo(player().position) - c.position.distanceTo(player().position))[0];
+    if (!hydro || hydro.position.distanceTo(player().position) > 120) {
+      if (!(await obtain(I.HYDRO_GENERATOR, 1))) return null;
+      const w = nearestWaterTile(30);
+      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return null; }
+      // aim at the pond floor: the hydro generator stands on it, under the water
+      if (!(await placeOnTile(I.HYDRO_GENERATOR, w, p.groundDepthOf(w)))) { st.badWater = (st.badWater || []).concat([w]); return null; }
+      hydro = b.hydroGeneratorManager.getHydroGeneratorAtTile(w);
+      if (!hydro || !hydro.isActive) { say('the hydro generator is not in water'); return null; }
+    }
+    // 2. a cable on dry ground beside it
+    const ht = hydro.tileIndex;
+    const cableTiles = b.cableNodeManager.getPlacedCables().map(c => c.tileIndex);
+    let ct = neighbors(ht).find(t => cableTiles.includes(t));
+    if (ct === undefined) {
+      ct = neighbors(ht).find(isDryTile);
+      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); return null; }
+      if (!(await obtain(I.CABLE, 1))) return null;
+      if (!(await placeOnTile(I.CABLE, ct))) return null;
+    }
+    // 3. the electric furnace beside the cable
+    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(Boolean);
+    if (!ef) {
+      const et = neighbors(ct).find(t => t !== ht && isDryTile(t));
+      if (et === undefined) { say('no room for the electric furnace'); return null; }
+      if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return null;
+      if (!(await placeOnTile(I.ELECTRIC_FURNACE, et))) return null;
+      ef = b.electricFurnaceManager.getElectricFurnaceAtTile(et);
+    }
+    await sleep(3000);   // the grid solves every so often
+    if (ef && ef.isPowered) say('power plant running: hydro -> cable -> electric furnace');
+    else say('electric furnace placed but not powered yet');
+    return ef && ef.isPowered ? ef : null;
+  }
+
+  // Smelt `n` of `output` in a powered electric furnace
+  async function electricSmelt(output, n) {
+    const r = ESMELTS.find(x => x.output === output);
+    if (!r) return false;
+    const runs = Math.ceil(n / r.outputQuantity);
+    const needIn = runs * (r.inputQuantity || 1);
+    if (count(r.input) < needIn) { await obtain(r.input, needIn); return false; }
+    if (r.with && count(r.with.itemType) < runs * r.with.quantity) { await obtain(r.with.itemType, runs * r.with.quantity); return false; }
+    const ef = await buildPowerPlant();
+    if (!ef) return false;
+    st.task = 'electric smelting';
+    await approach(ef.position, 2.2);
+    closeMenus(); selectEmptyHand();
+    await lookAtPoint(ef.position.clone().addScaledVector(upAt(ef.position), 0.3), 0.03, 2000);
+    await click(2, 80);
+    await sleep(500);
+    const ui = bi().electricFurnaceUI;
+    if (!ui.isMenuOpen()) { say('could not open the electric furnace'); closeMenus(); return false; }
+    const slotOf = (it) => inv().getAllSlots().findIndex(x => x.itemType === it && x.quantity > 0);
+    if (r.with) { const a = slotOf(r.with.itemType); if (a >= 0) ui.handleDropFromInventory(a, 'electric-furnace-additive'); }
+    const s0 = slotOf(r.input); if (s0 >= 0) ui.handleDropFromInventory(s0, 'electric-furnace-input');
+    say(`electric furnace loaded: ${ef.inputCount} ${itemName(r.input)}`);
+    const t0 = performance.now();
+    while (performance.now() - t0 < 120000 && (ef.inputCount >= (r.inputQuantity || 1))) await sleep(1000);
+    ui.handleSlotClick('electric-furnace-output');
+    await sleep(300);
+    // leftovers back
+    try { ui.handleShiftClick('electric-furnace-input'); ui.handleShiftClick('electric-furnace-additive'); } catch {}
+    closeMenus();
+    say(`took ${count(output)} ${itemName(output)} from the electric furnace`);
+    return count(output) >= n;
+  }
+
   // ---- a general planner: get any item the way a player would -------------------
   // Craft it (getting the ingredients first), smelt it from its ore, or dig
   // its block out of the ground. Returns true once `n` are held; false when
@@ -1028,6 +1137,8 @@
       await smelt(sm.input, runs);
       return count(item) >= n;
     }
+    // electric furnace
+    if (ESMELTS && ESMELTS.some(r => r.output === item)) { await electricSmelt(item, n); return count(item) >= n; }
     // dug out of the ground
     const block = name !== undefined ? B[name] : undefined;
     if (block !== undefined) {
@@ -1058,7 +1169,10 @@
       }
       if (o.kind === 'smelted') {
         const sm = SMELTS.find(r => r.output === o.item);
-        if (!sm) { st.cannot = (st.cannot || []).concat([m.id]); return; }
+        if (!sm) {
+          if (ESMELTS.some(r => r.output === o.item)) { await electricSmelt(o.item, left); return; }
+          st.cannot = (st.cannot || []).concat([m.id]); return;
+        }
         if (count(sm.input) < left) { await obtain(sm.input, left); return; }
         if (count(I.COAL) < 2) { await getCoal(); return; }
         await smelt(sm.input, left); return;
