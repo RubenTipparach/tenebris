@@ -144,31 +144,8 @@ export class LaunchPadManager {
         cached.material.uniforms.sunDirection.value.copy(direction);
       }
     }
-    // Update all placed rocket parts (cloned materials)
-    // Calculate sun brightness from the launch pad position and apply to ALL parts
-    // This ensures consistent vertex lighting across the entire rocket stack
-    for (const launchPad of this.launchPads) {
-      if (launchPad.rocketParts.length === 0) continue;
-
-      // Always use launch pad position for consistent lighting across all parts
-      const lightingPosition = launchPad.position;
-      const surfaceDir = lightingPosition.clone().sub(this.planetCenter).normalize();
-      const sunFacing = surfaceDir.dot(direction);
-      // smoothstep(-0.1, 0.3, sunFacing) - same as shader
-      const sunBrightness = this.smoothstep(-0.1, 0.3, sunFacing);
-
-      // Apply the same sun brightness to ALL parts
-      for (const rocketPart of launchPad.rocketParts) {
-        rocketPart.setSunDirection(direction);
-        rocketPart.setSunBrightness(sunBrightness);
-      }
-    }
-  }
-
-  // Helper function to match GLSL smoothstep
-  private smoothstep(edge0: number, edge1: number, x: number): number {
-    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-    return t * t * (3 - 2 * t);
+    // Placed rocket parts read the shared sky light (MachineLight.ts) - the
+    // sun's height is worked out per vertex from it, as on the terrain
   }
 
   // Update planet center
@@ -960,7 +937,6 @@ export class LaunchPadManager {
           atmosphereHeight: { value: this.atmosphereHeight },
           ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-          sunBrightness: { value: 1.0 }, // Pre-calculated sun brightness for consistent lighting
         },
         vertexShader: rocketPartVert,
         fragmentShader: rocketPartFrag,
@@ -1030,13 +1006,7 @@ export class LaunchPadManager {
     // Create mesh with cloned material so each part has independent uniforms
     const clonedMaterial = withMachineLight(assets.material.clone());
 
-    // Calculate sun brightness from the launch pad position for consistent lighting
-    // Always use launchPad.position as the reference - this ensures ALL parts get identical lighting
-    const lightingPosition = launchPad.position.clone();
-    const surfaceDir = lightingPosition.clone().sub(launchPad.planetCenter).normalize();
-    const sunFacing = surfaceDir.dot(this.sunDirection);
-    const sunBrightness = this.smoothstep(-0.1, 0.3, sunFacing);
-    clonedMaterial.uniforms.sunBrightness.value = sunBrightness;
+    // Lit like the pad and machines: the shared sky light (MachineLight.ts)
 
     const partMesh = new THREE.Mesh(assets.geometry, clonedMaterial);
     const partGroup = new THREE.Group();

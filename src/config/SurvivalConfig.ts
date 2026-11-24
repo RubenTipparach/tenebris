@@ -31,7 +31,7 @@ export const RANCHING = {
 
 export const AIR = {
   // How long the player holds their breath when exposed with no tank air (s)
-  BREATH_S: 10,
+  BREATH_S: 90,
   // Air in one oxygen tank (s); an empty tank takes its place when it runs out
   TANK_AIR_S: 300,
   // Breath comes back this many times faster than it runs out, once safe

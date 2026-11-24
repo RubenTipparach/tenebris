@@ -492,6 +492,11 @@ freely. It ships to two places:
   records rebuild through the ONE restore path a save load uses
   (`PlanetBlockInteraction.restoreSavedObject`) - a new placeable object
   joins by adding its kind there, never with its own sync code.
+  Any player can use any placed object (openspec mp-shared-objects): a
+  record write names its server version and a stale one is refused and
+  undone (no duped items), and only the planet's host (`netSync.isHost`)
+  ticks machines there. Text chat (`src/net/Chat.ts` / `ChatUI.ts`, Enter or
+  T) is a `chat` message the server relays per world with a short history.
 
 Deploys are in `.github/workflows/js-deploy.yml`:
 

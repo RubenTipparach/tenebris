@@ -227,7 +227,7 @@ export const MISSIONS: Mission[] = [
     unlocks: [I.COMPUTER, I.PRINTER_3D],
   },
   {
-    id: 'printer', branch: 'electronics', icon: I.PRINTER_3D, parent: 'chips', title: 'Build a 3D printer', help: 'Make a print nozzle, then the printer.',
+    id: 'printer', branch: 'electronics', icon: I.PRINTER_3D, parent: 'chips', title: 'Build a 3D printer', help: 'Make a print nozzle, then the printer. Cable it to power - it only prints while powered.',
     objectives: [
       { kind: 'crafted', item: I.PRINT_NOZZLE, count: 1, label: 'Print nozzle' },
       { kind: 'placed', item: I.PRINTER_3D, count: 1, label: '3D printer' },
@@ -362,7 +362,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- getting about
   {
-    id: 'map', branch: 'about', icon: I.GRASS, parent: 'furnace', title: 'Read the map', help: 'Press E, open Map, right-click a place 200 m away and walk there.',
+    id: 'map', branch: 'about', icon: I.GRASS, parent: 'furnace', title: 'Read the map', help: 'Press M to open the map, right-click a place 200 m away and walk there.',
     objectives: [{ kind: 'reached', count: 1, label: 'Waypoint' }],
     unlocks: [],
   },
@@ -456,7 +456,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- oil: crude from the deep, refined into kerosene and plastic
   {
-    id: 'crude', branch: 'oil', icon: I.CRUDE_OIL_BUCKET, parent: 'chips', after: ['bucket'], title: 'Strike oil', help: 'Dig deep for oil sand and scoop it with a bucket.',
+    id: 'crude', branch: 'oil', icon: I.CRUDE_OIL_BUCKET, parent: 'chips', after: ['bucket'], title: 'Strike oil', help: 'Dig deep for oil sand and scoop it with a bucket (or dig it out for the refinery).',
     objectives: [{ kind: 'gained', item: I.CRUDE_OIL_BUCKET, count: 1, label: 'Crude oil' }],
     unlocks: [I.PUMP_JACK],
   },

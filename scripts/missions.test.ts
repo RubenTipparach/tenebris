@@ -213,3 +213,28 @@ MISSION_TREE_UI.LEVELS.forEach((L, i) => {
     ok(centred.x === Math.round((W - t.w) / 2) && centred.y === Math.round((H - t.h) / 2), `zoom ${i}: a centred tree is not moved`);
   });
 }
+
+// ---- 9.7 picking the mission to do
+{
+  const t = new MissionTracker();
+  const first = t.now()!;
+  // finish missions in tree order until two are open at once
+  while (t.openMissions().length < 2) {
+    const m = t.now()!;
+    (t as unknown as { done: Set<string> }).done.add(m.id);
+    (t as unknown as { fitAll: () => void }).fitAll();
+  }
+  const [a, b] = t.openMissions();
+  ok(t.now() === a, 'with no pick, now is the first open mission');
+  ok(t.setFocus(b.id) && t.now() === b, 'picking an open mission makes it now');
+  ok(t.state(b) === 'now' && t.state(a) === 'open', 'the picked card is Now and the other stays Open');
+  const reloaded = new MissionTracker(t.save());
+  ok(reloaded.now()?.id === b.id, 'the pick survives a save and reload');
+  const locked = MISSIONS.find(m => t.state(m) === 'locked')!;
+  ok(!t.setFocus(locked.id) && t.now() === b, 'a locked mission cannot be picked');
+  ok(!t.setFocus(first.id) && t.now() === b, 'a done mission cannot be picked');
+  // finish the picked one: now goes back to the tree's order
+  t.event(b.objectives[0].kind as never, (b.objectives[0].item ?? b.objectives[0].body) as never, 999, () => 999);
+  if (!t.isDone(b.id)) (t as unknown as { done: Set<string> }).done.add(b.id);
+  ok(t.now() === MISSIONS.find(m => t.isOpen(m)), 'once the pick is done, now falls back to the first open mission');
+}

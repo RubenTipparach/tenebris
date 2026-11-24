@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 
+const ORIGIN = new THREE.Vector3();
+const LOCAL_UP = new THREE.Vector3(0, 1, 0);
+
 /**
  * Orbit camera for rocket flight mode
  * Camera orbits around the rocket's center, controlled by mouse movement
@@ -20,7 +23,11 @@ export class RocketCamera {
 
   // Rocket tracking
   private rocketCenter: THREE.Vector3 = new THREE.Vector3();
-  private rocketUp: THREE.Vector3 = new THREE.Vector3(0, 1, 0);  // Rocket's local up
+  private rocketUp: THREE.Vector3 = new THREE.Vector3(0, 1, 0);  // Rocket's local up (derived from rocketOrientation)
+  private rocketOrientation = new THREE.Quaternion();              // The rocket's attitude: the camera's frame
+  private tmpOffset = new THREE.Vector3();
+  private tmpMatrix = new THREE.Matrix4();
+  private tmpQuat = new THREE.Quaternion();
 
   // Configuration
   private readonly minDistance: number;
@@ -85,9 +92,15 @@ export class RocketCamera {
    * Set the rocket's center position and up vector
    * Call this each frame with the rocket's current transform
    */
-  public setRocketTransform(center: THREE.Vector3, up: THREE.Vector3): void {
+  /**
+   * The rocket's centre and full attitude. The camera orbits in the
+   * rocket's own frame (its quaternion), so it rolls, pitches and yaws with
+   * the ship and has no privileged world axis - no gimbal flip anywhere.
+   */
+  public setRocketTransform(center: THREE.Vector3, orientation: THREE.Quaternion): void {
     this.rocketCenter.copy(center);
-    this.rocketUp.copy(up).normalize();
+    this.rocketOrientation.copy(orientation).normalize();
+    this.rocketUp.set(0, 1, 0).applyQuaternion(this.rocketOrientation);
   }
 
   /**
@@ -112,45 +125,25 @@ export class RocketCamera {
     const cosAzi = Math.cos(this.currentAzimuth);
     const sinAzi = Math.sin(this.currentAzimuth);
 
-    // Build orthonormal basis around rocket's up vector
-    // We need forward and right vectors relative to rocket
-    const worldUp = new THREE.Vector3(0, 1, 0);
-    let forward = new THREE.Vector3();
-    let right = new THREE.Vector3();
-
-    // If rocket up is nearly aligned with world up, use world forward
-    if (Math.abs(this.rocketUp.dot(worldUp)) > 0.99) {
-      forward.set(0, 0, -1);
-    } else {
-      forward.crossVectors(worldUp, this.rocketUp).normalize();
-    }
-    right.crossVectors(this.rocketUp, forward).normalize();
-    forward.crossVectors(right, this.rocketUp).normalize();
-
-    // Calculate offset from rocket center
-    // Local coordinates: x = right, y = up, z = forward (behind is -z)
-    const localOffset = new THREE.Vector3(
+    // The orbit, in the rocket's own frame: x = right, y = up (the nose),
+    // z = forward (behind is -z). Quaternion-backed, as the rocket's attitude
+    // is: the old basis was rebuilt from the nose and WORLD up and snapped to
+    // a fixed axis when the nose crossed world up, which flipped the view
+    // (the gimbal snap), and never followed a roll.
+    const localOffset = this.tmpOffset.set(
       sinAzi * cosElev,   // Right component
       sinElev,            // Up component
       -cosAzi * cosElev   // Forward component (negative = behind)
     );
-
-    // Transform to world space
-    const worldOffset = new THREE.Vector3(
-      right.x * localOffset.x + this.rocketUp.x * localOffset.y + forward.x * localOffset.z,
-      right.y * localOffset.x + this.rocketUp.y * localOffset.y + forward.y * localOffset.z,
-      right.z * localOffset.x + this.rocketUp.z * localOffset.y + forward.z * localOffset.z
-    );
-
-    // Calculate desired camera position
-    const desiredPosition = this.rocketCenter.clone().addScaledVector(worldOffset, this.currentDistance);
-
-    // Position camera
-    this.camera.position.copy(desiredPosition);
-
-    // Align camera up with rocket up and look at rocket center
+    // Look at the rocket in its frame (elevation stays short of the poles,
+    // so local up never lines up with the view), then carry the whole view
+    // into the world by the rocket's quaternion
+    this.tmpMatrix.lookAt(localOffset, ORIGIN, LOCAL_UP);
+    this.tmpQuat.setFromRotationMatrix(this.tmpMatrix);
+    this.camera.quaternion.copy(this.rocketOrientation).multiply(this.tmpQuat);
     this.camera.up.copy(this.rocketUp);
-    this.camera.lookAt(this.rocketCenter);
+    this.camera.position.copy(this.rocketCenter)
+      .addScaledVector(localOffset.applyQuaternion(this.rocketOrientation), this.currentDistance);
   }
 
   /**

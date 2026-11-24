@@ -361,6 +361,20 @@ export class MissionsPanel {
     head.append(t, close);
     side.appendChild(head);
 
+    // An open mission (its parent done) can be picked as the one to do now
+    if (state === 'open') {
+      const pick = document.createElement('button');
+      pick.className = 'mt-pick';
+      pick.textContent = 'Do this mission';
+      pick.addEventListener('click', () => { if (this.tracker.setFocus(m.id)) this.redraw(); });
+      side.appendChild(pick);
+    } else if (state === 'now') {
+      const cur = document.createElement('div');
+      cur.className = 'mt-pick mt-pick-current';
+      cur.textContent = 'Current mission';
+      side.appendChild(cur);
+    }
+
     const section = (name: string) => {
       const h = document.createElement('div');
       h.className = 'mt-side-section';
@@ -530,6 +544,10 @@ function injectStyle(): void {
     .mt-side-head { display: flex; gap: 8px; align-items: center; }
     .mt-side-title { font-family: var(--game-font); font-size: 17px; color: #ffa300; }
     .mt-side-sub { font-size: 11px; color: #8a97a8; text-transform: uppercase; letter-spacing: 1px; }
+    .mt-pick { display: block; width: 100%; margin-top: 10px; padding: 6px 8px; font-family: var(--game-font); font-size: 13px; text-align: center; color: #0b0e14; background: #ffa300; border: 1px solid #ffec27; border-radius: 4px; cursor: pointer; }
+    .mt-pick:hover { background: #ffec27; }
+    .mt-pick-current { cursor: default; color: #ffa300; background: transparent; border-color: #ffa300; }
+    .mt-pick-current:hover { background: transparent; }
     .mt-close { margin-left: auto; background: #333; color: #ddd; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
     .mt-side-section { margin: 12px 0 4px; font-family: var(--game-font); font-size: 13px; color: #9fe0a5; text-transform: uppercase; letter-spacing: 1px; }
     .mt-side-text { font-size: 13px; color: #c8d0da; }

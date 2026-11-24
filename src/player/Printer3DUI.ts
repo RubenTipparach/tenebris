@@ -238,6 +238,8 @@ export class Printer3DUI {
   private progressBarElement: HTMLElement | null = null;
   private progressTextElement: HTMLElement | null = null;
   private statusElement: HTMLElement | null = null;
+  /** What the recipe list last showed (updateRecipeList skips a rebuild while it holds) */
+  private recipeListSignature = '';
   private cancelCurrentBtn: HTMLButtonElement | null = null;
   private tooltipElement: HTMLElement | null = null;
   private isDragging: boolean = false;
@@ -389,6 +391,10 @@ export class Printer3DUI {
         font-family: 'Courier New', monospace;
         font-size: 12px;
         font-weight: bold;
+      }
+
+      .printer3d-status .status-value.no-power {
+        color: #FF004D;
       }
 
       .printer3d-status .status-value.printing {
@@ -939,7 +945,10 @@ export class Printer3DUI {
     // Update status and progress
     const job = this.currentPrinter?.currentJob;
     if (this.statusElement) {
-      if (job) {
+      if (job && !this.currentPrinter?.isPowered) {
+        this.statusElement.textContent = 'No power - cable it to a generator';
+        this.statusElement.className = 'status-value no-power';
+      } else if (job) {
         const itemName = ITEM_DATA[job.itemType]?.name || 'Unknown';
         this.statusElement.textContent = `Printing: ${itemName}`;
         this.statusElement.className = 'status-value printing';
@@ -980,6 +989,18 @@ export class Printer3DUI {
   private updateRecipeList(): void {
     if (!this.recipeListElement || !this.inventory) return;
 
+    // The panel refreshes every frame while a job prints; rebuild the list
+    // only when what it shows changes (what can be printed, what is held,
+    // what is locked). Rebuilding every frame hid the hover tooltip at once
+    // and dropped the hover, so ingredient names could never be read.
+    const inv = this.inventory;
+    const signature = PRINTER_RECIPES.map(r =>
+      `${this.canCraftRecipe(r) ? 1 : 0}${recipeLockedBy(r.output) ?? ''}:` +
+      [...this.getRequiredItems(r)].map(([t, q]) => inv.hasItem(t, q) ? 1 : 0).join('')
+    ).join('|');
+    if (signature === this.recipeListSignature && this.recipeListElement.childElementCount > 0) return;
+    this.recipeListSignature = signature;
+
     // Hide tooltip when rebuilding recipe list (prevents stuck tooltips)
     this.hideTooltip();
 
@@ -1014,7 +1035,7 @@ export class Printer3DUI {
           const inputData = ITEM_DATA[itemType];
           const hasItem = this.inventory.hasItem(itemType, quantity);
           inputHtml += `
-            <div class="recipe-input ${hasItem ? 'has-item' : 'missing-item'}">
+            <div class="recipe-input ${hasItem ? 'has-item' : 'missing-item'}" title="${quantity}x ${inputData?.name || 'Unknown'}">
               <img src="${getAssetPath(inputData?.texture || '')}" alt="${inputData?.name || 'Unknown'}">
               <span class="recipe-input-qty">${quantity}</span>
             </div>

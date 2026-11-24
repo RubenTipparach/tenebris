@@ -26,10 +26,21 @@
 //         clients omit it); relayed when it is four small integers, else
 //         dropped - never the pose
 //     { t: 'edit', planet, tile, depth, block }
-//     { t: 'rec', kind, planet, key, data }   placed objects (torches, felled
-//         trees, machines and their contents, launch pads and their rockets,
-//         landed rockets): the latest data per (kind, planet, key) is kept
-//         and logged like an edit; data null removes it
+//     { t: 'rec', kind, planet, key, data, base? }   placed objects (torches,
+//         felled trees, machines and their contents, launch pads and their
+//         rockets, landed rockets): the latest data per (kind, planet, key) is
+//         kept and logged like an edit; data null removes it. base = the
+//         record version the change was made on (openspec mp-shared-objects):
+//         the write is a compare-and-set - accepted only when base is the
+//         record's current version (0 = no record yet), so two players
+//         changing one chest at once can never both win and duplicate items.
+//         The writer gets { t: 'recAck', kind, planet, key, v } or, when
+//         stale, { t: 'recNack', kind, planet, key, v, data } (the current
+//         record, to roll back to). A write without base (an older client)
+//         is accepted as before
+//     { t: 'chat', text }   a chat line: the server stamps name + time, strips
+//         control characters, caps the length, rate-limits and relays it to
+//         everyone in the world (the sender too), keeping the last few lines
 //     { t: 'live', ch, data }   relayed to the world, never stored (fauna
 //         snapshots from the planet's host, rockets in flight) - except the
 //         'status' channel: the player's own summary (items, suit, missions;
@@ -41,8 +52,10 @@
 //         renderer; kept per world + planet in DATA_DIR/maps/ for the portal
 //   server -> client
 //     { t: 'welcome', id, now, world: { id, name, seed, created }, edits: [[planet, tile, depth, block], ...],
-//       records: [[kind, planet, key, data], ...], players: [{ id, name, look, planet, p, q, a? }],
-//       uploadKey, maps: { planet: madeAtMs } }
+//       records: [[kind, planet, key, data, v], ...], players: [{ id, name, look, planet, p, q, a? }],
+//       uploadKey, maps: { planet: madeAtMs }, chat: [{ id, name, text, at }, ...] }
+//         v = each record's version (a compare-and-set write names it as base);
+//         chat = the world's last CHAT_HISTORY lines
 //         uploadKey signs this connection's map uploads; maps says which
 //         planets of the world have a map and when it was made
 //         now is the server clock (ms): every client derives the world's time
@@ -50,8 +63,11 @@
 //     { t: 'join', id, name, look }   { t: 'leave', id }
 //     { t: 'pose', id, planet, p, q, a? }
 //     { t: 'edit', id, planet, tile, depth, block }
-//     { t: 'rec', id, kind, planet, key, data }   { t: 'live', id, ch, data }
-//     { t: 'notice', text }   an operator message (admin portal)
+//     { t: 'rec', id, kind, planet, key, data, v }   { t: 'live', id, ch, data }
+//     { t: 'recAck', kind, planet, key, v }   { t: 'recNack', kind, planet, key, v, data }
+//     { t: 'chat', id, name, text, at }   a chat line (id 0 = the server)
+//     { t: 'notice', text }   an operator message (admin portal; the client
+//         shows it as a system line in the chat log)
 //   close codes: 4004 no such world (deleted), 4001 kicked by an operator,
 //   4010 the world was reset (the client drops its local copy and reloads)
 //
@@ -80,6 +96,13 @@ const CREATE_COOLDOWN_MS = 20_000;   // per address, so the list can't be floode
 const MAX_EDITS_PER_SECOND = 40;     // per client, to bound log growth from a bad client
 const MAX_RECS_PER_SECOND = 40;      // object records, per client
 const MAX_LIVE_PER_SECOND = 30;      // relayed live frames, per client
+// Chat (openspec mp-shared-objects): the longest line, how many lines a
+// client may send in CHAT_WINDOW_MS, and how many recent lines a world keeps
+// (in memory only) for players who join
+const CHAT_MAX_CHARS = 200;
+const CHAT_MAX_PER_WINDOW = 5;
+const CHAT_WINDOW_MS = 5000;
+const CHAT_HISTORY = 20;
 const MAX_RECORDS_PER_WORLD = 20_000;
 const MAX_MESSAGE_BYTES = 16 * 1024; // a chest or a rocket's cargo fits easily
 const MAX_MAP_BYTES = 512 * 1024;    // one planet map image
@@ -155,7 +178,14 @@ function openWorld(meta) {
       if (m) maps.set(m[1], { at: Math.round(fs.statSync(path.join(mapDir, f)).mtimeMs), ext: m[2] });
     }
   }
-  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set() };
+  // Record versions (compare-and-set writes), in memory: every record and
+  // every removed one ("kind|planet|key" -> v) from one per-world counter, so
+  // a version is never reused. Clients resync from the welcome, so this need
+  // not survive a restart
+  const versions = new Map();
+  let recSeq = 0;
+  for (const k of records.keys()) versions.set(k, ++recSeq);
+  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set(), versions, recSeq, chat: [] };
   worlds.set(w.id, w);
   return w;
 }
@@ -198,10 +228,36 @@ function recordEdit(w, e) {
   fs.appendFileSync(w.log, JSON.stringify(e) + '\n');
 }
 
+// Store a record (and log it the same message) - returns its new version
 function recordObject(w, r) {
   if (r[3] === null) w.records.delete(recKey(r));
   else w.records.set(recKey(r), r);
   fs.appendFileSync(w.recLog, JSON.stringify(r) + '\n');
+  const v = ++w.recSeq;
+  w.versions.set(recKey(r), v);
+  return v;
+}
+
+const recVersion = (w, k) => w.versions.get(k) ?? 0;
+
+// A chat line: printable ASCII only (the game's fonts), trimmed and capped
+const cleanChat = (s) => String(s ?? '').replace(/[^\x20-\x7e]/g, '').trim().slice(0, CHAT_MAX_CHARS);
+
+// Add a line to the world's recent history and send it to everyone there
+function chatLine(w, id, name, text) {
+  const line = { id, name, text, at: Date.now() };
+  w.chat.push(line);
+  if (w.chat.length > CHAT_HISTORY) w.chat.splice(0, w.chat.length - CHAT_HISTORY);
+  broadcast(w, { t: 'chat', ...line });
+}
+
+// A sliding chat window per client: false once it has sent too many lines
+function allowChat(pl) {
+  const now = Date.now();
+  pl.chatTimes = (pl.chatTimes ?? []).filter(t => now - t < CHAT_WINDOW_MS);
+  if (pl.chatTimes.length >= CHAT_MAX_PER_WINDOW) return false;
+  pl.chatTimes.push(now);
+  return true;
 }
 
 // A per-client rate window: false once the client has sent more than
@@ -252,6 +308,7 @@ function resetWorld(w) {
   closeWorldPlayers(w, CLOSE_RESET, 'world reset');
   w.edits.clear();
   w.records.clear();
+  w.chat = [];
   for (const f of [w.log, w.recLog]) fs.writeFileSync(f, '');
   dropMaps(w);
   return true;
@@ -264,8 +321,8 @@ function clearRecordKind(w, kind) {
   for (const r of [...w.records.values()]) {
     if (r[0] !== kind) continue;
     const gone = [r[0], r[1], r[2], null];
-    recordObject(w, gone);
-    broadcast(w, { t: 'rec', id: 0, kind: r[0], planet: r[1], key: r[2], data: null });
+    const v = recordObject(w, gone);
+    broadcast(w, { t: 'rec', id: 0, kind: r[0], planet: r[1], key: r[2], data: null, v });
     n++;
   }
   return n;
@@ -381,11 +438,31 @@ function onMessage(id, raw) {
     broadcast(w, { t: 'edit', id, planet: m.planet, tile: m.tile, depth: m.depth, block: m.block }, id);
   } else if (m.t === 'rec' && typeof m.kind === 'string' && KIND.test(m.kind) && isPlanetId(m.planet)
              && typeof m.key === 'string' && KEY.test(m.key) && (m.data === null || (typeof m.data === 'object' && !Array.isArray(m.data)))) {
-    if (!allow(pl, 'rec', MAX_RECS_PER_SECOND)) return;
     const r = [m.kind, m.planet, m.key, m.data];
-    if (r[3] !== null && !w.records.has(recKey(r)) && w.records.size >= MAX_RECORDS_PER_WORLD) return;
-    recordObject(w, r);
-    broadcast(w, { t: 'rec', id, kind: m.kind, planet: m.planet, key: m.key, data: m.data }, id);
+    const k = recKey(r);
+    const at = { kind: m.kind, planet: m.planet, key: m.key };
+    // over the rate: a versioned writer is told (it rolls back), never left waiting
+    if (!allow(pl, 'rec', MAX_RECS_PER_SECOND)) {
+      if (Number.isInteger(m.base)) send(pl.ws, { t: 'recNack', ...at, v: recVersion(w, k), data: w.records.get(k)?.[3] ?? null });
+      return;
+    }
+    // Compare-and-set: a change made on an older version of the record loses,
+    // and the writer gets the current record back to roll back to
+    if (Number.isInteger(m.base) && m.base !== recVersion(w, k)) {
+      send(pl.ws, { t: 'recNack', ...at, v: recVersion(w, k), data: w.records.get(k)?.[3] ?? null });
+      return;
+    }
+    if (r[3] !== null && !w.records.has(k) && w.records.size >= MAX_RECORDS_PER_WORLD) {
+      send(pl.ws, { t: 'recNack', ...at, v: recVersion(w, k), data: null });
+      return;
+    }
+    const v = recordObject(w, r);
+    if (Number.isInteger(m.base)) send(pl.ws, { t: 'recAck', ...at, v });
+    broadcast(w, { t: 'rec', id, ...at, data: m.data, v }, id);
+  } else if (m.t === 'chat' && typeof m.text === 'string') {
+    const text = cleanChat(m.text);
+    if (!text || !allowChat(pl)) return;
+    chatLine(w, id, pl.name, text);
   } else if (m.t === 'live' && m.ch === STATUS_CHANNEL) {
     if (!allow(pl, 'live', MAX_LIVE_PER_SECOND)) return;
     const st = cleanStatus(m.data);
@@ -509,11 +586,12 @@ wss.on('connection', (ws, req) => {
     now: Date.now(),
     world: { id: w.id, name: w.name, seed: w.seed, created: w.created },
     edits: [...w.edits.values()],
-    records: [...w.records.values()],
+    records: [...w.records.values()].map(r => [...r, recVersion(w, recKey(r))]),
     players: [...w.players].map(pid => [pid, players.get(pid)]).filter(([, p]) => p)
       .map(([pid, p]) => ({ id: pid, name: p.name, look: p.look, planet: p.planet, p: p.p, q: p.q, a: p.a })),
     uploadKey,
     maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
+    chat: w.chat,
   });
   w.players.add(id);
   ws.on('message', (data) => onMessage(id, data.toString()));

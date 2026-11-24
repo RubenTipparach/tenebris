@@ -175,6 +175,8 @@ export enum ItemType {
   FISH_GAR = 195,
   // Sequoia's schooling fish (openspec underwater-life)
   FISH_SPRAT = 196,
+  // Oil sand dug out whole, for the refinery (it can also be scooped with a bucket)
+  OIL_SAND = 197,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -422,6 +424,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)
   [ItemType.CLAY]: { name: 'Clay', stackSize: 64, texture: '/textures/resources/clay.png', mineTime: 0.6 },
+  [ItemType.OIL_SAND]: { name: 'Oil Sand', stackSize: 64, texture: '/textures/resources/oil_sand.png', mineTime: 0.9 },
   [ItemType.ORE_URANIUM]: { name: 'Uranium Ore', stackSize: 64, texture: '/textures/resources/ore_uranium.png', mineTime: 3.5 },
   [ItemType.BRICK]: { name: 'Brick', stackSize: 64, texture: '/textures/icons/brick.png', mineTime: 0.3 },
   [ItemType.CLAY_POT]: { name: 'Clay Pot', stackSize: 16, texture: '/textures/icons/clay_pot.png', mineTime: 0.3 },
@@ -561,7 +564,7 @@ export const DIG_WITH: Partial<Record<ItemType, ToolKind>> = {
     I.BRICK_BLOCK, I.CONCRETE_BLOCK, I.STEEL_GIRDER, I.STEEL_GLASS,
   ].map(i => [i, 'pickaxe'])),
   ...Object.fromEntries([
-    I.DIRT, I.GRASS, I.SAND, I.SNOW, I.SEQ_DIRT, I.SEQ_SAND, I.SEQ_SNOW, I.CLAY,
+    I.DIRT, I.GRASS, I.SAND, I.SNOW, I.SEQ_DIRT, I.SEQ_SAND, I.SEQ_SNOW, I.CLAY, I.OIL_SAND,
   ].map(i => [i, 'shovel'])),
   ...Object.fromEntries([I.WOOD, I.LOG, I.LEAVES].map(i => [i, 'axe'])),
 };
@@ -846,6 +849,37 @@ export class Inventory {
       return true;
     }
     return false;
+  }
+
+  /**
+   * How many of each item the player has: hotbar, bag, toolbox and a held
+   * stack (multiplayer's trade ledger measures a panel action by these -
+   * openspec mp-shared-objects).
+   */
+  public itemCounts(): Map<number, number> {
+    const out = new Map<number, number>();
+    const add = (s: InventorySlot) => {
+      if (s.itemType !== ItemType.NONE && s.quantity > 0) out.set(s.itemType, (out.get(s.itemType) ?? 0) + s.quantity);
+    };
+    for (const s of this.everySlot()) add(s);
+    if (this.held) add(this.held.stack);
+    return out;
+  }
+
+  /**
+   * Undo a trade (itemType -> count the player gained; negative = gave):
+   * take back what they gained, give back what they gave (hotbar first, then
+   * the bag). Returns what could not be taken back (already used) and what
+   * did not fit.
+   */
+  public undoTrade(gained: Record<number, number>): { missing: number; overflow: number } {
+    let missing = 0, overflow = 0;
+    for (const [k, n] of Object.entries(gained)) {
+      const type = Number(k) as ItemType;
+      if (n > 0) missing += n - this.removeItem(type, n);
+      else if (n < 0) overflow += this.addItem(type, -n);
+    }
+    return { missing, overflow };
   }
 
   // Get all hotbar + bag slots (for inventory UI)

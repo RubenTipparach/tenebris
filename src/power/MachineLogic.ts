@@ -84,7 +84,7 @@ function takeFrom(slots: InventorySlot[], itemType: ItemType, quantity: number):
 export function wantsPower(m: MachineState, oilBelow: boolean): boolean {
   switch (m.kind) {
     case 'pumpJack': return oilBelow && m.tank < MACHINE_CONFIG.PUMP_TANK_UNITS;
-    case 'refinery': return countIn(m.inputs, ItemType.CRUDE_OIL_BUCKET) > 0;
+    case 'refinery': return countIn(m.inputs, ItemType.CRUDE_OIL_BUCKET) > 0 || countIn(m.inputs, ItemType.OIL_SAND) >= MACHINE_CONFIG.REFINE_OIL_SAND_IN;
     case 'centrifuge': return countIn(m.inputs, ItemType.ORE_URANIUM) >= MACHINE_CONFIG.ENRICH_IN;
     case 'nuclearFabricator': return m.job !== null;
     case 'gasCollector': return countIn(m.inputs, ItemType.EMPTY_TANK) > 0;
@@ -132,16 +132,22 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
       break;
     }
     case 'refinery': {
-      if (countIn(m.inputs, ItemType.CRUDE_OIL_BUCKET) === 0) { m.status = 'Add crude oil'; m.progressS = 0; break; }
+      // crude oil first (its bucket comes back); else a load of oil sand
+      const fromCrude = countIn(m.inputs, ItemType.CRUDE_OIL_BUCKET) > 0;
+      if (!fromCrude && countIn(m.inputs, ItemType.OIL_SAND) < MACHINE_CONFIG.REFINE_OIL_SAND_IN) {
+        m.status = `Add crude oil or ${MACHINE_CONFIG.REFINE_OIL_SAND_IN} oil sand`; m.progressS = 0; break;
+      }
       if (!m.powered) { m.status = 'No power'; break; }
       m.progressS += dtS;
       m.status = 'Refining';
       if (m.progressS >= MACHINE_CONFIG.REFINE_S) {
         const trial = m.outputs.map(s => ({ ...s }));
-        const fits = [...MACHINE_CONFIG.REFINE_OUT, { itemType: ItemType.BUCKET, quantity: 1 }].every(o => addToSlots(trial, o.itemType, o.quantity));
+        const outs = fromCrude ? [...MACHINE_CONFIG.REFINE_OUT, { itemType: ItemType.BUCKET, quantity: 1 }] : MACHINE_CONFIG.REFINE_OUT;
+        const fits = outs.every(o => addToSlots(trial, o.itemType, o.quantity));
         if (!fits) { m.status = 'Output full'; m.progressS = MACHINE_CONFIG.REFINE_S; break; }
         trial.forEach((t, i) => { m.outputs[i].itemType = t.itemType; m.outputs[i].quantity = t.quantity; });
-        takeFrom(m.inputs, ItemType.CRUDE_OIL_BUCKET, 1);
+        if (fromCrude) takeFrom(m.inputs, ItemType.CRUDE_OIL_BUCKET, 1);
+        else takeFrom(m.inputs, ItemType.OIL_SAND, MACHINE_CONFIG.REFINE_OIL_SAND_IN);
         m.progressS = 0;
         fx.made = MACHINE_CONFIG.REFINE_OUT.map(o => ({ ...o }));
         fx.event = 'refined';
@@ -272,7 +278,7 @@ export function machineFromRecord(r: SavedMachine): MachineState {
 export function acceptsInput(kind: PowerNodeKind, itemType: ItemType): boolean {
   switch (kind) {
     case 'pumpJack': return itemType === ItemType.BUCKET;
-    case 'refinery': return itemType === ItemType.CRUDE_OIL_BUCKET;
+    case 'refinery': return itemType === ItemType.CRUDE_OIL_BUCKET || itemType === ItemType.OIL_SAND;
     case 'centrifuge': return itemType === ItemType.ORE_URANIUM;
     case 'reactor': return itemType === ItemType.FUEL_ROD;
     case 'gasCollector': return itemType === ItemType.EMPTY_TANK;

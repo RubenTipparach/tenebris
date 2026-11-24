@@ -62,8 +62,10 @@ export const MACHINE_CONFIG = {
   // TANK_UNITS; each unit pumped turns one oil sand cell below to stone
   PUMP_UNIT_S: 12,
   PUMP_TANK_UNITS: 8,
-  // Refinery: one crude oil bucket in -> outputs, every REFINE_S
+  // Refinery: one crude oil bucket in -> outputs, every REFINE_S; or, with
+  // no crude, REFINE_OIL_SAND_IN oil sand dug out whole does the same run
   REFINE_S: 10,
+  REFINE_OIL_SAND_IN: 4,
   REFINE_OUT: [
     { itemType: ItemType.KEROSENE, quantity: 2 },
     { itemType: ItemType.PLASTIC, quantity: 1 },

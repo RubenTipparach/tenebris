@@ -7,7 +7,8 @@ import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
 import { ActionFrame, IDLE_ACTION, LoopAction, OneShotTracker, ShotAction, avatarTransforms, decodeAction, encodeAction } from './AvatarPose';
 import { ITEM_DATA, ItemType } from '../player/Inventory';
 import { serverHttpBase } from './WorldSession';
-import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
+import { ackRecord, applySnapshot, attachTransport, dispatchChat, dispatchLive, dispatchRecord, nackRecord, setPeer } from './NetSync';
+import { parseChatLine, systemLine } from './Chat';
 
 /**
  * Online play against server-js/ (deployed to the 'tenebris' Fly app).
@@ -213,14 +214,20 @@ export class Multiplayer {
       case 'welcome':
         this.myId = m.id;
         attachTransport({
-          sendRecord: (kind, planet, key, data) => this.sendJson({ t: 'rec', kind, planet, key, data }),
+          sendRecord: (kind, planet, key, data, base) => this.sendJson({ t: 'rec', kind, planet, key, data, base }),
+          sendChat: (text) => this.sendJson({ t: 'chat', text }),
           sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
           uploadMap: (planet, image) => this.uploadMap(String(m.world?.id ?? ''), planet, image, String(m.uploadKey ?? '')),
         }, m.id, m.now, m.world?.created, m.world?.id, m.maps);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
           this.planets.get(planet)?.setBlock(tile, depth, block);
         }
-        applySnapshot((m.records ?? []) as Array<[string, string, string, any]>);
+        applySnapshot((m.records ?? []) as Array<[string, string, string, any, number?]>);
+        // the world's last few chat lines, so a joiner sees the conversation
+        for (const line of (m.chat ?? []) as unknown[]) {
+          const l = parseChatLine(line);
+          if (l) dispatchChat(l);
+        }
         for (const p of m.players) {
           this.upsert(p.id, p.name, p.planet, p.p, p.q, p.look);
           this.applyAction(p.id, p.a);
@@ -231,16 +238,16 @@ export class Multiplayer {
         // also sent when a player changes their name or look
         const isNew = !this.remotes.has(m.id);
         this.upsert(m.id, m.name, undefined, undefined, undefined, m.look);
-        if (isNew) showToast(`${m.name} joined`, { duration: 2000 });
+        if (isNew) dispatchChat(systemLine(`${String(m.name ?? 'Someone')} joined`));
         break;
       }
       case 'notice':
-        showToast(`Server: ${String(m.text ?? '').slice(0, 200)}`, { duration: 8000 });
+        dispatchChat(systemLine(`Server: ${String(m.text ?? '')}`));
         break;
       case 'leave': {
         const r = this.remotes.get(m.id);
         if (r) {
-          showToast(`${r.name} left`, { duration: 2000 });
+          dispatchChat(systemLine(`${r.name} left`));
           this.removeRemote(m.id);
         }
         break;
@@ -254,8 +261,19 @@ export class Multiplayer {
         this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block);
         break;
       case 'rec':
-        dispatchRecord(m.kind, m.planet, m.key, m.data);
+        dispatchRecord(m.kind, m.planet, m.key, m.data, m.v);
         break;
+      case 'recAck':
+        ackRecord(m.kind, m.planet, m.key, m.v);
+        break;
+      case 'recNack':
+        nackRecord(m.kind, m.planet, m.key, m.v, m.data ?? null);
+        break;
+      case 'chat': {
+        const l = parseChatLine(m);
+        if (l) dispatchChat(l);
+        break;
+      }
       case 'live':
         dispatchLive(m.ch, m.id, m.data);
         break;

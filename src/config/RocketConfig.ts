@@ -53,6 +53,11 @@ export interface RocketEquipmentStats {
 }
 
 export const ROCKET_CONFIG = {
+  // === EXIT IN SPACE ===
+  // Out of every gravity well a pilot may climb out (an EVA): the ship parks
+  // where it floats, and the player comes out this far off its side (m), clear
+  // of the hull, to float in space mode and re-board it later
+  EVA_EXIT_DISTANCE_M: 4,
   // === FUEL SYSTEM ===
   // Mass of one fuel unit. A medium tank holds 100 units = 450 kg of propellant
   FUEL_KG_PER_UNIT: 4.5,
@@ -68,6 +73,10 @@ export const ROCKET_CONFIG = {
   // A rocket assembled on a NEW launch pad starts with empty tanks (pads from
   // older saves, and the starter rocket, keep launching full)
   NEW_PAD_FUEL: 0,
+  // The pad a rocket launched from keeps the fuel it burns: its record is
+  // written each time this many more units have burnt (and on any exit,
+  // respawn or crash), so a relaunch from the pad starts with what is left
+  PAD_FUEL_RECORD_STEP: 5,
   // Launch pads are built one Launch Pad Block (one hex) at a time. A rocket
   // and its tower need at least PAD_BLOCKS_PER_TOWER blocks laid as a middle
   // hex with the full ring around it; the rocket stands in the middle and
@@ -167,7 +176,7 @@ export const ROCKET_CONFIG = {
     // edge (GRAVITY_WELL.FALLOFF_RADIUS_MULT), 80 m deep on Earth: the
     // whole descent through a body's pull is "in the air".
     shellRadiusMult: 1.8,
-    // Earth's free-fall speed with the flight damping is ~33 m/s, so a
+    // Earth's free-fall speed with the flight damping is ~37 m/s, so a
     // passive fall stays cool; only a powered dive heats
     safeSpeed: 40,                // m/s
     heatPerMs: 1.5,               // heat per second per m/s over safeSpeed (80 m/s: maxHeat in under 2 s)
@@ -193,7 +202,7 @@ export const ROCKET_CONFIG = {
   // there; sideways motion bleeds at the same rate; it rights the rocket.
   PARACHUTE: {
     deployAltitude: 50,           // m above the surface (auto-open while falling)
-    maxOpenSpeed: 45,             // m/s (above a passive fall's ~33 m/s)
+    maxOpenSpeed: 45,             // m/s (above a passive fall's ~37 m/s)
     terminalVelocity: 3,          // m/s, under HEALTH.impactDamageThreshold
     dragRate: 1.5,                // 1/s
     uprightRate: 1.5,             // 1/s, how fast it swings the nose up
@@ -211,8 +220,9 @@ export const ROCKET_CONFIG = {
   // === PHYSICS ===
   PHYSICS: {
     dragCoefficient: 0.5,         // Atmospheric drag
-    angularDamping: 0.95,         // Rotation slowdown per reference frame
-    linearDamping: 0.99,          // Linear slowdown per reference frame (noticeable drag to prevent infinite drift)
+    angularDamping: 0.98,         // Rotation kept per reference frame (0.98^60: 30% of a spin left after 1 s; was 0.95, ~5%)
+    linearDamping: 0.995,         // Speed kept per reference frame (0.995^60: 74% after 1 s; was 0.99, 55%) - drift still settles.
+                                  // Higher and a passive fall back from space passes REENTRY.safeSpeed (0.997: 41.6 m/s)
     dampingReferenceFps: 60,      // the damping above is per frame at this rate; scaled by dt so it is frame-rate independent
     gravityConstant: 9.81,        // m/s^2 for TWR/delta-V calculations
   },
@@ -234,6 +244,17 @@ export const ROCKET_CONFIG = {
     strafeFuelConsumption: 2,     // Fuel units per second when strafing
     throttleStep: 0.1,            // Per shift/ctrl press
     throttleHoldRate: 0.5,        // Throttle change per second when holding
+  },
+
+  // === RCS THRUSTER LINES (rocket/RocketRcsVisuals.ts) ===
+  // Shown while WASD / Q / E turn the rocket: a pair of jets per turn
+  RCS_VISUAL: {
+    length: 2.5,                  // m, each jet's line
+    flicker: 0.3,                 // share of the length a jet flickers by
+    leverShare: 0.85,             // pitch / roll jets sit this far up the half-stack (nose and tail)
+    hullRadius: 1.0,              // m, where spin jets leave the hull's side
+    color: 0xe8f6ff,
+    opacity: 0.9,
   },
 
   // === CAMERA ===

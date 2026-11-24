@@ -181,3 +181,25 @@ off, saved per browser, on by default.
 
 - **WHEN** the player switches Show Mission on HUD off in Settings and reloads
 - **THEN** the tracker stays hidden until the switch is turned back on
+
+### Requirement: The player picks which open mission to do
+
+An open mission's side panel SHALL offer a "Do this mission" button that
+makes it the mission to do now (the Now card and the HUD tracker). Only an
+open mission, next to a completed one, SHALL be pickable. The pick SHALL be
+saved, and SHALL fall back to the tree's order once that mission is done.
+
+#### Scenario: Switching to another branch
+
+- **WHEN** the player opens Strike oil's card while Rocketry is Now and presses Do this mission
+- **THEN** Strike oil becomes Now on the tree and the HUD, and stays Now after a reload
+
+#### Scenario: A locked mission cannot be picked
+
+- **WHEN** the player opens a locked mission's card
+- **THEN** it shows no Do this mission button, and picking it through the tracker changes nothing
+
+#### Scenario: The picked mission is finished
+
+- **WHEN** the player finishes the mission they picked
+- **THEN** the mission to do now goes back to the first open one in the tree's order, and every open mission kept counting progress meanwhile

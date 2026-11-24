@@ -335,3 +335,14 @@ export const MUSIC_SETTINGS = {
   // Fade out duration when stopping a track (seconds)
   FADE_OUT_DURATION: 0.5,
 };
+
+/**
+ * The Settings menu's volume sliders: music (MusicManager's gain) and sound
+ * effects (AudioManager's master gain, under every SFX category). Saved per
+ * browser as 0-1; missing means the default.
+ */
+export const VOLUME_SLIDERS = {
+  MUSIC_KEY: 'tenebris_music_volume',
+  SFX_KEY: 'tenebris_sfx_volume',
+  SFX_DEFAULT: 1.0,
+};

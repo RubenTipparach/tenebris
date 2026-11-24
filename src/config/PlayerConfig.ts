@@ -183,9 +183,9 @@ export const PlayerConfig = {
 
   // Rocket part stack position offset (relative to launch pad center)
   // X = sideways, Y = up/down from base, Z = forward/back
-  ROCKET_STACK_OFFSET_X: -0.3,           // Sideways offset
+  ROCKET_STACK_OFFSET_X: 0,             // Sideways offset (0: on the middle hex - the part models are centred)
   ROCKET_STACK_OFFSET_Y: -1,           // Vertical offset (added to calculated stack height)
-  ROCKET_STACK_OFFSET_Z: -1.0,           // Forward/back offset
+  ROCKET_STACK_OFFSET_Z: 0,             // Forward/back offset (0: on the middle hex)
 
   // Debug settings (for development/testing)
   DEBUG_BYPASS_CRAFTING_INGREDIENTS: false,  // Skip ingredient requirements when crafting

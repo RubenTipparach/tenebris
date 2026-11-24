@@ -45,6 +45,7 @@
 - [x] 9.4 Tree panel: cards laid out from the tree, branch plaques, parent lines, Done/Now/Open/Locked, pan, designed zoom levels and Fit, side panel with objectives, help, unlocks, needs, opens next. Verify: headless screenshots fitted, zoomed, and with a card's side panel open.
 - [x] 9.5 Pan bounds (Pale Blue Dot's `apply()`): `clampPan` in `MissionTreeLayout.ts` keeps `PAN_KEEP_PX` of the nearest card in view, applied on drag, zoom, Fit and centring. Verify: test that a drag far off every side at every zoom level stops with a card in view; headless drags far each way and zoomed out and in.
 - [x] 9.6 HUD tracker (`src/player/MissionHud.ts`): the now mission's icon, title and objectives with counts at the top right, redrawn on tracker changes, hidden while a menu is open, click opens Missions; "Show Mission on HUD" in Settings, saved as `tenebris_mission_hud`, on by default. Verify: headless the counts move, a done mission shows the next, the switch hides it.
+- [x] 9.7 Pick the mission to do: `MissionTracker.setFocus` (open missions only, saved as `focus`, cleared when it is done) and a Do this mission button on an open card's side panel. Verify: test that an open pick becomes now and survives a save, a locked or done pick is refused, and a done pick falls back to tree order.
 
 ## 8. Stage B and C (orbital-motion, later)
 
