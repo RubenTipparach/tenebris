@@ -96,6 +96,18 @@ async function launchBot(bot) {
     for (const b of bots) {
       try { status.bots[b.name] = await b.page.evaluate(() => window.__bot.status()); }
       catch (e) { status.bots[b.name] = { error: String(e).slice(0, 200) }; }
+      // The page reloaded (the dev server picked up a source change, or the
+      // server dropped it): once the game is back in the world, start the bot again
+      if (!status.bots[b.name].role) {
+        const ready = await b.page.evaluate(() => !!(window.__mp && window.__mp.ready() && window.__bot)).catch(() => false);
+        if (ready && !b.restarting) {
+          b.restarting = true;
+          log(b.name, 'page reloaded - starting the bot again');
+          await sleep(4000);
+          await b.page.evaluate((role) => window.__bot.start(role), b.role).catch(e => log(b.name, 'restart failed', String(e).slice(0, 120)));
+          b.restarting = false;
+        }
+      }
     }
     fs.writeFileSync(path.join(OUT, 'status.json'), JSON.stringify(status, null, 1));
     // Debugging a live bot: drop OUT/cmd-<bot>.js (a function body) and the
