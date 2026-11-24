@@ -401,7 +401,11 @@ export class RocketFlightManager {
       this.rocketController.disposeNonVisual();
       console.log('Rocket persisted in world as landed rocket');
     } else {
-      // Never launched - clean up completely (rocket stays on launch pad as DOCKED)
+      // Never launched: the rocket stays on its launch pad as DOCKED. Its
+      // parts go back under the pad's mesh first - boarding moved them onto
+      // the flight pivot, and disposing that pivot with them on it left the
+      // rocket invisible while the pad still listed it (boardable, unseen).
+      if (this.activePad) this.rocketController.returnPartsTo(this.activePad.mesh);
       this.rocketController.dispose();
     }
 

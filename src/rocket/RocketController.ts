@@ -1713,6 +1713,19 @@ export class RocketController {
   }
 
   /**
+   * Hand the parts back to the launch pad they were boarded from (an exit
+   * before launch): each keeps its world pose under the pad's mesh, and the
+   * controller lets go of them, so a dispose() after this can't remove or
+   * dispose the rocket still standing on the pad.
+   */
+  public returnPartsTo(padMesh: THREE.Object3D): void {
+    this.pivot.updateMatrixWorld(true);
+    padMesh.updateMatrixWorld(true);
+    for (const part of this.parts) padMesh.attach(part.mesh);
+    this.parts = [];
+  }
+
+  /**
    * Clean up non-visual resources only (for when rocket becomes a landed rocket)
    * Keeps the pivot and parts intact but cleans up particle systems, camera, etc.
    */
