@@ -32,6 +32,7 @@
 
   let I = null;          // ItemType
   let ITEM_DATA = null;  // per-item data (rocket part heights)
+  let STACK_OK = () => true;  // the pad's stack rules (stackProblems)
   let B = null;          // HexBlockType
   let RECIPES = null;    // CRAFTING_RECIPES
   let SMELTS = null;     // furnace SMELTING_RECIPES
@@ -71,6 +72,8 @@
     const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
     COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
     BODY_RES = (await import(`${BASE}/config/Missions.ts`)).BODY_RESOURCES || {};
+    const perfMod = await import(`${BASE}/rocket/RocketPerformance.ts`);
+    STACK_OK = (parts) => perfMod.stackProblems(parts).length === 0;
     I = inventory.ItemType;
     ITEM_DATA = inventory.ITEM_DATA;
     B = blocks.HexBlockType;
@@ -1240,7 +1243,7 @@
     // the staged rocket with the most fuel aboard (don't fill a second one)
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
     const up = bi().launchPadManager.getLaunchPads()
-      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR))
+      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR) && STACK_OK(p.rocketParts.map(q => q.itemType)))
       .sort((a, b) => (b.fuel ?? 0) - (a.fuel ?? 0))[0];
     if (up) {
       return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
@@ -1535,10 +1538,12 @@
   // so the booster alone must lift the whole stack: two basic engines under
   // the vacuum stage (liftoff TWR 1.28, ~2965 m/s; one engine gives 0.8).
   const UPGRADE_STACKS = () => [
-    [I.ROCKET_ENGINE, I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE],
-    [I.ROCKET_ENGINE, I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE],
+    // one engine per stage, at its bottom: a Rocket Engine booster under a
+    // vacuum stage (liftoff TWR ~1.10, ~1430 m/s; with a large upper tank it
+    // can't lift off Earth)
+    [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
   ];
-  const MIN_LIFT_TWR = 1.15;
+  const MIN_LIFT_TWR = 1.05;
   async function liftTWR(stack) {
     const perf = await import(`${BASE}/rocket/RocketPerformance.ts`);
     const cfg = (await import(`${BASE}/config/RocketConfig.ts`)).ROCKET_CONFIG;
@@ -2700,7 +2705,7 @@
         // after the vacuum engine: rebuild our rocket as a two-stage one, once
         if (doneIds().includes('vacuum') && !resting('upgrade') && (bodyId() === 'earth')) {
           // once: when no rocket of ours has stages yet
-          const staged = bi().launchPadManager.getLaunchPads().some(p => p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR));
+          const staged = bi().launchPadManager.getLaunchPads().some(p => p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR) && STACK_OK(p.rocketParts.map(q => q.itemType)));
           const pad = padHere();
           if (!staged && pad) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
         }

@@ -127,6 +127,8 @@ export const ROCKET_CONFIG = {
   // written each time this many more units have burnt (and on any exit,
   // respawn or crash), so a relaunch from the pad starts with what is left
   PAD_FUEL_RECORD_STEP: 5,
+  // Refuelling (on board or a parked rocket's panel) works only this close to a body's ground (m)
+  REFUEL_MAX_ALTITUDE_M: 3,
   // Launch pads are built one Launch Pad Block (one hex) at a time. A rocket
   // and its tower need at least PAD_BLOCKS_PER_TOWER blocks laid as a middle
   // hex with the full ring around it; the rocket stands in the middle and
