@@ -28,7 +28,7 @@ import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { getBodyConfig } from '../config/SolarSystemConfig';
 import { PlanetTreeManager } from '../planet/Tree';
 import { HeldTorch, PlacedTorch, TorchManager } from '../planet/Torch';
-import { FurnaceManager, PlacedFurnace } from '../planet/Furnace';
+import { FurnaceManager, PlacedFurnace, furnaceHasFuel } from '../planet/Furnace';
 import { SMELTS_PER_COAL } from '../config/SmeltingRecipes';
 import { bucketFill } from '../config/BucketFills';
 import { StorageChestManager, PlacedStorageChest } from '../planet/StorageChest';
@@ -2195,7 +2195,11 @@ export class PlanetBlockInteraction {
     if (furnace.outputItem !== null && furnace.outputCount > 0) {
       this.inventory.addItem(furnace.outputItem as ItemType, furnace.outputCount);
     }
-    // Convert fuel back to coal (approximately)
+    // The unburnt fuel stack comes back as it went in
+    if (furnace.fuelItem !== null && furnace.fuelCount > 0) {
+      this.inventory.addItem(furnace.fuelItem as ItemType, furnace.fuelCount);
+    }
+    // Convert the burning remainder back to coal (approximately)
     if (furnace.fuelAmount > 0) {
       const coalToReturn = Math.ceil(furnace.fuelAmount / SMELTS_PER_COAL);
       this.inventory.addItem(ItemType.COAL, coalToReturn);
@@ -3230,6 +3234,8 @@ export class PlanetBlockInteraction {
           position: { x: placedFurnace.position.x, y: placedFurnace.position.y, z: placedFurnace.position.z },
           rotation: placedFurnace.rotation,
           fuelAmount: placedFurnace.fuelAmount,
+          fuelItem: placedFurnace.fuelItem,
+          fuelCount: placedFurnace.fuelCount,
           smeltingItem: placedFurnace.smeltingItem,
           smeltingProgress: placedFurnace.smeltingProgress,
           inputCount: placedFurnace.inputCount,
@@ -4353,6 +4359,8 @@ export class PlanetBlockInteraction {
         position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
         rotation: furnace.rotation,
         fuelAmount: furnace.fuelAmount,
+        fuelItem: furnace.fuelItem,
+        fuelCount: furnace.fuelCount,
         smeltingItem: furnace.smeltingItem,
         smeltingProgress: furnace.smeltingProgress,
         inputCount: furnace.inputCount,
@@ -4911,6 +4919,8 @@ export class PlanetBlockInteraction {
       case 'furnace': {
         const f = o as PlacedFurnace, r = saved as SavedFurnace;
         f.fuelAmount = r.fuelAmount;
+        f.fuelItem = r.fuelItem ?? null;
+        f.fuelCount = r.fuelCount ?? 0;
         f.smeltingItem = r.smeltingItem;
         f.smeltingProgress = r.smeltingProgress;
         f.inputCount = r.inputCount ?? 0;
@@ -5232,9 +5242,9 @@ export class PlanetBlockInteraction {
           tileIndex: furnace.tileIndex,
           position: { x: furnace.position.x, y: furnace.position.y, z: furnace.position.z },
           getStatus: () => {
-            if (furnace.smeltingItem !== null && furnace.fuelAmount > 0) {
+            if (furnace.smeltingItem !== null && furnaceHasFuel(furnace)) {
               return `Smelting ${Math.round(furnace.smeltingProgress * 100)}%`;
-            } else if (furnace.smeltingItem !== null && furnace.fuelAmount === 0) {
+            } else if (furnace.smeltingItem !== null) {
               return 'No Fuel';
             } else if (furnace.outputCount > 0) {
               return `Output: ${furnace.outputCount}`;

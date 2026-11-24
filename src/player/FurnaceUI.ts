@@ -383,10 +383,10 @@ export class FurnaceUI {
         quantity = this.currentFurnace.inputCount;
       }
     } else if (slotType === this.SLOT_FUEL) {
-      hasItem = this.currentFurnace.fuelAmount > 0;
+      hasItem = this.currentFurnace.fuelItem !== null && this.currentFurnace.fuelCount > 0;
       if (hasItem) {
-        itemType = ItemType.COAL;
-        quantity = Math.ceil(this.currentFurnace.fuelAmount / this.FUEL_PER_COAL);
+        itemType = this.currentFurnace.fuelItem as ItemType;
+        quantity = this.currentFurnace.fuelCount;
       }
     }
 
@@ -520,9 +520,14 @@ export class FurnaceUI {
         }
       }
     } else if (slotType === this.SLOT_FUEL) {
-      // Right-click fuel: add half of the held fuel
+      // Right-click fuel: add half of the held fuel, else take half the stack back
       const selectedItem = this.inventory.getSelectedItem();
-      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, halfUp(selectedItem.quantity))) {
+      if (selectedItem.quantity > 0 && furnaceFuel(selectedItem.itemType)) {
+        if (this.burnFuel(selectedItem.itemType, halfUp(selectedItem.quantity))) {
+          this.updateUI();
+          this.notifyChanges();
+        }
+      } else if (this.takeFuel(halfUp(this.currentFurnace.fuelCount))) {
         this.updateUI();
         this.notifyChanges();
       }
@@ -593,10 +598,10 @@ export class FurnaceUI {
         }
       }
     } else if (slotType === this.SLOT_FUEL) {
-      // Shift+click fuel: fuel can't come back out (it's burnt), so add all
-      // the held fuel instead
+      // Shift+click fuel: take the unburnt stack back, else add all the held fuel
       const selectedItem = this.inventory.getSelectedItem();
-      if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, selectedItem.quantity)) {
+      if (this.takeFuel(this.currentFurnace.fuelCount) ||
+          (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, selectedItem.quantity))) {
         this.updateUI();
         this.notifyChanges();
       }
@@ -610,12 +615,39 @@ export class FurnaceUI {
    */
   private burnFuel(itemType: ItemType, count: number): boolean {
     const fuel = furnaceFuel(itemType);
-    if (!this.currentFurnace || !fuel || count <= 0) return false;
-    const taken = Math.min(count, this.inventory.getItemCount(itemType));
+    const furnace = this.currentFurnace;
+    if (!furnace || !fuel || count <= 0) return false;
+    if (fuel.returns !== undefined) {
+      // A container fuel (lava bucket) pours in at once and hands its
+      // container back, so it can't sit in the slot as a stack
+      const taken = Math.min(count, this.inventory.getItemCount(itemType));
+      if (taken <= 0) return false;
+      this.inventory.removeItem(itemType, taken);
+      furnace.fuelAmount += taken * fuel.smelts;
+      this.inventory.addItem(fuel.returns, taken);
+      return true;
+    }
+    // Anything else stacks in the fuel slot unburnt (one kind at a time, one
+    // stack's worth) and lights an item at a time as smelts need it
+    if (furnace.fuelItem !== null && furnace.fuelItem !== itemType) return false;
+    const room = (ITEM_DATA[itemType]?.stackSize ?? 64) - furnace.fuelCount;
+    const taken = Math.min(count, room, this.inventory.getItemCount(itemType));
     if (taken <= 0) return false;
     this.inventory.removeItem(itemType, taken);
-    this.currentFurnace.fuelAmount += taken * fuel.smelts;
-    if (fuel.returns !== undefined) this.inventory.addItem(fuel.returns, taken);
+    furnace.fuelItem = itemType;
+    furnace.fuelCount += taken;
+    return true;
+  }
+
+  /** Move up to `count` of the unburnt fuel stack back to the inventory */
+  private takeFuel(count: number): boolean {
+    const furnace = this.currentFurnace;
+    if (!furnace || furnace.fuelItem === null || furnace.fuelCount <= 0 || count <= 0) return false;
+    const want = Math.min(count, furnace.fuelCount);
+    const taken = want - this.inventory.addItem(furnace.fuelItem as ItemType, want);
+    if (taken <= 0) return false;
+    furnace.fuelCount -= taken;
+    if (furnace.fuelCount === 0) furnace.fuelItem = null;
     return true;
   }
 
@@ -630,8 +662,9 @@ export class FurnaceUI {
 
     const selectedItem = this.inventory.getSelectedItem();
 
-    // If holding fuel, add one
-    if (selectedItem.quantity > 0 && this.burnFuel(selectedItem.itemType, 1)) {
+    // Holding fuel adds one; otherwise the click takes the fuel stack back
+    const holdingFuel = selectedItem.quantity > 0 && furnaceFuel(selectedItem.itemType) !== undefined;
+    if (holdingFuel ? this.burnFuel(selectedItem.itemType, 1) : this.takeFuel(this.currentFurnace.fuelCount)) {
       this.updateUI();
       this.notifyChanges();
     }
@@ -748,8 +781,26 @@ export class FurnaceUI {
           }
         }
       }
+    } else if (sourceSlotType === this.SLOT_FUEL) {
+      const furnace = this.currentFurnace;
+      if (furnace.fuelItem !== null && furnace.fuelCount > 0) {
+        const itemType = furnace.fuelItem as ItemType;
+        const targetSlot = this.inventory.getSlot(targetSlotIndex);
+        if (targetSlot && (targetSlot.itemType === ItemType.NONE || targetSlot.itemType === itemType)) {
+          const currentCount = targetSlot.itemType === itemType ? targetSlot.quantity : 0;
+          const toTransfer = Math.min(furnace.fuelCount, (ITEM_DATA[itemType]?.stackSize ?? 64) - currentCount);
+          if (toTransfer > 0) {
+            this.inventory.setSlot(targetSlotIndex, itemType, currentCount + toTransfer);
+            furnace.fuelCount -= toTransfer;
+            if (furnace.fuelCount === 0) furnace.fuelItem = null;
+            this.updateUI();
+            this.notifyChanges();
+            return true;
+          }
+        }
+      }
     }
-    // Can't drag fuel back (it's been converted to fuel units)
+    // (only the burning item's remainder stays put - it's already alight)
 
     return false;
   }
@@ -846,12 +897,11 @@ export class FurnaceUI {
       const img = this.fuelSlotElement.querySelector('img') as HTMLImageElement;
       const count = this.fuelSlotElement.querySelector('.slot-count') as HTMLElement;
 
-      // Show coal icon if there's fuel
-      if (furnace.fuelAmount > 0) {
-        img.src = getAssetPath(ITEM_DATA[ItemType.COAL].texture);
+      // The unburnt fuel stack, as items you can take back
+      if (furnace.fuelItem !== null && furnace.fuelCount > 0) {
+        img.src = getAssetPath(ITEM_DATA[furnace.fuelItem as ItemType].texture);
         img.style.display = 'block';
-        const fuelItems = Math.ceil(furnace.fuelAmount / this.FUEL_PER_COAL);
-        count.textContent = fuelItems > 1 ? fuelItems.toString() : '';
+        count.textContent = furnace.fuelCount > 1 ? furnace.fuelCount.toString() : '';
       } else {
         img.style.display = 'none';
         count.textContent = '';
@@ -867,7 +917,9 @@ export class FurnaceUI {
     // Update fuel label
     const fuelLabel = document.getElementById('fuel-remaining');
     if (fuelLabel) {
-      fuelLabel.textContent = `${furnace.fuelAmount} items remaining`;
+      const stacked = furnace.fuelItem !== null
+        ? furnace.fuelCount * (furnaceFuel(furnace.fuelItem as ItemType)?.smelts ?? 0) : 0;
+      fuelLabel.textContent = `${furnace.fuelAmount + stacked} smelts left`;
     }
 
     // Update input slot

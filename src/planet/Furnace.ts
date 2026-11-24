@@ -9,7 +9,27 @@ import techFrag from '../shaders/tech/tech.frag';
 // Smelting recipes: ore -> ingot
 export { SMELTING_RECIPES } from '../config/SmeltingRecipes';
 export type { SmeltingRecipe } from '../config/SmeltingRecipes';
-import { SMELTING_RECIPES, smeltOpen } from '../config/SmeltingRecipes';
+import { SMELTING_RECIPES, smeltOpen, furnaceFuel } from '../config/SmeltingRecipes';
+
+type FurnaceFuelState = Pick<PlacedFurnace, 'fuelAmount' | 'fuelItem' | 'fuelCount'>;
+
+/** True while the furnace can run a smelt: fuel burning, or unburnt fuel to light */
+export function furnaceHasFuel(f: FurnaceFuelState): boolean {
+  return f.fuelAmount > 0 || f.fuelCount > 0;
+}
+
+/**
+ * Light the next item of the unburnt fuel stack once the burning one is
+ * spent. Fuel only burns when there is something to smelt, so the stack in
+ * the fuel slot stays whole - and takeable back - until it is needed.
+ */
+export function igniteFuel(f: FurnaceFuelState): void {
+  if (f.fuelAmount > 0 || f.fuelCount <= 0 || f.fuelItem === null) return;
+  const fuel = furnaceFuel(f.fuelItem);
+  f.fuelCount--;
+  f.fuelAmount += fuel?.smelts ?? 0;
+  if (f.fuelCount === 0) f.fuelItem = null;
+}
 
 // Furnace texture layout (48x32, each face is 16x16):
 // Row 1: Front(0,0) | Side1(16,0) | Side2(32,0)
@@ -26,7 +46,9 @@ export interface PlacedFurnace {
   position: THREE.Vector3;
   tileIndex: number;
   rotation: number;  // Y-axis rotation for facing direction
-  fuelAmount: number;  // Current fuel (in coal units, 1 coal = 8 smelt operations)
+  fuelAmount: number;  // Smelts left in the fuel that is already burning (not refundable)
+  fuelItem: number | null;  // Unburnt fuel stack waiting in the fuel slot (takeable back)
+  fuelCount: number;
   smeltingItem: number | null;  // ItemType being smelted
   smeltingProgress: number;  // 0-1 progress of current smelt
   inputCount: number;  // Number of items queued for smelting (including current)
@@ -268,6 +290,8 @@ export class FurnaceManager {
       tileIndex,
       rotation: facingAngle,
       fuelAmount: 0,
+      fuelItem: null,
+      fuelCount: 0,
       smeltingItem: null,
       smeltingProgress: 0,
       inputCount: 0,
@@ -332,6 +356,8 @@ export class FurnaceManager {
       tileIndex,
       rotation,
       fuelAmount: 0,
+      fuelItem: null,
+      fuelCount: 0,
       smeltingItem: null,
       smeltingProgress: 0,
       inputCount: 0,
@@ -391,6 +417,7 @@ export class FurnaceManager {
       if (!simulates(furnace.position)) continue;
       // A smelt a mission has not unlocked yet waits (src/player/RecipeGate)
       if (furnace.smeltingItem !== null && !smeltOpen(furnace.smeltingItem)) continue;
+      if (furnace.smeltingItem !== null) igniteFuel(furnace);
       if (furnace.fuelAmount > 0 && furnace.smeltingItem !== null) {
         // Progress the smelting
         const smeltRate = 1 / this.SMELT_TIME;
@@ -438,6 +465,8 @@ export class FurnaceManager {
     tileIndex: number;
     rotation: number;
     fuelAmount: number;
+    fuelItem: number | null;
+    fuelCount: number;
     smeltingItem: number | null;
     smeltingProgress: number;
     inputCount: number;
@@ -449,6 +478,8 @@ export class FurnaceManager {
       tileIndex: f.tileIndex,
       rotation: f.rotation,
       fuelAmount: f.fuelAmount,
+      fuelItem: f.fuelItem,
+      fuelCount: f.fuelCount,
       smeltingItem: f.smeltingItem,
       smeltingProgress: f.smeltingProgress,
       inputCount: f.inputCount,
