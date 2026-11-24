@@ -116,7 +116,7 @@ export const SUBMARINE = {
   RIDE_STALE_S: 20,
   // Climbing out: this far above the hull (m)
   EXIT_LIFT_M: 1.8,
-  CAMERA: { distanceM: 9, heightM: 2.5, followRate: 6 },
+  CAMERA: { distanceM: 6, heightM: 2, followRate: 6 },
 
   DIVER: {
     // It docks back within this distance (m) of its rocket

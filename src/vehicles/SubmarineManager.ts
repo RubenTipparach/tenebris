@@ -177,8 +177,8 @@ export class SubmarineManager implements SubmarineWorld {
     if (!craft) return;
     const p: Placed = { craft, mesh: buildCraftMesh(hullOf(craft.hull)!), position: new THREE.Vector3(), record: rec };
     this.placed.set(craft.key, p);
+    this.placeMesh(p);   // first: the router picks the planet by where it is
     planetObjectScene(this.host.scene).add(p.mesh);
-    this.placeMesh(p);
   }
 
   public applyRecord(o: unknown, rec: SavedSubmarine): boolean {
@@ -246,6 +246,16 @@ export class SubmarineManager implements SubmarineWorld {
     return best;
   }
 
+  /** The parked craft nearest the player within boarding reach (swimming beside one, it need not be under the crosshair) */
+  private nearest(): Placed | null {
+    let best: Placed | null = null, bestD = SUBMARINE.BOARD_REACH_M;
+    for (const p of this.placed.values()) {
+      const d = this.worldPosition(p.craft, v1).distanceTo(this.host.player.position);
+      if (d < bestD) { best = p; bestD = d; }
+    }
+    return best;
+  }
+
   /**
    * The interact button on foot: a submarine hull in hand places one in the
    * water ahead; looking at a parked one opens its hold. True when handled
@@ -294,8 +304,8 @@ export class SubmarineManager implements SubmarineWorld {
     const craft = newCraft(hull, body, local, local.clone().normalize(), forward);
     const p: Placed = { craft, mesh: buildCraftMesh(hull), position: new THREE.Vector3(), record: null };
     this.placed.set(craft.key, p);
+    this.placeMesh(p);   // first: the router picks the planet by where it is
     planetObjectScene(this.host.scene).add(p.mesh);
-    this.placeMesh(p);
     this.save(p);
     emitGameEvent('placed', hull.item, 1);
     showToast(`${ITEM_DATA[hull.item].name} placed - [${keyName(SUBMARINE_INPUTS.INTERACT)}] to board`, { duration: 3000 });
@@ -333,7 +343,7 @@ export class SubmarineManager implements SubmarineWorld {
     if (this.dive) this.holdRocket(this.dive);
     if (!this.piloting) {
       this.hud.style.display = 'none';
-      const target = gameActive && !this.host.flight.isInFlight() ? this.lookedAt() : null;
+      const target = gameActive && !this.host.flight.isInFlight() ? this.lookedAt() ?? this.nearest() : null;
       this.hint.style.display = target ? 'block' : 'none';
       if (target) {
         this.hint.textContent = `${ITEM_DATA[target.craft.hull].name} - [${keyName(SUBMARINE_INPUTS.INTERACT)}] board  [Right-click] hold`;
@@ -383,6 +393,8 @@ export class SubmarineManager implements SubmarineWorld {
     else { p.mesh.position.copy(world); p.mesh.quaternion.copy(p.craft.orientation); }
     this.updateCamera(p.craft, dt);
     this.renderHud(p.craft, r);
+    // (a pointer-lock change shows the crosshair again: the chase view has none)
+    this.setCrosshair(false);
     if (r.lost) { this.lose(); return r; }
     this.saveTimer -= dt;
     if (!this.dive && this.saveTimer <= 0) {
