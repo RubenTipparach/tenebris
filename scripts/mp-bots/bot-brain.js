@@ -592,6 +592,21 @@
     }
   }
 
+  // Aim at a machine and mine any block between the eye and it (a pillar
+  // block left in the way, a wall), so the right-click reaches the machine
+  async function aimAtMachine(target) {
+    for (let k = 0; k < 4; k++) {
+      await lookAtPoint(target, 0.03, 2000);
+      const h = rayHit();
+      const far = target.distanceTo(eye());
+      if (!h || h.point.distanceTo(eye()) >= far - 0.35) return;
+      const b = P().getBlock(h.tileIndex, h.depth);
+      if (b === B.AIR || b === B.WATER || h.depth <= 0) return;
+      say(`a block is in the way of the machine - mining it`);
+      await mineBlock(h.tileIndex, h.depth, 8000);
+    }
+  }
+
   // ---- furnace --------------------------------------------------------------
   function myFurnace() {
     const fm = bi().furnaceManager;
@@ -609,7 +624,8 @@
     await approach(f.position, 2.2);
     const aim = f.position.clone().addScaledVector(upAt(f.position), 0.3);
     selectEmptyHand();
-    await lookAtPoint(aim, 0.04, 2000);
+    await aimAtMachine(aim);
+    selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     return bi().furnaceUI.isMenuOpen();
@@ -726,7 +742,7 @@
     st.task = `cooking at the ${kind}`;
     await approach(c.position, 2.2);
     selectEmptyHand();
-    await lookAtPoint(c.position.clone().addScaledVector(upAt(c.position), 0.3), 0.04, 2000);
+    await aimAtMachine(c.position.clone().addScaledVector(upAt(c.position), 0.3)); selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     const ui = bi().storageUI;
@@ -1141,7 +1157,7 @@
     st.task = 'electric smelting';
     await approach(ef.position, 2.2);
     closeMenus(); selectEmptyHand();
-    await lookAtPoint(ef.position.clone().addScaledVector(upAt(ef.position), 0.3), 0.03, 2000);
+    await aimAtMachine(ef.position.clone().addScaledVector(upAt(ef.position), 0.3)); selectEmptyHand();
     await click(2, 80);
     await sleep(500);
     const ui = bi().electricFurnaceUI;
@@ -1187,7 +1203,7 @@
     st.task = 'at the workbench';
     await approach(wb.position, 2.2);
     closeMenus(); selectEmptyHand();
-    await lookAtPoint(wb.position.clone().addScaledVector(upAt(wb.position), 0.3), 0.03, 2000);
+    await aimAtMachine(wb.position.clone().addScaledVector(upAt(wb.position), 0.3)); selectEmptyHand();
     await click(2, 80);
     await sleep(600);
     const ui = bi().electronicsWorkbenchUI;
