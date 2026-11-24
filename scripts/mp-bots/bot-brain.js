@@ -48,6 +48,9 @@
     st.log.push(line);
     if (st.log.length > 200) st.log.shift();
     console.log(`[bot] ${msg}`);
+    // real work toward the mission (gathering, making) keeps the stall
+    // watchdog off it - a long supply chain isn't a stuck mission
+    if (/^(mined|crafted|collected|printed|made|took|placed|filled|cooked|stored|felled|pad block laid)/.test(msg)) st.since = Date.now();
   };
 
   async function loadModules() {
