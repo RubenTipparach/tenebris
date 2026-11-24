@@ -214,6 +214,13 @@
       height: 100%;
       background: #29ADFF;
     }
+    /* Hazard gauges (heat, cold, radiation) stack above the AIR chip, each in its own colour */
+    .hazard-chip.hazard-heat { border-color: #FFA300; }
+    .hazard-chip.hazard-heat .air-chip-fill { background: #FFA300; }
+    .hazard-chip.hazard-cold { border-color: #C2C3C7; }
+    .hazard-chip.hazard-cold .air-chip-fill { background: #C2C3C7; }
+    .hazard-chip.hazard-radiation { border-color: #00E436; }
+    .hazard-chip.hazard-radiation .air-chip-fill { background: #00E436; }
     .air-chip.low { border-color: #FF004D; color: #FF004D; }
     .air-chip.low .air-chip-fill { background: #FF004D; }
 

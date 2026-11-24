@@ -4,16 +4,20 @@ import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
 // Where the sun is until the flight manager hands over the live one (the
 // orbits move it in the reference body's frame)
 const SUN_CONFIG_POSITION = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.position ?? { x: 0, y: 0, z: 0 };
+// The Sun's radius: its surface burns, its close-pass distance is a multiple of it
+const SUN_RADIUS = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.radius ?? 0;
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
 import { RocketCamera } from './RocketCamera';
 import { RocketExhaust } from './RocketExhaust';
 import { RocketPart } from '../planet/RocketPart';
-import { InventorySlot } from '../player/Inventory';
+import { InventorySlot, ItemType, ITEM_DATA } from '../player/Inventory';
 import {
   computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
-  drainCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
+  drainCharge, feedCharge, addCharge, droneTarget, equipmentStats, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
+  chuteLandingSpeed, shieldCapacity, shieldsFitted, useShield, solarHeat,
+  stagesOf, stagedStats, fillStages, stagedDeltaVWith, engineNeeds, slotStore,
   chutesFitted,
 } from './RocketPerformance';
 import { showToast } from '../utils/toast';
@@ -25,13 +29,22 @@ import { AudioManager } from '../engine/AudioManager';
 /**
  * Planet data needed for gravity calculations
  */
+/** Why a rocket was destroyed (the crash screen's words) */
+export type CrashReason = 'impact' | 'burnedUp' | 'selfDestruct' | 'crushed';
+
 export interface PlanetGravitySource {
+  /** The body's id (missions, orbit updates) */
+  id: string;
   center: THREE.Vector3;
   radius: number;
   gravityStrength: number;  // Multiplier (1.0 = Earth-like)
   name: string;
   getSurfaceHeight?: (direction: THREE.Vector3) => number;  // Optional callback for actual terrain height
   hasAtmosphere?: boolean;  // air for re-entry heat and the parachute (CelestialBodyConfig.hasAtmosphere)
+  /** How thick that air is (BODY_ENVIRONMENTS; 1 = Earth's) */
+  atmosphereDensity?: number;
+  /** A gas giant: air but no ground (ROCKET_CONFIG.GAS_GIANT_FLIGHT) */
+  gasGiant?: boolean;
 }
 
 /**
@@ -111,8 +124,17 @@ export class RocketController {
   // Propulsion
   private throttle: number = 0;       // 0-1
   private isThrustActive: boolean = false;
+  // Fuel in the ACTIVE (lowest remaining) stage's tanks, and its capacity:
+  // only that stage burns (rocket-staging)
   private currentFuel: number = 0;
   private totalFuelCapacity: number = 0;
+  // The stages above the active one: their tanks' fuel and every stage's capacity
+  private upperFuel: number[] = [];
+  private stageCapacities: number[] = [];
+  // Dropped stages falling away (never saved; gone after STAGE_DEBRIS_LIFE_S)
+  private debris: Array<{ group: THREE.Group; velocity: THREE.Vector3; age: number }> = [];
+  /** A stage was dropped: these parts left the rocket (the pad forgets them) */
+  public onStageDropped: ((parts: RocketPart[]) => void) | null = null;
 
   // Status
   private health: number = ROCKET_CONFIG.HEALTH.maxHealth;
@@ -126,7 +148,6 @@ export class RocketController {
   private totalDryMass: number = 0;
   private totalThrust: number = 0;
   private totalFuelConsumption: number = 0;
-  private exhaustVelocity: number = 0;  // For delta-V calculation
 
   // Ground reference (for grounded states)
   private groundPosition: THREE.Vector3 = new THREE.Vector3();
@@ -166,6 +187,9 @@ export class RocketController {
   private batteryCapacityWh: number = 0;
   private powerDrawW: number = 0;
   private solarW: number = 0;          // the equipped solar arrays, full sun
+  private rtgW: number = 0;            // the equipped RTGs, always
+  private cooling: number = 0;         // share of heat its radiators shed
+  private chuteBrake: number = 1;      // a drogue's extra braking
   private sunlit: boolean = true;
   private flatWarned: boolean = false;
   private sunPosition: { x: number; y: number; z: number } = SUN_CONFIG_POSITION;
@@ -179,7 +203,14 @@ export class RocketController {
   private chuteOpen: boolean = false;
   private heatGlow: THREE.Mesh | null = null;
   private canopy: THREE.Group | null = null;
-  private crashReason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact';
+  private crashReason: CrashReason = 'impact';
+  // The air's density where the rocket is (0 outside every atmosphere)
+  private atmosphereDensity = 0;
+  // Heat soaked into the heat shield being worn through (space-exploration)
+  private shieldWear = 0;
+  // Inside the Sun's close-pass distance / below a gas giant's cloud tops (that giant's id)
+  private inSunPass = false;
+  private giantDip: string | null = null;
   // How long the self-destruct key has been held (s); 0 when let go
   private selfDestructHeldS = 0;
 
@@ -232,7 +263,7 @@ export class RocketController {
     // Calculate mass and propulsion properties
     this.calculateMassProperties();
     // A pad's tanks hold what was fuelled into them (null = full: older saves)
-    if (fuelUnits !== null) this.currentFuel = Math.max(0, Math.min(this.totalFuelCapacity, fuelUnits));
+    if (fuelUnits !== null) this.setFuelTotal(Math.max(0, fuelUnits));
     // The pad's crew charges the battery: full every launch
     this.resetFlightState(this.batteryCapacityWh);
 
@@ -278,7 +309,8 @@ export class RocketController {
     // Find all engine parts and calculate their exhaust positions
     const engineOffsets: THREE.Vector3[] = [];
 
-    for (const part of this.parts) {
+    // Only the active (lowest) stage's engines fire (rocket-staging)
+    for (const part of stagesOf(this.parts, p => p.itemType)[0] ?? []) {
       if (part.isEngine()) {
         // Get the engine's world position
         const engineWorldPos = part.getWorldPosition();
@@ -540,19 +572,161 @@ export class RocketController {
     const types = stackItemTypes(this.parts);
     this.engineMode = validEngineMode(types, this.engineMode);
     const stats = computeRocketStats(types, cargoMass(this.cargo), this.engineMode, this.equipment);
+    // Only the active (lowest) stage's engines fire, on its own tanks
+    const active = stagedStats(types, cargoMass(this.cargo), this.engineMode, this.equipment).stages[0];
+    this.stageCapacities = stagesOf(types, t => t).map(g => computeRocketStats(g).fuelCapacity);
     this.totalDryMass = stats.dryMass;
     this.totalWetMass = stats.wetMass;
-    this.totalFuelCapacity = stats.fuelCapacity;
-    this.totalThrust = stats.thrust;
-    this.totalFuelConsumption = stats.fuelFlow;
-    this.exhaustVelocity = stats.exhaustVelocity;
+    this.totalFuelCapacity = active.fuelCapacity;
+    this.totalThrust = active.thrust;
+    this.totalFuelConsumption = active.fuelFlow;
     this.batteryCapacityWh = stats.batteryWh;
     this.powerDrawW = stats.powerDrawW;
     this.solarW = stats.solarW;
+    this.rtgW = stats.rtgW;
+    this.cooling = stats.cooling;
+    this.chuteBrake = stats.chuteBrake;
     this.chargeWh = Math.min(this.chargeWh, this.batteryCapacityWh);
 
     // Start with full fuel
-    this.currentFuel = this.totalFuelCapacity;
+    this.setFuelTotal(Infinity);
+  }
+
+  /** Every stage's tanks together */
+  private allFuelCapacity(): number {
+    return this.stageCapacities.reduce((a, b) => a + b, 0);
+  }
+
+  /** Set the fuel aboard as one total, filled into the stages bottom first (rocket-staging) */
+  private setFuelTotal(total: number): void {
+    const fills = fillStages(Math.min(total, this.allFuelCapacity()), this.stageCapacities);
+    this.currentFuel = fills[0] ?? 0;
+    this.upperFuel = fills.slice(1);
+  }
+
+  // Cargo items owed to the engines, carried between frames (whole items leave the hold)
+  private consumeOwed = new Map<ItemType, number>();
+
+  /**
+   * Feed the active stage's engines for this step (rocket-tiers): the
+   * charge an ion thruster draws, and the pulse units / helium-3 /
+   * deuterium a drive uses from the cargo hold. False (with a toast) when
+   * something has run out - the engines can't fire.
+   */
+  private feedEngines(deltaTime: number): boolean {
+    const active = stagesOf(stackItemTypes(this.parts), t => t)[0] ?? [];
+    const needs = engineNeeds(active, this.engineMode);
+    const charge = feedCharge(this.chargeWh, needs.drawW, this.throttle, deltaTime);
+    this.chargeWh = charge.chargeWh;
+    if (!charge.firing) return false;
+    if (needs.consumes.size === 0) return true;
+    const hold = this.cargo ? slotStore(this.cargo) : null;
+    for (const [item, perS] of needs.consumes) {
+      const owed = (this.consumeOwed.get(item) ?? 0) + perS * this.throttle * deltaTime;
+      const whole = Math.floor(owed);
+      if (whole > 0) {
+        const got = hold?.removeItem(item, whole) ?? 0;
+        if (got < whole) {
+          showToast(`Out of ${ITEM_DATA[item]?.name ?? 'engine supplies'} - load more into the cargo hold`, { duration: 3000 });
+          this.consumeOwed.set(item, 0);
+          this.refreshCargoMass();
+          return false;
+        }
+        this.refreshCargoMass();
+      }
+      this.consumeOwed.set(item, owed - whole);
+      if ((hold?.getItemCount(item) ?? 0) <= 0 && owed - whole > 0) {
+        showToast(`Out of ${ITEM_DATA[item]?.name ?? 'engine supplies'} - load more into the cargo hold`, { duration: 3000 });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** Stages left, and the active stage's fuel (the HUD) */
+  public getStageInfo(): { count: number; activeFuel: number; activeCapacity: number } {
+    return { count: this.stageCapacities.length, activeFuel: this.currentFuel, activeCapacity: this.totalFuelCapacity };
+  }
+
+  /**
+   * Drop the active stage (rocket-staging): its parts leave the rocket and
+   * fall away, the stage above becomes active on its own tanks, and the
+   * rocket's base moves up to the new bottom. Refused with one stage left.
+   */
+  /**
+   * Launch a survey drone at the body below (space-exploration upgrade):
+   * one leaves the equipment and the body counts as surveyed, as a beacon
+   * planted there would. Refused without a drone or a body in reach.
+   */
+  public launchDrone(): boolean {
+    const slot = (this.equipment ?? []).find(s => equipmentStats(s.itemType)?.drone && s.quantity > 0);
+    if (!slot) { showToast('No survey drone aboard', { duration: 2000 }); return false; }
+    const body = droneTarget(this.position, this.planets);
+    if (!body) { showToast('No airless body in drone range', { duration: 2000 }); return false; }
+    slot.quantity -= 1;
+    if (slot.quantity <= 0) { slot.itemType = ItemType.NONE; slot.quantity = 0; }
+    this.refreshCargoMass();
+    this.onChanged?.();
+    emitGameEvent('surveyed', body.id);
+    showToast(`Survey drone: ${body.name} surveyed`, { duration: 3000 });
+    return true;
+  }
+
+  public dropStage(): boolean {
+    const stages = stagesOf(this.parts, p => p.itemType);
+    if (stages.length <= 1) {
+      showToast('Last stage - nothing to drop', { duration: 2000 });
+      return false;
+    }
+    const dropped = stages[0];
+    const kept = this.parts.filter(p => !dropped.includes(p));
+    const fuelAbove = this.upperFuel.reduce((a, b) => a + b, 0);
+    // The new bottom: the lowest kept part's base, in the pivot's frame
+    const base = (p: RocketPart) => p.mesh.position.y;
+    const lift = Math.min(...kept.map(base)) - Math.min(...dropped.map(base));
+    // The dropped parts become falling debris, where they are now
+    const group = new THREE.Group();
+    this.scene.add(group);
+    this.pivot.updateMatrixWorld(true);
+    for (const p of dropped) group.attach(p.mesh);
+    this.debris.push({ group, velocity: this.velocity.clone(), age: 0 });
+    // The rest: the base moves up to them, so landings and the camera follow
+    this.parts = kept;
+    for (const p of kept) p.mesh.position.y -= lift;
+    this.position.addScaledVector(this.getLocalUp(), lift);
+    this.pivot.position.copy(this.position);
+    this.calculateStackCenter();
+    this.calculateMassProperties();
+    this.setFuelTotal(fuelAbove);
+    this.rocketExhaust.dispose();
+    this.rocketExhaust = new RocketExhaust(this.scene);
+    this.initializeExhaust();
+    showToast(`Stage dropped - ${stagesOf(this.parts, p => p.itemType).length} left`, { duration: 2500 });
+    this.onStageDropped?.(dropped);
+    this.onChanged?.();
+    return true;
+  }
+
+  /** Dropped stages fall under the nearest body's gravity until they land or time out */
+  private updateDebris(deltaTime: number): void {
+    for (let i = this.debris.length - 1; i >= 0; i--) {
+      const d = this.debris[i];
+      d.age += deltaTime;
+      const pos = d.group.position;
+      let landed = false;
+      if (this.closestPlanet) {
+        const toCentre = this.closestPlanet.center.clone().sub(pos);
+        const dist = toCentre.length();
+        const g = this.gravityMultiplier * PlayerConfig.BASE_GRAVITY * this.closestPlanet.gravityStrength;
+        d.velocity.addScaledVector(toCentre.normalize(), g * deltaTime);
+        landed = !this.closestPlanet.gasGiant && dist < this.closestPlanet.radius;
+      }
+      pos.addScaledVector(d.velocity, deltaTime);
+      if (landed || d.age > ROCKET_CONFIG.STAGE_DEBRIS_LIFE_S) {
+        disposeObject(d.group);
+        this.debris.splice(i, 1);
+      }
+    }
   }
 
   // Which engines fire (design 6b): null = all of them
@@ -579,18 +753,17 @@ export class RocketController {
 
   /** Re-weigh the rocket after its cargo or equipment changed (fuel and charge kept) */
   public refreshCargoMass(): void {
-    const fuel = this.currentFuel;
+    const fuel = this.getFuelUnits();
     this.calculateMassProperties();
-    this.currentFuel = Math.min(fuel, this.totalFuelCapacity);
+    this.setFuelTotal(fuel);
   }
 
   /**
    * Get current mass based on fuel level
    */
   public getCurrentMass(): number {
-    if (this.totalFuelCapacity === 0) return this.totalDryMass;
-    const fuelFraction = this.currentFuel / this.totalFuelCapacity;
-    return this.totalDryMass + fuelFraction * (this.totalWetMass - this.totalDryMass);
+    // the dry stack, cargo and equipment, plus the fuel in every stage
+    return this.totalDryMass + this.getFuelUnits() * ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   }
 
   /**
@@ -611,12 +784,8 @@ export class RocketController {
    * Calculate remaining delta-V (Tsiolkovsky rocket equation)
    */
   public getRemainingDeltaV(): number {
-    if (this.exhaustVelocity === 0) return 0;
-
-    const currentMass = this.getCurrentMass();
-    if (currentMass <= this.totalDryMass) return 0;
-
-    return this.exhaustVelocity * Math.log(currentMass / this.totalDryMass);
+    // Each remaining stage burns its own fuel carrying the stages above it
+    return stagedDeltaVWith(stackItemTypes(this.parts), cargoMass(this.cargo), this.engineMode, this.equipment, this.getFuelUnits());
   }
 
   /**
@@ -796,6 +965,8 @@ export class RocketController {
 
     // RCS thruster lines for the turn commanded this frame
     this.updateRcsLines();
+    // Dropped stages falling away
+    this.updateDebris(deltaTime);
 
     // Update camera
     if (this.rocketCamera) {
@@ -917,6 +1088,10 @@ export class RocketController {
 
     // === THRUST ===
     const thrust = poweredThrust(this.totalThrust, this.chargeWh);
+    // What the active stage's engines need besides fuel: charge, cargo items
+    if (this.isThrustActive && this.throttle > 0 && thrust > 0 && !this.feedEngines(deltaTime)) {
+      this.isThrustActive = false;
+    }
     if (this.isThrustActive && this.currentFuel > 0 && this.throttle > 0 && thrust > 0) {
       const thrustMagnitude = thrust * this.throttle;
       const thrustAccel = thrustMagnitude / mass;
@@ -956,8 +1131,9 @@ export class RocketController {
     if (this.chuteOpen && this.closestPlanet) {
       const up = this.position.clone().sub(this.closestPlanet.center).normalize();
       const fall = -this.velocity.dot(up);
-      const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime));
-      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime);
+      const density = this.atmosphereDensity || 1;
+      const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime, density));
+      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime, density, this.chuteBrake);
       this.velocity.copy(side).addScaledVector(up, -newFall);
       const rocketUp = this.getLocalUp();
       const axis = new THREE.Vector3().crossVectors(rocketUp, up);
@@ -972,9 +1148,26 @@ export class RocketController {
     // === POSITION UPDATE ===
     this.position.addScaledVector(this.velocity, deltaTime);
 
+    // === GAS GIANTS: no ground - a skim below the cloud tops, crushed deeper ===
+    if (this.closestPlanet?.gasGiant) {
+      const g = this.closestPlanet;
+      const dist = this.position.distanceTo(g.center);
+      const cfgG = ROCKET_CONFIG.GAS_GIANT_FLIGHT;
+      if (dist < g.radius * (1 - cfgG.crushDepth)) {
+        this.explode('crushed');
+        return;
+      }
+      if (dist < g.radius) this.giantDip = g.id;
+      else if (this.giantDip === g.id && dist > g.radius * cfgG.skimExitMult) {
+        this.giantDip = null;
+        emitGameEvent('skimmed', g.id);
+        showToast(`Skimmed ${g.name}`, { duration: 3000 });
+      }
+    }
+
     // === GROUND COLLISION ===
-    // Prevent rocket from clipping through the planet surface
-    if (this.closestPlanet) {
+    // Prevent rocket from clipping through the planet surface (a gas giant has none)
+    if (this.closestPlanet && !this.closestPlanet.gasGiant) {
       const surfaceNormal = this.position.clone().sub(this.closestPlanet.center).normalize();
       const distFromCenter = this.position.distanceTo(this.closestPlanet.center);
 
@@ -1053,7 +1246,7 @@ export class RocketController {
         // Check if descending toward surface
         const vertVel = this.getVerticalVelocity();
         const alt = this.getAltitude();
-        if (vertVel < 0 && alt < 100 && this.isInGravityWell) {
+        if (vertVel < 0 && alt < 100 && this.isInGravityWell && !this.closestPlanet?.gasGiant) {
           this.stateMachine.transitionTo(RocketState.LANDING);
         }
         break;
@@ -1139,15 +1332,13 @@ export class RocketController {
       // (it was used up as it opened)
       this.leftAtmosphere = false;
       this.reentering = false;
+      const bodyId = this.closestPlanet?.id;
       if (this.chuteOpen) {
-        emitGameEvent('chuteLanded');
+        // keyed by the body, so a visit can ask for a chute landing there
+        emitGameEvent('chuteLanded', bodyId);
         this.closeChute();
       }
-      if (this.closestPlanet) {
-        // the gravity source is named by its display name; missions use body ids
-        const name = this.closestPlanet.name;
-        emitGameEvent('landed', SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase());
-      }
+      if (bodyId !== undefined) emitGameEvent('landed', bodyId);
     } else {
       // Too fast - crash!
       console.log(`Crash! Impact too fast: ${impactVelocity.toFixed(1)} m/s`);
@@ -1158,7 +1349,7 @@ export class RocketController {
   /**
    * Explode the rocket
    */
-  private explode(reason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact'): void {
+  private explode(reason: CrashReason = 'impact'): void {
     this.crashReason = reason;
     this.closeChute();
     if (this.heatGlow) setHeatGlow(this.heatGlow, 0);
@@ -1331,13 +1522,14 @@ export class RocketController {
    * Refuel the rocket from the fuel source
    */
   public refuel(): void {
-    const wanted = this.totalFuelCapacity - this.currentFuel;
+    const have = this.getFuelUnits();
+    const wanted = this.allFuelCapacity() - have;
     if (wanted <= 0) return;
     const supplied = RocketController.fuelSource ? RocketController.fuelSource(wanted, this.cargo) : wanted;
     if (supplied <= 0) return;
-    this.currentFuel = Math.min(this.totalFuelCapacity, this.currentFuel + supplied);
+    this.setFuelTotal(have + supplied);
     this.refreshCargoMass();
-    console.log(`Rocket refuelled: +${supplied.toFixed(0)} (${((this.currentFuel / this.totalFuelCapacity) * 100).toFixed(0)}%)`);
+    console.log(`Rocket refuelled: +${supplied.toFixed(0)} (${this.getFuelPercent().toFixed(0)}%)`);
     this.onChanged?.();
   }
 
@@ -1351,8 +1543,9 @@ export class RocketController {
     return this.equipment;
   }
 
+  /** Fuel aboard in every stage (what the pad and saves record) */
   public getFuelUnits(): number {
-    return this.currentFuel;
+    return this.currentFuel + this.upperFuel.reduce((a, b) => a + b, 0);
   }
 
   // === GETTERS ===
@@ -1413,8 +1606,9 @@ export class RocketController {
   }
 
   public getFuelPercent(): number {
-    if (this.totalFuelCapacity === 0) return 0;
-    return (this.currentFuel / this.totalFuelCapacity) * 100;
+    const cap = this.allFuelCapacity();
+    if (cap === 0) return 0;
+    return (this.getFuelUnits() / cap) * 100;
   }
 
   public getHealth(): number {
@@ -1487,7 +1681,7 @@ export class RocketController {
   }
 
   /** Why it crashed: a hard landing, burning up on re-entry, or self-destruct */
-  public getCrashReason(): 'impact' | 'burnedUp' | 'selfDestruct' {
+  public getCrashReason(): CrashReason {
     return this.crashReason;
   }
 
@@ -1528,6 +1722,8 @@ export class RocketController {
    * flight or landed (design 6): the line to the sun must miss every body.
    */
   private updateSolar(deltaTime: number): void {
+    // An RTG charges sun or not (space-exploration upgrade)
+    if (this.rtgW > 0) this.chargeWh = addCharge(this.chargeWh, this.batteryCapacityWh, (this.rtgW * deltaTime) / 3600);
     if (this.solarW <= 0) return;
     this.sunlit = inSunlight(this.position, this.sunPosition, this.planets);
     this.chargeWh = solarCharge(this.chargeWh, this.batteryCapacityWh, this.solarW, this.sunlit, deltaTime);
@@ -1546,18 +1742,50 @@ export class RocketController {
 
   /** Is the rocket inside any body's air (REENTRY.shellRadiusMult)? */
   private computeInAtmosphere(): boolean {
+    let density = 0;
     for (const planet of this.planets) {
-      if (inAtmosphereShell(this.position.distanceTo(planet.center), planet.radius, !!planet.hasAtmosphere)) return true;
+      if (inAtmosphereShell(this.position.distanceTo(planet.center), planet.radius, !!planet.hasAtmosphere)) {
+        density = Math.max(density, planet.atmosphereDensity ?? 1);
+      }
     }
-    return false;
+    this.atmosphereDensity = density;
+    return density > 0;
+  }
+
+  /** The air's density where the rocket is (0 in vacuum) */
+  public getAtmosphereDensity(): number {
+    return this.atmosphereDensity;
+  }
+
+  /** The speed a parachute would land at here (its HUD line; Infinity in vacuum) */
+  public getChuteLandingSpeed(): number {
+    return this.atmosphereDensity > 0 ? chuteLandingSpeed(this.atmosphereDensity, this.chuteBrake) : Infinity;
+  }
+
+  /** Heat shields fitted, and how worn the one in use is (0-1) */
+  public getHeatShield(): { fitted: number; wear: number } {
+    const cap = shieldCapacity(this.equipment);
+    return { fitted: shieldsFitted(this.equipment), wear: cap > 0 ? this.shieldWear / cap : 0 };
   }
 
   /** Re-entry heat, its damage and burn-up, and the glow */
   private updateReentry(deltaTime: number, flying: boolean): void {
     const cfg = ROCKET_CONFIG.REENTRY;
     const speed = flying ? this.velocity.length() : 0;
-    const step = reentryStep({ heat: this.heat, leftAtmosphere: this.leftAtmosphere }, this.inAtmosphere, speed, deltaTime);
+    // The Sun up close heats too (a close pass); a fitted heat shield takes its share
+    const sunR = SUN_RADIUS;
+    const sunDist = this.position.distanceTo(new THREE.Vector3(this.sunPosition.x, this.sunPosition.y, this.sunPosition.z));
+    const solar = flying ? solarHeat(sunDist, sunR, deltaTime) : 0;
+    const shields = shieldsFitted(this.equipment);
+    const step = reentryStep({ heat: this.heat, leftAtmosphere: this.leftAtmosphere }, this.inAtmosphere, speed, deltaTime, {
+      density: this.atmosphereDensity || 1,
+      extraGain: solar,
+      shieldShare: shields > 0 ? cfg.shieldShare : 0,
+      cooling: this.cooling,
+    });
     this.heat = step.heat;
+    if (step.absorbed > 0) this.wearShield(step.absorbed);
+    if (flying) this.updateSunPass(sunDist, sunR);
     if (flying) {
       this.leftAtmosphere = step.leftAtmosphere;
       this.reentering = step.reentering;
@@ -1643,6 +1871,38 @@ export class RocketController {
       this.pivot.add(this.rcsLines);
     }
     setRcsLines(this.rcsLines, rcsJets(this.rcsCommand, this.stackHeight(), this.stackCenterOffset));
+  }
+
+  /** The heat shield soaks `absorbed`: each time one's capacity is used up it is worn through and leaves the equipment */
+  private wearShield(absorbed: number): void {
+    const cap = shieldCapacity(this.equipment);
+    if (cap <= 0) return;
+    this.shieldWear += absorbed;
+    while (this.shieldWear >= cap && useShield(this.equipment)) {
+      this.shieldWear -= cap;
+      showToast('Heat shield worn through', { duration: 2500 });
+      this.refreshCargoMass();
+      this.onChanged?.();
+    }
+    if (shieldsFitted(this.equipment) === 0) this.shieldWear = 0;
+  }
+
+  /** The Sun: touching it burns the rocket up; leaving its close-pass distance alive is a close pass */
+  private updateSunPass(sunDist: number, sunR: number): void {
+    if (this.stateMachine.getState() === RocketState.CRASHED) return;
+    if (sunDist < sunR) { this.explode('burnedUp'); return; }
+    const inside = sunDist < sunR * ROCKET_CONFIG.SUN_PASS.closePassRadii;
+    if (inside) this.inSunPass = true;
+    else if (this.inSunPass) {
+      this.inSunPass = false;
+      emitGameEvent('closePass', 'sun');
+      // The pass records the Sun's field: data into the hold (what fits)
+      const want = ROCKET_CONFIG.SUN_PASS.coronalData;
+      const left = this.cargo ? slotStore(this.cargo).addItem(ItemType.CORONAL_DATA, want) : want;
+      if (left < want) { this.refreshCargoMass(); this.onChanged?.(); }
+      showToast(left < want ? `Close pass of the Sun - ${want - left} coronal field data recorded`
+        : 'Close pass of the Sun - no room in the cargo hold for the field data', { duration: 3000 });
+    }
   }
 
   /** Remove the re-entry visuals and the RCS lines (landing, despawn) */
@@ -1747,6 +2007,8 @@ export class RocketController {
   public dispose(): void {
     // Stop engine sound
     AudioManager.stopLoop('rocket_engine');
+    for (const d of this.debris) disposeObject(d.group);
+    this.debris = [];
     this.disposeReentryVisuals();
 
     // Remove pivot from scene
@@ -1861,8 +2123,8 @@ export class RocketController {
     // Calculate mass and propulsion properties
     this.calculateMassProperties();
 
-    // Set fuel level from saved state
-    this.currentFuel = (fuelPercent / 100) * this.totalFuelCapacity;
+    // Set fuel level from saved state (filled into the stages bottom first)
+    this.setFuelTotal((fuelPercent / 100) * this.allFuelCapacity());
     // Its battery as it was left (null = full: older records)
     this.resetFlightState(chargeWh ?? this.batteryCapacityWh);
 

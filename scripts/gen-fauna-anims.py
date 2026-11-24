@@ -346,6 +346,24 @@ SPECIES = {
             'tentacles': track(rot=wave(0.25, phase=0.4)),
         }),
     },
+    # chain salp (Thalassa): the chain sways link by link, a slow ripple
+    # down its length, the whole chain rising and settling as it pulses
+    'chainSalp': {
+        'idle': (3.0, {
+            'body': track(dy=seq([0, 0.01, 0.03, 0.04, 0.03, 0.01, 0, 0])),
+            'skirtA': track(rot=wave(0.12, phase=0.0)),
+            'skirtB': track(rot=wave(0.12, phase=0.5)),
+            'arms': track(rot=wave(0.18, phase=0.25)),
+            'tentacles': track(rot=wave(0.18, phase=0.75)),
+        }),
+        'move': (2.2, {
+            'body': track(dy=seq([0, 0.02, 0.05, 0.06, 0.05, 0.02, 0, 0])),
+            'skirtA': track(rot=wave(0.2, phase=0.0)),
+            'skirtB': track(rot=wave(0.2, phase=0.5)),
+            'arms': track(rot=wave(0.28, phase=0.25)),
+            'tentacles': track(rot=wave(0.28, phase=0.75)),
+        }),
+    },
     # sea turtle: the front flippers sweep (axes outward: + is up), the back steer
     'seaTurtle': {
         'idle': (2.8, {

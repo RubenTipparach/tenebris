@@ -4,6 +4,7 @@ import { computeRocketStats, stackItemTypes, equipmentLabel, equipmentSummary } 
 import { ITEM_DATA, ItemType } from '../player/Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
+import type { RefitOp } from './Refit';
 
 /**
  * Simple UI for interacting with a landed rocket
@@ -72,6 +73,17 @@ export class LandedRocketUI {
             <button class="side-btn refuel-btn">Refuel</button>
             <button class="side-btn cargo-btn">Cargo</button>
           </div>
+          <div class="button-section side-buttons">
+            <button class="side-btn dock-btn" title="Move this rocket onto the free launch pad nearby">Dock on pad</button>
+            <button class="side-btn refit-btn" title="Change the stack here (uses a refit kit; a mk2 is kept)">Refit</button>
+          </div>
+          <div class="refit-section" hidden>
+            <label>Refit - bottom to top</label>
+            <div class="refit-stack"></div>
+            <button class="side-btn refit-add">Add on top</button>
+            <div class="refit-picker" hidden></div>
+            <div class="refit-msg"></div>
+          </div>
         </div>
       </div>
     `;
@@ -100,6 +112,20 @@ export class LandedRocketUI {
     // The equipment row opens the equipment slots beside the hotbar + bag,
     // where items are fitted and taken out (the cargo hold's panel, filtered)
     this.equipRow.addEventListener('click', () => this.handOver(this.onEquipmentCallback));
+    // Docking and refits (rocket-refit)
+    this.dockButton = this.container.querySelector('.dock-btn') as HTMLButtonElement;
+    this.refitButton = this.container.querySelector('.refit-btn') as HTMLButtonElement;
+    this.refitSection = this.container.querySelector('.refit-section') as HTMLDivElement;
+    this.refitStack = this.container.querySelector('.refit-stack') as HTMLDivElement;
+    this.refitPicker = this.container.querySelector('.refit-picker') as HTMLDivElement;
+    this.refitMsg = this.container.querySelector('.refit-msg') as HTMLDivElement;
+    this.dockButton.addEventListener('click', () => void this.handleDock());
+    this.refitButton.addEventListener('click', () => {
+      if (!this.currentRocket || !this.refit) return;
+      if (!this.refit.start(this.currentRocket)) { this.refitMsg.textContent = 'Fit a refit kit in the equipment first'; return; }
+      this.updateDisplay();
+    });
+    (this.container.querySelector('.refit-add') as HTMLButtonElement).addEventListener('click', () => this.pick({ kind: 'addTop' }));
     this.closeButton.addEventListener('click', () => this.close());
 
     // Handle keyboard
@@ -342,13 +368,125 @@ export class LandedRocketUI {
         font-size: 11px;
         text-align: center;
       }
-    `;
+    
+      /* Refits (rocket-refit): the stack, one row per part, and the part picker */
+      .refit-section { margin-top: 8px; }
+      .refit-section label { display: block; margin-bottom: 4px; }
+      .refit-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+      .refit-row span { flex: 1; font-size: 12px; }
+      .side-btn.small { padding: 3px 8px; font-size: 11px; }
+      .refit-picker { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+      .refit-picker .equip-cell { cursor: pointer; }
+      .refit-msg { color: #ff6666; font-size: 12px; min-height: 14px; margin-top: 4px; }
+`;
     document.head.appendChild(style);
   }
 
   /**
    * Open the UI for a specific landed rocket
    */
+  // ---- docking and refits (openspec space-exploration, rocket-refit) ----
+
+  private dockButton!: HTMLButtonElement;
+  private refitButton!: HTMLButtonElement;
+  private refitSection!: HTMLDivElement;
+  private refitStack!: HTMLDivElement;
+  private refitPicker!: HTMLDivElement;
+  private refitMsg!: HTMLDivElement;
+  // What the open picker will do with the part chosen: add on top, or swap the part at an index
+  private pending: { kind: 'addTop' } | { kind: 'swap'; index: number } | null = null;
+  private refit: {
+    canDock(r: LandedRocket): boolean;
+    dock(r: LandedRocket): Promise<string | null>;
+    kit(r: LandedRocket): 'once' | 'reusable' | null;
+    refitting(r: LandedRocket): boolean;
+    start(r: LandedRocket): boolean;
+    end(r: LandedRocket): void;
+    available(r: LandedRocket): ItemType[];
+    apply(r: LandedRocket, op: RefitOp): Promise<string | null>;
+  } | null = null;
+
+  public setRefitHandlers(handlers: NonNullable<LandedRocketUI['refit']>): void {
+    this.refit = handlers;
+  }
+
+  private async handleDock(): Promise<void> {
+    if (!this.currentRocket || !this.refit) return;
+    const why = await this.refit.dock(this.currentRocket);
+    if (why) { this.refitMsg.textContent = why; return; }
+    this.close();
+  }
+
+  /** Open the part picker for an add or a swap */
+  private pick(action: { kind: 'addTop' } | { kind: 'swap'; index: number }): void {
+    this.pending = action;
+    this.renderRefit();
+  }
+
+  private async applyOp(op: RefitOp): Promise<void> {
+    if (!this.currentRocket || !this.refit) return;
+    const why = await this.refit.apply(this.currentRocket, op);
+    this.refitMsg.textContent = why ?? '';
+    this.pending = null;
+    this.updateDisplay();
+  }
+
+  /** An item icon cell (the slot look the rest of the panel uses) */
+  private iconCell(t: ItemType, title: string): HTMLDivElement {
+    const cell = document.createElement('div');
+    cell.className = 'equip-cell';
+    cell.title = title;
+    const img = document.createElement('img');
+    img.src = getAssetPath(ITEM_DATA[t].texture);
+    img.draggable = false;
+    cell.appendChild(img);
+    return cell;
+  }
+
+  /** The dock and refit buttons, and during a refit the stack and the part picker */
+  private renderRefit(): void {
+    const r = this.currentRocket;
+    if (!r || !this.refit) return;
+    this.dockButton.disabled = !this.refit.canDock(r);
+    const active = this.refit.refitting(r);
+    const kit = this.refit.kit(r);
+    this.refitButton.disabled = active || !kit;
+    this.refitButton.textContent = active ? 'Refitting' : kit === 'reusable' ? 'Refit (mk2 kit)' : 'Refit';
+    this.refitSection.hidden = !active;
+    if (!active) return;
+    this.refitStack.innerHTML = '';
+    r.parts.forEach((p, index) => {
+      const row = document.createElement('div');
+      row.className = 'refit-row';
+      row.appendChild(this.iconCell(p.itemType, ITEM_DATA[p.itemType].name));
+      const name = document.createElement('span');
+      name.textContent = ITEM_DATA[p.itemType].name;
+      const swap = document.createElement('button');
+      swap.className = 'side-btn small';
+      swap.textContent = 'Swap';
+      swap.addEventListener('click', () => this.pick({ kind: 'swap', index }));
+      const remove = document.createElement('button');
+      remove.className = 'side-btn small';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => void this.applyOp({ kind: 'remove', index }));
+      row.append(name, swap, remove);
+      this.refitStack.appendChild(row);
+    });
+    // The picker: rocket parts in the cargo hold and the player's inventory, as icons
+    this.refitPicker.hidden = !this.pending;
+    this.refitPicker.innerHTML = '';
+    if (this.pending) {
+      const parts = this.refit.available(r);
+      if (parts.length === 0) this.refitPicker.textContent = 'No rocket parts in the cargo hold or your inventory';
+      for (const t of parts) {
+        const cell = this.iconCell(t, `${this.pending.kind === 'addTop' ? 'Add' : 'Swap in'} ${ITEM_DATA[t].name}`);
+        const action = this.pending;
+        cell.addEventListener('click', () => void this.applyOp(action.kind === 'addTop' ? { kind: 'addTop', itemType: t } : { kind: 'swap', index: action.index, itemType: t }));
+        this.refitPicker.appendChild(cell);
+      }
+    }
+  }
+
   public open(rocket: LandedRocket): void {
     this.currentRocket = rocket;
     this.isOpen = true;
@@ -369,6 +507,10 @@ export class LandedRocketUI {
   public close(): void {
     if (!this.isOpen) return;
 
+    // A refit ends when the panel closes (the next one needs a kit again)
+    if (this.currentRocket) this.refit?.end(this.currentRocket);
+    this.pending = null;
+    this.refitMsg.textContent = '';
     this.isOpen = false;
     this.container.style.display = 'none';
     this.currentRocket = null;
@@ -417,6 +559,7 @@ export class LandedRocketUI {
     this.chargeLine.style.color = charge > 0 ? '#3ee0ff' : '#ff6666';
 
     this.updateEquipment();
+    this.renderRefit();
 
     // Update fuel bar color class
     this.fuelBar.classList.remove('low', 'high');

@@ -182,6 +182,8 @@ export const FAUNA_WATER: Record<string, WaterLifeConfig> & { default: WaterLife
   // of their water is home to something and one block of water is enough
   verdance: { ...WATER_BASE, siteChance: 0.03, minSwimDepth: 1, bedMargin: 0.12, surfaceMargin: 0.3, depthFollowRate: 1.8 },
   mirewood: { ...WATER_BASE, siteChance: 0.03, minSwimDepth: 1, bedMargin: 0.12, surfaceMargin: 0.3, depthFollowRate: 1.8 },
+  // Thalassa: nearly all sea, much of it deep - a sparser scatter goes a long way
+  thalassa: { ...WATER_BASE, siteChance: 0.006, bedMargin: 0.15, surfaceMargin: 0.35, depthFollowRate: 1.4 },
 };
 
 export function waterLife(planetId: string): WaterLifeConfig {
@@ -441,6 +443,13 @@ const CREATURES = {
     planet: 'mirewood', name: 'Bog newt', motion: 'walk', habitat: 'seabed',
     walkSpeed: 0.7, fleeSpeed: 2.6, fleeRadius: 4, idleTime: [2, 6], wanderTime: [1.5, 4],
     herd: [2, 4], scale: [0.9, 1.2], hover: [0, 0], bob: [0, 0], maxStep: 1, weight: 1.5, glow: 0.9,
+  },
+  // ---- Thalassa (space-exploration, ocean-world): a glowing chain salp ----
+  chainSalp: {
+    planet: 'thalassa', name: 'Chain salp', motion: 'drift', habitat: 'water',
+    walkSpeed: 0.3, fleeSpeed: 0.5, fleeRadius: 0, idleTime: [3, 8], wanderTime: [6, 12],
+    herd: [2, 4], scale: [0.8, 1.3], hover: [0, 0], bob: [0.18, 0.25], maxStep: 99, weight: 1.2, glow: 0.8,
+    swimBand: [0.35, 0.85],
   },
 } satisfies Record<string, FaunaSpecies>;
 

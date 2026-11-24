@@ -1,0 +1,90 @@
+// Hostile environments (openspec space-exploration, body-environments 2.2):
+// heat, cold and high radiation drain their own gauges unless the suit is
+// rated or the player is in a powered cabin; gauges recover when safe.
+// Run: npx tsx scripts/hazards.test.ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { ENVIRONMENT } from '../src/config/SurvivalConfig';
+import { bodyEnvironment, BODY_ENVIRONMENTS } from '../src/config/SolarSystemConfig';
+import { CRAFTING_RECIPES } from '../src/player/CraftingSystem';
+import { ItemType } from '../src/player/Inventory';
+import { environmentExposure, newEnvState, tickEnvironment, hazardLevels, hazardDrain, suitNeeded, environmentCard, ExposureInput } from '../src/player/Survival';
+
+const on = (body: string, extra: Partial<ExposureInput> = {}): ExposureInput =>
+  ({ inRocket: false, rocketPowered: false, inGravityWell: true, bodyBreathable: false, environment: bodyEnvironment(body), ...extra });
+
+test('levels: hot 1 / scorching 2 heat, cold 1 / frozen 2 cold, high radiation 1', () => {
+  assert.deepEqual(hazardLevels(bodyEnvironment('vesper')), { heat: 1, cold: 0, radiation: 0 });
+  assert.deepEqual(hazardLevels(bodyEnvironment('pyrra')), { heat: 2, cold: 0, radiation: 1 });
+  assert.deepEqual(hazardLevels(bodyEnvironment('tessaly')), { heat: 0, cold: 1, radiation: 0 });
+  assert.deepEqual(hazardLevels(bodyEnvironment('glacia')), { heat: 0, cold: 2, radiation: 1 });
+  assert.deepEqual(hazardLevels(bodyEnvironment('moon')), { heat: 0, cold: 0, radiation: 0 }, 'low radiation is harmless');
+});
+
+test('cold drains on Tessaly in a plain space suit, and kills when it runs out', () => {
+  const s = newEnvState();
+  const ex = environmentExposure(on('tessaly'), ItemType.SPACE_SUIT);
+  assert.equal(ex.cold, true);
+  assert.equal(tickEnvironment(s, ENVIRONMENT.GAUGE_S / 2, ex), null);
+  assert.ok(Math.abs(s.cold - ENVIRONMENT.GAUGE_S / 2) < 1e-9);
+  assert.equal(tickEnvironment(s, ENVIRONMENT.GAUGE_S, ex), 'cold');
+});
+
+test('a temperate world drains nothing, even without a suit', () => {
+  assert.deepEqual(environmentExposure(on('sequoia'), null), { heat: false, cold: false, radiation: false });
+});
+
+test('a powered cabin keeps everything out; an unpowered one does not', () => {
+  assert.deepEqual(environmentExposure(on('pyrra', { inRocket: true, rocketPowered: true }), null), { heat: false, cold: false, radiation: false });
+  assert.equal(environmentExposure(on('pyrra', { inRocket: true, rocketPowered: false }), null).heat, true);
+});
+
+test('open space has no temperature; the debug jetpack skips it all', () => {
+  assert.equal(environmentExposure({ inRocket: false, rocketPowered: false, inGravityWell: false, bodyBreathable: false, environment: null }, null).cold, false);
+  assert.equal(environmentExposure(on('glacia', { jetpack: true }), null).cold, false);
+});
+
+test('gauges recover once safe, up to full', () => {
+  const s = newEnvState();
+  tickEnvironment(s, 30, { heat: true, cold: false, radiation: false });
+  tickEnvironment(s, 30 / ENVIRONMENT.RECOVER_RATE, { heat: false, cold: false, radiation: false });
+  assert.ok(Math.abs(s.heat - ENVIRONMENT.GAUGE_S) < 1e-9);
+});
+
+// ---- suit tiers (space-exploration 6.2)
+test('a thermal suit holds on Tessaly (cold): neither air nor cold drains', () => {
+  const ex = environmentExposure(on('tessaly'), ItemType.THERMAL_SUIT);
+  assert.deepEqual(ex, { heat: false, cold: false, radiation: false });
+});
+
+test('a thermal suit on Glacia (frozen) still drains the cold, and the card names the hardened suit', () => {
+  assert.equal(environmentExposure(on('glacia'), ItemType.THERMAL_SUIT).cold, true);
+  assert.equal(suitNeeded(bodyEnvironment('glacia')), ItemType.HARDENED_SUIT);
+  assert.match(environmentCard(bodyEnvironment('glacia')), /Hardened Suit/);
+  assert.match(environmentCard(bodyEnvironment('tessaly')), /Thermal Suit/);
+  assert.doesNotMatch(environmentCard(bodyEnvironment('sequoia')), /needs/);
+});
+
+test('the hardened suit holds everywhere', () => {
+  for (const id of Object.keys(BODY_ENVIRONMENTS)) {
+    const ex = environmentExposure(on(id), ItemType.HARDENED_SUIT);
+    assert.deepEqual(ex, { heat: false, cold: false, radiation: false }, id);
+  }
+});
+
+test('each suit tier is crafted from the one below it', () => {
+  const needs = (out: ItemType) => CRAFTING_RECIPES.find(r => r.output.itemType === out)?.inputs.map(i => i.itemType) ?? [];
+  assert.ok(needs(ItemType.THERMAL_SUIT).includes(ItemType.SPACE_SUIT));
+  assert.ok(needs(ItemType.HARDENED_SUIT).includes(ItemType.THERMAL_SUIT));
+  assert.ok(needs(ItemType.SUIT_HEATER_MK2).includes(ItemType.SUIT_HEATER));
+});
+
+test('a suit heater slows the cold gauge; the mk2 more; it does not stop it', () => {
+  const drain = (items: ItemType[]) => hazardDrain(t => items.filter(i => i === t).length);
+  const plain = newEnvState(), heated = newEnvState(), mk2 = newEnvState();
+  const ex = { heat: false, cold: true, radiation: false };
+  tickEnvironment(plain, 10, ex, drain([]));
+  tickEnvironment(heated, 10, ex, drain([ItemType.SUIT_HEATER]));
+  tickEnvironment(mk2, 10, ex, drain([ItemType.SUIT_HEATER, ItemType.SUIT_HEATER_MK2]));
+  assert.ok(plain.cold < heated.cold && heated.cold < mk2.cold && mk2.cold < ENVIRONMENT.GAUGE_S);
+});

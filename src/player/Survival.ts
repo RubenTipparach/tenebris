@@ -1,4 +1,6 @@
-import { AIR } from '../config/SurvivalConfig';
+import { AIR, ENVIRONMENT, SUITS, SUIT_TIERS, SuitRating } from '../config/SurvivalConfig';
+import { describeEnvironment, type BodyEnvironment } from '../config/SolarSystemConfig';
+import { ITEM_DATA, type ItemType } from './Inventory';
 
 /**
  * Air (openspec wool-air-and-reentry, design 4): when the player is exposed,
@@ -31,6 +33,8 @@ export interface ExposureInput {
   bodyBreathable: boolean;
   /** The debug jetpack is on: like the rest of debug mode, air is not checked. */
   jetpack?: boolean;
+  /** The environment of the body the player is on or near (null in open space) */
+  environment?: BodyEnvironment | null;
 }
 
 /**
@@ -99,4 +103,84 @@ export function tickAir(s: AirState, dtS: number, i: AirTickInput): AirTickResul
 export function airGauge(s: AirState, onTank: boolean): { fraction: number; seconds: number; low: boolean } {
   const fraction = onTank ? s.tankS / AIR.TANK_AIR_S : s.breathS / AIR.BREATH_S;
   return { fraction, seconds: onTank ? s.tankS : s.breathS, low: fraction < AIR.LOW_FRACTION };
+}
+
+// ---- hostile environments (openspec space-exploration, body-environments) ----
+
+export type Hazard = 'heat' | 'cold' | 'radiation';
+export const HAZARDS: Hazard[] = ['heat', 'cold', 'radiation'];
+
+/** Seconds left on each hazard's gauge: ENVIRONMENT.GAUGE_S when full, 0 = dead. */
+export type EnvState = Record<Hazard, number>;
+
+export function newEnvState(): EnvState {
+  return { heat: ENVIRONMENT.GAUGE_S, cold: ENVIRONMENT.GAUGE_S, radiation: ENVIRONMENT.GAUGE_S };
+}
+
+/** How hard each hazard is on a body: heat 1 hot / 2 scorching, cold 1 cold / 2 frozen, radiation 1 high. */
+export function hazardLevels(e: BodyEnvironment): Record<Hazard, number> {
+  return {
+    heat: e.temperature === 'scorching' ? 2 : e.temperature === 'hot' ? 1 : 0,
+    cold: e.temperature === 'frozen' ? 2 : e.temperature === 'cold' ? 1 : 0,
+    radiation: e.radiation === 'high' ? 1 : 0,
+  };
+}
+
+const NO_SUIT: SuitRating = { heat: 0, cold: 0, radiation: 0 };
+
+/** What a worn suit holds off (no suit, or an item that is not one: nothing). */
+export function suitRating(suit: ItemType | null): SuitRating {
+  return (suit !== null && SUITS[suit]) || NO_SUIT;
+}
+
+/**
+ * Which hazards reach the player: those of the body they're on or near that
+ * their suit is not rated for. A powered cabin keeps everything out, as it
+ * does vacuum; open space has no temperature; the debug jetpack skips it all.
+ */
+export function environmentExposure(i: ExposureInput, suit: ItemType | null): Record<Hazard, boolean> {
+  const none = { heat: false, cold: false, radiation: false };
+  if (i.jetpack || !i.environment) return none;
+  if (i.inRocket && i.rocketPowered) return none;
+  const levels = hazardLevels(i.environment);
+  const rating = suitRating(suit);
+  return { heat: levels.heat > rating.heat, cold: levels.cold > rating.cold, radiation: levels.radiation > rating.radiation };
+}
+
+/**
+ * One step of the hazard gauges: each exposed one drains (at `drain[h]` x its
+ * normal rate - a suit heater slows the cold), the rest recover. Returns the
+ * hazard that killed, if any. Mutates `s`.
+ */
+export function tickEnvironment(s: EnvState, dtS: number, exposed: Record<Hazard, boolean>, drain: Partial<Record<Hazard, number>> = {}): Hazard | null {
+  let died: Hazard | null = null;
+  for (const h of HAZARDS) {
+    if (exposed[h]) {
+      s[h] = Math.max(0, s[h] - dtS * (drain[h] ?? 1));
+      if (s[h] <= 0 && !died) died = h;
+    } else {
+      s[h] = Math.min(ENVIRONMENT.GAUGE_S, s[h] + dtS * ENVIRONMENT.RECOVER_RATE);
+    }
+  }
+  return died;
+}
+
+/** How fast each hazard drains with what the player carries: the best suit heater slows the cold (ENVIRONMENT.HEATERS). */
+export function hazardDrain(carried: (t: ItemType) => number): Partial<Record<Hazard, number>> {
+  let cold = 1;
+  for (const [k, f] of Object.entries(ENVIRONMENT.HEATERS)) if (f !== undefined && carried(Number(k) as ItemType) > 0) cold = Math.min(cold, f);
+  return { cold };
+}
+
+/** The lowest suit tier that holds off everything a body throws at the player (null: none needed; undefined: none does). */
+export function suitNeeded(e: BodyEnvironment): ItemType | null | undefined {
+  const lv = hazardLevels(e);
+  if (lv.heat === 0 && lv.cold === 0 && lv.radiation === 0) return null;
+  return SUIT_TIERS.find(t => { const r = SUITS[t]!; return lv.heat <= r.heat && lv.cold <= r.cold && lv.radiation <= r.radiation; });
+}
+
+/** A body's card line: its environment, and the suit to work there */
+export function environmentCard(e: BodyEnvironment): string {
+  const suit = suitNeeded(e);
+  return describeEnvironment(e) + (suit ? ` - needs the ${ITEM_DATA[suit].name}` : '');
 }

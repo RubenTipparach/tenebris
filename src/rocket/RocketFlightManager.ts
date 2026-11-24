@@ -4,12 +4,15 @@ import { RocketController, PlanetGravitySource, RocketInputState } from './Rocke
 import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
 import { ROCKET_INPUTS, ROCKET_CONFIG } from '../config/RocketConfig';
-import { PlacedLaunchPad } from '../planet/LaunchPad';
+import { PlacedLaunchPad, LaunchPadManager, stackPartHeights, ROCKET_SEGMENT_HEIGHT } from '../planet/LaunchPad';
+import { RocketPart } from '../planet/RocketPart';
+import { withMachineLight } from '../planet/MachineLight';
+import { RefitOp, planRefit, refitKitIn, stackAfter } from './Refit';
 import { InputManager, lockPointer } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
 import { LandedRocketUI } from './LandedRocketUI';
-import { InventorySlot, ItemType } from '../player/Inventory';
-import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh, isEquipment } from './RocketPerformance';
+import { InventorySlot, ItemType, ITEM_DATA } from '../player/Inventory';
+import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh, isEquipment, stackProblems, slotStore, cargoSlotsFor, equipmentSlotsFor, fitSlots, validEngineMode } from './RocketPerformance';
 import { emitGameEvent } from '../engine/GameEvents';
 import { showToast } from '../utils/toast';
 
@@ -96,6 +99,17 @@ export class RocketFlightManager {
     });
 
     this.landedRocketUI.setOnRefuelCallback((rocket) => this.refuelLanded(rocket));
+    // Docking and refits away from home (rocket-refit)
+    this.landedRocketUI.setRefitHandlers({
+      canDock: (r) => this.nearestFreePad(r) !== null,
+      dock: (r) => this.dockLanded(r),
+      kit: (r) => this.refitKit(r),
+      refitting: (r) => this.isRefitting(r),
+      start: (r) => this.startRefit(r),
+      end: (r) => this.endRefit(r),
+      available: (r) => this.refitPartsAvailable(r),
+      apply: (r, op) => this.applyRefit(r, op),
+    });
     this.landedRocketUI.setOnCargoCallback((rocket) => {
       if (rocket.cargo) this.onOpenCargoCallback?.(rocket.cargo);
     });
@@ -140,22 +154,8 @@ export class RocketFlightManager {
    * Register a planet for gravity calculations
    * @param getSurfaceHeight Optional callback to get actual terrain height at a direction
    */
-  public addPlanet(
-    name: string,
-    center: THREE.Vector3,
-    radius: number,
-    gravityStrength: number = 1.0,
-    getSurfaceHeight?: (direction: THREE.Vector3) => number,
-    hasAtmosphere: boolean = false
-  ): void {
-    this.planets.push({
-      name,
-      center: center.clone(),
-      radius,
-      gravityStrength,
-      getSurfaceHeight,
-      hasAtmosphere,
-    });
+  public addPlanet(source: PlanetGravitySource): void {
+    this.planets.push({ ...source, center: source.center.clone() });
     // Also update landed rocket manager
     this.landedRocketManager.setPlanets(this.planets);
   }
@@ -168,8 +168,9 @@ export class RocketFlightManager {
     this.rocketController?.setSunPosition(this.sunPosition);
   }
 
-  public setPlanetCenter(name: string, center: THREE.Vector3): void {
-    for (const p of this.planets) if (p.name === name) p.center.copy(center);
+  /** A body (by id) moved on its orbit: gravity and landings use its live centre. */
+  public setPlanetCenter(id: string, center: THREE.Vector3): void {
+    for (const p of this.planets) if (p.id === id) p.center.copy(center);
   }
 
   /**
@@ -187,6 +188,193 @@ export class RocketFlightManager {
       this.activePad.engineMode = this.rocketController.getEngineMode();
     }
     this.onRocketChangedCallback?.(this.activePad);
+  }
+
+  /**
+   * A dropped stage is gone for good (rocket-staging): the pad the flight
+   * came from keeps only the stages still attached, so a relaunch from it
+   * uses what is left. Saved at once (recordActiveRocket).
+   */
+  private forgetDroppedStage(parts: unknown[]): void {
+    if (this.activePad) {
+      this.activePad.rocketParts = this.activePad.rocketParts.filter(p => !parts.includes(p));
+    }
+    this.recordActiveRocket();
+  }
+
+  // ---- refits away from home (openspec space-exploration, rocket-refit) ----
+
+  private padManager: LaunchPadManager | null = null;
+  private playerItems: { count(t: ItemType): number; take(t: ItemType, n: number): number; give(t: ItemType, n: number): number } | null = null;
+  // Parked rockets with a refit under way (the kit is spent when it starts)
+  private refitting = new Set<string>();
+
+  /** What docking and refits use: the launch pads, and the player's own items */
+  public setRefitSupport(padManager: LaunchPadManager, playerItems: { count(t: ItemType): number; take(t: ItemType, n: number): number; give(t: ItemType, n: number): number }): void {
+    this.padManager = padManager;
+    this.playerItems = playerItems;
+  }
+
+  /** A complete, empty pad with a tower within REFIT.DOCK_RADIUS_M of the rocket (on its body) */
+  public nearestFreePad(rocket: LandedRocket): PlacedLaunchPad | null {
+    let best: PlacedLaunchPad | null = null;
+    let bestD: number = ROCKET_CONFIG.REFIT.DOCK_RADIUS_M;
+    for (const pad of this.padManager?.getLaunchPads() ?? []) {
+      // The rocket's own pad still lists it (the pad is its record while it
+      // is away), so that pad counts as free for it
+      const holdsOnlyThis = pad === rocket.pad && pad.rocketParts.every(p => rocket.parts.includes(p));
+      if (!pad.isComplete || (pad.rocketParts.length > 0 && !holdsOnlyThis) || pad.segmentCount < 1) continue;
+      // pad.position is in the pad's planet frame; the mesh (geometry baked at
+      // its origin) carries that frame, so map the point through it
+      pad.mesh.updateWorldMatrix(true, false);
+      const d = pad.mesh.localToWorld(pad.position.clone()).distanceTo(rocket.pivot.getWorldPosition(new THREE.Vector3()));
+      if (d <= bestD) { best = pad; bestD = d; }
+    }
+    return best;
+  }
+
+  /**
+   * Dock a parked rocket onto a free pad nearby: its parts, fuel, cargo and
+   * equipment move onto the pad, where the pad's own stack editor changes
+   * it. Returns why it can't, or null when docked.
+   */
+  public async dockLanded(rocket: LandedRocket): Promise<string | null> {
+    const pad = this.nearestFreePad(rocket);
+    if (!pad || !this.padManager) return 'No free launch pad with a tower nearby';
+    const types = stackItemTypes(rocket.parts);
+    const problems = stackProblems(types);
+    if (problems.length) return problems[0];
+    const fuelUnits = (rocket.fuelPercent / 100) * computeRocketStats(types).fuelCapacity;
+    // Copies: the parked rocket shares its hold arrays with its origin pad,
+    // which re-sizes them in place while the parts are stacked again
+    const copy = (slots: InventorySlot[] | null | undefined) => (slots ?? []).map(sl => ({ itemType: sl.itemType, quantity: sl.quantity }));
+    const cargo = copy(rocket.cargo), equipment = copy(rocket.equipment);
+    // The parked rocket leaves; its parts are stacked again on the pad. Its
+    // origin pad (this one, or the one it launched from) forgets them, so
+    // the rocket is listed once, where it docked
+    this.landedRocketManager.removeLandedRocket(rocket.id);
+    rocket.pivot.parent?.remove(rocket.pivot);
+    const origin = rocket.pad;
+    if (origin) {
+      origin.rocketParts = origin.rocketParts.filter(p => !rocket.parts.includes(p));
+      if (origin !== pad) this.onRocketChangedCallback?.(origin);
+    }
+    for (const p of rocket.parts) p.dispose();
+    for (const t of types) await this.padManager.addRocketPart(pad, t);
+    pad.fuel = fuelUnits;
+    // Same stack, so the pad's (re-sized) slots match the rocket's hold
+    for (const [into, from] of [[pad.cargo, cargo], [pad.equipment, equipment]] as const) {
+      into.forEach((sl, i) => { sl.itemType = from[i]?.itemType ?? ItemType.NONE; sl.quantity = from[i]?.quantity ?? 0; });
+    }
+    pad.engineMode = rocket.engineMode ?? null;
+    this.onRocketChangedCallback?.(pad);
+    return null;
+  }
+
+  /** The refit kit a parked rocket carries ('once', 'reusable', or null) */
+  public refitKit(rocket: LandedRocket): 'once' | 'reusable' | null {
+    return refitKitIn(rocket.equipment);
+  }
+
+  /** Is a refit under way on this rocket (its kit already spent)? */
+  public isRefitting(rocket: LandedRocket): boolean {
+    return this.refitting.has(rocket.netKey);
+  }
+
+  /** Start a refit: it uses one plain kit up (a mk2 is kept). False with no kit. */
+  public startRefit(rocket: LandedRocket): boolean {
+    if (this.refitting.has(rocket.netKey)) return true;
+    const kind = refitKitIn(rocket.equipment);
+    if (!kind) return false;
+    if (kind === 'once' && rocket.equipment) slotStore(rocket.equipment).removeItem(ItemType.REFIT_KIT, 1);
+    this.refitting.add(rocket.netKey);
+    return true;
+  }
+
+  /** The refit is over (the panel closed): the next one needs a kit again */
+  public endRefit(rocket: LandedRocket): void {
+    this.refitting.delete(rocket.netKey);
+  }
+
+  /** Parts a refit can put on: rocket parts in the cargo hold and the player's items */
+  public refitPartsAvailable(rocket: LandedRocket): ItemType[] {
+    const out: ItemType[] = [];
+    for (const [k, data] of Object.entries(ITEM_DATA)) {
+      const t = Number(k) as ItemType;
+      if (!data.rocketPart) continue;
+      if ((rocket.cargo ? slotStore(rocket.cargo).getItemCount(t) : 0) + (this.playerItems?.count(t) ?? 0) > 0) out.push(t);
+    }
+    return out;
+  }
+
+  /**
+   * One change to a parked rocket's stack during a refit: a part taken off
+   * goes to the cargo hold (else the player); a part put on comes from the
+   * cargo hold (else the player). Refused (with the reason) if the stack
+   * would not fly, or the items aren't there or won't fit.
+   */
+  public async applyRefit(rocket: LandedRocket, op: RefitOp): Promise<string | null> {
+    if (!this.refitting.has(rocket.netKey)) return 'Start a refit first';
+    const types = stackItemTypes(rocket.parts);
+    const plan = planRefit(types, op);
+    if (plan.refused) return plan.refused;
+    const cargo = rocket.cargo ? slotStore(rocket.cargo) : null;
+    const have = (t: ItemType) => (cargo?.getItemCount(t) ?? 0) + (this.playerItems?.count(t) ?? 0);
+    if (plan.putOn !== null && have(plan.putOn) <= 0) return 'That part is not in the cargo hold or your inventory';
+    const after = stackAfter(types, op);
+    // The cargo and equipment must still fit the slots the new stack has
+    const used = (slots: InventorySlot[] | null) => (slots ?? []).filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).length;
+    if (used(rocket.cargo) > cargoSlotsFor(after) || used(rocket.equipment) > equipmentSlotsFor(after)) return 'Unload the cargo or equipment that would not fit first';
+    // Take the part to put on, then put away the one taken off
+    if (plan.putOn !== null) {
+      const fromCargo = cargo?.removeItem(plan.putOn, 1) ?? 0;
+      if (fromCargo === 0) this.playerItems?.take(plan.putOn, 1);
+    }
+    if (plan.takenOff !== null) {
+      const left = cargo ? cargo.addItem(plan.takenOff, 1) : 1;
+      if (left > 0) this.playerItems?.give(plan.takenOff, 1);
+    }
+    await this.rebuildLanded(rocket, after);
+    return null;
+  }
+
+  /** Rebuild a parked rocket's meshes and numbers for a new stack (the pad's stacking heights) */
+  private async rebuildLanded(rocket: LandedRocket, types: ItemType[]): Promise<void> {
+    if (!this.padManager) return;
+    const oldTypes = stackItemTypes(rocket.parts);
+    const oldCap = computeRocketStats(oldTypes).fuelCapacity;
+    const fuelUnits = (rocket.fuelPercent / 100) * oldCap;
+    // Keep the stack's base where it stands
+    const oldHeights = stackPartHeights(oldTypes, ROCKET_SEGMENT_HEIGHT);
+    const base = rocket.parts.length ? rocket.parts[0].mesh.position.y - oldHeights[0] : 0;
+    for (const p of rocket.parts) { rocket.pivot.remove(p.mesh); p.dispose(); }
+    const heights = stackPartHeights(types, ROCKET_SEGMENT_HEIGHT);
+    const parts: RocketPart[] = [];
+    for (let i = 0; i < types.length; i++) {
+      const info = ITEM_DATA[types[i]].rocketPart!;
+      const assets = await this.padManager.loadRocketPartAssets(types[i]);
+      if (!assets) continue;
+      const material = withMachineLight(assets.material.clone());
+      const group = new THREE.Group();
+      group.add(new THREE.Mesh(assets.geometry, material));
+      group.position.set(0, base + heights[i], 0);
+      const ms = info.modelScale ?? { x: 1, y: 1, z: 1 };
+      group.scale.set(ms.x, ms.y, ms.z);
+      rocket.pivot.add(group);
+      parts.push(new RocketPart(types[i], info.partType, group, material, i));
+    }
+    rocket.parts = parts;
+    // The rocket's pad is its saved record while it is away: it lists the
+    // new stack, so the refit survives a reload
+    if (rocket.pad) rocket.pad.rocketParts = parts;
+    const cap = computeRocketStats(types).fuelCapacity;
+    rocket.fuelPercent = cap > 0 ? (Math.min(fuelUnits, cap) / cap) * 100 : 0;
+    if (rocket.pad) rocket.pad.fuel = Math.min(fuelUnits, cap);
+    // Its slots follow the new stack (what is aboard already fits: checked above)
+    if (rocket.cargo) fitSlots(rocket.cargo, cargoSlotsFor(types));
+    if (rocket.equipment) fitSlots(rocket.equipment, equipmentSlotsFor(types));
+    rocket.engineMode = validEngineMode(types, rocket.engineMode ?? null);
+    this.onRocketChangedCallback?.(rocket.pad);
   }
 
   /** The cargo hold of the rocket being flown (null when not flying) */
@@ -305,9 +493,9 @@ export class RocketFlightManager {
     this.rocketController = new RocketController(this.scene);
     this.rocketController.setSunPosition(this.sunPosition);
 
-    // Get surface normal from launch pad position (pointing away from planet center)
-    // For simplicity, assume Earth at origin
-    const surfaceNormal = launchPad.position.clone().normalize();
+    // Surface normal: away from the centre of the body the pad is on (any
+    // body - the Moon's pads launch straight up from the Moon too)
+    const surfaceNormal = launchPad.position.clone().sub(launchPad.planetCenter).normalize();
 
     // Initialize the rocket
     this.rocketController.initialize(
@@ -322,6 +510,7 @@ export class RocketFlightManager {
     );
     this.activePad = launchPad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
+    this.rocketController.onStageDropped = (parts) => this.forgetDroppedStage(parts);
 
     // Board the rocket (sets up camera)
     if (!this.rocketController.board(this.camera)) {
@@ -462,6 +651,7 @@ export class RocketFlightManager {
     );
     this.activePad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
+    this.rocketController.onStageDropped = (parts) => this.forgetDroppedStage(parts);
 
     // Board the rocket (sets up camera)
     if (!this.rocketController.boardLanded(this.camera)) {
@@ -606,6 +796,15 @@ export class RocketFlightManager {
       // Handle exit key - call exitFlightMode directly
       if (e.code === ROCKET_INPUTS.EXIT_ROCKET) {
         this.exitFlightMode();
+      }
+
+      // Drop the spent stage (rocket-staging)
+      if (e.code === ROCKET_INPUTS.STAGE) {
+        this.rocketController?.dropStage();
+      }
+      // Survey the airless body below with a drone (space-exploration)
+      if (e.code === ROCKET_INPUTS.DRONE) {
+        this.rocketController?.launchDrone();
       }
 
       // Manual respawn: abandon the rocket (e.g. stranded in space)

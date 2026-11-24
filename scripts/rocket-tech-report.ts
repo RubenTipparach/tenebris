@@ -2,6 +2,7 @@
 // from the same tables and physics the game flies (src/rocket/RocketPerformance).
 //
 //   npx esbuild scripts/rocket-tech-report.ts --bundle --platform=node --format=esm --outfile=/tmp/rtr.mjs && node /tmp/rtr.mjs
+//   (STACKS="^(Moon|Brontes):" node /tmp/rtr.mjs - only the stacks whose label matches)
 //
 // A trip is flown by simulateTransfer's careful pilot (full burn, coast,
 // a landing burn to a safe touchdown); a hand-flown trip costs more.
@@ -90,13 +91,26 @@ const STACKS: [string, ItemType[]][] = [
   ['Tier 4: two Rocket Engines (lift) + Ion Drive + Reactor Core + Medium Tank', [ItemType.ROCKET_ENGINE, ItemType.ROCKET_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Tier 4: Ion Drive + Reactor Core + Large Tank (in space)', [ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Ion Drive with no Reactor Core (cannot fire)', [ItemType.ION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  // ---- the engine ladder past the Moon (space-exploration, design 3) ----
+  ['Moon: Ion Thruster (solar-electric) + Large Tank', [ItemType.ION_THRUSTER, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Moon: Rocket Engine (lift) + separator + Ion Thruster + Large Tank', [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.STAGE_SEPARATOR, ItemType.ION_THRUSTER, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Ember: Gas-Core Engine + two Large Tanks', [ItemType.GAS_CORE_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Lodestone: Gas-Core Engine (lift) + Fission-Fragment Drive + Reactor Core + Large Tank', [ItemType.GAS_CORE_ENGINE, ItemType.FISSION_FRAGMENT_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
+  ['Brand: Nuclear Pulse Drive + three Large Tanks + Cargo Bay', [ItemType.NUCLEAR_PULSE_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Aurelia: D-He3 Fusion Drive + Cryo Tank + two Large Tanks + Cargo Bay', [ItemType.FUSION_DRIVE, ItemType.CRYO_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Brontes: Magnetic Fusion Torch + Cryo Tank + two Large Tanks + Cargo Bay', [ItemType.FUSION_TORCH, ItemType.CRYO_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
 ];
 const TRIPS: [string, string][] = [
   ['earth', 'moon'], ['moon', 'earth'], ['earth', 'sequoia'], ['moon', 'sequoia'],
   ['earth', 'cinder'], ['cinder', 'earth'], ['moon', 'cinder'], ['moon', 'nerith'], ['moon', 'kessel'], ['moon', 'vesper'],
+  // each route's hops (space-exploration): sunward, then outward
+  ['sequoia', 'ferrum'], ['ferrum', 'umbra'], ['umbra', 'vesper'],
+  ['kessel', 'cinder'], ['cinder', 'nerith'], ['nerith', 'halcyon'], ['halcyon', 'tessaly'],
 ];
 
-for (const [label, parts] of STACKS) {
+// STACKS=<regex> reports only the stacks whose label matches it (the full report is slow)
+const only = process.env.STACKS;
+for (const [label, parts] of STACKS.filter(([l]) => !only || new RegExp(only).test(l))) {
   const s = computeRocketStats(parts);
   console.log(`\n${label}`);
   console.log(`  parts: ${parts.map(p => ITEM_DATA[p].name).join(' / ')}`);
@@ -137,12 +151,13 @@ for (const [label, parts] of STACKS) {
     }
     // Fly it across the window: best and worst moment
     const period = synodicS(a, b);
-    const n = period > 0 ? SAMPLES : 1;
+    // Co-orbital bodies (same orbit, e.g. Sequoia and Metropole Prime) never change alignment: one moment
+    const n = period > 0 && Number.isFinite(period) ? SAMPLES : 1;
     let best: { dv: number; fuel: number; t: number; km: number } | null = null;
     let worst: { dv: number; fuel: number; t: number; km: number } | null = null;
     let fails = 0, worstFail = '';
     for (let i = 0; i < n; i++) {
-      const t = (period * i) / n;
+      const t = n > 1 ? (period * i) / n : 0;
       const from = body(a, t), to = body(b, t);
       const km = Math.hypot(to.center.x - from.center.x, to.center.y - from.center.y, to.center.z - from.center.z);
       const r = simulateTransfer(flown, from, to);
@@ -157,7 +172,7 @@ for (const [label, parts] of STACKS) {
     }
     const name = `${body(a).name.padEnd(8)} -> ${body(b).name.padEnd(8)}`;
     const pct = (f: number) => `${(100 * f / s.fuelCapacity).toFixed(0)}%`;
-    const when = period > 0 ? ` (window repeats every ${(period / 60).toFixed(0)} min)` : '';
+    const when = !Number.isFinite(period) ? ' (same orbit: always this far apart)' : period > 0 ? ` (window repeats every ${(period / 60).toFixed(0)} min)` : '';
     if (!best) {
       console.log(`    ${name} FAILS at every moment - ${worstFail}${when}`);
     } else if (fails === 0) {

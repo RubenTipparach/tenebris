@@ -86,6 +86,27 @@ export interface PlacedLaunchPad {
   rocketEngineMesh: THREE.Group | null;
 }
 
+/** One tower segment's height, and a rocket part's per height unit (m) */
+export const ROCKET_SEGMENT_HEIGHT = 2.0;
+
+/**
+ * Each part's height up a stack (bottom to top): where its model's origin
+ * sits above the stack's base - its bottom at the heights of the parts below
+ * it, plus half its own height and its model's offset. The pad stacks parts
+ * with it and a refit rebuilds a parked rocket with it (rocket-refit).
+ */
+export function stackPartHeights(itemTypes: readonly ItemType[], segmentHeight: number): number[] {
+  let bottom = 0;
+  return itemTypes.map(t => {
+    const part = ITEM_DATA[t]?.rocketPart;
+    if (!part) return bottom;
+    const h = part.heightUnits * segmentHeight;
+    const centre = bottom + h / 2 + (part.modelYOffset ?? 0);
+    bottom += h;
+    return centre;
+  });
+}
+
 export class LaunchPadManager {
   private scene: THREE.Scene;
   private launchPads: PlacedLaunchPad[] = [];
@@ -115,7 +136,7 @@ export class LaunchPadManager {
   private readonly BASE_RADIUS = 1.0;  // Radius of hexagonal base
   private readonly BASE_HEIGHT = 0.25; // 1/4 of normal block height (which is 1)
   private readonly SEGMENT_SIZE = 2.0;  // Segment tower piece
-  private readonly SEGMENT_HEIGHT = 2.0;  // Height per segment
+  private readonly SEGMENT_HEIGHT = ROCKET_SEGMENT_HEIGHT;  // Height per segment
   private readonly MAX_SEGMENTS = 8;
   private readonly ROCKET_PART_SCALE = 1.0;  // Scale for rocket part models
 
@@ -1020,23 +1041,9 @@ export class LaunchPadManager {
     // Get the surface level from the tower tile (same as where tower segments start)
     const towerSurfaceDistance = launchPad.towerTileCenter.distanceTo(launchPad.planetCenter);
 
-    // Calculate height based on existing parts
-    // Each part's height is based on where the BOTTOM of the part should be
-    let bottomHeight = 0;
-    for (const existingPart of launchPad.rocketParts) {
-      const existingData = ITEM_DATA[existingPart.itemType];
-      if (existingData.rocketPart) {
-        bottomHeight += existingData.rocketPart.heightUnits * this.SEGMENT_HEIGHT;
-      }
-    }
-
-    // Position the part so its bottom is at bottomHeight
-    // Model origin is assumed to be at the center, so we add half the part's height
-    // to position the center correctly (bottom at bottomHeight means center at bottomHeight + halfHeight)
-    const partHalfHeight = (itemData.rocketPart.heightUnits * this.SEGMENT_HEIGHT) / 2;
-    // Apply per-part model offset to correct for different model origins
-    const modelYOffset = itemData.rocketPart.modelYOffset ?? 0;
-    const partHeight = bottomHeight + partHalfHeight + modelYOffset;
+    // Where the part sits up the stack (one rule for the pad and refits)
+    const heights = stackPartHeights([...launchPad.rocketParts.map(p => p.itemType), itemType], this.SEGMENT_HEIGHT);
+    const partHeight = heights[heights.length - 1];
 
     // Orient the part first: Y axis along radial direction (from rocket tile)
     const up = new THREE.Vector3(0, 1, 0);

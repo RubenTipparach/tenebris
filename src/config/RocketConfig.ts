@@ -37,6 +37,14 @@ export interface RocketPartStats {
   // drive needs a reactor core). Unmet: the part gives no thrust, and the
   // stack's stats carry the reason (RocketStats.problems)
   requires?: ItemType[];
+  // This part counts as another for `requires` (the compact reactor core is a reactor core)
+  provides?: ItemType;
+  // An engine that draws the rocket's charge while it fires, W at full
+  // throttle (the solar-electric ion thruster): no charge, no thrust
+  firingDrawW?: number;
+  // An engine that uses items from the cargo hold as it fires (pulse units,
+  // helium-3, deuterium): per second at full throttle. None left: it can't fire
+  consumes?: { itemType: ItemType; perS: number }[];
 }
 
 /**
@@ -50,9 +58,30 @@ export interface RocketEquipmentStats {
   batteryWh?: number;    // charge each stores (battery pack)
   solarW?: number;       // what each charges in full sun (solar array)
   chutes?: number;       // parachutes each gives (one opens per descent and is used up)
+  heatShield?: number;   // heat each heat shield soaks up before it is worn through (REENTRY heat units)
+  refit?: 'once' | 'reusable'; // a refit kit: changes a parked rocket's stack (once: used up per refit)
+  cooling?: number;      // share of the heat gained a radiator sheds (re-entry, the Sun); radiators stack multiplicatively
+  rtgW?: number;         // charge it gives at all times, sun or not (the RTG)
+  chuteBrake?: number;   // a drogue: the chute brakes this many times harder (lands slower); the best fitted counts, never used up
+  drone?: boolean;       // a survey drone: surveys the body below from orbit (used up)
 }
 
 export const ROCKET_CONFIG = {
+  // === REFITS (space-exploration, rocket-refit) ===
+  REFIT: {
+    // A parked rocket docks onto a free, complete pad this close (m) on the same body
+    DOCK_RADIUS_M: 25,
+  },
+
+  // === STAGING (space-exploration, rocket-staging) ===
+  // A dropped stage falls away under gravity for this long (s), then is
+  // gone; it is never saved
+  STAGE_DEBRIS_LIFE_S: 20,
+  // A survey drone (space-exploration upgrade) reaches a body within this
+  // many of its radii of its centre - only an airless, solid one (the
+  // small bodies: anything with air or no ground needs a landing or a skim)
+  DRONE_RANGE_RADII: 3,
+
   // === RESPAWN ===
   // After a crash, respawn beside the pad the flight took off from: this far
   // (m) from its middle, on the side away from the tower
@@ -122,6 +151,8 @@ export const ROCKET_CONFIG = {
     // 3 equipment slots: a parachute, a solar array and a battery pack at once
     [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, equipmentSlots: 3, batteryWh: CELL_WH, powerDrawW: CELL_DRAW_W },
     [ItemType.CARGO_BAY]: { tier: 1, dryMass: 80, cargoSlots: 8 },
+    // splits the stack into stages; it drops with the stage below (rocket-staging)
+    [ItemType.STAGE_SEPARATOR]: { tier: 1, dryMass: 30 },
     // Tier 3 (uranium, built off-world): the nuclear thermal engine - the
     // same tank fuel at more than twice the vacuum engine's efficiency
     [ItemType.NUCLEAR_THERMAL_ENGINE]: { tier: 3, dryMass: 300, thrust: 30000, specificImpulse: 500 },
@@ -129,6 +160,36 @@ export const ROCKET_CONFIG = {
     // an in-space engine that only fires with a reactor core aboard
     [ItemType.ION_DRIVE]: { tier: 4, dryMass: 120, thrust: 1500, specificImpulse: 3000, requires: [ItemType.REACTOR_CORE] },
     [ItemType.REACTOR_CORE]: { tier: 4, dryMass: 400 },
+    // ---- upgrade parts (space-exploration, resources): each a reward of a
+    // moon or asteroid (Missions VISIT_REWARDS) ----
+    // Composite tanks: more fuel for less tank (Magnetite mk2, Ferrite mk3)
+    [ItemType.FUEL_TANK_MK2]: { tier: 2, dryMass: 100, fuelCapacity: 400 },
+    [ItemType.FUEL_TANK_MK3]: { tier: 3, dryMass: 90, fuelCapacity: 550 },
+    // Cargo: Grit mk2, Ingot large, Hailstone mk3
+    [ItemType.CARGO_BAY_MK2]: { tier: 2, dryMass: 70, cargoSlots: 12 },
+    [ItemType.LARGE_CARGO_BAY]: { tier: 2, dryMass: 140, cargoSlots: 20 },
+    [ItemType.CARGO_BAY_MK3]: { tier: 3, dryMass: 120, cargoSlots: 28 },
+    // Cinder: a reactor core at half the mass
+    [ItemType.COMPACT_REACTOR_CORE]: { tier: 4, dryMass: 200, provides: ItemType.REACTOR_CORE },
+    // Sleet: an insulated hold - helium-3 and deuterium keep only in one,
+    // so the fusion engines need it in the stack
+    [ItemType.CRYO_TANK]: { tier: 3, dryMass: 90, cargoSlots: 4 },
+    // ---- the engine ladder (space-exploration, rocket-tiers; design 3) ----
+    // The Moon's solar-electric ion thruster: no reactor, runs on the charge
+    [ItemType.ION_THRUSTER]: { tier: 2, dryMass: 60, thrust: 600, specificImpulse: 2000, firingDrawW: 6000 },
+    // Ember: the gas-core nuclear engine ("nuclear lightbulb")
+    [ItemType.GAS_CORE_ENGINE]: { tier: 3, dryMass: 500, thrust: 100000, specificImpulse: 1200 },
+    // Lodestone: the fission-fragment drive (magnetic fission) - needs a reactor core
+    [ItemType.FISSION_FRAGMENT_DRIVE]: { tier: 4, dryMass: 300, thrust: 4000, specificImpulse: 9000, requires: [ItemType.REACTOR_CORE] },
+    // Brand: the nuclear pulse drive ("Orion") - fission charges from the cargo
+    [ItemType.NUCLEAR_PULSE_DRIVE]: { tier: 4, dryMass: 1500, thrust: 400000, specificImpulse: 2500,
+      consumes: [{ itemType: ItemType.PULSE_UNIT, perS: 2 }] },
+    // Aurelia: the D-He3 fusion drive - helium-3 from the cargo
+    [ItemType.FUSION_DRIVE]: { tier: 5, dryMass: 600, thrust: 60000, specificImpulse: 12000, requires: [ItemType.CRYO_TANK],
+      consumes: [{ itemType: ItemType.HELIUM_3, perS: 0.2 }] },
+    // Brontes: the magnetic fusion torch - helium-3 and deuterium
+    [ItemType.FUSION_TORCH]: { tier: 6, dryMass: 900, thrust: 120000, specificImpulse: 30000, requires: [ItemType.CRYO_TANK],
+      consumes: [{ itemType: ItemType.HELIUM_3, perS: 0.3 }, { itemType: ItemType.DEUTERIUM, perS: 0.3 }] },
   } as Partial<Record<ItemType, RocketPartStats>>,
 
   // === CARGO HOLD ===
@@ -152,7 +213,55 @@ export const ROCKET_CONFIG = {
     // the battery pack (tier 3): a lithium-ion battery's charge, twice the
     // command module's own cell - +30 minutes of flight each
     [ItemType.BATTERY_PACK]: { mass: 60, batteryWh: LITHIUM_WH },
+    // the heat shield (space-exploration): soaks up REENTRY.shieldShare of
+    // the heat gained until `heatShield` units have gone into it, then it is
+    // worn through and leaves the equipment
+    [ItemType.HEAT_SHIELD]: { mass: 120, heatShield: 400 },
+    // refit kits (rocket-refit): open the stack editor on a parked rocket;
+    // the plain kit is used up by each refit, the mk2 is not
+    [ItemType.REFIT_KIT]: { mass: 25, refit: 'once' },
+    [ItemType.REFIT_KIT_MK2]: { mass: 40, refit: 'reusable' },
+    // ---- upgrades (space-exploration, resources) ----
+    // batteries: Nyx mk2, Obol mk3; solar: Talus mk2
+    [ItemType.BATTERY_PACK_MK2]: { mass: 60, batteryWh: LITHIUM_WH * 2 },
+    [ItemType.BATTERY_PACK_MK3]: { mass: 60, batteryWh: LITHIUM_WH * 4 },
+    [ItemType.SOLAR_ARRAY_MK2]: { mass: 50, solarW: CELL_DRAW_W },
+    // radiators (Sable, Scoria mk2): shed a share of the heat gained
+    [ItemType.RADIATOR]: { mass: 40, cooling: 0.3 },
+    [ItemType.RADIATOR_MK2]: { mass: 50, cooling: 0.5 },
+    // Mirewood: a drogue opens with the chute and brakes it harder
+    [ItemType.DROGUE_CHUTE]: { mass: 30, chuteBrake: 1.6 },
+    // Kessel: the RTG - the command module's whole draw, sun or not
+    [ItemType.RTG]: { mass: 150, rtgW: CELL_DRAW_W },
+    // Glint: surveys a small body from orbit (no landing)
+    [ItemType.SURVEY_DRONE]: { mass: 20, drone: true },
+    // heat shields: Ashfall mk2, Pyrra mk3
+    [ItemType.HEAT_SHIELD_MK2]: { mass: 150, heatShield: 800 },
+    [ItemType.HEAT_SHIELD_MK3]: { mass: 180, heatShield: 1600 },
   } as Partial<Record<ItemType, RocketEquipmentStats>>,
+
+  // === GAS GIANTS (space-exploration, design 7) ===
+  // A gas giant is a gravity well with air (BODY_ENVIRONMENTS density) and no
+  // ground. Dropping below its cloud tops and climbing back out past
+  // skimExitMult x its radius is a skim; sinking below (1 - crushDepth) x its
+  // radius crushes the rocket.
+  GAS_GIANT_FLIGHT: {
+    gravityStrength: 1.6,
+    crushDepth: 0.06,             // share of the radius below the cloud tops
+    skimExitMult: 1.15,
+  },
+
+  // === THE SUN (space-exploration, design 7) ===
+  // Inside closePassRadii x its radius the Sun heats a rocket, more the
+  // closer it is (heatPerS at its surface); getting back out alive is a
+  // close pass. Touching it burns the rocket up.
+  SUN_PASS: {
+    closePassRadii: 1.6,
+    heatPerS: 45,
+    // Coronal field data a surviving close pass records into the cargo
+    // hold (the Sun's resource: space-exploration, resources)
+    coronalData: 4,
+  },
 
   // === COMMAND MODULE ===
   COMMAND_MODULE: {
@@ -186,6 +295,8 @@ export const ROCKET_CONFIG = {
     // edge (GRAVITY_WELL.FALLOFF_RADIUS_MULT), 80 m deep on Earth: the
     // whole descent through a body's pull is "in the air".
     shellRadiusMult: 1.8,
+    // A fitted heat shield takes this share of the heat gained (re-entry and the Sun)
+    shieldShare: 0.95,
     // Earth's free-fall speed with the flight damping is ~37 m/s, so a
     // passive fall stays cool; only a powered dive heats
     safeSpeed: 40,                // m/s
@@ -344,4 +455,6 @@ export const ROCKET_INPUTS = {
   RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
   PARACHUTE: 'KeyP',              // P - open the parachute (Shift+P stays the screenshot key)
   SELF_DESTRUCT: 'KeyK',          // K - hold to self-destruct (X is throttle up)
+  STAGE: 'KeyN',                  // N - drop the spent stage (next stage)
+  DRONE: 'KeyL',                  // L - launch a survey drone at the body below
 };

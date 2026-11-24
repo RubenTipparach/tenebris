@@ -137,11 +137,15 @@ ok(t4.isDone('map'), 'reaching a far waypoint completes Read the map');
 t4.event('smelted', ItemType.INGOT_IRON, 3, h);
 ok(!t4.isDone('ingots'), 'smelting before its mission opens does not count');
 const lateIds = ['moon', 'moonmetal', 'titanium', 'vacuum', 'icefuel', 'sequoia', 'explorer', 'alienfish', 'recharge', 'spacewalk'];
-const t9 = new MissionTracker({ v: 2, done: MISSIONS.filter(m => !lateIds.includes(m.id) && m.branch !== 'nuclear').map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [] });
+// (space exploration visits sit under the Moon: leave them out, or closing
+// their ancestors would mark the Moon done)
+const t9 = new MissionTracker({ v: 2, done: MISSIONS.filter(m => !lateIds.includes(m.id) && m.branch !== 'nuclear' && !m.visit).map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [] });
 t9.event('landed', 'earth', 1, h);
 ok(!t9.isDone('moon'), 'landing on Earth does not count for the Moon');
 t9.event('landed', 'moon', 1, h);
-ok(t9.isDone('moon') && t9.recipeOpen(ItemType.VACUUM_ENGINE), 'landing on the Moon unlocks the vacuum tier');
+ok(!t9.isDone('moon'), 'landing alone is not the Moon visit: it needs a survey beacon too');
+t9.event('surveyed', 'moon', 1, h);
+ok(t9.isDone('moon') && t9.recipeOpen(ItemType.VACUUM_ENGINE), 'landing on the Moon and planting a beacon unlocks the vacuum tier');
 t9.event('caughtOn', 'earth', 1, h);
 ok(!t9.isDone('alienfish'), 'a fish on Earth is not an alien fish');
 t9.event('caughtOn', 'moon', 1, h);
@@ -209,8 +213,12 @@ MISSION_TREE_UI.LEVELS.forEach((L, i) => {
       if (!inView(c.x, c.y)) all = false;
     }
     ok(all, `zoom ${i}: a drag far off any side stops with a card in view`);
-    const centred = clampPan(L, t, Math.round((W - t.w) / 2), Math.round((H - t.h) / 2), W, H, keep);
-    ok(centred.x === Math.round((W - t.w) / 2) && centred.y === Math.round((H - t.h) / 2), `zoom ${i}: a centred tree is not moved`);
+    // A pan that shows a card (one centred in the view) is left alone. (The
+    // whole tree's centre can fall between branch blocks now it is this big.)
+    const card = [...t.cards.values()][Math.floor(t.cards.size / 2)];
+    const px = Math.round(W / 2 - card.x - L.cardW / 2), py = Math.round(H / 2 - card.y - L.cardH / 2);
+    const centred = clampPan(L, t, px, py, W, H, keep);
+    ok(centred.x === px && centred.y === py, `zoom ${i}: a pan showing a card is not moved`);
   });
 }
 
@@ -237,4 +245,68 @@ MISSION_TREE_UI.LEVELS.forEach((L, i) => {
   t.event(b.objectives[0].kind as never, (b.objectives[0].item ?? b.objectives[0].body) as never, 999, () => 999);
   if (!t.isDone(b.id)) (t as unknown as { done: Set<string> }).done.add(b.id);
   ok(t.now() === MISSIONS.find(m => t.isOpen(m)), 'once the pick is done, now falls back to the first open mission');
+}
+
+// ---- space exploration (openspec space-exploration 1.2, 1.6, 1.8)
+{
+  const { exploredBodyIds, visitCoverageProblems, MISSION_BRANCHES: BRANCHES } = await import('../src/config/Missions');
+  const { SOLAR_SYSTEM, GAS_GIANTS } = await import('../src/config/SolarSystemConfig');
+  const probs = visitCoverageProblems(exploredBodyIds(), MISSIONS);
+  ok(probs.length === 0, `every body but Earth has exactly one visit mission${probs.length ? ' - ' + probs.join('; ') : ''} (${exploredBodyIds().length} bodies)`);
+  const fake = visitCoverageProblems([...exploredBodyIds(), 'testworld'], MISSIONS);
+  ok(fake.length === 1 && fake[0].startsWith('testworld'), 'a body added without a visit mission fails, naming it');
+
+  const visitOf = new Map(MISSIONS.filter(m => m.visit).map(m => [m.visit!, m]));
+  const moonOk = SOLAR_SYSTEM.bodies.filter(b => b.orbit?.parent && b.id !== 'moon' && visitOf.has(b.orbit.parent))
+    .every(b => visitOf.get(b.id)!.parent === visitOf.get(b.orbit!.parent)!.id);
+  ok(moonOk, 'every moon is visited after (as a child of) its planet');
+
+  const majors = [...SOLAR_SYSTEM.bodies.filter(b => b.type === 'planet' && b.id !== 'earth'), ...GAS_GIANTS]
+    .filter(b => visitOf.has(b.id));
+  const d = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  const asteroids = SOLAR_SYSTEM.bodies.filter(b => b.type === 'asteroid');
+  const astOk = asteroids.every(a => {
+    const near = majors.reduce((best, m) => d(a.position, m.position) < d(a.position, best.position) ? m : best);
+    return visitOf.get(a.id)!.parent === visitOf.get(near.id)!.id;
+  });
+  ok(asteroids.length > 0 && astOk, `each of the ${asteroids.length} asteroids hangs off the major body nearest it`);
+
+  const root = visitOf.get('moon')!;
+  ok(root.branch === 'space' && visitOf.get('sequoia')!.parent === 'moon' && visitOf.get('kessel')!.parent === 'moon',
+    'the Moon is the root; Sequoia (sunward) and Kessel (outward) both open from it');
+  ok(BRANCHES.find(b => b.id === 'space')?.announcedBy === 'assemble', 'building the first rocket announces Space exploration');
+
+  // The unlock toast shows once per world
+  const ta = new MissionTracker();
+  ok(ta.announceAfter('assemble').includes('space') && ta.announceAfter('assemble').length === 0, 'the branch is announced once');
+  const tb = new MissionTracker(ta.save());
+  ok(tb.announceAfter('assemble').length === 0, 'and not again after a reload');
+  ok(tb.visits().total === exploredBodyIds().length && tb.visits().done === 0, 'visits count every body, none done yet');
+
+  // A veteran world: its Moon and Sequoia landings stay done, nothing re-locks
+  const doneIds = MISSIONS.filter(m => !m.visit || m.visit === 'moon' || m.visit === 'sequoia').map(m => m.id);
+  const vet = new MissionTracker({ v: 2, done: doneIds, prog: {}, low: {}, seen: {}, legacy: [], rule: 2 });
+  ok(vet.isDone('moon') && vet.isDone('sequoia') && vet.visits().done === 2, 'a veteran world keeps the Moon and Sequoia visited');
+  ok(vet.recipeOpen(ItemType.VACUUM_ENGINE) && vet.recipeOpen(ItemType.SURVEY_BEACON), 'and keeps its recipes, the survey beacon among them');
+  // Visiting: land + beacon on an airless moon, chute + beacon where there is air
+  const tv = new MissionTracker({ v: 2, done: [...doneIds], prog: {}, low: {}, seen: {}, legacy: [], rule: 2 });
+  tv.event('landed', 'rime', 1, h);
+  ok(!tv.isDone('visit_rime'), 'landing on Rime alone is not a visit');
+  tv.event('surveyed', 'rime', 1, h);
+  ok(tv.isDone('visit_rime'), 'landing and a beacon on Rime visits it');
+  tv.event('landed', 'ferrum', 1, h); tv.event('surveyed', 'ferrum', 1, h);
+  ok(!tv.isDone('visit_ferrum'), 'Metropole Prime has air: a plain landing does not visit it');
+  tv.event('chuteLanded', 'ferrum', 1, h);
+  ok(tv.isDone('visit_ferrum'), 'a chute landing and a beacon visits it');
+}
+
+// ---- the survey beacon is a machine: placed, saved and synced on the machine record path
+{
+  const THREE = await import('three');
+  const { newMachineState, machineRecord, machineFromRecord, wantsPower, machineSupplyW, tickMachine } = await import('../src/power/MachineLogic');
+  const m = newMachineState(ItemType.SURVEY_BEACON, 42, 3, new THREE.Vector3(400, 51, 0), 0);
+  ok(m.kind === 'surveyBeacon' && m.inputs.length === 0 && m.outputs.length === 0, 'a survey beacon is a machine with no slots');
+  ok(!wantsPower(m, false) && machineSupplyW(m) === 0 && !tickMachine(m, 1, { oilBelow: false, reactorPower: false }).event, 'it draws and makes no power and does no work');
+  const back = machineFromRecord(JSON.parse(JSON.stringify(machineRecord(m))));
+  ok(back.kind === 'surveyBeacon' && back.tileIndex === 42 && back.position.distanceTo(m.position) < 1e-6, 'its saved record restores it');
 }

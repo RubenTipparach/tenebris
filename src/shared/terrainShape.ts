@@ -25,6 +25,10 @@ export interface ShapeParams {
   terrainMaxDepth: number;
   // Volcano cones on this body (0 / unset = none)
   volcanoes?: number;
+  // Lowers the whole height field before land and sea are split (0 / unset
+  // = Earth's split): an ocean world floods all but its highest ground,
+  // leaving scattered islands (Thalassa)
+  seaBias?: number;
   // Body radius in metres (sizes the cones)
   radius?: number;
   // Unit direction of the spawn point: the first cone stands just beyond it,
@@ -261,6 +265,7 @@ export function surfaceDepthAt(center: Vec3, p: ShapeParams): number {
   height += mountainHeight;
   height += hillNoise * p.hillWeight * (landFactor > 0.1 ? 1.0 : 0.3);
   height += detailNoise * p.detailWeight;
+  height -= p.seaBias ?? 0;
 
   // Height to depth: land rises from sea level, ocean floors sink below it
   const SEA_LEVEL_DEPTH = p.maxDepth - 1 - p.seaLevel;

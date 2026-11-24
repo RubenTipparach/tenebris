@@ -1,10 +1,10 @@
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
-import { Inventory, ItemType, ITEM_DATA, RocketPartType } from './Inventory';
+import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { showToast } from '../utils/toast';
-import { computeRocketStats, cargoMass, deltaVWith, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
+import { computeRocketStats, cargoMass, deltaVWith, stagedStats, stagedDeltaVWith, stackProblems, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
 
 // Rocket validation result
 export interface RocketValidationResult {
@@ -708,83 +708,9 @@ export class LaunchPadUI {
    * Returns validation result with any errors
    */
   private validateRocket(launchPad: PlacedLaunchPad): RocketValidationResult {
-    const errors: string[] = [];
-    const parts = launchPad.rocketParts;
-
-    if (parts.length === 0) {
-      errors.push('No rocket parts installed');
-      return { isValid: false, errors };
-    }
-
-    // Count parts by type
-    const engines: PlacedRocketPart[] = [];
-    const fuelTanks: PlacedRocketPart[] = [];
-    const commandModules: PlacedRocketPart[] = [];
-
-    for (const part of parts) {
-      const partData = ITEM_DATA[part.itemType].rocketPart;
-      if (!partData) continue;
-
-      switch (partData.partType) {
-        case RocketPartType.ENGINE:
-          engines.push(part);
-          break;
-        case RocketPartType.FUEL_TANK:
-          fuelTanks.push(part);
-          break;
-        case RocketPartType.CAPSULE:
-          commandModules.push(part);
-          break;
-      }
-    }
-
-    // Check basic requirements
-    if (engines.length === 0) {
-      errors.push('Missing: Engine required');
-    }
-
-    if (fuelTanks.length === 0) {
-      errors.push('Missing: Fuel Tank required');
-    }
-
-    if (commandModules.length === 0) {
-      errors.push('Missing: Command Module required');
-    }
-
-    // Check that engine is at the bottom of the stack (height index 0)
-    if (engines.length > 0) {
-      const bottomPart = parts[0];
-      const bottomPartData = ITEM_DATA[bottomPart.itemType].rocketPart;
-      if (!bottomPartData || bottomPartData.partType !== RocketPartType.ENGINE) {
-        errors.push('Engine must be at the bottom of the stack');
-      }
-    }
-
-    // Parts that need another part aboard (an ion drive with no reactor
-    // core): the same reasons the stats model gives, so the flight and this
-    // check agree
-    errors.push(...computeRocketStats(parts.map(p => p.itemType)).problems);
-
-    // Check engine-specific requirements
-    for (const engine of engines) {
-      const engineData = ITEM_DATA[engine.itemType].rocketPart;
-      if (engineData?.engineRequirements) {
-        const reqs = engineData.engineRequirements;
-
-        if (fuelTanks.length < reqs.minFuelTanks) {
-          errors.push(`${ITEM_DATA[engine.itemType].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
-        }
-
-        if (reqs.requiresCommandModule && commandModules.length === 0) {
-          errors.push(`${ITEM_DATA[engine.itemType].name} requires a Command Module`);
-        }
-      }
-    }
-
-    return {
-      isValid: errors.length === 0,
-      errors
-    };
+    // One set of stack rules for the pad, docking and refits (rocket-refit)
+    const errors = stackProblems(launchPad.rocketParts.map(p => p.itemType));
+    return { isValid: errors.length === 0, errors };
   }
 
   private handleBoardRocket(): void {
@@ -1386,12 +1312,16 @@ export class LaunchPadUI {
     }
     const fuel = pad.fuel ?? stats.fuelCapacity;
     const gravity = this.gravityLookup ? this.gravityLookup(pad) : 1;
-    const twr = surfaceTWR(stats, gravity, fuel);
+    // Lift-off: the bottom stage's engines lift the whole rocket (rocket-staging)
+    const staged = stagedStats(types, cargoMass(pad.cargo), mode, pad.equipment);
+    const twr = surfaceTWR({ ...stats, thrust: staged.stages[0]?.thrust ?? stats.thrust }, gravity, fuel);
     const twrText = Number.isFinite(twr) ? twr.toFixed(2) : '-';
     const used = pad.cargo.filter(sl => sl.itemType !== ItemType.NONE).length;
+    const dv = stagedDeltaVWith(types, cargoMass(pad.cargo), mode, pad.equipment, fuel);
     this.statsElement.innerHTML = `
       <div class="stat"><span>Fuel</span><b>${Math.round(fuel)}/${stats.fuelCapacity}</b></div>
-      <div class="stat"><span>dV</span><b>${Math.round(deltaVWith(stats, fuel))} m/s</b></div>
+      <div class="stat"><span>dV</span><b>${Math.round(dv)} m/s</b></div>
+      ${staged.stages.length > 1 ? `<div class="stat"><span>Stages</span><b>${staged.stages.map(st => Math.round(st.deltaV)).join(' + ')}</b></div>` : ''}
       <div class="stat ${twr < 1 ? 'warn' : ''}"><span>TWR</span><b>${twrText}</b></div>
       <div class="stat"><span>Cargo</span><b>${used}/${stats.cargoSlots}</b></div>
       <div class="stat"><span>Power</span><b>${Math.round(stats.batteryWh / 1000)} kWh</b></div>

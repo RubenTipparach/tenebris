@@ -38,6 +38,7 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreTitanium', 'moon/ore_titanium'],
   // Industry resources (scripts/gen-biome-textures.py)
   ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
+  ['resinAmber', 'resources/resin'], ['salvageScrap', 'resources/salvage'], ['oreRareEarth', 'resources/ore_rare_earth'], ['fungusSeam', 'resources/fungus'], ['silicaSand', 'resources/silica_sand'], ['crystalVein', 'resources/crystal_vein'], ['cryoIce', 'resources/cryo_ice'],
   // Building materials (scripts/gen-biome-textures.py)
   ['brickBlock', 'building/brick_block'], ['carpet', 'building/carpet'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)
@@ -62,6 +63,9 @@ const BIOME_TEXTURES: [string, string][] = [
   ['verdJungle', 'alien/verdance_jungle'], ['verdJungleSide', 'alien/verdance_jungle_side'],
   ['verdSwamp', 'alien/verdance_swamp'], ['verdSwampSide', 'alien/verdance_swamp_side'],
   ['verdBank', 'alien/verdance_bank'], ['verdSoil', 'alien/verdance_soil'], ['verdRock', 'alien/verdance_rock'],
+  ['thalTurf', 'alien/thalassa_turf'], ['thalTurfSide', 'alien/thalassa_turf_side'],
+  ['thalMoss', 'alien/thalassa_moss'], ['thalMossSide', 'alien/thalassa_moss_side'],
+  ['thalBank', 'alien/thalassa_bank'], ['thalSoil', 'alien/thalassa_soil'], ['thalRock', 'alien/thalassa_rock'],
   ['mireJungle', 'alien/mirewood_jungle'], ['mireJungleSide', 'alien/mirewood_jungle_side'],
   ['mireSwamp', 'alien/mirewood_swamp'], ['mireSwampSide', 'alien/mirewood_swamp_side'],
   ['mireBank', 'alien/mirewood_bank'], ['mireSoil', 'alien/mirewood_soil'], ['mireRock', 'alien/mirewood_rock'],

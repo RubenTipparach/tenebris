@@ -44,7 +44,7 @@ ok(species.every(sp => !land.has(sp)), 'no sea species shares a name with a land
 const dryBodies = SOLAR_SYSTEM.bodies.filter(b => !b.terrain.hasWater);
 ok(dryBodies.length > 10 && dryBodies.every(b => !b.seaFlora && !bodyGrowsSeaFlora(b)), `no sea flora on any of the ${dryBodies.length} waterless bodies`);
 const seaWorlds = SOLAR_SYSTEM.bodies.filter(b => bodyGrowsSeaFlora(b)).map(b => b.id).sort();
-ok(seaWorlds.join() === ['earth', 'mirewood', 'sequoia', 'verdance'].join(), `sea flora grows on exactly the sea worlds: ${seaWorlds.join(', ')}`);
+ok(seaWorlds.join() === ['earth', 'mirewood', 'sequoia', 'thalassa', 'verdance'].join(), `sea flora grows on exactly the sea worlds: ${seaWorlds.join(', ')}`);
 ok(!bodyGrowsSeaFlora(undefined), 'no body (space) grows nothing');
 
 // ---- the seabed column: open water over a solid bed only
@@ -92,7 +92,7 @@ ok((seen.get('seagrass') ?? 0) > 0, `seagrass in the shallows (${seen.get('seagr
 }
 
 // ---- coherent zones: neighbouring seabed mostly grows the same thing
-for (const id of ['earth', 'sequoia', 'verdance', 'mirewood']) {
+for (const id of ['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa']) {
   const t = body(id).seaFlora!;
   let same = 0, pairs = 0;
   const step = 0.01; // ~1 m apart on Earth (radius 100)
@@ -113,7 +113,7 @@ for (const id of ['earth', 'sequoia', 'verdance', 'mirewood']) {
 const BED_R = 90, BH = 1, OFFSET = PlayerConfig.WATER_SURFACE_OFFSET;
 let plants = 0, above = 0, inBed = 0, floatBad = 0, sameTwice = true;
 const perSpecies = new Map<string, number>();
-for (const id of ['earth', 'sequoia', 'verdance', 'mirewood']) {
+for (const id of ['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa']) {
   const t = body(id).seaFlora!;
   for (let i = 0; i < 1200; i++) {
     const dir = dirs[(i * 13) % N];
@@ -151,7 +151,7 @@ ok(species.every(sp => (perSpecies.get(sp) ?? 0) > 0), 'every species gets place
 }
 
 // ---- underwater-life: wavy plants and anemones on every sea world, its own
-const SEA_WORLDS = ['earth', 'sequoia', 'verdance', 'mirewood'];
+const SEA_WORLDS = ['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa'];
 const speciesOf = (id: string) => [...new Set(body(id).seaFlora!.zones.map(z => z.species))];
 for (const id of SEA_WORLDS) {
   const t = body(id).seaFlora!;
