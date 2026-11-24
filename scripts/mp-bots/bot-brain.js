@@ -976,7 +976,7 @@
         if (!p.isTileLoaded(t)) continue;
         const gd = p.groundDepthOf(t);
         for (let d = gd; d >= Math.max(1, gd - 3); d--) {
-          if (kinds.includes(p.getBlock(t, d))) {
+          if (kinds.includes(p.getBlock(t, d)) && !(st.badDig || []).includes(`${t}:${d}`)) {
             const c = blockCenter(t, d); const dd = c.distanceTo(player().position);
             if (dd < bd) { bd = dd; target = { t, d, c }; }
             break;
@@ -984,8 +984,11 @@
         }
       }
       if (!target) { say('none of that nearby - exploring'); await wander(); await wander(); continue; }
-      await walkTo(target.c, 2.5, 40000);
-      await mineBlock(target.t, target.d, 15000);
+      await approach(target.c, 2.5);
+      if (!(await mineBlock(target.t, target.d, 15000))) {
+        say(`could not dig the block at tile ${target.t} depth ${target.d} - skipping it`);
+        st.badDig = (st.badDig || []).concat([`${target.t}:${target.d}`]);
+      }
     }
   }
 
@@ -1078,14 +1081,18 @@
     builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
+  // A mission with no progress for STALL_MS is set aside for REST_MS
+  const STALL_MS = 10 * 60 * 1000, REST_MS = 20 * 60 * 1000;
+  const resting = (id) => (st.rest && st.rest[id] || 0) > Date.now();
+  function progressKey() { return doneIds().length + ':' + JSON.stringify(tracker().openMissions().map(m => tracker().progress(m))); }
   function pickMission() {
-    const open = new Set(openIds());
+    const open = new Set(openIds().filter(id => !resting(id)));
     for (const id of ROLE_ORDER[st.role] ?? ROLE_ORDER.miner) if (open.has(id) && PLAYBOOK[id]) return id;
     // its own branches are done: help itself to the other's
     for (const order of Object.values(ROLE_ORDER)) for (const id of order) if (open.has(id) && PLAYBOOK[id]) return id;
     // then anything the general planner can play
     for (const m of tracker().openMissions()) {
-      if ((st.cannot || []).includes(m.id)) continue;
+      if ((st.cannot || []).includes(m.id) || resting(m.id)) continue;
       if (m.objectives.every(o => PLAYABLE.includes(o.kind))) return m.id;
     }
     return null;
@@ -1098,8 +1105,15 @@
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
         const m = tracker().openMissions().find(x => x.id === id);
-        if (st.goal !== id) say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`);
+        if (st.goal !== id) { say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`); st.since = Date.now(); st.pkey = progressKey(); }
         st.goal = id;
+        const pk = progressKey();
+        if (pk !== st.pkey) { st.pkey = pk; st.since = Date.now(); }
+        if (Date.now() - (st.since || Date.now()) > STALL_MS) {
+          say(`stuck on ${m.title} for 10 min - setting it aside for 20 min`);
+          st.rest = st.rest || {}; st.rest[id] = Date.now() + REST_MS;
+          st.goal = ''; continue;
+        }
         if (PLAYBOOK[id]) await PLAYBOOK[id](); else await generic(m);
       } catch (e) {
         st.errors++;
