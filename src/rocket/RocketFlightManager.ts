@@ -3,7 +3,7 @@ import { planetObjectScene } from '../world/PlanetFrames';
 import { RocketController, PlanetGravitySource, RocketInputState } from './RocketController';
 import { RocketFlightUI } from './RocketFlightUI';
 import { RocketState } from './RocketState';
-import { ROCKET_INPUTS } from '../config/RocketConfig';
+import { ROCKET_INPUTS, ROCKET_CONFIG } from '../config/RocketConfig';
 import { PlacedLaunchPad } from '../planet/LaunchPad';
 import { InputManager, lockPointer } from '../engine/InputManager';
 import { LandedRocket, LandedRocketManager } from './LandedRocket';
@@ -45,7 +45,7 @@ export class RocketFlightManager {
   }
 
   // Callbacks
-  private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null) => void) | null = null;
+  private onExitFlightCallback: ((exitPosition: THREE.Vector3 | null, inSpace?: boolean) => void) | null = null;
   private onRespawnCallback: ((position: THREE.Vector3) => void) | null = null;
   private onBoardRocketCallback: (() => void) | null = null;
 
@@ -235,7 +235,8 @@ export class RocketFlightManager {
   /**
    * Set callback for when flight mode ends
    */
-  public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null) => void): void {
+  /** `inSpace`: the pilot climbed out in space - `exitPosition` is then where they float, beside the ship */
+  public setOnExitFlightCallback(callback: (exitPosition: THREE.Vector3 | null, inSpace?: boolean) => void): void {
     this.onExitFlightCallback = callback;
   }
 
@@ -358,8 +359,7 @@ export class RocketFlightManager {
     }
 
     // Check if we can exit
-    const stateInfo = this.rocketController.getStateMachine().getStateInfo();
-    if (!stateInfo.canExit && !force) {
+    if (!this.rocketController.canExitNow() && !force) {
       console.log('Cannot exit rocket in current state');
       return;
     }
@@ -367,8 +367,13 @@ export class RocketFlightManager {
     // Check if rocket has ever launched - if so, it should persist
     const hasLaunched = this.rocketController.getHasLaunched();
 
-    // Get rocket position BEFORE exiting (for player spawn)
-    const rocketPosition = hasLaunched ? this.rocketController.getPosition().clone() : null;
+    // Get rocket position BEFORE exiting (for player spawn). In space the
+    // player floats out beside the ship, off its side, clear of the hull
+    const inSpace = this.rocketController.isInSpace();
+    const rocketPosition = !hasLaunched ? null : inSpace
+      ? this.rocketController.getStackCenter().clone().add(
+          new THREE.Vector3(1, 0, 0).applyQuaternion(this.rocketController.getOrientation()).multiplyScalar(ROCKET_CONFIG.EVA_EXIT_DISTANCE_M))
+      : this.rocketController.getPosition().clone();
 
     // The pad keeps the rocket's fuel record
     this.recordActiveRocket();
@@ -415,7 +420,7 @@ export class RocketFlightManager {
 
     // Call exit callback with position (null if exiting at launch pad, position if landed elsewhere)
     if (this.onExitFlightCallback) {
-      this.onExitFlightCallback(rocketPosition);
+      this.onExitFlightCallback(rocketPosition, inSpace);
     }
 
     console.log('Exited flight mode');

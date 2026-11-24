@@ -723,9 +723,24 @@ export class RocketController {
   /**
    * Exit the rocket (player leaves)
    */
+  /**
+   * Can the pilot climb out right now: wherever the state allows it (on the
+   * ground, landed), and in flight once the rocket is out of every gravity
+   * well - in space the ship parks where it floats and the player floats
+   * out beside it.
+   */
+  public canExitNow(): boolean {
+    if (this.stateMachine.getStateInfo().canExit) return true;
+    return this.isInSpace();
+  }
+
+  /** In flight with no planet's gravity on the rocket */
+  public isInSpace(): boolean {
+    return this.stateMachine.getState() === RocketState.IN_FLIGHT && !this.isInGravityWell;
+  }
+
   public exit(): boolean {
-    const stateInfo = this.stateMachine.getStateInfo();
-    if (!stateInfo.canExit) {
+    if (!this.canExitNow()) {
       return false;
     }
 
@@ -735,7 +750,7 @@ export class RocketController {
     const state = this.stateMachine.getState();
     if (state === RocketState.BOARDED_GROUNDED) {
       return this.stateMachine.transitionTo(RocketState.DOCKED);
-    } else if (state === RocketState.LANDED) {
+    } else if (state === RocketState.LANDED || state === RocketState.IN_FLIGHT) {
       return this.stateMachine.transitionTo(RocketState.DOCKED);
     }
 
@@ -1820,8 +1835,10 @@ export class RocketController {
     // But for re-boarding, we need to go from DOCKED -> LANDED equivalent
     // Actually, we need to force the state to LANDED since that's where we are
 
-    // Force state to LANDED (we're resuming from a landed position)
-    this.stateMachine.forceState(RocketState.LANDED);
+    // Resume as it was left: LANDED on a surface, or IN_FLIGHT (at rest)
+    // when it was parked in space, out of every gravity well
+    this.updateClosestPlanet();
+    this.stateMachine.forceState(this.isInGravityWell ? RocketState.LANDED : RocketState.IN_FLIGHT);
 
     // Store boarded position for respawn
     this.lastBoardedPosition.copy(this.position);

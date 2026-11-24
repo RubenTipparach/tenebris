@@ -493,7 +493,7 @@ class PlanetGame {
       });
 
       // Set up exit flight callback
-      this.rocketFlightManager.setOnExitFlightCallback((exitPosition) => {
+      this.rocketFlightManager.setOnExitFlightCallback((exitPosition, inSpace) => {
         // The walker takes the rocket camera's view, so climbing out does
         // not snap the look (openspec player-heading; PBD drop_walker)
         const cam = this.engine.camera;
@@ -501,8 +501,12 @@ class PlanetGame {
           forward: cam.getWorldDirection(new THREE.Vector3()),
           up: new THREE.Vector3(0, 1, 0).applyQuaternion(cam.quaternion),
         };
-        // If we landed somewhere (not at launch pad), move player to rocket position
-        if (exitPosition) {
+        if (exitPosition && inSpace) {
+          // Climbed out in space: float beside the parked ship (space mode,
+          // no surface to stand on)
+          this.player.placeAt(exitPosition, view);
+        } else if (exitPosition) {
+          // Landed somewhere (not at launch pad): move player to rocket position
           // Position player slightly above the rocket position, on the surface
           // of the body it landed on (radial from that body's centre)
           const bodyId = this.sphereOfInfluence(exitPosition);

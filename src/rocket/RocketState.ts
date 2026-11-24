@@ -29,6 +29,7 @@ const VALID_TRANSITIONS: Record<RocketState, RocketState[]> = {
     RocketState.CAPSULE_EJECTED,   // Emergency eject
   ],
   [RocketState.IN_FLIGHT]: [
+    RocketState.DOCKED,            // Player exits in space (RocketController.canExitNow): parked where it floats
     RocketState.LANDING,           // Descending toward surface
     RocketState.CRASHED,           // Collision or out of fuel crash
     RocketState.CAPSULE_EJECTED,   // Emergency eject

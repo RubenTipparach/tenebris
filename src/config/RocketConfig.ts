@@ -53,6 +53,11 @@ export interface RocketEquipmentStats {
 }
 
 export const ROCKET_CONFIG = {
+  // === EXIT IN SPACE ===
+  // Out of every gravity well a pilot may climb out (an EVA): the ship parks
+  // where it floats, and the player comes out this far off its side (m), clear
+  // of the hull, to float in space mode and re-board it later
+  EVA_EXIT_DISTANCE_M: 4,
   // === FUEL SYSTEM ===
   // Mass of one fuel unit. A medium tank holds 100 units = 450 kg of propellant
   FUEL_KG_PER_UNIT: 4.5,
