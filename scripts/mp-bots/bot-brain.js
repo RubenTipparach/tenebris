@@ -223,7 +223,7 @@
   async function walkTo(target, arrive = 1.6, maxMs = 45000) {
     st.task = 'walking';
     const t0 = performance.now();
-    let lastPos = player().position.clone(), lastCheck = t0, stalls = 0;
+    let lastPos = player().position.clone(), lastCheck = t0, stalls = 0, digs = 0;
     selectEmptyHand();
     try {
       while (performance.now() - t0 < maxMs) {
@@ -245,9 +245,16 @@
             stalls++;
             if (stalls <= 3) { await tap('Space', 250); }
             else {
-              // a wall: dig through it at head and foot height
+              // a wall: dig through it at head and foot height; if that
+              // didn't free it last time (a machine, not a block), step aside
               key('KeyW', false);
-              await clearAhead(flat);
+              digs++;
+              if (digs % 2 === 0) {
+                const side = Math.random() < 0.5 ? 'KeyA' : 'KeyD';
+                key(side, true); key('Space', true); await sleep(900); key('Space', false); await sleep(300); key(side, false);
+              } else {
+                await clearAhead(flat);
+              }
               stalls = 1;
             }
           } else stalls = 0;
@@ -579,9 +586,35 @@
 
   // Get within reach of world point `target`: out of any hole, over to it,
   // and up to its level if it stands higher
+  // Dig straight along the line of sight to `target`, stepping forward: gets
+  // through walls and down or up a slope that walking can't climb
+  async function tunnelTo(target, arrive, steps = 24) {
+    st.task = 'digging toward the target';
+    for (let i = 0; i < steps; i++) {
+      if (hdist(player().position, target) < arrive && Math.abs(target.clone().sub(player().position).dot(upAt(target))) < 2.2) return true;
+      await lookAtPoint(target, 0.05, 1200);
+      const h = rayHit();
+      if (h && h.point.distanceTo(eye()) < target.distanceTo(eye()) - 0.5 && h.depth > 1) {
+        const b = P().getBlock(h.tileIndex, h.depth);
+        if (b !== B.AIR && b !== B.WATER) { await mineBlock(h.tileIndex, h.depth, 8000); continue; }
+      }
+      // nothing in the line: step (and hop) forward
+      const pos = player().position;
+      const up = upAt(pos);
+      const flat = target.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
+      await lookAtPoint(pos.clone().addScaledVector(flat, 3).addScaledVector(up, 1.0), 0.08, 800);
+      key('KeyW', true); key('Space', true); await sleep(400); key('Space', false); await sleep(250); key('KeyW', false);
+      await sleep(150);
+    }
+    return hdist(player().position, target) < arrive;
+  }
+
   async function approach(target, arrive = 2.2) {
     await toSurface();
-    await walkTo(target, arrive, 40000);
+    if (!(await walkTo(target, arrive, 40000))) {
+      say('cannot walk there - digging toward it');
+      await tunnelTo(target, arrive);
+    }
     const pos = player().position;
     const up = upAt(pos);
     const above = target.clone().sub(pos).dot(up);
