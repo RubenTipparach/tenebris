@@ -1023,7 +1023,8 @@
           if (!free(c) || nearPad(c)) return false;
           const g = p.groundDepthOf(c);
           const nb = neighbors(c);
-          return nb.length === 6 && nb.every(t => free(t) && Math.abs(p.groundDepthOf(t) - g) <= 1);
+          // exactly level: a pad block must sit level with the rest of its pad
+          return nb.length === 6 && nb.every(t => free(t) && p.groundDepthOf(t) === g);
         });
         if (site === undefined) { say('no flat ground for a launch pad here - moving on'); await wander(); return; }
         st.padSite = site;
@@ -1031,6 +1032,17 @@
         say(`laying a launch pad round tile ${site}`);
       }
       const has = (t) => lp.getLaunchPads().some(pad => pad.hexes.has(t));
+      // still level? (the ground may have been dug since) - else give the site up now
+      const sg = p.groundDepthOf(site);
+      // (the game takes a pad block within PAD_MAX_STEP = 1 of the pad's level)
+      const unlevel = neighbors(site).find(t => !has(t) && Math.abs(p.groundDepthOf(t) - sg) > 1);
+      if (unlevel !== undefined) {
+        say(`the ground round tile ${site} is no longer level - choosing another site`);
+        st.padSite = null;
+        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        st.badPlace = (st.badPlace || []).concat([site]);
+        return;
+      }
       for (const t of [site, ...neighbors(site)]) {
         if (has(t)) continue;
         if (count(I.LAUNCH_PAD_BLOCK) < 1) return;
