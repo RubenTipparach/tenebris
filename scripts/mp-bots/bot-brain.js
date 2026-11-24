@@ -389,7 +389,7 @@
       if (!p.isTileLoaded(t)) continue;
       for (let d = Math.max(1, fd - 6); d <= fd + 4; d++) {
         const b = p.getBlock(t, d);
-        if (wanted.includes(b)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
+        if (wanted.includes(b) && !(st.badDig || []).includes(`${t}:${d}`)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
       }
     }
     return out.sort((a, b) => a.dist - b.dist);
