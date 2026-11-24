@@ -165,6 +165,11 @@ export const PlayerConfig = {
   TORCH_FLICKER_AMOUNT: 0.2,         // How much intensity varies (0-1)
 
   // Trees
+  // The longest step one frame may simulate (s). A stall - a teleport or
+  // respawn building terrain, a backgrounded tab - otherwise hands the next
+  // frame seconds of gravity at once, and the player falls straight through
+  // the ground (the 'respawned away from Earth' bug)
+  MAX_FRAME_DELTA_S: 0.1,
   TREE_COUNT: 500,                   // Number of trees to scatter on planet surface
 
   // Clouds

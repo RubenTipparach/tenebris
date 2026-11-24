@@ -71,6 +71,11 @@
 //   close codes: 4004 no such world (deleted), 4001 kicked by an operator,
 //   4010 the world was reset (the client drops its local copy and reloads)
 //
+// Activity: every join (when the player's hello names them) and leave (with
+// how long they stayed) is printed to the server log, kept per world for the
+// portal (the last ACTIVITY_PER_WORLD), and appended to DATA_DIR/activity.log
+// (JSON lines) so the portal's list survives a restart or a redeploy.
+//
 // Operator portal: /admin (admin.js), enabled by the ADMIN_TOKEN secret.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -92,6 +97,8 @@ const GAME_DATA = JSON.parse(fs.readFileSync(new URL('./game-data.json', import.
 const BODIES = new Map(GAME_DATA.bodies.map(b => [b.id, b]));
 const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 64);   // whole server
 const MAX_WORLDS = Number(process.env.MAX_WORLDS || 100);
+const ACTIVITY_LOG = path.join(DATA_DIR, 'activity.log');
+const ACTIVITY_PER_WORLD = Number(process.env.ACTIVITY_PER_WORLD || 200);   // joins + leaves the portal shows
 const CREATE_COOLDOWN_MS = 20_000;   // per address, so the list can't be flooded
 const MAX_EDITS_PER_SECOND = 40;     // per client, to bound log growth from a bad client
 const MAX_RECS_PER_SECOND = 40;      // object records, per client
@@ -185,7 +192,7 @@ function openWorld(meta) {
   const versions = new Map();
   let recSeq = 0;
   for (const k of records.keys()) versions.set(k, ++recSeq);
-  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set(), versions, recSeq, chat: [] };
+  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set(), versions, recSeq, chat: [], activity: [] };
   worlds.set(w.id, w);
   return w;
 }
@@ -207,6 +214,45 @@ function loadWorlds() {
   let recs = 0;
   for (const w of worlds.values()) { total += w.edits.size; recs += w.records.size; }
   console.log(`loaded ${worlds.size} world(s), ${total} edits, ${recs} objects`);
+  loadActivity();
+}
+
+// ---- activity (joins and leaves) ------------------------------------------
+function loadActivity() {
+  if (!fs.existsSync(ACTIVITY_LOG)) return;
+  const lines = fs.readFileSync(ACTIVITY_LOG, 'utf8').split('\n');
+  let kept = 0;
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line);
+      const w = worlds.get(e.world);
+      if (!w) continue;
+      w.activity.push(e);
+      if (w.activity.length > ACTIVITY_PER_WORLD) w.activity.shift();
+    } catch {
+      // a torn last line after a crash
+    }
+  }
+  // Compact: only what the portal can still show
+  const all = [...worlds.values()].flatMap(w => w.activity).sort((a, b) => a.at - b.at);
+  kept = all.length;
+  const tmp = `${ACTIVITY_LOG}.tmp`;
+  fs.writeFileSync(tmp, all.map(e => JSON.stringify(e)).join('\n') + (all.length ? '\n' : ''));
+  fs.renameSync(tmp, ACTIVITY_LOG);
+  console.log(`activity: ${kept} join/leave event(s) kept`);
+}
+
+// kind: 'join' | 'leave'; stayedMs on a leave; reason when the server ended it
+function logActivity(w, kind, pl, stayedMs, reason) {
+  const e = { at: Date.now(), world: w.id, kind, id: pl.id, name: pl.name };
+  if (stayedMs !== undefined) e.stayedMs = stayedMs;
+  if (reason) e.reason = reason;
+  const mins = stayedMs !== undefined ? ` after ${Math.round(stayedMs / 60000)}m` : '';
+  console.log(`[world ${w.id}] ${kind} ${pl.id} "${pl.name}"${mins}${reason ? ` (${reason})` : ''}`);
+  w.activity.push(e);
+  if (w.activity.length > ACTIVITY_PER_WORLD) w.activity.shift();
+  try { fs.appendFileSync(ACTIVITY_LOG, JSON.stringify(e) + '\n'); } catch (err) { console.error('activity log', err.message); }
 }
 
 function createWorld(name, seed) {
@@ -372,6 +418,7 @@ function serverStatus() {
         edits: w.edits.size, records: w.records.size, kinds,
         players: [...w.players].map(pid => players.get(pid)).filter(Boolean).map(playerInfo),
         maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
+        activity: w.activity.slice(-ACTIVITY_PER_WORLD),
       };
     }),
   };
@@ -425,6 +472,8 @@ function onMessage(id, raw) {
   if (m.t === 'hello' && typeof m.name === 'string') {
     pl.name = m.name.replace(/[^\x20-\x7e]/g, '').slice(0, 24) || pl.name;
     pl.look = cleanLook(m.look) ?? pl.look;
+    // the first hello is the join (later ones are name / look changes)
+    if (!pl.joinLogged) { pl.joinLogged = true; logActivity(w, 'join', pl); }
     broadcast(w, { t: 'join', id, name: pl.name, look: pl.look }, id);
   } else if (m.t === 'pose' && isPlanetId(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
     const a = isAction(m.a) ? m.a : undefined;
@@ -596,6 +645,8 @@ wss.on('connection', (ws, req) => {
   w.players.add(id);
   ws.on('message', (data) => onMessage(id, data.toString()));
   ws.on('close', () => {
+    const pl = players.get(id);
+    if (pl && pl.joinLogged) logActivity(w, 'leave', pl, Date.now() - pl.joinedAt);
     players.delete(id);
     w.players.delete(id);
     broadcast(w, { t: 'leave', id });
@@ -604,3 +655,17 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, () => console.log(`tenebris js server on :${PORT}, data in ${DATA_DIR}`));
+
+// Stopping (a redeploy, Fly auto-stop): everyone still on is logged as leaving
+let stopping = false;
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    if (stopping) return;
+    stopping = true;
+    for (const pl of players.values()) {
+      if (pl.joinLogged) logActivity(pl.world, 'leave', pl, Date.now() - pl.joinedAt, 'server stopped');
+      pl.joinLogged = false;   // the close handler doesn't log it again
+    }
+    process.exit(0);
+  });
+}

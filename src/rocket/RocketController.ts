@@ -71,6 +71,7 @@ export interface RocketInputState {
   fuel: boolean;          // F
   exit: boolean;          // V
   eject: boolean;         // J
+  selfDestruct?: boolean; // K (held)
   parachute?: boolean;    // P (edge triggered)
 }
 
@@ -178,7 +179,9 @@ export class RocketController {
   private chuteOpen: boolean = false;
   private heatGlow: THREE.Mesh | null = null;
   private canopy: THREE.Group | null = null;
-  private crashReason: 'impact' | 'burnedUp' = 'impact';
+  private crashReason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact';
+  // How long the self-destruct key has been held (s); 0 when let go
+  private selfDestructHeldS = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -774,6 +777,7 @@ export class RocketController {
 
     // Process controls
     this.processControls(deltaTime, input, stateInfo);
+    this.updateSelfDestruct(deltaTime, input);
 
     // Run physics if active
     if (stateInfo.physicsActive) {
@@ -1154,7 +1158,7 @@ export class RocketController {
   /**
    * Explode the rocket
    */
-  private explode(reason: 'impact' | 'burnedUp' = 'impact'): void {
+  private explode(reason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact'): void {
     this.crashReason = reason;
     this.closeChute();
     if (this.heatGlow) setHeatGlow(this.heatGlow, 0);
@@ -1463,8 +1467,27 @@ export class RocketController {
     return chutesFitted(this.equipment);
   }
 
-  /** Why it crashed: a hard landing or burning up on re-entry */
-  public getCrashReason(): 'impact' | 'burnedUp' {
+  /**
+   * Self-destruct: holding the key for SELF_DESTRUCT_HOLD_S blows the rocket
+   * up through the same crash path as an impact. Letting go cancels. Only
+   * once launched - a rocket still on its pad is just left by climbing out.
+   */
+  private updateSelfDestruct(deltaTime: number, input: RocketInputState): void {
+    const armed = !!input.selfDestruct && this.hasLaunched && this.stateMachine.getState() !== RocketState.CRASHED;
+    this.selfDestructHeldS = armed ? this.selfDestructHeldS + deltaTime : 0;
+    if (this.selfDestructHeldS >= ROCKET_CONFIG.SELF_DESTRUCT_HOLD_S) {
+      this.selfDestructHeldS = 0;
+      this.explode('selfDestruct');
+    }
+  }
+
+  /** How far the self-destruct hold has got, 0-1 (0 when not held) */
+  public getSelfDestructProgress(): number {
+    return Math.min(1, this.selfDestructHeldS / ROCKET_CONFIG.SELF_DESTRUCT_HOLD_S);
+  }
+
+  /** Why it crashed: a hard landing, burning up on re-entry, or self-destruct */
+  public getCrashReason(): 'impact' | 'burnedUp' | 'selfDestruct' {
     return this.crashReason;
   }
 
