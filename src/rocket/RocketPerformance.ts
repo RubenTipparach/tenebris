@@ -299,6 +299,8 @@ export function stackProblems(itemTypes: readonly ItemType[]): string[] {
   if (tanks.length === 0) errors.push('Missing: Fuel Tank required');
   if (capsules.length === 0) errors.push('Missing: Command Module required');
   if (engines.length > 0 && typeOf(itemTypes[0]) !== RocketPartType.ENGINE) errors.push('Engine must be at the bottom of the stack');
+  // The launch tower's height: no taller stack, however it got its parts (pad or refit)
+  if (itemTypes.length > ROCKET_CONFIG.MAX_STACK_PARTS) errors.push(`At most ${ROCKET_CONFIG.MAX_STACK_PARTS} parts in a stack`);
   // Parts that need another part aboard (an ion drive with no reactor core):
   // the same reasons the stats model gives, so the flight and this agree
   errors.push(...computeRocketStats(itemTypes).problems);
@@ -315,6 +317,12 @@ export function stackProblems(itemTypes: readonly ItemType[]): string[] {
     stages.forEach((stage, i) => {
       if (!stage.some(t => typeOf(t) === RocketPartType.ENGINE)) errors.push(`Stage ${i + 1} has no engine`);
     });
+    // A booster engine fires only as the bottom stage (the Rocket Engine): upper stages need an engine that lights in flight
+    for (const t of new Set(stages.slice(1).flat())) {
+      if (partStats(t)?.boosterOnly) errors.push(`${ITEM_DATA[t]?.name ?? 'Engine'} only fires as the bottom stage`);
+    }
+    // The crew rides the last stage: a command module below a separator would drop with its stage
+    if (stages.slice(0, -1).some(stage => stage.some(t => typeOf(t) === RocketPartType.CAPSULE))) errors.push('Command Module must be in the top stage');
   }
   return [...new Set(errors)];
 }
@@ -641,6 +649,7 @@ export interface TransferBody {
   radius: number;          // the body's radius (gravity well scale)
   surfaceRadius: number;   // ground level, from the centre
   gravity: number;         // strength (1 = Earth)
+  hasAtmosphere?: boolean; // air: a fitted parachute can land the rocket (simulateTransfer `chute`)
 }
 
 export interface TransferResult {
@@ -677,13 +686,16 @@ export interface FlightProfile {
   cruise: RocketStats;
 }
 
-/** The lift (most thrust) and cruise (best exhaust velocity) modes of a stack, or null with one engine type */
+/**
+ * The lift (most thrust: every engine firing, the All mode) and cruise (best
+ * exhaust velocity) modes of a stack, or null with one engine type
+ */
 export function liftCruiseProfile(itemTypes: readonly ItemType[], extraDryMass = 0): FlightProfile | null {
   const types = engineTypes(itemTypes);
   if (types.length < 2) return null;
   const each = types.map(t => computeRocketStats(itemTypes, extraDryMass, t)).filter(s => s.thrust > 0);
   if (each.length < 2) return null;
-  const lift = each.reduce((a, b) => (b.thrust > a.thrust ? b : a));
+  const lift = [computeRocketStats(itemTypes, extraDryMass, null), ...each].reduce((a, b) => (b.thrust > a.thrust ? b : a));
   const cruise = each.reduce((a, b) => (b.exhaustVelocity > a.exhaustVelocity ? b : a));
   return { lift, cruise };
 }
@@ -692,14 +704,54 @@ export function liftCruiseProfile(itemTypes: readonly ItemType[], extraDryMass =
 // cruise outlasts it; scripts/rocket-tech-report.ts estimates those
 export const TRANSFER_MAX_S = 1200;
 
-export function simulateTransfer(stats: RocketStats | FlightProfile, from: TransferBody, to: TransferBody, fuelUnits?: number): TransferResult {
-  const profile: FlightProfile = 'lift' in stats ? stats : { lift: stats, cruise: stats };
-  const base = profile.lift;
-  if (fuelUnits === undefined) fuelUnits = base.fuelCapacity;
+/** One stage's flight numbers: its stats, or its lift / cruise profile (several engine types) */
+export type StageFlight = RocketStats | FlightProfile;
+
+/**
+ * A stack (bottom to top) as simulateTransfer flies it: one StageFlight per
+ * stage (stagesOf), bottom first. Each stage's mass carries everything above
+ * it (their tanks filled as fillStages fills them) and only its own engines
+ * fire, as RocketController flies a staged rocket. One stage: the stack's
+ * own stats or profile.
+ */
+export function stagedFlight(itemTypes: readonly ItemType[], extraDryMass = 0, fuelUnits?: number): StageFlight[] {
+  const groups = stagesOf(itemTypes, t => t);
+  const own = groups.map(g => computeRocketStats(g));
+  const fuels = fillStages(fuelUnits ?? own.reduce((a, s) => a + s.fuelCapacity, 0), own.map(s => s.fuelCapacity));
+  return groups.map((g, k) => {
+    let above = extraDryMass;
+    for (let j = k + 1; j < groups.length; j++) above += own[j].dryMass + fuels[j] * ROCKET_CONFIG.FUEL_KG_PER_UNIT;
+    return liftCruiseProfile(g, above) ?? computeRocketStats(g, above);
+  });
+}
+
+// The simulated pilot gives up on a rocket out of fuel and slower than this
+// (m/s) outside every gravity well: the damping only slows it further
+const STALLED_SPEED = 1e-3;
+
+/**
+ * `chute`: a parachute is fitted. Landing on a body with air, the pilot then
+ * only brakes to a speed the chute opens at (PARACHUTE.maxOpenSpeed, kept
+ * under REENTRY.safeSpeed so it doesn't heat) by its deploy altitude, and
+ * the chute does the rest - the landing counts once it opens.
+ */
+export function simulateTransfer(stats: StageFlight | readonly StageFlight[], from: TransferBody, to: TransferBody, fuelUnits?: number, chute = false): TransferResult {
+  // Staged: the active (bottom) stage burns its own tanks and drops when they are dry
+  const stages: FlightProfile[] = (Array.isArray(stats) ? stats : [stats]).map((f: StageFlight) => ('lift' in f ? f : { lift: f, cruise: f }));
+  const capacities = stages.map(p => p.lift.fuelCapacity);
+  if (fuelUnits === undefined) fuelUnits = capacities.reduce((a, b) => a + b, 0);
+  const fuels = fillStages(fuelUnits, capacities);
+  let active = 0;
+  let profile = stages[0];
   const dt = 1 / ROCKET_CONFIG.PHYSICS.dampingReferenceFps;
   const damp = dampingFactor(ROCKET_CONFIG.PHYSICS.linearDamping, dt);
   const span = Math.hypot(to.center.x - from.center.x, to.center.y - from.center.y, to.center.z - from.center.z);
-  const safe = ROCKET_CONFIG.HEALTH.impactDamageThreshold * LANDING_SAFE_SHARE;
+  // Under a chute the descent need only be slow enough for it to open, at its deploy height
+  const chuting = chute && !!to.hasAtmosphere;
+  const openSpeed = Math.min(ROCKET_CONFIG.PARACHUTE.maxOpenSpeed, ROCKET_CONFIG.REENTRY.safeSpeed);
+  const touchdown = chuting ? to.surfaceRadius + ROCKET_CONFIG.PARACHUTE.deployAltitude : to.surfaceRadius;
+  const safe = (chuting ? openSpeed : ROCKET_CONFIG.HEALTH.impactDamageThreshold) * LANDING_SAFE_SHARE;
+  const landedBelow = chuting ? openSpeed : ROCKET_CONFIG.HEALTH.impactDamageThreshold;
   const targetWell = to.radius * GRAVITY_WELL.FALLOFF_RADIUS_MULT;
   // A coast must carry the rocket into the target's full gravity (at the
   // well's edge the pull is ~0 and damping would stall it there)
@@ -711,10 +763,18 @@ export function simulateTransfer(stats: RocketStats | FlightProfile, from: Trans
       : gravityAccel(dTo, to.radius, to.gravity) * Math.sign(span - s);
   };
   let s = from.surfaceRadius + ROCKET_CONFIG.THRESHOLDS.groundedCheckDistance;
-  let v = 0, fuel = fuelUnits, dvUsed = 0, t = 0;
+  let v = 0, fuel = fuels[0], dvUsed = 0, t = 0;
+  // Fuel aboard: the active stage's and every stage's above it
+  const fuelLeft = () => fuel + fuels.slice(active + 1).reduce((a, b) => a + b, 0);
   let phase: 'burn' | 'coast' = 'burn';
   const fromWell = from.radius * GRAVITY_WELL.FALLOFF_RADIUS_MULT;
   while (t < TRANSFER_MAX_S) {
+    // The active stage's tanks are dry: drop it and the next one fires
+    while (fuel <= 0 && active < stages.length - 1) {
+      active++;
+      profile = stages[active];
+      fuel = fuels[active];
+    }
     // Lift engines inside a gravity well, cruise engines between
     const stats = s < fromWell || span - s < targetWell ? profile.lift : profile.cruise;
     const mass = stats.dryMass + fuel * ROCKET_CONFIG.FUEL_KG_PER_UNIT;
@@ -736,7 +796,7 @@ export function simulateTransfer(stats: RocketStats | FlightProfile, from: Trans
       // left, then hold the descent on that profile down to a safe touchdown
       const g = Math.abs(pull(s));
       const brake = Math.max(LANDING_MIN_BRAKE, stats.thrust / mass - g);
-      const alt = Math.max(0, span - s - to.surfaceRadius);
+      const alt = Math.max(0, span - s - touchdown);
       const allowed = safe + Math.sqrt(2 * brake * LANDING_BRAKE_MARGIN * alt);
       if (v > allowed) {
         dir = -1;
@@ -750,12 +810,14 @@ export function simulateTransfer(stats: RocketStats | FlightProfile, from: Trans
     dvUsed += a * dt;
     s += v * dt;
     t += dt;
-    if (span - s <= to.surfaceRadius) {
-      return { landed: v < ROCKET_CONFIG.HEALTH.impactDamageThreshold, fuelUsed: fuelUnits - fuel, deltaVUsed: dvUsed, impactSpeed: v, seconds: t };
+    if (span - s <= touchdown) {
+      return { landed: v < landedBelow, fuelUsed: fuelUnits - fuelLeft(), deltaVUsed: dvUsed, impactSpeed: v, seconds: t };
     }
     if (s < from.surfaceRadius && t > 1) break; // fell back
+    // Out of fuel and stopped between the wells: it can never get there
+    if (fuelLeft() <= 0 && Math.abs(v) < STALLED_SPEED && pull(s) === 0) break;
   }
-  return { landed: false, fuelUsed: fuelUnits - fuel, deltaVUsed: dvUsed, impactSpeed: Math.abs(v), seconds: t };
+  return { landed: false, fuelUsed: fuelUnits - fuelLeft(), deltaVUsed: dvUsed, impactSpeed: Math.abs(v), seconds: t };
 }
 
 /**

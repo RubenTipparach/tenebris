@@ -16,7 +16,7 @@ export interface RocketValidationResult {
  * LaunchPadUI - UI for managing launch pad segments and rockets
  *
  * Layout:
- * - Two vertical columns of 8 slots each
+ * - Two vertical columns of ROCKET_CONFIG.MAX_STACK_PARTS slots each
  * - Left column: Rocket blocks (must match segment height)
  * - Right column: Launch pad segments (tower height) - bottom slot is permanent base
  * - "Board Rocket" button when rocket is fully assembled
@@ -53,7 +53,8 @@ export class LaunchPadUI {
   private statusElement: HTMLElement | null = null;
   private validationMessageElement: HTMLElement | null = null;
 
-  private readonly MAX_HEIGHT = 8;
+  // Tower height = most parts a stack holds (one number, ROCKET_CONFIG)
+  private readonly MAX_HEIGHT = ROCKET_CONFIG.MAX_STACK_PARTS;
 
   // The rocket's numbers, refuelling and its cargo hold
   private refuelBtn: HTMLButtonElement | null = null;
