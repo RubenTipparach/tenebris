@@ -107,6 +107,15 @@ export function engineModeLabel(mode: EngineMode): string {
  * fuel flow); mass, tanks, cargo and equipment are the whole rocket's either
  * way. `extraDryMass` is what the cargo hold carries (cargoMass).
  */
+/**
+ * The stack's frame (ROCKET_CONFIG.STACK_LEVEL_KG): the k-th part from the
+ * bottom adds (k - 1) levels of it, so a tall stack is much heavier than
+ * its parts alone - a short one barely changes.
+ */
+export function stackStructureKg(partCount: number): number {
+  return ROCKET_CONFIG.STACK_LEVEL_KG * partCount * (partCount - 1) / 2;
+}
+
 export function computeRocketStats(
   itemTypes: readonly ItemType[],
   extraDryMass = 0,
@@ -115,7 +124,8 @@ export function computeRocketStats(
 ): RocketStats {
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
-  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
+  // a taller stack needs a heavier frame: each part carries the ones above it
+  let dryMass = extraDryMass + stackStructureKg(itemTypes.length), fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
   let keepHeat = 1, rtgW = 0, chuteBrake = 1, drones = 0;
   for (const slot of equipment ?? []) {
     const e = equipmentStats(slot.itemType);
@@ -224,6 +234,12 @@ export function stagedStats(
   const groups = stagesOf(itemTypes, t => t);
   const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  // the frame's mass by each part's height in the whole stack (not in its own stage)
+  let below = 0;
+  groups.forEach((g, k) => {
+    parts[k].dryMass += stackStructureKg(below + g.length) - stackStructureKg(below) - stackStructureKg(g.length);
+    below += g.length;
+  });
   // the payload's fixed mass (cargo, equipment) sits on top
   const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
   const stages: StageStats[] = [];

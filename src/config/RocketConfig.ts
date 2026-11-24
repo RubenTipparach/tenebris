@@ -111,6 +111,10 @@ export const ROCKET_CONFIG = {
   // === FUEL SYSTEM ===
   // Mass of one fuel unit. A medium tank holds 100 units = 450 kg of propellant
   FUEL_KG_PER_UNIT: 4.5,
+  // A taller stack needs a heavier frame: the k-th part from the bottom adds
+  // (k - 1) x this (kg). 3 parts: +45 kg; 6: +225; 8: +420 - a tall rocket
+  // loses thrust-to-weight fast (computeRocketStats / stackStructureKg)
+  STACK_LEVEL_KG: 15,
   // What refuelling burns, in the order it is drawn (from the rocket's cargo
   // hold first, then the player's hotbar + bag), and the fuel units each item
   // gives. `returns` goes back where the item came from (an emptied bucket).
