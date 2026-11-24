@@ -28,7 +28,13 @@ const ATLAS = { W: 48, H: 32, CELL: 16 } as const;
 
 // The campfire atlas (gen-item-icons.py campfire_atlas): 2x2 cells of 16 px
 type Cell = { u0: number; v0: number; u1: number; v1: number };
-const fireCell = (x: number, y: number): Cell => ({ u0: x / 2, u1: (x + 1) / 2, v0: 1 - (y + 1) / 2, v1: 1 - y / 2 });
+// Each cell is inset half a texel (of the 32 px atlas) so a quad's edge
+// never samples the neighbouring cell (the flame's top picked up a row of
+// the log end above it)
+const FIRE_INSET = 0.5 / 32;
+const fireCell = (x: number, y: number): Cell => ({
+  u0: x / 2 + FIRE_INSET, u1: (x + 1) / 2 - FIRE_INSET, v0: 1 - (y + 1) / 2 + FIRE_INSET, v1: 1 - y / 2 - FIRE_INSET,
+});
 const FIRE = { BARK: fireCell(0, 0), END: fireCell(1, 0), STONE: fireCell(0, 1), FLAME: fireCell(1, 1) };
 
 /** Squeeze a geometry's 0..1 UVs into one atlas cell, per box face (+X, -X, +Y, -Y, +Z, -Z). */
