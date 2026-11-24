@@ -4578,7 +4578,8 @@ export class Planet {
     // Also check immediateRebuildChunks/deferredRebuildChunks in case worker was busy previously
     const hasPendingRebuild = this.dirtyColumnsQueue.size > 0 ||
                               this.immediateRebuildChunks.size > 0 ||
-                              this.deferredRebuildChunks.size > 0;
+                              this.deferredRebuildChunks.size > 0 ||
+                              this.throttledRebuildChunks.size > 0;
     if (hasPendingRebuild) {
       profiler.begin('Planet.dirtyRebatch');
       this.rebuildDirtyColumns();
@@ -4887,8 +4888,8 @@ export class Planet {
       const column = this.columns.get(tile);
       if (!column) continue;
       column.isDirty = true;
-      this.queueDirtyColumnRebuild(tile);
-      for (const n of column.tile.neighbors) this.queueDirtyColumnRebuild(n);
+      this.queueDirtyColumnRebuild(tile, true);
+      for (const n of column.tile.neighbors) this.queueDirtyColumnRebuild(n, true);
     }
     this.liquidChangedTiles.clear();
     const mat = this.meshBuilder.getWaterShaderMaterial();
@@ -5261,7 +5262,12 @@ export class Planet {
     return column.blocks[depth];
   }
 
-  public setBlock(tileIndex: number, depth: number, blockType: HexBlockType): void {
+  /**
+   * `remote`: the edit came from another player (multiplayer). Its chunk
+   * rebuild is throttled instead of immediate, so a stream of someone
+   * else's edits can't stall this player's frames.
+   */
+  public setBlock(tileIndex: number, depth: number, blockType: HexBlockType, remote = false): void {
     if (depth >= 0 && tileIndex >= 0) {
       let logged = this.editLog.get(tileIndex);
       if (!logged) { logged = new Map(); this.editLog.set(tileIndex, logged); }
@@ -5298,10 +5304,10 @@ export class Planet {
     // Queue dirty columns for incremental mesh update instead of full rebuild
     // NOTE: LOD is no longer rebuilt when blocks change - it's built once at init
     // For block changes to appear in LOD, we'd need per-tile LOD mesh updates (future improvement)
-    this.queueDirtyColumnRebuild(tileIndex);
+    this.queueDirtyColumnRebuild(tileIndex, remote);
     for (const neighborIndex of column.tile.neighbors) {
       if (this.cachedNearbyTiles.has(neighborIndex)) {
-        this.queueDirtyColumnRebuild(neighborIndex);
+        this.queueDirtyColumnRebuild(neighborIndex, remote);
       }
     }
 
@@ -5315,8 +5321,10 @@ export class Planet {
   // Separate tracking for immediate vs deferred chunk rebuilds
   private immediateRebuildChunks: Set<number> = new Set(); // Near player - no debounce
   private deferredRebuildChunks: Set<number> = new Set();  // Far from player - use debounce
+  private throttledRebuildChunks: Set<number> = new Set(); // Near player, not this player's own edit - one at a time
+  private lastThrottledRebuildMs = 0;
 
-  private queueDirtyColumnRebuild(tileIndex: number): void {
+  private queueDirtyColumnRebuild(tileIndex: number, throttled = false): void {
     if (!this.cachedNearbyTiles.has(tileIndex)) return;
 
     // Also mark the chunk as dirty for per-chunk rebuilds
@@ -5327,8 +5335,11 @@ export class Planet {
 
       // Route to immediate (CPU) or deferred (worker) queue based on distance from player
       const isImmediate = this.isTileWithinImmediateRebuildDistance(tileIndex);
-      if (isImmediate) {
+      if (isImmediate && throttled) {
+        if (!this.immediateRebuildChunks.has(chunkIndex)) this.throttledRebuildChunks.add(chunkIndex);
+      } else if (isImmediate) {
         this.immediateRebuildChunks.add(chunkIndex);
+        this.throttledRebuildChunks.delete(chunkIndex);
       } else {
         this.deferredRebuildChunks.add(chunkIndex);
       }
@@ -5345,7 +5356,8 @@ export class Planet {
     // Check if there's any work to do
     const hasWork = this.dirtyColumnsQueue.size > 0 ||
                     this.immediateRebuildChunks.size > 0 ||
-                    this.deferredRebuildChunks.size > 0;
+                    this.deferredRebuildChunks.size > 0 ||
+                    this.throttledRebuildChunks.size > 0;
     if (!this.batchedMeshGroup || !hasWork) return;
 
     // First time: do full chunk rebuild to transition from flat meshes to per-chunk meshes
@@ -5381,6 +5393,7 @@ export class Planet {
       this.dirtyChunks.clear();
       this.immediateRebuildChunks.clear();
       this.deferredRebuildChunks.clear();
+      this.throttledRebuildChunks.clear();
 
       // Build all chunks using CPU (no worker delay)
       this.rebuildChunkImmediate(allChunksInRange);
@@ -5409,6 +5422,22 @@ export class Planet {
       }
 
       return; // Process immediate chunks first, deferred chunks will be handled next frame
+    }
+
+    // Throttled rebuilds (near player, changed by someone else or by water):
+    // one chunk per interval, so they never stack into a long frame
+    if (this.throttledRebuildChunks.size > 0) {
+      const now = performance.now();
+      if (now - this.lastThrottledRebuildMs >= PlayerConfig.THROTTLED_REBUILD_INTERVAL_MS) {
+        this.lastThrottledRebuildMs = now;
+        const chunkIndex = this.throttledRebuildChunks.values().next().value as number;
+        this.throttledRebuildChunks.delete(chunkIndex);
+        this.dirtyChunks.delete(chunkIndex);
+        for (const tileIndex of Array.from(this.dirtyColumnsQueue)) {
+          if (this.tileToChunk.get(tileIndex) === chunkIndex) this.dirtyColumnsQueue.delete(tileIndex);
+        }
+        this.rebuildChunkImmediate(new Set([chunkIndex]));
+      }
     }
 
     // Handle deferred rebuilds (far from player) - use debounce, but still use CPU

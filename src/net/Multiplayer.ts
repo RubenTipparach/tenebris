@@ -220,7 +220,7 @@ export class Multiplayer {
           uploadMap: (planet, image) => this.uploadMap(String(m.world?.id ?? ''), planet, image, String(m.uploadKey ?? '')),
         }, m.id, m.now, m.world?.created, m.world?.id, m.maps);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
-          this.planets.get(planet)?.setBlock(tile, depth, block);
+          this.planets.get(planet)?.setBlock(tile, depth, block, true);
         }
         applySnapshot((m.records ?? []) as Array<[string, string, string, any, number?]>);
         // the world's last few chat lines, so a joiner sees the conversation
@@ -258,7 +258,7 @@ export class Multiplayer {
         this.applyAction(m.id, m.a);
         break;
       case 'edit':
-        this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block);
+        this.planets.get(m.planet)?.setBlock(m.tile, m.depth, m.block, true);
         break;
       case 'rec':
         dispatchRecord(m.kind, m.planet, m.key, m.data, m.v);

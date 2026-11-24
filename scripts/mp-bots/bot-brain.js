@@ -19,12 +19,21 @@
   const planet = () => g().player.getCurrentPlanet();
   const player = () => g().player;
   const im = () => g().inputManager;
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // Every wait notes where it was called from (Chrome keeps the await chain),
+  // and unwinds a loop the hang watchdog has replaced
+  let loopGen = 0;
+  function waitPoint(gen) {
+    if (gen !== undefined && gen !== loopGen) throw new Error('loop replaced');
+    st.where = (new Error().stack || '').split('\n').slice(3, 9).map(l => l.trim().replace(/^at /, '').replace(/ \(.*$/, '')).join(' < ');
+  }
+  const sleep = (ms) => { waitPoint(st.curGen); return new Promise(r => setTimeout(r, ms)); };
 
   let I = null;          // ItemType
   let B = null;          // HexBlockType
   let RECIPES = null;    // CRAFTING_RECIPES
   let SMELTS = null;     // furnace SMELTING_RECIPES
+  let ESMELTS = null;    // electric furnace ELECTRIC_SMELTING_RECIPES
+  let COOKS = null;      // campfire / kiln / oven recipes, with their station kind
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -46,6 +55,9 @@
     const cfg = await import(`${BASE}/config/PlayerConfig.ts`);
     const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
     SMELTS = smeltMod.SMELTING_RECIPES;
+    ESMELTS = smeltMod.ELECTRIC_SMELTING_RECIPES;
+    const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
+    COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
     I = inventory.ItemType;
     B = blocks.HexBlockType;
     RECIPES = crafting.CRAFTING_RECIPES;
@@ -116,7 +128,8 @@
     }
     return false;
   }
-  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+  // rAF, but never longer than a second (a throttled tab must not hang the bot)
+  const nextFrame = () => { waitPoint(st.curGen); return new Promise(r => { const t = setTimeout(r, 1000); requestAnimationFrame(() => { clearTimeout(t); r(); }); }); };
 
   async function calibrate() {
     // Which way does +mouseY move the pitch? Measure it once.
@@ -374,9 +387,9 @@
     const out = [];
     for (const t of tilesWithin(myTile(), radius)) {
       if (!p.isTileLoaded(t)) continue;
-      for (let d = Math.max(1, fd - 3); d <= fd + 3; d++) {
+      for (let d = Math.max(1, fd - 6); d <= fd + 4; d++) {
         const b = p.getBlock(t, d);
-        if (wanted.includes(b)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
+        if (wanted.includes(b) && !(st.badDig || []).includes(`${t}:${d}`)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
       }
     }
     return out.sort((a, b) => a.dist - b.dist);
@@ -393,14 +406,29 @@
 
   // Tunnel toward the nearest wanted ore and mine it
   async function tunnelToOre(wanted, radius = 6) {
-    const list = oreAround(radius, wanted);
+    const list = oreAround(radius, wanted).filter(o => !(st.badDig || []).includes(`${o.tile}:${o.depth}`));
     if (!list.length) return false;
     const o = list[0];
     st.task = `tunnelling to ore ${o.block}`;
-    for (let step = 0; step < 12; step++) {
+    const giveUp = () => { st.badDig = (st.badDig || []).concat([`${o.tile}:${o.depth}`]); say(`could not reach ore at tile ${o.tile} depth ${o.depth} - skipping it`); return false; };
+    for (let step = 0; step < 16; step++) {
       const c = blockCenter(o.tile, o.depth);
-      if (c.distanceTo(eye()) < 4.5) { await mineBlock(o.tile, o.depth, 20000); return true; }
-      // dig the two blocks in front (foot + head) and step forward
+      if (P().getBlock(o.tile, o.depth) !== o.block) return true;   // already gone
+      if (c.distanceTo(eye()) < 4.5) {
+        const ok = await mineBlock(o.tile, o.depth, 20000);
+        if (ok) say(`mined ore ${o.block} at depth ${o.depth}`);
+        return ok || giveUp();
+      }
+      const fd = feetDepth();
+      if (o.depth < fd - 1) {
+        // the ore lies deeper: dig the block under your feet and drop
+        const tile = myTile();
+        if (fd - 1 <= 1) return giveUp();
+        if (!(await mineBlock(tile, fd - 1, 12000))) return giveUp();
+        await sleep(400);
+        continue;
+      }
+      // level with it: dig the two blocks in front (foot + head) and step forward
       const pos = player().position;
       const up = upAt(pos);
       const flat = c.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
@@ -409,7 +437,7 @@
       key('KeyW', true); await sleep(450); key('KeyW', false);
       await sleep(150);
     }
-    return false;
+    return giveUp();
   }
 
   // Climb out of a shaft: jump and place a block under your feet, again and again
@@ -532,9 +560,16 @@
     if (feetDepth() < s - 1) { say('climbing out to the surface'); await pillarUpTo(s - 1, 60); }
   }
 
+  // Anything placed on tile t (a machine, a cable or pipe node, a chest...): not free to build on
   function stationAt(t) {
     const b = bi();
-    return !!(b.furnaceManager.getFurnaceAtTile(t) || b.cookerManager.getAtTile(t) || b.storageChestManager.getChestAtTile(t));
+    if ((st.badPlace || []).includes(t)) return true;
+    return !!(b.furnaceManager.getFurnaceAtTile(t) || b.cookerManager.getAtTile(t) || b.storageChestManager.getChestAtTile(t)
+      || b.electricFurnaceManager.getElectricFurnaceAtTile(t) || b.steamEngineManager.getSteamEngineAtTile(t)
+      || b.hydroGeneratorManager.getHydroGeneratorAtTile(t) || b.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(t)
+      || b.cableNodeManager.getPlacedCables().some(c => c.tileIndex === t)
+      || b.copperPipeManager.getPlacedPipes().some(c => c.tileIndex === t)
+      || b.machineManager.getAll().some(m => m.tileIndex === t));
   }
 
   // Get within reach of world point `target`: out of any hole, over to it,
@@ -893,6 +928,28 @@
       if (count(I.STONE) < 2) { await digForStone(4); return; }
       await cookAt('kiln', [I.CLAY, I.STONE], I.CEMENT);
     },
+    // These missions count what THIS player places: build its own, even if
+    // someone else's power plant is already running nearby
+    hydro: async () => {
+      if (!(await obtain(I.HYDRO_GENERATOR, 1))) return;
+      const w = nearestWaterTile(30);
+      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return; }
+      if (!(await placeOnTile(I.HYDRO_GENERATOR, w, P().groundDepthOf(w)))) st.badWater = (st.badWater || []).concat([w]);
+    },
+    efurnace: async () => {
+      if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return;
+      const pos = player().position;
+      const cable = bi().cableNodeManager.getPlacedCables()
+        .sort((a, c) => a.position.distanceTo(pos) - c.position.distanceTo(pos))
+        .find(c => neighbors(c.tileIndex).some(isDryTile));
+      if (!cable) {
+        if (!(await obtain(I.CABLE, 1))) return;
+        await placeNearby(I.CABLE);
+        return;
+      }
+      const t = neighbors(cable.tileIndex).find(isDryTile);
+      await placeOnTile(I.ELECTRIC_FURNACE, t);
+    },
     cookfish: async () => {
       if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return; }
       await cookAt('campfire', ['fish'], I.COOKED_FISH);
@@ -976,7 +1033,7 @@
         if (!p.isTileLoaded(t)) continue;
         const gd = p.groundDepthOf(t);
         for (let d = gd; d >= Math.max(1, gd - 3); d--) {
-          if (kinds.includes(p.getBlock(t, d))) {
+          if (kinds.includes(p.getBlock(t, d)) && !(st.badDig || []).includes(`${t}:${d}`)) {
             const c = blockCenter(t, d); const dd = c.distanceTo(player().position);
             if (dd < bd) { bd = dd; target = { t, d, c }; }
             break;
@@ -984,11 +1041,120 @@
         }
       }
       if (!target) { say('none of that nearby - exploring'); await wander(); await wander(); continue; }
-      await walkTo(target.c, 2.5, 40000);
-      await mineBlock(target.t, target.d, 15000);
+      await approach(target.c, 2.5);
+      if (!(await mineBlock(target.t, target.d, 15000))) {
+        say(`could not dig the block at tile ${target.t} depth ${target.d} - skipping it`);
+        st.badDig = (st.badDig || []).concat([`${target.t}:${target.d}`]);
+      }
     }
   }
 
+
+
+  // ---- power: a hydro generator in a pond, a cable, an electric furnace ------------
+  // Place `item` on tile `tile`, aiming at block (tile, depth) (default: its ground)
+  async function placeOnTile(item, tile, depth) {
+    const p = P();
+    const d = depth ?? p.groundDepthOf(tile);
+    const target = depth != null ? blockCenter(tile, d) : blockTop(tile, d);
+    await approach(target, 2.6);
+    closeMenus();
+    if (!selectItem(item)) return false;
+    const before = count(item);
+    await lookAtPoint(target, 0.03, 1500);
+    await click(2, 80);
+    await sleep(900);
+    closeMenus();
+    const ok = count(item) < before;
+    say(ok ? `placed item ${item} on tile ${tile}` : `could not place item ${item} on tile ${tile} - won't try that tile again`);
+    if (!ok) st.badPlace = (st.badPlace || []).concat([tile]);
+    return ok;
+  }
+  const isWaterTile = (t) => P().topBlockOf(t) === B.WATER;
+  const isDryTile = (t) => { const p = P(); return p.isTileLoaded(t) && !isWaterTile(t) && !stationAt(t) && p.getBlock(t, p.groundDepthOf(t) + 1) === B.AIR && p.getBlock(t, p.groundDepthOf(t) + 2) === B.AIR; };
+
+  function poweredEFurnace() {
+    const pos = player().position;
+    return bi().electricFurnaceManager.getPlacedElectricFurnaces()
+      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120)
+      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
+  }
+
+  // Build (or finish) a small power plant by a pond; returns a powered electric furnace or null
+  async function buildPowerPlant() {
+    const done = poweredEFurnace();
+    if (done) return done;
+    const b = bi(), p = P();
+    st.task = 'building a power plant';
+    // 1. an active hydro generator (ours, or a new one in the nearest pond)
+    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive)
+      .sort((a, c) => a.position.distanceTo(player().position) - c.position.distanceTo(player().position))[0];
+    if (!hydro || hydro.position.distanceTo(player().position) > 120) {
+      if (!(await obtain(I.HYDRO_GENERATOR, 1))) return null;
+      const w = nearestWaterTile(30);
+      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return null; }
+      // aim at the pond floor: the hydro generator stands on it, under the water
+      if (!(await placeOnTile(I.HYDRO_GENERATOR, w, p.groundDepthOf(w)))) { st.badWater = (st.badWater || []).concat([w]); return null; }
+      hydro = b.hydroGeneratorManager.getHydroGeneratorAtTile(w);
+      if (!hydro || !hydro.isActive) { say('the hydro generator is not in water'); return null; }
+    }
+    // 2. a cable on dry ground beside it
+    const ht = hydro.tileIndex;
+    const cableTiles = b.cableNodeManager.getPlacedCables().map(c => c.tileIndex);
+    let ct = neighbors(ht).find(t => cableTiles.includes(t));
+    if (ct === undefined) {
+      ct = neighbors(ht).find(isDryTile);
+      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); return null; }
+      if (!(await obtain(I.CABLE, 1))) return null;
+      if (!(await placeOnTile(I.CABLE, ct))) return null;
+    }
+    // 3. the electric furnace beside the cable
+    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(Boolean);
+    if (!ef) {
+      const et = neighbors(ct).find(t => t !== ht && isDryTile(t));
+      if (et === undefined) { say('no room for the electric furnace'); return null; }
+      if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return null;
+      if (!(await placeOnTile(I.ELECTRIC_FURNACE, et))) return null;
+      ef = b.electricFurnaceManager.getElectricFurnaceAtTile(et);
+    }
+    await sleep(3000);   // the grid solves every so often
+    if (ef && ef.isPowered) say('power plant running: hydro -> cable -> electric furnace');
+    else say('electric furnace placed but not powered yet');
+    return ef && ef.isPowered ? ef : null;
+  }
+
+  // Smelt `n` of `output` in a powered electric furnace
+  async function electricSmelt(output, n) {
+    const r = ESMELTS.find(x => x.output === output);
+    if (!r) return false;
+    const runs = Math.ceil(n / r.outputQuantity);
+    const needIn = runs * (r.inputQuantity || 1);
+    if (count(r.input) < needIn) { await obtain(r.input, needIn); return false; }
+    if (r.with && count(r.with.itemType) < runs * r.with.quantity) { await obtain(r.with.itemType, runs * r.with.quantity); return false; }
+    const ef = await buildPowerPlant();
+    if (!ef) return false;
+    st.task = 'electric smelting';
+    await approach(ef.position, 2.2);
+    closeMenus(); selectEmptyHand();
+    await lookAtPoint(ef.position.clone().addScaledVector(upAt(ef.position), 0.3), 0.03, 2000);
+    await click(2, 80);
+    await sleep(500);
+    const ui = bi().electricFurnaceUI;
+    if (!ui.isMenuOpen()) { say('could not open the electric furnace'); closeMenus(); return false; }
+    const slotOf = (it) => inv().getAllSlots().findIndex(x => x.itemType === it && x.quantity > 0);
+    if (r.with) { const a = slotOf(r.with.itemType); if (a >= 0) ui.handleDropFromInventory(a, 'electric-furnace-additive'); }
+    const s0 = slotOf(r.input); if (s0 >= 0) ui.handleDropFromInventory(s0, 'electric-furnace-input');
+    say(`electric furnace loaded: ${ef.inputCount} ${itemName(r.input)}`);
+    const t0 = performance.now();
+    while (performance.now() - t0 < 120000 && (ef.inputCount >= (r.inputQuantity || 1))) await sleep(1000);
+    ui.handleSlotClick('electric-furnace-output');
+    await sleep(300);
+    // leftovers back
+    try { ui.handleShiftClick('electric-furnace-input'); ui.handleShiftClick('electric-furnace-additive'); } catch {}
+    closeMenus();
+    say(`took ${count(output)} ${itemName(output)} from the electric furnace`);
+    return count(output) >= n;
+  }
 
   // ---- a general planner: get any item the way a player would -------------------
   // Craft it (getting the ingredients first), smelt it from its ore, or dig
@@ -1025,21 +1191,41 @@
       await smelt(sm.input, runs);
       return count(item) >= n;
     }
+    // electric furnace
+    if (ESMELTS && ESMELTS.some(r => r.output === item)) { await electricSmelt(item, n); return count(item) >= n; }
+    // a cooking station (campfire, kiln, oven): one dish per cook
+    const ck = COOKS && COOKS.find(r => r.output === item && tracker().recipeOpen(item));
+    if (ck) {
+      for (const inp of ck.inputs) {
+        if (inp === 'fish') { if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return false; } continue; }
+        if (count(inp) < 1 && !(await obtain(inp, 1, depth + 1))) return false;
+      }
+      await cookAt(ck.kind, ck.inputs, item);
+      return count(item) >= n;
+    }
     // dug out of the ground
     const block = name !== undefined ? B[name] : undefined;
     if (block !== undefined) {
-      if (name.startsWith('ORE_')) await goMining([block, B.ORE_COAL], () => count(item) >= n);
+      if (name.startsWith('ORE_')) await goMining(count(I.COAL) < 16 && block !== B.ORE_COAL ? [block, B.ORE_COAL] : [block], () => count(item) >= n);
       else if (block === B.STONE) await digForStone(n);
       else await findAndDig([block], () => count(item) >= n);
       return count(item) >= n;
     }
-    say(`does not know how to get ${name}`);
+    if (!(st.unknown || []).includes(item)) say(`does not know how to get ${name}`);
     st.unknown = (st.unknown || []).concat([item]);
     return false;
   }
 
   // Play any mission whose objectives are holding, making, smelting or placing things
   async function generic(m) {
+    const unknown0 = (st.unknown || []).length;
+    await genericStep(m);
+    if ((st.unknown || []).length > unknown0) {
+      say(`${m.title} needs something it cannot get - skipping it`);
+      st.cannot = (st.cannot || []).concat([m.id]);
+    }
+  }
+  async function genericStep(m) {
     const prog = tracker().progress(m);
     for (let i = 0; i < m.objectives.length; i++) {
       const o = m.objectives[i];
@@ -1055,7 +1241,10 @@
       }
       if (o.kind === 'smelted') {
         const sm = SMELTS.find(r => r.output === o.item);
-        if (!sm) { st.cannot = (st.cannot || []).concat([m.id]); return; }
+        if (!sm) {
+          if (ESMELTS.some(r => r.output === o.item)) { await electricSmelt(o.item, left); return; }
+          st.cannot = (st.cannot || []).concat([m.id]); return;
+        }
         if (count(sm.input) < left) { await obtain(sm.input, left); return; }
         if (count(I.COAL) < 2) { await getCoal(); return; }
         await smelt(sm.input, left); return;
@@ -1078,28 +1267,42 @@
     builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
+  // A mission with no progress for STALL_MS is set aside for REST_MS
+  const STALL_MS = 10 * 60 * 1000, REST_MS = 20 * 60 * 1000;
+  const resting = (id) => (st.rest && st.rest[id] || 0) > Date.now();
+  function progressKey() { return doneIds().length + ':' + JSON.stringify(tracker().openMissions().map(m => tracker().progress(m))); }
   function pickMission() {
-    const open = new Set(openIds());
+    const open = new Set(openIds().filter(id => !resting(id)));
     for (const id of ROLE_ORDER[st.role] ?? ROLE_ORDER.miner) if (open.has(id) && PLAYBOOK[id]) return id;
     // its own branches are done: help itself to the other's
     for (const order of Object.values(ROLE_ORDER)) for (const id of order) if (open.has(id) && PLAYBOOK[id]) return id;
     // then anything the general planner can play
     for (const m of tracker().openMissions()) {
-      if ((st.cannot || []).includes(m.id)) continue;
+      if ((st.cannot || []).includes(m.id) || resting(m.id)) continue;
       if (m.objectives.every(o => PLAYABLE.includes(o.kind))) return m.id;
     }
     return null;
   }
 
   async function loop() {
-    while (st.running) {
+    const gen = ++loopGen;
+    st.curGen = gen;
+    while (st.running && gen === loopGen) {
+      st.iterAt = Date.now();
       try {
         closeMenus();
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
         const m = tracker().openMissions().find(x => x.id === id);
-        if (st.goal !== id) say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`);
+        if (st.goal !== id) { say(`mission: ${m.title} (${m.objectives.map(o => o.label).join(', ')})`); st.since = Date.now(); st.pkey = progressKey(); }
         st.goal = id;
+        const pk = progressKey();
+        if (pk !== st.pkey) { st.pkey = pk; st.since = Date.now(); }
+        if (Date.now() - (st.since || Date.now()) > STALL_MS) {
+          say(`stuck on ${m.title} for 10 min - setting it aside for 20 min`);
+          st.rest = st.rest || {}; st.rest[id] = Date.now() + REST_MS;
+          st.goal = ''; continue;
+        }
         if (PLAYBOOK[id]) await PLAYBOOK[id](); else await generic(m);
       } catch (e) {
         st.errors++;
@@ -1122,6 +1325,16 @@
       await calibrate();
       say(`${role} bot starting at tile ${myTile()}`);
       loop();
+      // Hang watchdog: a loop pass that runs past HANG_MS is abandoned and a
+      // fresh loop starts (the old one unwinds at its next wait)
+      const HANG_MS = 12 * 60 * 1000;
+      setInterval(() => {
+        if (!st.running || Date.now() - (st.iterAt || Date.now()) < HANG_MS) return;
+        say(`hung for 12 min at: ${st.where || '?'} - restarting the loop`);
+        releaseAll();
+        st.iterAt = Date.now();
+        loop();
+      }, 30000);
     },
     stop() { st.running = false; releaseAll(); },
     status() {
@@ -1131,7 +1344,8 @@
       return {
         role: st.role, task: st.task, goal: st.goal, done: s.done, now: t.now()?.id ?? null,
         pos: player().position.toArray().map(v => +v.toFixed(1)), tile: myTile(), depth: feetDepth(),
-        items: hot, errors: st.errors, log: st.log.slice(-12),
+        items: hot, errors: st.errors, log: st.log.slice(-12), where: st.where,
+        mem: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, geo: g().engine.renderer.info.memory.geometries, tex: g().engine.renderer.info.memory.textures },
       };
     },
     // exposed for poking at a running bot from the runner's REPL
