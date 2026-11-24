@@ -778,6 +778,40 @@ export class Inventory {
     return removed;
   }
 
+  /**
+   * Would `give` fit in the hotbar + bag once `take` is removed? A craft asks
+   * this before it spends anything: addItem drops whatever doesn't fit, so a
+   * craft into a full inventory used to eat the ingredients and the result.
+   */
+  public fitsAfter(take: { itemType: ItemType; quantity: number }[], give: { itemType: ItemType; quantity: number }[]): boolean {
+    const sim = this.slots.slice(0, this.totalSlots).map(s => ({ itemType: s.itemType, quantity: s.quantity }));
+    for (const t of take) {
+      let left = t.quantity;
+      for (let i = sim.length - 1; i >= 0 && left > 0; i--) {
+        if (sim[i].itemType !== t.itemType) continue;
+        const n = Math.min(left, sim[i].quantity);
+        sim[i].quantity -= n;
+        left -= n;
+        if (sim[i].quantity === 0) sim[i].itemType = ItemType.NONE;
+      }
+    }
+    for (const g of give) {
+      if (g.itemType === ItemType.NONE) continue;
+      const stack = ITEM_DATA[g.itemType].stackSize;
+      let left = g.quantity;
+      for (const s of sim) {
+        if (left <= 0) break;
+        if (s.itemType === g.itemType && s.quantity < stack) { const n = Math.min(left, stack - s.quantity); s.quantity += n; left -= n; }
+      }
+      for (const s of sim) {
+        if (left <= 0) break;
+        if (s.itemType === ItemType.NONE) { const n = Math.min(left, stack); s.itemType = g.itemType; s.quantity = n; left -= n; }
+      }
+      if (left > 0) return false;
+    }
+    return true;
+  }
+
   // Check if inventory (hotbar + bag) has at least this many of an item
   public hasItem(itemType: ItemType, quantity: number): boolean {
     return this.getItemCount(itemType) >= quantity;

@@ -3,6 +3,7 @@ import { recipeLockedBy, recipeLockedLabel, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
+import { showToast } from '../utils/toast';
 import { MenuManager } from './MenuManager';
 import { PlayerConfig } from '../config/PlayerConfig';
 
@@ -730,6 +731,13 @@ export class ElectronicsWorkbenchUI {
 
     // Check if we have all ingredients in inventory
     if (!this.canCraftRecipe(recipe)) return;
+
+    // Room for the part once the ingredients are spent - else nothing is spent
+    const take = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS ? [] : recipe.inputs;
+    if (!this.inventory.fitsAfter(take, [recipe.output])) {
+      showToast(`No room in the inventory for the ${ITEM_DATA[recipe.output.itemType]?.name ?? 'part'}`, { duration: 3000 });
+      return;
+    }
 
     // Remove ingredients from inventory (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
