@@ -971,6 +971,18 @@ export class CraftingSystem {
 
   private setupKeyboardHandler(): void {
     document.addEventListener('keydown', (e) => {
+      // M: the same panel on its Map tab (M again, or on the map, closes it)
+      if ((e.key === 'm' || e.key === 'M') && !isTypingTarget(e.target)) {
+        if (this.isOpen && this.currentPanel === 'map') {
+          this.close();
+          MenuManager.closeMenuViaKeyboard();
+          e.preventDefault();
+        } else if (this.isOpen || document.pointerLockElement) {
+          this.openPanel('map');
+          e.preventDefault();
+        }
+        return;
+      }
       if (e.key === 'e' || e.key === 'E') {
         if (this.isOpen) {
           this.close();
@@ -1609,4 +1621,10 @@ export class CraftingSystem {
       this.onSaveCallback();
     }
   }
+}
+
+/** A key pressed in a text field (a name, a chat line) is text, not a game key */
+function isTypingTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
 }
