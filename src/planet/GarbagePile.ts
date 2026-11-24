@@ -43,6 +43,12 @@ export class GarbagePileManager {
     texture.wrapT = THREE.ClampToEdgeWrapping;
     const profile = SACK.PROFILE.map(([r, h]) => new THREE.Vector2(r, h));
     this.pileGeometry = new THREE.LatheGeometry(profile, SACK.SEGMENTS);
+    // v by height (the lathe spaces it by profile point, which stretches the
+    // texture's rows unevenly), u wrapped U_REPEAT times round
+    const top = Math.max(...SACK.PROFILE.map(([, h]) => h));
+    const pos = this.pileGeometry.attributes.position as THREE.BufferAttribute;
+    const uv = this.pileGeometry.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * SACK.U_REPEAT, pos.getY(i) / top);
     this.pileGeometry.computeVertexNormals();
     this.pileMaterial = new THREE.ShaderMaterial({
       uniforms: {

@@ -218,5 +218,8 @@ export const SACK = {
   // Lathe profile of the sack: [radius, height] pairs (m), bottom to the tied top
   PROFILE: [[0, 0], [0.22, 0.02], [0.3, 0.12], [0.31, 0.26], [0.24, 0.4], [0.1, 0.48], [0.09, 0.52], [0.14, 0.6], [0, 0.62]] as [number, number][],
   SEGMENTS: 10,              // lathe segments round the sack (low-poly)
+  // The 16 px texture wraps this many times round the sack (v runs by
+  // height, so the rope band, rows 2-3, sits on the neck at ~0.5 m)
+  U_REPEAT: 2,
   TOAST_MS: 2500,
 };

@@ -25,7 +25,9 @@ Writes, under public/textures/:
   texture)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
   gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
-  technology/sack.png: the overflow sack a full inventory drops
+  technology/sack.png: the overflow sack a full inventory drops (Sweaft-64)
+  technology/campfire.png: the campfire model's atlas - bark, log end,
+  hearth stone, flame (Sweaft-64)
   tools: icons/tools/<tier>_<kind>.png - pickaxe, axe and shovel in the
   rock, copper, iron, steel and titanium tiers
 Deterministic - rerun to regenerate.
@@ -886,25 +888,145 @@ def tool_icon(kind, tier):
     return px
 
 
+# ---- Props drawn the Pale Blue Dot way (the block-textures skill) ---------
+# Sweaft-64 only (checked), short ramps lit from the top left, no AA. The
+# palette and the check come from the biome generator - one copy of each.
+def _biome_gen():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gen_biome", os.path.join(ROOT, "scripts", "gen-biome-textures.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_BG = _biome_gen()
+
+
+def _sw(*hexes):
+    """A ramp of Sweaft-64 tones (dark to light) as RGBA."""
+    return [_BG.rgb(h) + (255,) for h in hexes]
+
+
+def _checked(px):
+    _BG.check_rgba([[None if p[3] == 0 else p[:3] for p in row] for row in px])
+    return px
+
+
 def sack():
-    """A burlap sack, wrapped round a lathe (u = around, v = up): the tied
-    tuft at the top rows, the rope, then a brown weave down to the seam"""
-    px, c = _canvas()
+    """The overflow sack, 16x16, wrapped round its lathe: u goes round the
+    sack (tiles left-right), v is height (row 0 = the top). Rows 0-1 the
+    gathered neck, 2-3 the rope tie, 4-14 a basket-weave burlap, 15 the
+    bottom seam. Each 2x2 weave cell is one thread: a flat one lit on its
+    top row, an upright one lit on its left column and shaded on its right."""
+    dark, base, light, hi = _sw("#41322c", "#725244", "#ab8465", "#cfaa81")
+    rope = _sw("#2e0d06", "#522b2f", "#7d4636", "#a8633e")
+    px = [[base] * 16 for _ in range(16)]
     for y in range(16):
         for x in range(16):
-            if y <= 2:
-                px[y][x] = c["peach"] if (x + 2 * y) % 5 == 0 else c["brown"]
-            elif y <= 4:
-                px[y][x] = c["dgrey"] if (x + y) % 3 else c["navy"]
+            if y <= 1:
+                # gathered folds, 4 px apart: lit left, shaded right
+                px[y][x] = (light, base, base, dark)[x % 4]
+            elif y <= 3:
+                # twisted rope: a lit strand running down-right
+                k = (x + (3 - y)) % 4
+                px[y][x] = (rope[3], rope[2], rope[1], rope[0])[k] if y == 2 else (rope[2], rope[1], rope[0], rope[1])[k]
             elif y == 15:
-                px[y][x] = c["plum"]
-            elif (x + y) % 4 == 0:
-                px[y][x] = c["plum"]       # the weave, on the diagonal
-            elif y % 3 == 1 and x % 4 == 2:
-                px[y][x] = c["peach"]      # a fleck of light thread
+                px[y][x] = dark
             else:
-                px[y][x] = c["brown"]
-    return px
+                cx, cy = x % 2, y % 2
+                flat = ((x // 2) + (y // 2)) % 2 == 0
+                if flat:
+                    px[y][x] = light if cy == 0 else base
+                else:
+                    px[y][x] = light if cx == 0 else dark
+    # the folds of the neck carry on a little into the body: creases
+    for x in range(3, 16, 4):
+        px[4][x] = dark
+    # a few bright fibres (single pixels, sparingly)
+    for x, y in ((2, 6), (9, 9), (13, 12), (5, 13)):
+        px[y][x] = hi
+    return _checked(px)
+
+
+def campfire_atlas():
+    """The campfire model's atlas, 32x32 in four 16x16 cells:
+    (0,0) bark down a log's length, (1,0) a log's cut end, (0,1) a hearth
+    stone, (1,1) the flame (alpha-cut, drawn unlit so it glows)."""
+    clear = (0, 0, 0, 0)
+    px = [[clear] * 32 for _ in range(32)]
+    bark = _sw("#2e0d06", "#41322c", "#522b2f", "#7d4636")
+    # bark: horizontal ridges 3 px tall (lit top, shaded bottom), cracks
+    for y in range(16):
+        for x in range(16):
+            px[y][x] = (bark[3], bark[2], bark[1])[y % 3]
+    for x, y0 in ((3, 0), (10, 4), (6, 9), (13, 12)):
+        for d in range(3):
+            px[(y0 + d) % 16][x] = bark[0]
+    # cut end: rings round the pith, bark rim, lit top-left
+    ring = _sw("#725244", "#ab8465", "#cfaa81", "#eab798")
+    for y in range(16):
+        for x in range(16):
+            dx, dy = x - 7.5, y - 7.5
+            r = (dx * dx + dy * dy) ** 0.5
+            if r > 7.2 or x in (0, 15) or y in (0, 15):
+                c = bark[2] if (x + y) < 15 else bark[0]
+            elif r > 6:
+                c = bark[3] if (x + y) < 15 else bark[1]
+            else:
+                c = ring[2] if int(r) % 3 else ring[1]
+                if int(r) % 3 and dx + dy < -4:
+                    c = ring[3]
+                if r < 1.5:
+                    c = ring[0]
+            px[y][16 + x] = c
+    # hearth stone: one cobble lit top-left - pale rim top-left, dark rim
+    # bottom-right, a few lit 2x2 blotches and dark 2x1 pits (seeded)
+    import random
+    rng = random.Random(7)
+    st = _sw("#1f3b52", "#3e586e", "#5d778d", "#92a3b2")
+    for y in range(16):
+        for x in range(16):
+            c = st[2]
+            if x == 0 or y == 0:
+                c = st[3]
+            elif x == 15 or y == 15:
+                c = st[0]
+            elif x == 14 or y == 14:
+                c = st[1]
+            px[16 + y][x] = c
+    for _ in range(4):
+        x, y = rng.randrange(2, 11), rng.randrange(2, 11)
+        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            px[16 + y + dy][x + dx] = st[3]
+        px[16 + y + 1][x + 2] = st[1]          # its shadow, bottom-right
+    for _ in range(5):
+        x, y = rng.randrange(2, 12), rng.randrange(3, 13)
+        px[16 + y][x] = px[16 + y][x + 1] = st[1]
+    # flame, drawn by hand: R rim, O body, o bright, y heart, e embers
+    flame = [
+        "................",
+        ".......R........",
+        "......RR....R...",
+        "......ROR...R...",
+        ".....ROOR..RR...",
+        "..R..ROoOR.ROR..",
+        "..RR.ROooOROOR..",
+        ".ROR.ROoyoOOoR..",
+        ".ROORRooyyoOoOR.",
+        ".ROoOOoyyyyoooR.",
+        "RROooOoyyyyooOR.",
+        "ROOoooyyyyyyoOOR",
+        "ROoooyyyyyyyooOR",
+        ".ROoooyyyyyoooR.",
+        "..RROOoooooORR..",
+        "..eReeReeReeRe..",
+    ]
+    fl = dict(zip("eROoy", _sw("#a61e1f", "#d4462b", "#fe6420", "#fb902f", "#faaf5c")))
+    for y, row in enumerate(flame):
+        for x, ch in enumerate(row):
+            if ch != ".":
+                px[16 + y][16 + x] = fl[ch]
+    return _checked(px)
 
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
@@ -967,6 +1089,7 @@ if __name__ == "__main__":
         face = recolour(read_png(os.path.join(techd, src + "_face.png")), ramp)
         write(f"technology/{name}_face.png", trefoil(face) if nuclear else face)
     write("technology/campfire_face.png", campfire())
+    write("technology/campfire.png", campfire_atlas())
     # Overflow sack: what a full inventory drops on the ground
     write("technology/sack.png", sack())
     # Batteries: one tier mark per tier (I, II, III)

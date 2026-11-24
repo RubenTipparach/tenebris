@@ -1,9 +1,10 @@
 import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { InventorySlot, ItemType } from '../player/Inventory';
-import { COOKERS, CookerKind } from '../config/CookingConfig';
+import { CAMPFIRE_MODEL, COOKERS, CookerKind } from '../config/CookingConfig';
 import { CookerState, emptyCookerSlots, tickCooker } from '../player/Cooking';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
@@ -25,11 +26,74 @@ export interface PlacedCooker extends CookerState {
 // Atlas cells (48x32, 16 px each), as the furnace and chest lay theirs out
 const ATLAS = { W: 48, H: 32, CELL: 16 } as const;
 
+// The campfire atlas (gen-item-icons.py campfire_atlas): 2x2 cells of 16 px
+type Cell = { u0: number; v0: number; u1: number; v1: number };
+const fireCell = (x: number, y: number): Cell => ({ u0: x / 2, u1: (x + 1) / 2, v0: 1 - (y + 1) / 2, v1: 1 - y / 2 });
+const FIRE = { BARK: fireCell(0, 0), END: fireCell(1, 0), STONE: fireCell(0, 1), FLAME: fireCell(1, 1) };
+
+/** Squeeze a geometry's 0..1 UVs into one atlas cell, per box face (+X, -X, +Y, -Y, +Z, -Z). */
+function intoCells(g: THREE.BufferGeometry, faceCells: Cell[]): THREE.BufferGeometry {
+  const uv = g.attributes.uv as THREE.BufferAttribute;
+  const perFace = uv.count / faceCells.length;
+  for (let i = 0; i < uv.count; i++) {
+    const c = faceCells[Math.floor(i / perFace)];
+    uv.setXY(i, c.u0 + uv.getX(i) * (c.u1 - c.u0), c.v0 + uv.getY(i) * (c.v1 - c.v0));
+  }
+  return g;
+}
+
+/**
+ * The campfire: hearth stones in a ring and logs leaned into a teepee (one
+ * lit mesh), plus two crossed flame cards (drawn unlit). Built standing on
+ * the ground at y = -height / 2, as the station's centre is its origin.
+ */
+function buildCampfire(height: number): { body: THREE.BufferGeometry; flame: THREE.BufferGeometry; flameY: number } {
+  const M = CAMPFIRE_MODEL;
+  const ground = -height / 2;
+  const parts: THREE.BufferGeometry[] = [];
+  const m = new THREE.Matrix4();
+  // Hearth stones, each turned a little differently
+  const [sx, sy, sz] = M.STONE_SIZE;
+  for (let i = 0; i < M.STONES; i++) {
+    const a = (i / M.STONES) * Math.PI * 2;
+    const g = intoCells(new THREE.BoxGeometry(sx, sy, sz), Array(6).fill(FIRE.STONE));
+    g.applyMatrix4(m.makeRotationY(-a + (i % 3) * 0.3));
+    g.applyMatrix4(m.makeTranslation(Math.cos(a) * M.STONE_R, ground + sy / 2, Math.sin(a) * M.STONE_R));
+    parts.push(g);
+  }
+  // Logs: foot on the ground at LOG_BASE_R, leaning in to meet at LOG_PEAK_H
+  const len = Math.hypot(M.LOG_BASE_R, M.LOG_PEAK_H);
+  const lean = Math.atan2(M.LOG_PEAK_H, -M.LOG_BASE_R);
+  for (let i = 0; i < M.LOGS; i++) {
+    const a = (i / M.LOGS) * Math.PI * 2 + Math.PI / M.LOGS;
+    // along X: the ends (+X, -X) show the cut rings, the rest is bark
+    const g = intoCells(new THREE.BoxGeometry(len, M.LOG_THICK, M.LOG_THICK),
+      [FIRE.END, FIRE.END, FIRE.BARK, FIRE.BARK, FIRE.BARK, FIRE.BARK]);
+    g.applyMatrix4(m.makeRotationZ(lean));
+    g.applyMatrix4(m.makeTranslation(M.LOG_BASE_R / 2, ground + M.LOG_PEAK_H / 2, 0));
+    g.applyMatrix4(m.makeRotationY(a));
+    parts.push(g);
+  }
+  const body = BufferGeometryUtils.mergeGeometries(parts)!;
+  // Two crossed flame cards
+  const cards: THREE.BufferGeometry[] = [];
+  for (const turn of [0, Math.PI / 2]) {
+    const g = intoCells(new THREE.PlaneGeometry(M.FLAME_W, M.FLAME_H), [FIRE.FLAME]);
+    g.applyMatrix4(m.makeTranslation(0, M.FLAME_H / 2, 0));
+    g.applyMatrix4(m.makeRotationY(turn));
+    cards.push(g);
+  }
+  // Its foot is its origin, so the flicker stretches it up from the embers
+  const flame = BufferGeometryUtils.mergeGeometries(cards)!;
+  return { body, flame, flameY: ground + M.FLAME_BASE };
+}
+
 export class CookerManager {
   private cookers: PlacedCooker[] = [];
   private meshes: THREE.Mesh[] = [];
   private loader = new THREE.TextureLoader();
-  private assets = new Map<CookerKind, Promise<{ geometry: THREE.BoxGeometry; material: THREE.ShaderMaterial }>>();
+  private assets = new Map<CookerKind, Promise<{ geometry: THREE.BufferGeometry; material: THREE.ShaderMaterial; flame?: { geometry: THREE.BufferGeometry; material: THREE.Material; y: number } }>>();
+  private clock = 0;
   private planetCenter: THREE.Vector3;
   private sunDirection: THREE.Vector3;
   private onCooked: ((cooker: PlacedCooker, item: ItemType) => void) | null = null;
@@ -65,13 +129,19 @@ export class CookerManager {
 
   private async loadAssets(kind: CookerKind) {
     const cfg = COOKERS[kind];
-    const texture = await this.loader.loadAsync(getAssetPath(cfg.atlas ?? cfg.face));
+    const texture = await this.loader.loadAsync(getAssetPath(cfg.model ?? cfg.atlas ?? cfg.face));
     texture.magFilter = THREE.NearestFilter;
     texture.minFilter = THREE.NearestFilter;
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
-    const geometry = new THREE.BoxGeometry(cfg.width, cfg.height, cfg.width);
-    if (cfg.atlas) {
+    let geometry: THREE.BufferGeometry = new THREE.BoxGeometry(cfg.width, cfg.height, cfg.width);
+    let flame: { geometry: THREE.BufferGeometry; material: THREE.Material; y: number } | undefined;
+    if (cfg.model) {
+      const built = buildCampfire(cfg.height);
+      geometry = built.body;
+      // The flame glows: unlit, alpha-cut, seen from both sides
+      flame = { geometry: built.flame, material: new THREE.MeshBasicMaterial({ map: texture, alphaTest: 0.5, side: THREE.DoubleSide }), y: built.flameY };
+    } else if (cfg.atlas) {
       // Box faces: +X, -X, +Y, -Y, +Z (front), -Z
       const cell = (x: number, y: number) => ({
         u1: (x * ATLAS.CELL) / ATLAS.W, u2: ((x + 1) * ATLAS.CELL) / ATLAS.W,
@@ -97,7 +167,7 @@ export class CookerManager {
       vertexShader: techVert,
       fragmentShader: techFrag,
     });
-    return { geometry, material };
+    return { geometry, material, flame };
   }
 
   /**
@@ -107,8 +177,16 @@ export class CookerManager {
    */
   public async place(kind: CookerKind, groundPosition: THREE.Vector3, planetCenter: THREE.Vector3, tileIndex: number,
                      facing: number, slots?: InventorySlot[], savedCentre?: THREE.Vector3, progress = 0): Promise<PlacedCooker> {
-    const { geometry, material } = await this.assetsFor(kind);
+    const { geometry, material, flame } = await this.assetsFor(kind);
     const mesh = new THREE.Mesh(geometry, withMachineLight(material.clone()));
+    if (flame) {
+      const f = new THREE.Mesh(flame.geometry, flame.material);
+      f.position.y = flame.y;
+      f.raycast = () => {};            // aiming at the fire hits the station
+      f.userData.phase = tileIndex % 7;
+      mesh.add(f);
+      mesh.userData.flame = f;
+    }
     const up = (savedCentre ?? groundPosition).clone().sub(planetCenter).normalize();
     const centre = savedCentre ?? groundPosition.clone().addScaledVector(up, COOKERS[kind].height / 2);
     mesh.position.copy(centre);
@@ -138,7 +216,14 @@ export class CookerManager {
 
   /** Cook. Called every frame; announces each dish made. */
   public update(dt: number, simulates: (position: THREE.Vector3) => boolean = () => true): void {
+    this.clock += dt;
     for (const c of this.cookers) {
+      // The campfire's flame flickers (every client, cooking or not)
+      const f = c.mesh.userData.flame as THREE.Mesh | undefined;
+      if (f) {
+        const w = Math.sin((this.clock + f.userData.phase) * CAMPFIRE_MODEL.FLICKER_HZ * Math.PI * 2);
+        f.scale.set(1 - w * CAMPFIRE_MODEL.FLICKER_AMP / 2, 1 + w * CAMPFIRE_MODEL.FLICKER_AMP, 1);
+      }
       // multiplayer: only the planet's host cooks (openspec mp-shared-objects)
       if (!simulates(c.position)) continue;
       const made = tickCooker(c, dt);
