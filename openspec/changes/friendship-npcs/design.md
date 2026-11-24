@@ -61,6 +61,22 @@ or Earth is listed.
 generation costs nothing to recompute and can't drift between server and
 client.
 
+*As built (group 1):* the people (names, roles, villages) and their homes
+are two functions. `buildPopulation(worldSeed, body)` needs nothing else and
+is what the server runs (the admin view, village sizes). Homes need terrain,
+which the server does not have, so `placePopulation(worldSeed, population,
+{ radiusM, ground, anchor })` takes the client's ground test (`GroundProbe`:
+can an NPC stand at this unit direction) and draws candidate spots from a
+seeded sequence, keeping the first the probe accepts: the first village
+near the anchor (the body's spawn, so a landing party finds it), the others
+apart from it, homes within `VILLAGE.RADIUS_M` of their centre. Every client
+has the same terrain and probe, so every client gets the same homes. With no
+walkable ground near the anchor the search widens to the whole globe (ocean
+worlds); a spot still unaccepted is returned flagged `grounded: false` for
+the motion code (task 3.3) to settle, never silently placed in the sea. The
+art piece of each world is referenced by a string id (`ArtPiece.id`) until
+its item lands in task 4.4, which maps id -> ItemType in one table.
+
 ### 2. One rules module, shipped to the server as a generated bundle
 
 The rules (population build, village food store, request draw and
@@ -99,6 +115,22 @@ So:
 *Alternative:* a dedicated NPC message set (`npcState`, `npcDeliver`, ...).
 Rejected - it would re-implement versioning and refunds.
 
+*As built (group 2):* the village state is event based, in the planet's NPC
+clock T (seconds, running only while the planet is awake): the food store is
+(amount at `foodT`) and read with `foodAt(v, T)`, closed slots wait for a
+reopen time, a trader leaves at `leaveT` of the world it is on. Advancing
+time therefore changes a record only when something happens (a slot
+reopens, the store runs low, a trader restocks or moves on), so the server's
+ticks write little, and an hour advanced in one step equals an hour in many.
+A catch-up also writes the store's current amount (with the low-mark
+floor). `npcClock` is `{ T, at, awake }`: the clock T as of wall time `at`,
+running on from there while `awake` (`clockNow`). Village and `npcClock`
+writes go to the players on that planet; `trader` records go to the whole
+world (every player needs them for the system map, task 4.5), and a
+player's client writes are relayed as before. A player arriving on a planet
+is sent its NPC records at once (they may have missed planet-only writes
+while elsewhere).
+
 ### 4. Time passes only where someone is
 
 The server keeps an occupancy count per (world, planet) from poses and
@@ -118,6 +150,17 @@ same capped catch-up from the saved `npcClock`, and ticks the player's
 planet. This is the "time compression on resume" rule in CLAUDE.md, and its
 `world_time` dispatch: `src/shared/npc` registers as the first subsystem of
 a small `src/shared/worldTime.ts` that owns the cap and the catch-up call.
+
+*As built (group 2):* occupancy counts a player on a planet from their
+first pose (not from connecting). While awake, `npcClock` is restamped at
+least every `CLOCK_STAMP_S`, so a server crash re-applies at most that much
+time; a clean stop (SIGTERM) puts every occupied planet to sleep first. A
+world reset or delete drops the occupancy without stamping (its records are
+going). For tests, a server started with `NPC_TEST_CLOCK=1` accepts
+`POST /admin/api/npc-clock { addMs }` to move the NPC clock forward and tick
+(404 otherwise) - task 6.1's "server clock moved forward" uses it. The
+bundle includes the `ItemType` table it names items with, so changing
+`Inventory.ts` also means regenerating `npc-core.js` (the drift test says so).
 
 ### 5. Motion is the fauna pattern, not server physics
 

@@ -76,6 +76,21 @@
 // portal (the last ACTIVITY_PER_WORLD), and appended to DATA_DIR/activity.log
 // (JSON lines) so the portal's list survives a restart or a redeploy.
 //
+// NPCs (openspec friendship-npcs, design 3 and 4): the server tracks which
+// players are on which planet (from their poses; a player is on no planet
+// until their first pose) and runs the shared NPC rules (npc-core.js,
+// generated from src/shared/npc) only for inhabited planets someone is on.
+// A planet's first occupant wakes it: its `village` records are created if
+// it was never visited, and the time since its `npcClock` was stamped is
+// applied in one step, capped (CLAUDE.md time compression). While occupied
+// it is advanced every SERVER_TICK_S; when the last player leaves it is
+// advanced to now and its clock stamped asleep. Planets nobody is on cost
+// nothing. Every change is an ordinary record write as id 0 with a bumped
+// version, sent to the players on that planet (`trader` records, on the
+// pseudo-planet 'traders', go to the whole world), so a client delivery
+// made on the version before a server write is refused like any stale
+// write. A player arriving on a planet is sent its NPC records at once.
+//
 // Operator portal: /admin (admin.js), enabled by the ADMIN_TOKEN secret.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -85,6 +100,7 @@ import { WebSocketServer } from 'ws';
 import { handleAdmin } from './admin.js';
 import { placeOn } from './geo.js';
 import { cleanStatus, STATUS_CHANNEL } from './status.js';
+import * as npc from './npc-core.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || '/data';
@@ -192,7 +208,9 @@ function openWorld(meta) {
   const versions = new Map();
   let recSeq = 0;
   for (const k of records.keys()) versions.set(k, ++recSeq);
-  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set(), versions, recSeq, chat: [], activity: [] };
+  // occ: planet -> Set<playerId> (who is on it); npcAwake: inhabited planet
+  // -> { T, lastMs, stampMs } while someone is on it (its NPC clock runs)
+  const w = { ...meta, edits, log, records, recLog, maps, mapDir, players: new Set(), versions, recSeq, chat: [], activity: [], occ: new Map(), npcAwake: new Map() };
   worlds.set(w.id, w);
   return w;
 }
@@ -335,6 +353,7 @@ function renameWorld(w, name) {
 // Delete a world and its files ('main' stays: it is the default world)
 function deleteWorld(w) {
   if (w.id === MAIN_WORLD.id) return false;
+  forgetPresence(w);
   closeWorldPlayers(w, CLOSE_DELETED, 'world deleted');
   worlds.delete(w.id);
   for (const f of [w.log, w.recLog]) fs.rmSync(f, { force: true });
@@ -351,6 +370,7 @@ function dropMaps(w) {
 
 // Back to fresh terrain: every edit and object gone, same name and seed
 function resetWorld(w) {
+  forgetPresence(w);
   closeWorldPlayers(w, CLOSE_RESET, 'world reset');
   w.edits.clear();
   w.records.clear();
@@ -419,11 +439,235 @@ function serverStatus() {
         players: [...w.players].map(pid => players.get(pid)).filter(Boolean).map(playerInfo),
         maps: Object.fromEntries([...w.maps].map(([planet, m]) => [planet, m.at])),
         activity: w.activity.slice(-ACTIVITY_PER_WORLD),
+        npc: npcStatus(w),
       };
     }),
   };
 }
 
+
+// ---- NPCs: presence, wake / tick / sleep (see the header) -------------------
+const NPC = npc.NPC_CONFIG;
+const NREC = npc.NPC_RECORDS;
+const NPC_TICK_MS = NPC.SERVER_TICK_S * 1000;
+const NPC_STAMP_MS = NPC.CLOCK_STAMP_S * 1000;
+// Test hook (NPC_TEST_CLOCK=1 only): the admin API can move the NPC clock
+// forward, to check catch-up and ticks without waiting hours
+const NPC_TEST_CLOCK = process.env.NPC_TEST_CLOCK === '1';
+let npcSkewMs = 0;
+const npcNow = () => Date.now() + npcSkewMs;
+const range = (n) => Array.from({ length: n }, (_, i) => i);
+
+const recData = (w, kind, planet, key) => w.records.get(recKey([kind, planet, key]))?.[3] ?? null;
+const occupants = (w, planet) => w.occ.get(planet) ?? new Set();
+
+// A server write: stored and logged like any record (id 0, a new version),
+// sent to the players on `toPlanet`, or to the whole world when it is null
+function npcWrite(w, kind, planet, key, data, toPlanet) {
+  const v = recordObject(w, [kind, planet, key, data]);
+  const msg = { t: 'rec', id: 0, kind, planet, key, data, v };
+  if (toPlanet === null) { broadcast(w, msg); return; }
+  const out = JSON.stringify(msg);
+  for (const pid of occupants(w, toPlanet)) {
+    const pl = players.get(pid);
+    if (pl && pl.ws.readyState === pl.ws.OPEN) pl.ws.send(out);
+  }
+}
+
+// A planet's NPC clock now: in memory while awake, else its stamped record
+// (0 for a planet never visited: its clock starts there)
+function npcClockOf(w) {
+  return (body) => {
+    const a = w.npcAwake.get(body);
+    if (a) return a.T;
+    return recData(w, NREC.CLOCK, body, NREC.CLOCK_KEY)?.T ?? 0;
+  };
+}
+
+function tradersOf(w) {
+  return range(NPC.TRADERS.BAND.length).map(i => recData(w, NREC.TRADER, NREC.TRADER_PLANET, String(i)));
+}
+
+// The band exists from the first time anyone wakes a planet in this world
+// (a cleared trader is put back where the band would have started it)
+function ensureTraders(w) {
+  const have = tradersOf(w);
+  if (have.every(Boolean)) return have;
+  const fresh = npc.createTraders(w.seed, npcClockOf(w));
+  return have.map((t, i) => {
+    if (t) return t;
+    npcWrite(w, NREC.TRADER, NREC.TRADER_PLANET, String(i), fresh[i], null);
+    return fresh[i];
+  });
+}
+
+// A planet's villages at clock T; any missing (first visit, or cleared by an
+// operator) are created there and then
+function villagesOf(w, body, T) {
+  const n = npc.inhabitedWorld(body).villages;
+  const have = range(n).map(i => recData(w, NREC.VILLAGE, body, String(i)));
+  if (have.every(Boolean)) return have;
+  const fresh = npc.createPlanetNpc(w.seed, body, T);
+  return have.map((v, i) => {
+    if (v) return v;
+    npcWrite(w, NREC.VILLAGE, body, String(i), fresh.villages[i], body);
+    return fresh.villages[i];
+  });
+}
+
+// Store what an advance changed; true when anything did
+function applyAdvance(w, body, res) {
+  for (const i of res.changedVillages) npcWrite(w, NREC.VILLAGE, body, String(i), res.planet.villages[i], body);
+  for (const i of res.changedTraders) npcWrite(w, NREC.TRADER, NREC.TRADER_PLANET, String(i), res.traders[i], null);
+  return res.changedVillages.length + res.changedTraders.length > 0;
+}
+
+function stampClock(w, body, T, at, awake) {
+  npcWrite(w, NREC.CLOCK, body, NREC.CLOCK_KEY, { T, at, awake }, body);
+}
+
+// The first player arrives: create (first visit) or catch up, then the clock runs
+function wakePlanet(w, body, now) {
+  const clock = recData(w, NREC.CLOCK, body, NREC.CLOCK_KEY);
+  const T0 = clock?.T ?? 0;
+  const traders = ensureTraders(w);
+  const villages = villagesOf(w, body, T0);
+  let T = T0;
+  if (clock) {
+    const res = npc.catchUpPlanet(w.seed, body, { T: T0, villages }, traders, clock.at, now, npcClockOf(w));
+    applyAdvance(w, body, res);
+    T = res.planet.T;
+    if (res.dtS > 0) console.log(`[world ${w.id}] npc ${body}: caught up ${Math.round(res.dtS)} s`);
+  }
+  stampClock(w, body, T, now, true);
+  w.npcAwake.set(body, { T, lastMs: now, stampMs: now });
+}
+
+// Time passes on an occupied planet
+function tickPlanet(w, body, now) {
+  const a = w.npcAwake.get(body);
+  if (!a) return;
+  const dtS = (now - a.lastMs) / 1000;
+  if (!(dtS > 0)) return;
+  const traders = ensureTraders(w);
+  const res = npc.advancePlanet(w.seed, body, { T: a.T, villages: villagesOf(w, body, a.T) }, traders, dtS, npcClockOf(w));
+  a.T = res.planet.T;
+  a.lastMs = now;
+  if (applyAdvance(w, body, res) || now - a.stampMs >= NPC_STAMP_MS) {
+    stampClock(w, body, a.T, now, true);
+    a.stampMs = now;
+  }
+}
+
+// The last player leaves: advance to now, stamp the clock asleep
+function sleepPlanet(w, body, now) {
+  tickPlanet(w, body, now);
+  const a = w.npcAwake.get(body);
+  if (!a) return;
+  stampClock(w, body, a.T, now, false);
+  w.npcAwake.delete(body);
+}
+
+// Bring an arriving player up to date with the planet's NPC records (they
+// may have missed writes made while they were elsewhere)
+function sendPlanetNpc(w, pl, body) {
+  const keys = [...range(npc.inhabitedWorld(body).villages).map(i => [NREC.VILLAGE, String(i)]), [NREC.CLOCK, NREC.CLOCK_KEY]];
+  for (const [kind, key] of keys) {
+    const k = recKey([kind, body, key]);
+    const r = w.records.get(k);
+    if (r) send(pl.ws, { t: 'rec', id: 0, kind, planet: body, key, data: r[3], v: recVersion(w, k) });
+  }
+}
+
+function enterPlanet(w, pl, body) {
+  let set = w.occ.get(body);
+  if (!set) w.occ.set(body, set = new Set());
+  set.add(pl.id);
+  if (!npc.isInhabited(body)) return;
+  if (!w.npcAwake.has(body)) wakePlanet(w, body, npcNow());
+  sendPlanetNpc(w, pl, body);
+}
+
+function leavePlanet(w, pid, body) {
+  const set = w.occ.get(body);
+  if (!set) return;
+  set.delete(pid);
+  if (set.size) return;
+  w.occ.delete(body);
+  if (w.npcAwake.has(body)) sleepPlanet(w, body, npcNow());
+}
+
+// A player's planet from their pose (null = gone)
+function setPresence(pl, planet) {
+  if (pl.occPlanet === planet) return;
+  if (pl.occPlanet) leavePlanet(pl.world, pl.id, pl.occPlanet);
+  pl.occPlanet = planet;
+  if (planet) enterPlanet(pl.world, pl, planet);
+}
+
+// A world being reset or deleted: nobody is anywhere, and nothing is
+// stamped on the way out (its records are going)
+function forgetPresence(w) {
+  w.npcAwake.clear();
+  w.occ.clear();
+  for (const pid of w.players) { const pl = players.get(pid); if (pl) pl.occPlanet = null; }
+}
+
+function tickAllPlanets() {
+  const now = npcNow();
+  for (const w of worlds.values()) for (const body of [...w.npcAwake.keys()]) tickPlanet(w, body, now);
+}
+
+// Test hook: move the NPC clock forward, then tick at once
+function skewNpcClock(ms) {
+  if (!NPC_TEST_CLOCK || !isNum(ms) || ms < 0) return false;
+  npcSkewMs += ms;
+  tickAllPlanets();
+  return true;
+}
+
+// What the portal shows of a world's NPCs: who is on which planet, every
+// planet that has a population (its villages, people and requests), and
+// the traders
+function npcStatus(w) {
+  const now = npcNow();
+  const planets = [];
+  for (const world of npc.INHABITED_WORLDS) {
+    const body = world.body;
+    const clock = recData(w, NREC.CLOCK, body, NREC.CLOCK_KEY);
+    const villages = range(world.villages).map(i => recData(w, NREC.VILLAGE, body, String(i)));
+    if (!clock && !villages.some(Boolean)) continue;   // never visited: no population
+    const a = w.npcAwake.get(body);
+    const T = a ? a.T + Math.max(0, now - a.lastMs) / 1000 : clock?.T ?? 0;
+    const pop = npc.buildPopulation(w.seed, body);
+    planets.push({
+      body, awake: !!a, occupants: occupants(w, body).size, T: Math.round(T), species: world.species.name,
+      villages: pop.villages.map((info, i) => {
+        const v = villages[i];
+        const s = v && NPC.STRUCTURES[v.structure];
+        return {
+          index: i, name: info.name,
+          residents: info.residents.map(id => { const n = pop.npcs.find(x => x.id === id); return { name: n.name, role: n.role }; }),
+          state: v ? {
+            food: Math.round(npc.foodAt(v, T) * 10) / 10, low: npc.foodLowMark(v), pop: v.pop,
+            building: s ? s.name : null, stage: v.stage, stages: s ? s.stages.length : 0, built: v.structure,
+            art: v.art, requests: v.requests, reopensIn: v.reopen.map(t => Math.max(0, Math.round(t - T))),
+          } : null,
+        };
+      }),
+    });
+  }
+  const clockOf = npcClockOf(w);
+  const traders = tradersOf(w).map((t, i) => t && {
+    name: NPC.TRADERS.BAND[i].name, at: t.at, route: NPC.TRADERS.BAND[i].route,
+    leavesIn: Math.max(0, Math.round(t.leaveT - clockOf(t.at))), offers: t.offers,
+  }).filter(Boolean);
+  return {
+    occupancy: Object.fromEntries([...w.occ].map(([b, s]) => [b, s.size])),
+    planets, traders,
+    art: Object.fromEntries(npc.INHABITED_WORLDS.map(x => [x.art.id, x.art.name])),
+  };
+}
 
 // ---- players --------------------------------------------------------------
 let nextId = 1;
@@ -478,6 +722,7 @@ function onMessage(id, raw) {
   } else if (m.t === 'pose' && isPlanetId(m.planet) && isVec(m.p, 3) && isVec(m.q, 4)) {
     const a = isAction(m.a) ? m.a : undefined;
     pl.planet = m.planet; pl.p = m.p; pl.q = m.q; pl.a = a;
+    setPresence(pl, m.planet);
     broadcast(w, { t: 'pose', id, planet: m.planet, p: m.p, q: m.q, a }, id);
   } else if (m.t === 'edit' && isPlanetId(m.planet) && Number.isInteger(m.tile) && Number.isInteger(m.depth) && Number.isInteger(m.block)
              && m.tile >= 0 && m.tile < 1_000_000 && m.depth >= 0 && m.depth < 256 && m.block >= 0 && m.block < 256) {
@@ -573,7 +818,7 @@ function mapFile(w, planet) {
   return m ? { file: path.join(w.mapDir, `${planet}.${m.ext}`), type: `image/${m.ext}`, at: m.at } : null;
 }
 
-const admin = { worlds, players, serverStatus, renameWorld, deleteWorld, resetWorld, clearRecordKind, kickPlayer, noticeWorld, gameData: GAME_DATA, mapFile };
+const admin = { worlds, players, serverStatus, renameWorld, deleteWorld, resetWorld, clearRecordKind, kickPlayer, noticeWorld, gameData: GAME_DATA, mapFile, skewNpcClock };
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -628,7 +873,7 @@ wss.on('connection', (ws, req) => {
   }
   const id = nextId++;
   const uploadKey = crypto.randomBytes(12).toString('hex');
-  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {}, id, joinedAt: Date.now(), lastSeen: Date.now(), status: null, uploadKey, lastMapAt: 0 });
+  players.set(id, { ws, world: w, name: `Player ${id}`, planet: 'earth', p: [0, 0, 0], q: [0, 0, 0, 1], look: null, rate: {}, id, joinedAt: Date.now(), lastSeen: Date.now(), status: null, uploadKey, lastMapAt: 0, occPlanet: null });
   send(ws, {
     t: 'welcome',
     id,
@@ -647,6 +892,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     const pl = players.get(id);
     if (pl && pl.joinLogged) logActivity(w, 'leave', pl, Date.now() - pl.joinedAt);
+    if (pl) setPresence(pl, null);
     players.delete(id);
     w.players.delete(id);
     broadcast(w, { t: 'leave', id });
@@ -655,6 +901,7 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, () => console.log(`tenebris js server on :${PORT}, data in ${DATA_DIR}`));
+setInterval(tickAllPlanets, NPC_TICK_MS);
 
 // Stopping (a redeploy, Fly auto-stop): everyone still on is logged as leaving
 let stopping = false;
@@ -665,6 +912,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     for (const pl of players.values()) {
       if (pl.joinLogged) logActivity(pl.world, 'leave', pl, Date.now() - pl.joinedAt, 'server stopped');
       pl.joinLogged = false;   // the close handler doesn't log it again
+      setPresence(pl, null);   // occupied planets advance to now and stamp their clocks
     }
     process.exit(0);
   });

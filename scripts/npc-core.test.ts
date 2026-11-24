@@ -25,3 +25,5 @@ ok(same(core.createTraders(31337, () => 0), createTraders(31337, () => 0)), 'and
 
 const dockerfile = readFileSync(fileURLToPath(new URL('../server-js/Dockerfile', import.meta.url)), 'utf8');
 ok(/^COPY .*\bnpc-core\.js\b/m.test(dockerfile), 'the server Dockerfile copies npc-core.js');
+const server = readFileSync(fileURLToPath(new URL('../server-js/server.js', import.meta.url)), 'utf8');
+ok(/from '\.\/npc-core\.js'/.test(server), 'server.js runs the bundle');
