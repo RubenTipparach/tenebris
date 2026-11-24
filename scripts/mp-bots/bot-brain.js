@@ -1043,6 +1043,16 @@
     }
     if (feetDepth() < surface - 1) await pillarUpTo(surface - 1, 60);
     void seaLevel;
+    if (!done()) {
+      // nothing of it round here: new ground, well away, before the next try
+      const names = wanted.map(b => Object.keys(B).find(k => B[k] === b)).join('/');
+      say(`no ${names} here - heading for new ground`);
+      const pos = player().position;
+      const up = upAt(pos);
+      const r = new (T().Vector3)(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5);
+      r.addScaledVector(up, -r.dot(up)).normalize();
+      await walkTo(pos.clone().addScaledVector(r, 80), 4, 60000);
+    }
     return done();
   }
   // Find a surface block of type `kinds` within range, walk there, dig it
