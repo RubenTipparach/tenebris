@@ -560,9 +560,16 @@
     if (feetDepth() < s - 1) { say('climbing out to the surface'); await pillarUpTo(s - 1, 60); }
   }
 
+  // Anything placed on tile t (a machine, a cable or pipe node, a chest...): not free to build on
   function stationAt(t) {
     const b = bi();
-    return !!(b.furnaceManager.getFurnaceAtTile(t) || b.cookerManager.getAtTile(t) || b.storageChestManager.getChestAtTile(t));
+    if ((st.badPlace || []).includes(t)) return true;
+    return !!(b.furnaceManager.getFurnaceAtTile(t) || b.cookerManager.getAtTile(t) || b.storageChestManager.getChestAtTile(t)
+      || b.electricFurnaceManager.getElectricFurnaceAtTile(t) || b.steamEngineManager.getSteamEngineAtTile(t)
+      || b.hydroGeneratorManager.getHydroGeneratorAtTile(t) || b.electronicsWorkbenchManager.getElectronicsWorkbenchAtTile(t)
+      || b.cableNodeManager.getPlacedCables().some(c => c.tileIndex === t)
+      || b.copperPipeManager.getPlacedPipes().some(c => c.tileIndex === t)
+      || b.machineManager.getAll().some(m => m.tileIndex === t));
   }
 
   // Get within reach of world point `target`: out of any hole, over to it,
@@ -1059,7 +1066,8 @@
     await sleep(900);
     closeMenus();
     const ok = count(item) < before;
-    say(ok ? `placed item ${item} on tile ${tile}` : `could not place item ${item} on tile ${tile}`);
+    say(ok ? `placed item ${item} on tile ${tile}` : `could not place item ${item} on tile ${tile} - won't try that tile again`);
+    if (!ok) st.badPlace = (st.badPlace || []).concat([tile]);
     return ok;
   }
   const isWaterTile = (t) => P().topBlockOf(t) === B.WATER;
