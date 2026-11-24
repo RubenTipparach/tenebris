@@ -1667,6 +1667,19 @@ export class CraftingSystem {
   private craftSelectedRecipe(): void {
     if (!this.selectedRecipe || !this.canCraft(this.selectedRecipe)) return;
 
+    // Room for what it makes, once the ingredients are spent - else nothing
+    // is spent (addItem would drop the result). A tool whose toolbox slot is
+    // free equips there and needs no inventory room.
+    const made = this.selectedRecipe.output;
+    const tool = toolOf(made.itemType);
+    const toolboxFree = !!tool && this.inventory.getToolbox()[this.inventory.toolboxIndex(tool.kind)]?.itemType === ItemType.NONE;
+    const give = [...(toolboxFree ? [] : [made]), ...(this.selectedRecipe.returns ? [this.selectedRecipe.returns] : [])];
+    const take = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS ? [] : this.selectedRecipe.inputs;
+    if (!this.inventory.fitsAfter(take, give)) {
+      showToast(`No room in the inventory for the ${ITEM_DATA[made.itemType].name}`, { duration: TOOLBOX.TOAST_MS });
+      return;
+    }
+
     // Remove input items (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       for (const input of this.selectedRecipe.inputs) {
