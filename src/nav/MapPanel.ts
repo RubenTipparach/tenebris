@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
-import { getBodyConfig, GAS_GIANTS, CelestialBodyType, bodyEnvironment, describeEnvironment } from '../config/SolarSystemConfig';
+import { getBodyConfig, GAS_GIANTS, CelestialBodyType, bodyEnvironment } from '../config/SolarSystemConfig';
+import { environmentCard } from '../player/Survival';
 import { allOrbits, gameTimeS, positionAt } from '../world/Orbits';
 import { BlockColours } from './blockColours';
 import { compassHeading, fromLatLon, mapUV, V3 } from './compass';
@@ -276,7 +277,7 @@ export class MapPanel {
       if (!hit) { c.title = ''; return; }
       const name = getBodyConfig(hit.id)?.name ?? GAS_GIANTS.find(g => g.id === hit.id)?.name ?? hit.id;
       const visited = this.nav.visited?.(hit.id) ? ' (visited)' : '';
-      c.title = `${name}${visited} - ${describeEnvironment(bodyEnvironment(hit.id))}`;
+      c.title = `${name}${visited} - ${environmentCard(bodyEnvironment(hit.id))}`;
     });
     c.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;

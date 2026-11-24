@@ -220,8 +220,14 @@ export class RocketFlightManager {
     let best: PlacedLaunchPad | null = null;
     let bestD: number = ROCKET_CONFIG.REFIT.DOCK_RADIUS_M;
     for (const pad of this.padManager?.getLaunchPads() ?? []) {
-      if (!pad.isComplete || pad.rocketParts.length > 0 || pad.segmentCount < 1) continue;
-      const d = pad.mesh.getWorldPosition(new THREE.Vector3()).distanceTo(rocket.pivot.getWorldPosition(new THREE.Vector3()));
+      // The rocket's own pad still lists it (the pad is its record while it
+      // is away), so that pad counts as free for it
+      const holdsOnlyThis = pad === rocket.pad && pad.rocketParts.every(p => rocket.parts.includes(p));
+      if (!pad.isComplete || (pad.rocketParts.length > 0 && !holdsOnlyThis) || pad.segmentCount < 1) continue;
+      // pad.position is in the pad's planet frame; the mesh (geometry baked at
+      // its origin) carries that frame, so map the point through it
+      pad.mesh.updateWorldMatrix(true, false);
+      const d = pad.mesh.localToWorld(pad.position.clone()).distanceTo(rocket.pivot.getWorldPosition(new THREE.Vector3()));
       if (d <= bestD) { best = pad; bestD = d; }
     }
     return best;
@@ -239,14 +245,27 @@ export class RocketFlightManager {
     const problems = stackProblems(types);
     if (problems.length) return problems[0];
     const fuelUnits = (rocket.fuelPercent / 100) * computeRocketStats(types).fuelCapacity;
-    // The parked rocket leaves; its parts are stacked again on the pad
+    // Copies: the parked rocket shares its hold arrays with its origin pad,
+    // which re-sizes them in place while the parts are stacked again
+    const copy = (slots: InventorySlot[] | null | undefined) => (slots ?? []).map(sl => ({ itemType: sl.itemType, quantity: sl.quantity }));
+    const cargo = copy(rocket.cargo), equipment = copy(rocket.equipment);
+    // The parked rocket leaves; its parts are stacked again on the pad. Its
+    // origin pad (this one, or the one it launched from) forgets them, so
+    // the rocket is listed once, where it docked
     this.landedRocketManager.removeLandedRocket(rocket.id);
     rocket.pivot.parent?.remove(rocket.pivot);
+    const origin = rocket.pad;
+    if (origin) {
+      origin.rocketParts = origin.rocketParts.filter(p => !rocket.parts.includes(p));
+      if (origin !== pad) this.onRocketChangedCallback?.(origin);
+    }
     for (const p of rocket.parts) p.dispose();
     for (const t of types) await this.padManager.addRocketPart(pad, t);
     pad.fuel = fuelUnits;
-    pad.cargo = rocket.cargo ?? [];
-    pad.equipment = rocket.equipment ?? [];
+    // Same stack, so the pad's (re-sized) slots match the rocket's hold
+    for (const [into, from] of [[pad.cargo, cargo], [pad.equipment, equipment]] as const) {
+      into.forEach((sl, i) => { sl.itemType = from[i]?.itemType ?? ItemType.NONE; sl.quantity = from[i]?.quantity ?? 0; });
+    }
     pad.engineMode = rocket.engineMode ?? null;
     this.onRocketChangedCallback?.(pad);
     return null;
@@ -345,8 +364,12 @@ export class RocketFlightManager {
       parts.push(new RocketPart(types[i], info.partType, group, material, i));
     }
     rocket.parts = parts;
+    // The rocket's pad is its saved record while it is away: it lists the
+    // new stack, so the refit survives a reload
+    if (rocket.pad) rocket.pad.rocketParts = parts;
     const cap = computeRocketStats(types).fuelCapacity;
     rocket.fuelPercent = cap > 0 ? (Math.min(fuelUnits, cap) / cap) * 100 : 0;
+    if (rocket.pad) rocket.pad.fuel = Math.min(fuelUnits, cap);
     // Its slots follow the new stack (what is aboard already fits: checked above)
     if (rocket.cargo) fitSlots(rocket.cargo, cargoSlotsFor(types));
     if (rocket.equipment) fitSlots(rocket.equipment, equipmentSlotsFor(types));
@@ -470,9 +493,9 @@ export class RocketFlightManager {
     this.rocketController = new RocketController(this.scene);
     this.rocketController.setSunPosition(this.sunPosition);
 
-    // Get surface normal from launch pad position (pointing away from planet center)
-    // For simplicity, assume Earth at origin
-    const surfaceNormal = launchPad.position.clone().normalize();
+    // Surface normal: away from the centre of the body the pad is on (any
+    // body - the Moon's pads launch straight up from the Moon too)
+    const surfaceNormal = launchPad.position.clone().sub(launchPad.planetCenter).normalize();
 
     // Initialize the rocket
     this.rocketController.initialize(

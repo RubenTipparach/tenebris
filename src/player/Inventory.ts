@@ -212,6 +212,11 @@ export enum ItemType {
   METALLIC_HYDROGEN = 224,
   CERAMIC_PLATING = 225,
   MAGNETIC_COIL = 226,
+  // Suit tiers and heaters (space-exploration, body-environments)
+  THERMAL_SUIT = 227,
+  HARDENED_SUIT = 228,
+  SUIT_HEATER = 229,
+  SUIT_HEATER_MK2 = 230,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -680,6 +685,10 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
   [ItemType.GAS_COLLECTOR]: { name: 'Gas Collector', stackSize: 8, texture: '/textures/technology/gas_collector_face.png', mineTime: 2.0 },
   [ItemType.SPACE_SUIT]: { name: 'Space Suit', stackSize: 1, texture: '/textures/icons/space_suit.png', mineTime: 0.5 },
+  [ItemType.THERMAL_SUIT]: { name: 'Thermal Suit', stackSize: 1, texture: '/textures/icons/thermal_suit.png', mineTime: 0.5 },
+  [ItemType.HARDENED_SUIT]: { name: 'Hardened Suit', stackSize: 1, texture: '/textures/icons/hardened_suit.png', mineTime: 0.5 },
+  [ItemType.SUIT_HEATER]: { name: 'Suit Heater', stackSize: 1, texture: '/textures/icons/suit_heater.png', mineTime: 0.5 },
+  [ItemType.SUIT_HEATER_MK2]: { name: 'Suit Heater Mk2', stackSize: 1, texture: '/textures/icons/suit_heater_mk2.png', mineTime: 0.5 },
   [ItemType.SOLAR_PANEL]: { name: 'Solar Panel', stackSize: 16, texture: '/textures/technology/solar_panel_face.png', mineTime: 1.5 },
   [ItemType.SOLAR_ARRAY]: {
     name: 'Solar Array',

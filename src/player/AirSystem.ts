@@ -3,7 +3,7 @@ import { gameStorage } from '../engine/GameStorage';
 import { emitGameEvent } from '../engine/GameEvents';
 import { showToast } from '../utils/toast';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
-import { AirState, EnvState, ExposureInput, HAZARDS, Hazard, airGauge, environmentExposure, isExposed, newAirState, newEnvState, tickAir, tickEnvironment } from './Survival';
+import { AirState, EnvState, ExposureInput, HAZARDS, Hazard, airGauge, environmentExposure, hazardDrain, isExposed, newAirState, newEnvState, tickAir, tickEnvironment } from './Survival';
 
 /** What the HUD calls each hazard's gauge, and what the death screen says it did */
 const HAZARD_TEXT: Record<Hazard, { chip: string; death: string }> = {
@@ -144,7 +144,7 @@ export class AirSystem {
     this.renderChip(exposed || fx.onTank, fx.onTank);
     // Heat, cold and radiation: their own gauges (body-environments)
     const hazards = environmentExposure(where, this.suit);
-    const killedBy = tickEnvironment(this.env, dt, hazards);
+    const killedBy = tickEnvironment(this.env, dt, hazards, hazardDrain(t => this.inventory.getItemCount(t)));
     for (const h of HAZARDS) this.renderHazardChip(h, hazards[h] || this.env[h] < ENVIRONMENT.GAUGE_S);
     if (fx.died) { this.dead = true; this.deathCause = 'air'; }
     else if (killedBy) { this.dead = true; this.deathCause = killedBy; }

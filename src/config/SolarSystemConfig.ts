@@ -557,7 +557,7 @@ export const BODY_ENVIRONMENTS: Record<string, BodyEnvironment> = {
   nerith: env('cold', 'low'),
   halcyon: env('cold', 'low'),
   glint: env('frozen', 'low'),
-  tessaly: env('frozen', 'low'),
+  tessaly: env('cold', 'low'),
   // the gas giants and their moons (inside their radiation belts)
   brontes: env('cold', 'high', 4),
   aurelia: env('cold', 'high', 4),
@@ -927,6 +927,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       terrain: {
         hasWater: true,
+        extraOres: [DEPOSITS.RESIN],   // amber resin seams: Sequoia's own (space-exploration)
         seaLevel: 12,
         waterColor: '#2a6655',      // Greenish water
         waterDeepColor: '#1a4433',  // Darker greenish deep water
@@ -1017,6 +1018,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       },
       terrain: {
         hasWater: false,
+        extraOres: [DEPOSITS.SALVAGE], // the buried city's scrap: Metropole Prime's own (space-exploration)
         seaLevel: 36,      // air above street level: the tallest tower
         seed: 404,
         city: {
@@ -1093,7 +1095,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'vesper', name: 'Vesper', dayMin: 36, radius: 280, position: { x: 2800, y: -100, z: -1200 },
+    rockWorld({ id: 'vesper', extraOres: [DEPOSITS.SILICA], name: 'Vesper', dayMin: 36, radius: 280, position: { x: 2800, y: -100, z: -1200 },
       heightVariation: 0.5, gravity: 0.7, colour: '#d6a96c', seed: 202,
       life: {
         grounds: [['clay', HexBlockType.VESPER_CLAY], ['dune', HexBlockType.VESPER_DUNE], ['salt', HexBlockType.VESPER_SALT]],
@@ -1105,7 +1107,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'halcyon', name: 'Halcyon', dayMin: 18, radius: 120, position: { x: -1100, y: -250, z: -2000 },
+    rockWorld({ id: 'halcyon', extraOres: [DEPOSITS.CRYSTAL], name: 'Halcyon', dayMin: 18, radius: 120, position: { x: -1100, y: -250, z: -2000 },
       heightVariation: 0.8, gravity: 0.65, colour: '#3f8577', seed: 303,
       life: {
         grounds: [['moss', HexBlockType.HALCYON_MOSS], ['geode', HexBlockType.HALCYON_GEODE], ['glass', HexBlockType.HALCYON_GLASS]],
@@ -1117,7 +1119,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
         floraDensity: 2,
       },
     }),
-    rockWorld({ id: 'tessaly', name: 'Tessaly', dayMin: 28, radius: 160, position: { x: -2800, y: 400, z: -600 },
+    rockWorld({ id: 'tessaly', extraOres: [DEPOSITS.CRYO], name: 'Tessaly', dayMin: 28, radius: 160, position: { x: -2800, y: 400, z: -600 },
       heightVariation: 0.6, gravity: 0.55, colour: '#c3dff0', seed: 505, iceCover: true,
       life: {
         grounds: [['snowmoss', HexBlockType.TESSALY_SNOWMOSS], ['glaze', HexBlockType.TESSALY_GLAZE], ['frost', HexBlockType.TESSALY_FROST]],
@@ -1133,7 +1135,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       heightVariation: 0.7, gravity: 0.45, colour: '#61708a', seed: 606 }),
     rockWorld({ id: 'kessel', name: 'Kessel', dayMin: 12, radius: 80, position: { x: -300, y: 600, z: 2400 },
       heightVariation: 1.0, gravity: 0.35, colour: '#655d77', seed: 707 }),
-    rockWorld({ id: 'umbra', name: 'Umbra', dayMin: 40, radius: 110, position: { x: 4000, y: -200, z: 600 },
+    rockWorld({ id: 'umbra', extraOres: [DEPOSITS.FUNGUS], name: 'Umbra', dayMin: 40, radius: 110, position: { x: 4000, y: -200, z: 600 },
       heightVariation: 0.7, gravity: 0.5, colour: '#2e3560', seed: 808,
       life: {
         grounds: [['moss', HexBlockType.UMBRA_MOSS], ['shale', HexBlockType.UMBRA_SHALE], ['mycel', HexBlockType.UMBRA_MYCEL]],
@@ -1223,7 +1225,7 @@ export const SOLAR_SYSTEM: SolarSystemConfig = {
       heightVariation: 0.4, gravity: 0.25, colour: '#4a2a24', seed: 906, volcanoes: 2 }),
     moon('cinder', { id: 'scoria', name: 'Scoria', radius: 32, position: { x: -2050, y: 230, z: 1100 },
       heightVariation: 0.7, gravity: 0.25, colour: '#6b4a3c', seed: 907 }),
-    moon('ferrum', { id: 'lodestone', name: 'Lodestone', radius: 40, position: { x: 3300, y: 400, z: 2050 },
+    moon('ferrum', { id: 'lodestone', extraOres: [DEPOSITS.RARE_EARTH], name: 'Lodestone', radius: 40, position: { x: 3300, y: 400, z: 2050 },
       heightVariation: 0.7, gravity: 0.35, colour: '#5b5f66', seed: 908, metalRich: true }),
 
     // =========================================================================

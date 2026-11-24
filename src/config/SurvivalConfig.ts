@@ -63,6 +63,13 @@ export const ENVIRONMENT = {
   RECOVER_RATE: 4,
   // The chip turns red under this fraction left
   LOW_FRACTION: 0.25,
+  // A suit heater carried in the inventory: how fast the COLD gauge drains
+  // (x its normal rate) - longer cold stays, not immunity. The best one
+  // carried counts.
+  HEATERS: {
+    [ItemType.SUIT_HEATER]: 0.5,
+    [ItemType.SUIT_HEATER_MK2]: 0.25,
+  } as Partial<Record<ItemType, number>>,
 };
 
 /** The HUD chips for the hazard gauges: stacked above the AIR chip (px from the bottom) */
@@ -74,9 +81,15 @@ export const ENVIRONMENT_CHIP = {
 /**
  * What each suit protects against, as the highest level of each hazard it
  * holds off (see ENVIRONMENT). Every suit also breathes from oxygen tanks.
- * The space suit: vacuum only.
+ * The space suit: vacuum only. The thermal suit: vacuum, hot and cold (not
+ * scorching or frozen). The hardened suit: everything - scorching, frozen
+ * and high radiation. Listed lowest tier first (the body card names the
+ * first that holds a world).
  */
 export interface SuitRating { heat: number; cold: number; radiation: number }
 export const SUITS: Partial<Record<ItemType, SuitRating>> = {
   [ItemType.SPACE_SUIT]: { heat: 0, cold: 0, radiation: 0 },
+  [ItemType.THERMAL_SUIT]: { heat: 1, cold: 1, radiation: 0 },
+  [ItemType.HARDENED_SUIT]: { heat: 2, cold: 2, radiation: 1 },
 };
+export const SUIT_TIERS: ItemType[] = [ItemType.SPACE_SUIT, ItemType.THERMAL_SUIT, ItemType.HARDENED_SUIT];

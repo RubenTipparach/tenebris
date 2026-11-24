@@ -135,11 +135,11 @@ Real propulsion concepts, scaled to game stats. They are new entries in `ROCKET_
 | 2 | Vacuum (exists) | 26 kN | 200 | 150 | - | Moon titanium |
 | 2 | **Solar-electric ion thruster** | 0.6 kN | 2000 | 60 | draws charge while firing | Moon |
 | 3 | Nuclear thermal (exists) | 30 kN | 500 | 300 | - | uranium |
-| 3 | **Gas-core nuclear** ("nuclear lightbulb") | 60 kN | 1200 | 500 | fuel rods to build | Ember |
+| 3 | **Gas-core nuclear** ("nuclear lightbulb") | 100 kN | 1200 | 500 | fuel rods to build | Ember |
 | 4 | Nuclear-electric ion drive (exists) | 1.5 kN | 3000 | 120 | reactor core | |
 | 4 | **Fission-fragment drive** (magnetic fission) | 4 kN | 9000 | 300 | reactor core, magnets | Lodestone |
 | 4 | **Nuclear pulse drive** ("Orion", fission bombs) | 400 kN | 2500 | 1500 | pulse units in cargo | Brand |
-| 5 | **D-He3 fusion drive** | 25 kN | 12000 | 600 | helium-3 in cargo | Aurelia |
+| 5 | **D-He3 fusion drive** | 60 kN | 12000 | 600 | helium-3 in cargo | Aurelia |
 | 6 | **Magnetic fusion torch** | 120 kN | 30000 | 900 | helium-3 and deuterium in cargo | Brontes, plus the coil from the Sun |
 
 **Charge and consumables:**
@@ -189,8 +189,8 @@ Each body config gains `environment: { temperature, radiation, atmosphereDensity
 | Scorching | Ember, Brand, Pyrra, Ashfall |
 | Hot | Cinder, Vesper, Sable, Lodestone |
 | Temperate | Earth, Moon, Sequoia, Metropole, Thalassa, Verdance, Mirewood, Scoria |
-| Cold | Umbra, Nyx, Rime, Kessel, Nerith, Halcyon, Ingot, and the rock asteroids |
-| Frozen | Tessaly, Glint, Calyx, Glacia, Obol, and the ice asteroids |
+| Cold | Umbra, Nyx, Rime, Kessel, Nerith, Halcyon, Ingot, Tessaly, and the rock asteroids |
+| Frozen | Glint, Calyx, Glacia, Obol, and the ice asteroids |
 
 High radiation is on the gas giants' moons and close to the Sun.
 

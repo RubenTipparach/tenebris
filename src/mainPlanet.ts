@@ -1913,7 +1913,7 @@ class PlanetGame {
     this.air = air;
     this.blockInteraction.setAirSystem(air);
     const crafting = this.blockInteraction.getCraftingSystem();
-    crafting.setSuitSlot({ worn: () => air.isSuitWorn(), takeOff: () => air.takeOffSuit() });
+    crafting.setSuitSlot({ item: () => air.getSuitItem(), takeOff: () => air.takeOffSuit() });
     // The suit rides the synced look, so other players see it
     this.multiplayer?.setSuit(air.isSuitWorn());
     air.onSuitChanged((worn) => {

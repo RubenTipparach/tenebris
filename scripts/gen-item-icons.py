@@ -475,6 +475,57 @@ def space_suit():
     return px
 
 
+def suit_tier(body, trim, chest, plates=False):
+    """A suit tier: the space suit's cut in its own colours (space-exploration):
+    the thermal suit quilted gold, the hardened suit dark and plated"""
+    px, c = _canvas()
+    for y in range(1, 6):
+        for x in range(5, 11):
+            edge = x in (5, 10) or y in (1, 5)
+            px[y][x] = c["navy"] if edge else c["blue"] if 2 <= y <= 4 and 6 <= x <= 9 else c[trim]
+    px[2][7] = c["white"]
+    for y in range(6, 15):
+        x0, x1 = (2, 13) if y < 10 else (4, 11)
+        for x in range(x0, x1 + 1):
+            edge = x in (x0, x1) or y == 14
+            px[y][x] = c["navy"] if edge else c[trim] if x in (x0 + 1, x1 - 1) else c[body]
+    if plates:                      # plate seams across the torso and legs
+        for y in (8, 11):
+            for x in range(3, 13):
+                if px[y][x] != (0, 0, 0, 0) and px[y][x] != c["navy"]:
+                    px[y][x] = c["black"]
+    else:                           # quilting: a diamond stitch
+        for y in range(7, 14):
+            for x in range(3, 13):
+                if (x + y) % 3 == 0 and px[y][x] == c[body]:
+                    px[y][x] = c[trim]
+    for y in range(7, 10):
+        for x in range(6, 10):
+            px[y][x] = c[chest]
+    for y in range(11, 15):
+        px[y][7] = px[y][8] = c["navy"]
+    return px
+
+
+def suit_heater(mk2=False):
+    """A suit heater: a battery pack with glowing coils"""
+    px, c = _canvas()
+    for y in range(3, 14):
+        for x in range(3, 13):
+            edge = x in (3, 12) or y in (3, 13)
+            px[y][x] = c["navy"] if edge else c["dgrey"] if y > 10 else c["lgrey"]
+    coil = "blue" if mk2 else "orange"
+    hot = "white" if mk2 else "yellow"
+    for y in (5, 7, 9):
+        for x in range(5, 11):
+            px[y][x] = c[coil] if x % 2 else c[hot]
+    for x in (6, 9):                 # terminals
+        px[2][x] = c["dgrey"]
+    if mk2:
+        px[11][5] = px[11][6] = c["blue"]
+    return px
+
+
 def chute_face():
     """A parachute pack's face: a canopy over its lines"""
     px, c = _canvas()
@@ -919,6 +970,10 @@ if __name__ == "__main__":
     write("icons/empty_tank.png", tank(False))
     write("icons/oxygen_tank.png", tank(True))
     write("icons/space_suit.png", space_suit())
+    write("icons/thermal_suit.png", suit_tier("orange", "yellow", "red"))
+    write("icons/hardened_suit.png", suit_tier("dgrey", "indigo", "lime", plates=True))
+    write("icons/suit_heater.png", suit_heater())
+    write("icons/suit_heater_mk2.png", suit_heater(mk2=True))
     gas = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/gas_collector.png", recolour(read_png(os.path.join(techd, "hydro_generator.png")), gas))
     write("technology/gas_collector_face.png", recolour(read_png(os.path.join(techd, "hydro_generator_face.png")), gas))

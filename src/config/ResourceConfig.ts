@@ -25,6 +25,15 @@ export const DEPOSITS = {
   // wool-air-and-reentry). Earth keeps only the thin common veins in
   // Planet.ts ORE_CONFIGS.
   LITHIUM: { type: HexBlockType.ORE_LITHIUM, minDepth: 0, maxDepth: 10, veinChance: 0.012, veinSize: 9, spreadFactor: 0.75 },
+  // Body resources (openspec space-exploration, resources): each listed in
+  // one body's extraOres only - scripts/body-resources.test.ts checks it
+  RESIN: { type: HexBlockType.RESIN_AMBER, minDepth: 2, maxDepth: 14, veinChance: 0.006, veinSize: 8, spreadFactor: 0.7 },
+  SALVAGE: { type: HexBlockType.SALVAGE_SCRAP, minDepth: 2, maxDepth: 14, veinChance: 0.008, veinSize: 10, spreadFactor: 0.75 },
+  RARE_EARTH: { type: HexBlockType.ORE_RARE_EARTH, minDepth: 0, maxDepth: 10, veinChance: 0.008, veinSize: 7, spreadFactor: 0.7 },
+  FUNGUS: { type: HexBlockType.FUNGUS_SEAM, minDepth: 1, maxDepth: 12, veinChance: 0.007, veinSize: 9, spreadFactor: 0.75 },
+  SILICA: { type: HexBlockType.SILICA_SAND, minDepth: 2, maxDepth: 14, veinChance: 0.007, veinSize: 12, spreadFactor: 0.8 },
+  CRYSTAL: { type: HexBlockType.CRYSTAL_VEIN, minDepth: 0, maxDepth: 10, veinChance: 0.005, veinSize: 6, spreadFactor: 0.65 },
+  CRYO: { type: HexBlockType.CRYO_ICE, minDepth: 1, maxDepth: 12, veinChance: 0.007, veinSize: 8, spreadFactor: 0.7 },
 } satisfies Record<string, Deposit>;
 
 /**

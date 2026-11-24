@@ -683,6 +683,22 @@
   "226": {
    "name": "Magnetic Coil",
    "icon": "/textures/icons/magnetic_coil.png"
+  },
+  "227": {
+   "name": "Thermal Suit",
+   "icon": "/textures/icons/thermal_suit.png"
+  },
+  "228": {
+   "name": "Hardened Suit",
+   "icon": "/textures/icons/hardened_suit.png"
+  },
+  "229": {
+   "name": "Suit Heater",
+   "icon": "/textures/icons/suit_heater.png"
+  },
+  "230": {
+   "name": "Suit Heater Mk2",
+   "icon": "/textures/icons/suit_heater_mk2.png"
   }
  },
  "slots": {

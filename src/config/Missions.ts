@@ -204,13 +204,15 @@ export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   ferrum: [I.SUPERCONDUCTOR],
   lodestone: [I.MAGNET, I.FISSION_FRAGMENT_DRIVE],
   brand: [I.PULSE_UNIT, I.NUCLEAR_PULSE_DRIVE],
-  vesper: [I.AEROGEL],
+  vesper: [I.AEROGEL, I.THERMAL_SUIT],
   sun: [I.MAGNETIC_COIL],
   // outward
   aurelia: [I.FUSION_DRIVE],
-  halcyon: [I.LASER_CRYSTAL],
+  calyx: [I.SUIT_HEATER],
+  halcyon: [I.LASER_CRYSTAL, I.HARDENED_SUIT],
   clinker: [I.REFIT_KIT_MK2],
   brontes: [I.FUSION_TORCH],
+  glacia: [I.SUIT_HEATER_MK2],
 };
 
 /** A body's visit mission: land and survey it (a chute landing where there is air), skim a gas giant, pass the Sun. */

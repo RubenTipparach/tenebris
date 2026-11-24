@@ -31,10 +31,10 @@
 
 ## 4. Refit
 
-- [ ] 4.1 Generalise `LaunchPadUI`'s stack editor over a stack host (pad or parked rocket) with one `stackProblems(parts)` check; verify the pad editor behaves as before (existing tests) and `stackProblems` tests.
-- [ ] 4.2 Confirm launch pads complete and launch on the Moon, fixing any Earth-only assumption; verify a headless build-and-launch on the Moon.
-- [ ] 4.3 Add Dock to `LandedRocketUI` (an empty complete pad within `REFIT.DOCK_RADIUS_M` on the same body) moving parts, fuel, cargo and equipment to the pad; verify a test and a headless dock on the Moon, persisting over a reload.
-- [ ] 4.4 Add the refit kit (and the mk2 reusable kit) opening the editor on a parked rocket, landed or in space, using cargo and inventory; verify a test of an engine swap in space (kit used up, stats updated) and refusal without a kit.
+- [x] 4.1 Generalise `LaunchPadUI`'s stack editor over a stack host (pad or parked rocket) with one `stackProblems(parts)` check; verify the pad editor behaves as before (existing tests) and `stackProblems` tests.
+- [x] 4.2 Confirm launch pads complete and launch on the Moon, fixing any Earth-only assumption; verify a headless build-and-launch on the Moon.
+- [x] 4.3 Add Dock to `LandedRocketUI` (an empty complete pad within `REFIT.DOCK_RADIUS_M` on the same body) moving parts, fuel, cargo and equipment to the pad; verify a test and a headless dock on the Moon, persisting over a reload.
+- [x] 4.4 Add the refit kit (and the mk2 reusable kit) opening the editor on a parked rocket, landed or in space, using cargo and inventory; verify a test of an engine swap in space (kit used up, stats updated) and refusal without a kit.
 
 ## 5. Engine ladder
 
@@ -46,8 +46,8 @@
 
 ## 6. Resources and suits
 
-- [ ] 6.1 Add the body resources (resin, salvage and superconductor, rare-earth ore and magnets, radiotrophic fungus, silica and aerogel, crystal and laser crystal, cryogenic coolant, coronal field data, pulse units), each with an icon and blocks drawn by the block-textures skill, gathered only on their body; verify an icon test and a per-body gathering test.
-- [ ] 6.2 Add the thermal and hardened suits (and suit heaters) with protection sets in `SurvivalConfig.SUITS`; verify tests: thermal on Tessaly holds, thermal on Glacia drains, hardened holds everywhere.
+- [x] 6.1 Add the body resources (resin, salvage and superconductor, rare-earth ore and magnets, radiotrophic fungus, silica and aerogel, crystal and laser crystal, cryogenic coolant, coronal field data, pulse units), each with an icon and blocks drawn by the block-textures skill, gathered only on their body; verify an icon test and a per-body gathering test.
+- [x] 6.2 Add the thermal and hardened suits (and suit heaters) with protection sets in `SurvivalConfig.SUITS`; verify tests: thermal on Tessaly holds, thermal on Glacia drains, hardened holds everywhere.
 - [ ] 6.3 Add the upgrade parts (mk2/mk3 tanks, cargo, batteries, solar, radiators, drogue chute, RTG, cryo tank, compact reactor core, survey drone); verify `computeRocketStats` tests for each new stat they bring.
 
 ## 7. Thalassa

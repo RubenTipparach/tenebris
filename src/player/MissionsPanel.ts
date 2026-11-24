@@ -5,7 +5,8 @@ import { getAssetPath } from '../utils/assetPath';
 import { showToast } from '../utils/toast';
 import { Inventory, ITEM_DATA, ItemType } from './Inventory';
 import { MissionSave, MissionTracker, WorldState } from './MissionTracker';
-import { bodyEnvironment, describeEnvironment } from '../config/SolarSystemConfig';
+import { bodyEnvironment } from '../config/SolarSystemConfig';
+import { environmentCard } from './Survival';
 import { setRecipeGate } from './RecipeGate';
 import { clampPan, packTree, plaqueLabel, plaqueProgress, plaqueVisits, TreeLayout } from './MissionTreeLayout';
 
@@ -390,7 +391,7 @@ export class MissionsPanel {
       // The body's environment: what to bring (suits, a heat shield)
       const e = document.createElement('div');
       e.className = 'mt-side-env';
-      e.textContent = describeEnvironment(bodyEnvironment(m.visit));
+      e.textContent = environmentCard(bodyEnvironment(m.visit));
       side.appendChild(e);
     }
 

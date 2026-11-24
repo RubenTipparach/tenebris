@@ -1868,7 +1868,12 @@ export class RocketController {
     else if (this.inSunPass) {
       this.inSunPass = false;
       emitGameEvent('closePass', 'sun');
-      showToast('Close pass of the Sun', { duration: 3000 });
+      // The pass records the Sun's field: data into the hold (what fits)
+      const want = ROCKET_CONFIG.SUN_PASS.coronalData;
+      const left = this.cargo ? slotStore(this.cargo).addItem(ItemType.CORONAL_DATA, want) : want;
+      if (left < want) this.refreshCargoMass();
+      showToast(left < want ? `Close pass of the Sun - ${want - left} coronal field data recorded`
+        : 'Close pass of the Sun - no room in the cargo hold for the field data', { duration: 3000 });
     }
   }
 

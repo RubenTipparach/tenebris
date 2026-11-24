@@ -1,6 +1,6 @@
-import { AIR, ENVIRONMENT, SUITS, SuitRating } from '../config/SurvivalConfig';
-import type { BodyEnvironment } from '../config/SolarSystemConfig';
-import type { ItemType } from './Inventory';
+import { AIR, ENVIRONMENT, SUITS, SUIT_TIERS, SuitRating } from '../config/SurvivalConfig';
+import { describeEnvironment, type BodyEnvironment } from '../config/SolarSystemConfig';
+import { ITEM_DATA, type ItemType } from './Inventory';
 
 /**
  * Air (openspec wool-air-and-reentry, design 4): when the player is exposed,
@@ -147,16 +147,40 @@ export function environmentExposure(i: ExposureInput, suit: ItemType | null): Re
   return { heat: levels.heat > rating.heat, cold: levels.cold > rating.cold, radiation: levels.radiation > rating.radiation };
 }
 
-/** One step of the hazard gauges: each exposed one drains, the rest recover. Returns the hazard that killed, if any. Mutates `s`. */
-export function tickEnvironment(s: EnvState, dtS: number, exposed: Record<Hazard, boolean>): Hazard | null {
+/**
+ * One step of the hazard gauges: each exposed one drains (at `drain[h]` x its
+ * normal rate - a suit heater slows the cold), the rest recover. Returns the
+ * hazard that killed, if any. Mutates `s`.
+ */
+export function tickEnvironment(s: EnvState, dtS: number, exposed: Record<Hazard, boolean>, drain: Partial<Record<Hazard, number>> = {}): Hazard | null {
   let died: Hazard | null = null;
   for (const h of HAZARDS) {
     if (exposed[h]) {
-      s[h] = Math.max(0, s[h] - dtS);
+      s[h] = Math.max(0, s[h] - dtS * (drain[h] ?? 1));
       if (s[h] <= 0 && !died) died = h;
     } else {
       s[h] = Math.min(ENVIRONMENT.GAUGE_S, s[h] + dtS * ENVIRONMENT.RECOVER_RATE);
     }
   }
   return died;
+}
+
+/** How fast each hazard drains with what the player carries: the best suit heater slows the cold (ENVIRONMENT.HEATERS). */
+export function hazardDrain(carried: (t: ItemType) => number): Partial<Record<Hazard, number>> {
+  let cold = 1;
+  for (const [k, f] of Object.entries(ENVIRONMENT.HEATERS)) if (f !== undefined && carried(Number(k) as ItemType) > 0) cold = Math.min(cold, f);
+  return { cold };
+}
+
+/** The lowest suit tier that holds off everything a body throws at the player (null: none needed; undefined: none does). */
+export function suitNeeded(e: BodyEnvironment): ItemType | null | undefined {
+  const lv = hazardLevels(e);
+  if (lv.heat === 0 && lv.cold === 0 && lv.radiation === 0) return null;
+  return SUIT_TIERS.find(t => { const r = SUITS[t]!; return lv.heat <= r.heat && lv.cold <= r.cold && lv.radiation <= r.radiation; });
+}
+
+/** A body's card line: its environment, and the suit to work there */
+export function environmentCard(e: BodyEnvironment): string {
+  const suit = suitNeeded(e);
+  return describeEnvironment(e) + (suit ? ` - needs the ${ITEM_DATA[suit].name}` : '');
 }

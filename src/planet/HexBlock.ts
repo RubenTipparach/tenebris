@@ -38,6 +38,7 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreTitanium', 'moon/ore_titanium'],
   // Industry resources (scripts/gen-biome-textures.py)
   ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
+  ['resinAmber', 'resources/resin'], ['salvageScrap', 'resources/salvage'], ['oreRareEarth', 'resources/ore_rare_earth'], ['fungusSeam', 'resources/fungus'], ['silicaSand', 'resources/silica_sand'], ['crystalVein', 'resources/crystal_vein'], ['cryoIce', 'resources/cryo_ice'],
   // Building materials (scripts/gen-biome-textures.py)
   ['brickBlock', 'building/brick_block'], ['carpet', 'building/carpet'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)

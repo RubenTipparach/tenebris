@@ -154,14 +154,14 @@ export const ROCKET_CONFIG = {
     // The Moon's solar-electric ion thruster: no reactor, runs on the charge
     [ItemType.ION_THRUSTER]: { tier: 2, dryMass: 60, thrust: 600, specificImpulse: 2000, firingDrawW: 6000 },
     // Ember: the gas-core nuclear engine ("nuclear lightbulb")
-    [ItemType.GAS_CORE_ENGINE]: { tier: 3, dryMass: 500, thrust: 60000, specificImpulse: 1200 },
+    [ItemType.GAS_CORE_ENGINE]: { tier: 3, dryMass: 500, thrust: 100000, specificImpulse: 1200 },
     // Lodestone: the fission-fragment drive (magnetic fission) - needs a reactor core
     [ItemType.FISSION_FRAGMENT_DRIVE]: { tier: 4, dryMass: 300, thrust: 4000, specificImpulse: 9000, requires: [ItemType.REACTOR_CORE] },
     // Brand: the nuclear pulse drive ("Orion") - fission charges from the cargo
     [ItemType.NUCLEAR_PULSE_DRIVE]: { tier: 4, dryMass: 1500, thrust: 400000, specificImpulse: 2500,
       consumes: [{ itemType: ItemType.PULSE_UNIT, perS: 2 }] },
     // Aurelia: the D-He3 fusion drive - helium-3 from the cargo
-    [ItemType.FUSION_DRIVE]: { tier: 5, dryMass: 600, thrust: 25000, specificImpulse: 12000,
+    [ItemType.FUSION_DRIVE]: { tier: 5, dryMass: 600, thrust: 60000, specificImpulse: 12000,
       consumes: [{ itemType: ItemType.HELIUM_3, perS: 0.2 }] },
     // Brontes: the magnetic fusion torch - helium-3 and deuterium
     [ItemType.FUSION_TORCH]: { tier: 6, dryMass: 900, thrust: 120000, specificImpulse: 30000,
@@ -217,6 +217,9 @@ export const ROCKET_CONFIG = {
   SUN_PASS: {
     closePassRadii: 1.6,
     heatPerS: 45,
+    // Coronal field data a surviving close pass records into the cargo
+    // hold (the Sun's resource: space-exploration, resources)
+    coronalData: 4,
   },
 
   // === COMMAND MODULE ===
