@@ -1102,6 +1102,7 @@
   // Find a surface block of type `kinds` within range, walk there, dig it
   async function findAndDig(kinds, done) {
     const p = P();
+    let found = false;
     for (let round = 0; round < 6 && !done(); round++) {
       let target = null, bd = 1e9;
       for (const t of tilesWithin(myTile(), 16)) {
@@ -1116,12 +1117,14 @@
         }
       }
       if (!target) { say('none of that nearby - exploring'); await wander(); await wander(); continue; }
+      found = true;
       await approach(target.c, 2.5);
       if (!(await mineBlock(target.t, target.d, 15000))) {
         say(`could not dig the block at tile ${target.t} depth ${target.d} - skipping it`);
         st.badDig = (st.badDig || []).concat([`${target.t}:${target.d}`]);
       }
     }
+    return found;
   }
 
 
@@ -1436,7 +1439,11 @@
     if (block !== undefined) {
       if (name.startsWith('ORE_')) await goMining(count(I.COAL) < 16 && block !== B.ORE_COAL ? [block, B.ORE_COAL] : [block], () => count(item) >= n);
       else if (block === B.STONE) await digForStone(n);
-      else await findAndDig([block], () => count(item) >= n);
+      else if (!(await findAndDig([block], () => count(item) >= n)) && count(item) < n) {
+        // searched six patches and saw none: not on this world (sulfur, moon rock...)
+        say(`found no ${name} anywhere near - it may only be on another world`);
+        st.unknown = (st.unknown || []).concat([item]);
+      }
       return count(item) >= n;
     }
     if (!(st.unknown || []).includes(item)) say(`does not know how to get ${name}`);
