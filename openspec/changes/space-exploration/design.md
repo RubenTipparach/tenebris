@@ -198,7 +198,7 @@ High radiation is on the gas giants' moons and close to the Sun.
 
 **Heat and braking:**
 - `reentryStep` and the parachute braking take the body's `atmosphereDensity` as a factor. Heat gain and chute drag both scale with it, and the safe speed scales inversely.
-- Draft densities: Earth 1, Sequoia 1.2, Metropole 1, Verdance and Mirewood 1.5, Thalassa 2.5, gas giants 8.
+- Draft densities: Earth 1, Sequoia 1.2, Metropole 1, Verdance and Mirewood 1.5, Thalassa 2.5, gas giants 4 (tuned from 8 so a shielded skim of a few seconds survives while an unshielded one burns at once).
 
 **Heat shield:**
 - Equipment with a heat capacity. While it has capacity it absorbs a share of the heat gained (`REENTRY.shieldShare`) and wears down by what it absorbs.

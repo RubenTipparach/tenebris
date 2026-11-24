@@ -50,6 +50,7 @@ export interface RocketEquipmentStats {
   batteryWh?: number;    // charge each stores (battery pack)
   solarW?: number;       // what each charges in full sun (solar array)
   chutes?: number;       // parachutes each gives (one opens per descent and is used up)
+  heatShield?: number;   // heat each heat shield soaks up before it is worn through (REENTRY heat units)
 }
 
 export const ROCKET_CONFIG = {
@@ -152,7 +153,31 @@ export const ROCKET_CONFIG = {
     // the battery pack (tier 3): a lithium-ion battery's charge, twice the
     // command module's own cell - +30 minutes of flight each
     [ItemType.BATTERY_PACK]: { mass: 60, batteryWh: LITHIUM_WH },
+    // the heat shield (space-exploration): soaks up REENTRY.shieldShare of
+    // the heat gained until `heatShield` units have gone into it, then it is
+    // worn through and leaves the equipment
+    [ItemType.HEAT_SHIELD]: { mass: 120, heatShield: 400 },
   } as Partial<Record<ItemType, RocketEquipmentStats>>,
+
+  // === GAS GIANTS (space-exploration, design 7) ===
+  // A gas giant is a gravity well with air (BODY_ENVIRONMENTS density) and no
+  // ground. Dropping below its cloud tops and climbing back out past
+  // skimExitMult x its radius is a skim; sinking below (1 - crushDepth) x its
+  // radius crushes the rocket.
+  GAS_GIANT_FLIGHT: {
+    gravityStrength: 1.6,
+    crushDepth: 0.06,             // share of the radius below the cloud tops
+    skimExitMult: 1.15,
+  },
+
+  // === THE SUN (space-exploration, design 7) ===
+  // Inside closePassRadii x its radius the Sun heats a rocket, more the
+  // closer it is (heatPerS at its surface); getting back out alive is a
+  // close pass. Touching it burns the rocket up.
+  SUN_PASS: {
+    closePassRadii: 1.6,
+    heatPerS: 45,
+  },
 
   // === COMMAND MODULE ===
   COMMAND_MODULE: {
@@ -186,6 +211,8 @@ export const ROCKET_CONFIG = {
     // edge (GRAVITY_WELL.FALLOFF_RADIUS_MULT), 80 m deep on Earth: the
     // whole descent through a body's pull is "in the air".
     shellRadiusMult: 1.8,
+    // A fitted heat shield takes this share of the heat gained (re-entry and the Sun)
+    shieldShare: 0.95,
     // Earth's free-fall speed with the flight damping is ~37 m/s, so a
     // passive fall stays cool; only a powered dive heats
     safeSpeed: 40,                // m/s

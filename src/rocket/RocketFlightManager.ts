@@ -140,22 +140,8 @@ export class RocketFlightManager {
    * Register a planet for gravity calculations
    * @param getSurfaceHeight Optional callback to get actual terrain height at a direction
    */
-  public addPlanet(
-    name: string,
-    center: THREE.Vector3,
-    radius: number,
-    gravityStrength: number = 1.0,
-    getSurfaceHeight?: (direction: THREE.Vector3) => number,
-    hasAtmosphere: boolean = false
-  ): void {
-    this.planets.push({
-      name,
-      center: center.clone(),
-      radius,
-      gravityStrength,
-      getSurfaceHeight,
-      hasAtmosphere,
-    });
+  public addPlanet(source: PlanetGravitySource): void {
+    this.planets.push({ ...source, center: source.center.clone() });
     // Also update landed rocket manager
     this.landedRocketManager.setPlanets(this.planets);
   }
@@ -168,8 +154,9 @@ export class RocketFlightManager {
     this.rocketController?.setSunPosition(this.sunPosition);
   }
 
-  public setPlanetCenter(name: string, center: THREE.Vector3): void {
-    for (const p of this.planets) if (p.name === name) p.center.copy(center);
+  /** A body (by id) moved on its orbit: gravity and landings use its live centre. */
+  public setPlanetCenter(id: string, center: THREE.Vector3): void {
+    for (const p of this.planets) if (p.id === id) p.center.copy(center);
   }
 
   /**

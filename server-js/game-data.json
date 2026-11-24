@@ -571,6 +571,10 @@
   "198": {
    "name": "Survey Beacon",
    "icon": "/textures/technology/survey_beacon_face.png"
+  },
+  "199": {
+   "name": "Heat Shield",
+   "icon": "/textures/rocket_parts/heat_shield_face.png"
   }
  },
  "slots": {

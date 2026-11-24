@@ -15,7 +15,7 @@ import { skyLightTexture } from './planet/SkyLightTexture';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { MACHINE_KIND_OF } from './config/PowerConfig';
-import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems } from './config/SolarSystemConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems, bodyEnvironment } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -458,15 +458,30 @@ class PlanetGame {
 
         const planet = this.planets.get(bodyConfig.id);
         if (planet) {
-          this.rocketFlightManager.addPlanet(
-            bodyConfig.name,
-            planet.center,
-            planet.radius,
-            bodyConfig.gravity.strength,
-            (direction) => planet.getSurfaceHeightInDirection(direction),
-            bodyConfig.hasAtmosphere
-          );
+          this.rocketFlightManager.addPlanet({
+            id: bodyConfig.id,
+            name: bodyConfig.name,
+            center: planet.center,
+            radius: planet.radius,
+            gravityStrength: bodyConfig.gravity.strength,
+            getSurfaceHeight: (direction) => planet.getSurfaceHeightInDirection(direction),
+            hasAtmosphere: bodyConfig.hasAtmosphere,
+            atmosphereDensity: bodyEnvironment(bodyConfig.id).atmosphereDensity,
+          });
         }
+      }
+      // The gas giants: wells of thick air with no ground (space-exploration)
+      for (const g of GAS_GIANTS) {
+        this.rocketFlightManager.addPlanet({
+          id: g.id,
+          name: g.name,
+          center: new THREE.Vector3(g.position.x, g.position.y, g.position.z),
+          radius: g.radius,
+          gravityStrength: ROCKET_CONFIG.GAS_GIANT_FLIGHT.gravityStrength,
+          hasAtmosphere: true,
+          atmosphereDensity: bodyEnvironment(g.id).atmosphereDensity,
+          gasGiant: true,
+        });
       }
 
       // Set up close all menus callback for boarding rocket
@@ -1134,6 +1149,11 @@ class PlanetGame {
     this.engine.setSkyYaw(yaw);
     this.solarSystemMockup?.setFrameYaw(yaw);
     const center = new THREE.Vector3();
+    // The gas giants' wells ride their orbits too (rocket gravity, skims)
+    for (const g of GAS_GIANTS) {
+      framePositionAt(g.id, frame, t, p);
+      this.rocketFlightManager?.setPlanetCenter(g.id, center.set(p.x, p.y, p.z));
+    }
     for (const [id, planet] of this.planets) {
       framePositionAt(id, frame, t, p);
       center.set(p.x, p.y, p.z);
@@ -1912,6 +1932,8 @@ class PlanetGame {
       inGravityWell: well !== null,
       bodyBreathable: bodyId !== null && getBodyConfig(bodyId)?.breathable === true,
       jetpack: this.player.getJetpackEnabled(),
+      // Heat, cold and radiation of the body underfoot (body-environments)
+      environment: bodyId !== null ? bodyEnvironment(bodyId) : null,
     };
   }
 

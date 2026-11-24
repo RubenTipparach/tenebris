@@ -4,6 +4,8 @@ import { SOLAR_SYSTEM } from '../config/SolarSystemConfig';
 // Where the sun is until the flight manager hands over the live one (the
 // orbits move it in the reference body's frame)
 const SUN_CONFIG_POSITION = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.position ?? { x: 0, y: 0, z: 0 };
+// The Sun's radius: its surface burns, its close-pass distance is a multiple of it
+const SUN_RADIUS = SOLAR_SYSTEM.bodies.find(b => b.id === 'sun')?.radius ?? 0;
 import * as THREE from 'three';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { RocketState, RocketStateMachine, STATE_INFO } from './RocketState';
@@ -14,6 +16,7 @@ import { InventorySlot } from '../player/Inventory';
 import {
   computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
   drainCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
+  chuteLandingSpeed, shieldCapacity, shieldsFitted, useShield, solarHeat,
   chutesFitted,
 } from './RocketPerformance';
 import { showToast } from '../utils/toast';
@@ -25,13 +28,22 @@ import { AudioManager } from '../engine/AudioManager';
 /**
  * Planet data needed for gravity calculations
  */
+/** Why a rocket was destroyed (the crash screen's words) */
+export type CrashReason = 'impact' | 'burnedUp' | 'selfDestruct' | 'crushed';
+
 export interface PlanetGravitySource {
+  /** The body's id (missions, orbit updates) */
+  id: string;
   center: THREE.Vector3;
   radius: number;
   gravityStrength: number;  // Multiplier (1.0 = Earth-like)
   name: string;
   getSurfaceHeight?: (direction: THREE.Vector3) => number;  // Optional callback for actual terrain height
   hasAtmosphere?: boolean;  // air for re-entry heat and the parachute (CelestialBodyConfig.hasAtmosphere)
+  /** How thick that air is (BODY_ENVIRONMENTS; 1 = Earth's) */
+  atmosphereDensity?: number;
+  /** A gas giant: air but no ground (ROCKET_CONFIG.GAS_GIANT_FLIGHT) */
+  gasGiant?: boolean;
 }
 
 /**
@@ -179,7 +191,14 @@ export class RocketController {
   private chuteOpen: boolean = false;
   private heatGlow: THREE.Mesh | null = null;
   private canopy: THREE.Group | null = null;
-  private crashReason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact';
+  private crashReason: CrashReason = 'impact';
+  // The air's density where the rocket is (0 outside every atmosphere)
+  private atmosphereDensity = 0;
+  // Heat soaked into the heat shield being worn through (space-exploration)
+  private shieldWear = 0;
+  // Inside the Sun's close-pass distance / below a gas giant's cloud tops (that giant's id)
+  private inSunPass = false;
+  private giantDip: string | null = null;
   // How long the self-destruct key has been held (s); 0 when let go
   private selfDestructHeldS = 0;
 
@@ -956,8 +975,9 @@ export class RocketController {
     if (this.chuteOpen && this.closestPlanet) {
       const up = this.position.clone().sub(this.closestPlanet.center).normalize();
       const fall = -this.velocity.dot(up);
-      const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime));
-      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime);
+      const density = this.atmosphereDensity || 1;
+      const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime, density));
+      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime, density);
       this.velocity.copy(side).addScaledVector(up, -newFall);
       const rocketUp = this.getLocalUp();
       const axis = new THREE.Vector3().crossVectors(rocketUp, up);
@@ -972,9 +992,26 @@ export class RocketController {
     // === POSITION UPDATE ===
     this.position.addScaledVector(this.velocity, deltaTime);
 
+    // === GAS GIANTS: no ground - a skim below the cloud tops, crushed deeper ===
+    if (this.closestPlanet?.gasGiant) {
+      const g = this.closestPlanet;
+      const dist = this.position.distanceTo(g.center);
+      const cfgG = ROCKET_CONFIG.GAS_GIANT_FLIGHT;
+      if (dist < g.radius * (1 - cfgG.crushDepth)) {
+        this.explode('crushed');
+        return;
+      }
+      if (dist < g.radius) this.giantDip = g.id;
+      else if (this.giantDip === g.id && dist > g.radius * cfgG.skimExitMult) {
+        this.giantDip = null;
+        emitGameEvent('skimmed', g.id);
+        showToast(`Skimmed ${g.name}`, { duration: 3000 });
+      }
+    }
+
     // === GROUND COLLISION ===
-    // Prevent rocket from clipping through the planet surface
-    if (this.closestPlanet) {
+    // Prevent rocket from clipping through the planet surface (a gas giant has none)
+    if (this.closestPlanet && !this.closestPlanet.gasGiant) {
       const surfaceNormal = this.position.clone().sub(this.closestPlanet.center).normalize();
       const distFromCenter = this.position.distanceTo(this.closestPlanet.center);
 
@@ -1053,7 +1090,7 @@ export class RocketController {
         // Check if descending toward surface
         const vertVel = this.getVerticalVelocity();
         const alt = this.getAltitude();
-        if (vertVel < 0 && alt < 100 && this.isInGravityWell) {
+        if (vertVel < 0 && alt < 100 && this.isInGravityWell && !this.closestPlanet?.gasGiant) {
           this.stateMachine.transitionTo(RocketState.LANDING);
         }
         break;
@@ -1139,10 +1176,7 @@ export class RocketController {
       // (it was used up as it opened)
       this.leftAtmosphere = false;
       this.reentering = false;
-      // the gravity source is named by its display name; missions use body ids
-      const name = this.closestPlanet?.name;
-      const bodyId = name === undefined ? undefined
-        : SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase();
+      const bodyId = this.closestPlanet?.id;
       if (this.chuteOpen) {
         // keyed by the body, so a visit can ask for a chute landing there
         emitGameEvent('chuteLanded', bodyId);
@@ -1159,7 +1193,7 @@ export class RocketController {
   /**
    * Explode the rocket
    */
-  private explode(reason: 'impact' | 'burnedUp' | 'selfDestruct' = 'impact'): void {
+  private explode(reason: CrashReason = 'impact'): void {
     this.crashReason = reason;
     this.closeChute();
     if (this.heatGlow) setHeatGlow(this.heatGlow, 0);
@@ -1488,7 +1522,7 @@ export class RocketController {
   }
 
   /** Why it crashed: a hard landing, burning up on re-entry, or self-destruct */
-  public getCrashReason(): 'impact' | 'burnedUp' | 'selfDestruct' {
+  public getCrashReason(): CrashReason {
     return this.crashReason;
   }
 
@@ -1547,18 +1581,49 @@ export class RocketController {
 
   /** Is the rocket inside any body's air (REENTRY.shellRadiusMult)? */
   private computeInAtmosphere(): boolean {
+    let density = 0;
     for (const planet of this.planets) {
-      if (inAtmosphereShell(this.position.distanceTo(planet.center), planet.radius, !!planet.hasAtmosphere)) return true;
+      if (inAtmosphereShell(this.position.distanceTo(planet.center), planet.radius, !!planet.hasAtmosphere)) {
+        density = Math.max(density, planet.atmosphereDensity ?? 1);
+      }
     }
-    return false;
+    this.atmosphereDensity = density;
+    return density > 0;
+  }
+
+  /** The air's density where the rocket is (0 in vacuum) */
+  public getAtmosphereDensity(): number {
+    return this.atmosphereDensity;
+  }
+
+  /** The speed a parachute would land at here (its HUD line; Infinity in vacuum) */
+  public getChuteLandingSpeed(): number {
+    return this.atmosphereDensity > 0 ? chuteLandingSpeed(this.atmosphereDensity) : Infinity;
+  }
+
+  /** Heat shields fitted, and how worn the one in use is (0-1) */
+  public getHeatShield(): { fitted: number; wear: number } {
+    const cap = shieldCapacity(this.equipment);
+    return { fitted: shieldsFitted(this.equipment), wear: cap > 0 ? this.shieldWear / cap : 0 };
   }
 
   /** Re-entry heat, its damage and burn-up, and the glow */
   private updateReentry(deltaTime: number, flying: boolean): void {
     const cfg = ROCKET_CONFIG.REENTRY;
     const speed = flying ? this.velocity.length() : 0;
-    const step = reentryStep({ heat: this.heat, leftAtmosphere: this.leftAtmosphere }, this.inAtmosphere, speed, deltaTime);
+    // The Sun up close heats too (a close pass); a fitted heat shield takes its share
+    const sunR = SUN_RADIUS;
+    const sunDist = this.position.distanceTo(new THREE.Vector3(this.sunPosition.x, this.sunPosition.y, this.sunPosition.z));
+    const solar = flying ? solarHeat(sunDist, sunR, deltaTime) : 0;
+    const shields = shieldsFitted(this.equipment);
+    const step = reentryStep({ heat: this.heat, leftAtmosphere: this.leftAtmosphere }, this.inAtmosphere, speed, deltaTime, {
+      density: this.atmosphereDensity || 1,
+      extraGain: solar,
+      shieldShare: shields > 0 ? cfg.shieldShare : 0,
+    });
     this.heat = step.heat;
+    if (step.absorbed > 0) this.wearShield(step.absorbed);
+    if (flying) this.updateSunPass(sunDist, sunR);
     if (flying) {
       this.leftAtmosphere = step.leftAtmosphere;
       this.reentering = step.reentering;
@@ -1644,6 +1709,33 @@ export class RocketController {
       this.pivot.add(this.rcsLines);
     }
     setRcsLines(this.rcsLines, rcsJets(this.rcsCommand, this.stackHeight(), this.stackCenterOffset));
+  }
+
+  /** The heat shield soaks `absorbed`: each time one's capacity is used up it is worn through and leaves the equipment */
+  private wearShield(absorbed: number): void {
+    const cap = shieldCapacity(this.equipment);
+    if (cap <= 0) return;
+    this.shieldWear += absorbed;
+    while (this.shieldWear >= cap && useShield(this.equipment)) {
+      this.shieldWear -= cap;
+      showToast('Heat shield worn through', { duration: 2500 });
+      this.refreshCargoMass();
+      this.onChanged?.();
+    }
+    if (shieldsFitted(this.equipment) === 0) this.shieldWear = 0;
+  }
+
+  /** The Sun: touching it burns the rocket up; leaving its close-pass distance alive is a close pass */
+  private updateSunPass(sunDist: number, sunR: number): void {
+    if (this.stateMachine.getState() === RocketState.CRASHED) return;
+    if (sunDist < sunR) { this.explode('burnedUp'); return; }
+    const inside = sunDist < sunR * ROCKET_CONFIG.SUN_PASS.closePassRadii;
+    if (inside) this.inSunPass = true;
+    else if (this.inSunPass) {
+      this.inSunPass = false;
+      emitGameEvent('closePass', 'sun');
+      showToast('Close pass of the Sun', { duration: 3000 });
+    }
   }
 
   /** Remove the re-entry visuals and the RCS lines (landing, despawn) */

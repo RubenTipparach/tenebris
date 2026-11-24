@@ -511,6 +511,83 @@ const asteroid = (kind: AsteroidKind, w: Omit<RockWorld, 'type' | 'texture' | 'h
  * by src/mockups/SolarSystemMockup.ts in the far layer. They stand still, so
  * their moons (landable rock worlds below) can sit beside them.
  */
+/**
+ * A body's environment (openspec space-exploration, body-environments): how
+ * hot or cold its surface is, how much radiation reaches it, and how thick
+ * its air is. Hostile temperatures and high radiation drain the player's
+ * gauges unless their suit is rated for them (SurvivalConfig ENVIRONMENT /
+ * SUITS); the air's density scales re-entry heat and parachute braking.
+ *  - temperature: scorching | hot | temperate | cold | frozen
+ *  - radiation:   none (an atmosphere shields it) | low (airless, no
+ *                 magnetic field: shown, harmless) | high (a gas giant's
+ *                 belts, the Sun up close: harmful)
+ *  - atmosphereDensity: 0 airless, 1 = Earth's; > 0 exactly where the body
+ *                 has an atmosphere (and on the gas giants)
+ */
+export type TemperatureClass = 'scorching' | 'hot' | 'temperate' | 'cold' | 'frozen';
+export type RadiationLevel = 'none' | 'low' | 'high';
+export interface BodyEnvironment {
+  temperature: TemperatureClass;
+  radiation: RadiationLevel;
+  atmosphereDensity: number;
+}
+const env = (temperature: TemperatureClass, radiation: RadiationLevel, atmosphereDensity = 0): BodyEnvironment =>
+  ({ temperature, radiation, atmosphereDensity });
+
+/** Every body's environment, one table (scripts/environment.test.ts checks every body has one). */
+export const BODY_ENVIRONMENTS: Record<string, BodyEnvironment> = {
+  sun: env('scorching', 'high'),
+  earth: env('temperate', 'none', 1),
+  moon: env('temperate', 'low'),
+  // sunward
+  sequoia: env('temperate', 'none', 1.2),
+  rime: env('cold', 'low'),
+  ember: env('scorching', 'low'),
+  ferrum: env('temperate', 'none', 1),
+  lodestone: env('hot', 'low'),
+  umbra: env('cold', 'low'),
+  nyx: env('cold', 'low'),
+  brand: env('scorching', 'low'),
+  vesper: env('hot', 'low'),
+  sable: env('hot', 'low'),
+  // outward
+  kessel: env('cold', 'low'),
+  cinder: env('hot', 'low'),
+  scoria: env('temperate', 'low'),
+  nerith: env('cold', 'low'),
+  halcyon: env('cold', 'low'),
+  glint: env('frozen', 'low'),
+  tessaly: env('frozen', 'low'),
+  // the gas giants and their moons (inside their radiation belts)
+  brontes: env('cold', 'high', 4),
+  aurelia: env('cold', 'high', 4),
+  verdance: env('temperate', 'none', 1.5),
+  mirewood: env('temperate', 'none', 1.5),
+  pyrra: env('scorching', 'high'),
+  glacia: env('frozen', 'high'),
+  obol: env('frozen', 'high'),
+  calyx: env('frozen', 'high'),
+  ashfall: env('scorching', 'high'),
+  ingot: env('cold', 'high'),
+  // asteroids: rock and metal ones cold, ice ones frozen
+  talus: env('cold', 'low'), clinker: env('cold', 'low'), grit: env('cold', 'low'),
+  ferrite: env('cold', 'low'), nickel: env('cold', 'low'), magnetite: env('cold', 'low'),
+  hailstone: env('frozen', 'low'), sleet: env('frozen', 'low'),
+};
+
+/** A body's environment in words, for cards and the map: "Scorching, high radiation, airless" */
+export function describeEnvironment(e: BodyEnvironment): string {
+  const temp = e.temperature[0].toUpperCase() + e.temperature.slice(1);
+  const rad = e.radiation === 'none' ? 'no radiation' : `${e.radiation} radiation`;
+  const air = e.atmosphereDensity > 0 ? `air ${e.atmosphereDensity}x Earth's` : 'airless';
+  return `${temp}, ${rad}, ${air}`;
+}
+
+/** A body's environment (a mild, airless default for an unknown id) */
+export function bodyEnvironment(id: string): BodyEnvironment {
+  return BODY_ENVIRONMENTS[id] ?? env('temperate', 'low');
+}
+
 export interface GasGiantConfig {
   id: string;
   name: string;

@@ -685,11 +685,12 @@ export class RocketFlightUI {
       // Show crash overlay after 2 seconds to let player watch explosion
       if (timeSinceCrash > 2.0 && this.crashOverlay) {
         const reason = rocket.getCrashReason();
-        const titles = { impact: 'YOU CRASHED', burnedUp: 'BURNED UP', selfDestruct: 'SELF DESTRUCTED' };
+        const titles = { impact: 'YOU CRASHED', burnedUp: 'BURNED UP', selfDestruct: 'SELF DESTRUCTED', crushed: 'CRUSHED' };
         const texts = {
           impact: 'Your rocket was destroyed.',
           burnedUp: 'Your rocket burned up on re-entry. Slow down before the air.',
           selfDestruct: 'You blew up your rocket.',
+          crushed: 'The gas giant crushed your rocket. Skim its cloud tops - do not dive.',
         };
         if (this.crashTitleEl) this.crashTitleEl.textContent = titles[reason];
         if (this.crashTextEl) this.crashTextEl.textContent = texts[reason];
@@ -787,8 +788,15 @@ export class RocketFlightUI {
     if (this.chuteEl) {
       const chutes = rocket.chutesFitted();
       this.chuteEl.hidden = !rocket.isChuteOpen() && chutes <= 0;
-      this.chuteEl.textContent = rocket.isChuteOpen() ? 'CHUTE OPEN'
-        : `CHUTES ${chutes} [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]`;
+      // In air: the speed a chute lands at here (thin air lands faster)
+      const lands = rocket.getChuteLandingSpeed();
+      const landsAt = Number.isFinite(lands) ? ` - LANDS ${lands.toFixed(1)} m/s` : '';
+      this.chuteEl.textContent = rocket.isChuteOpen() ? `CHUTE OPEN${landsAt}`
+        : `CHUTES ${chutes} [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]${landsAt}`;
+      // Heat shields fitted, and how worn the one in use is
+      const shield = rocket.getHeatShield();
+      if (shield.fitted > 0) this.chuteEl.textContent += `  SHIELDS ${shield.fitted} (${Math.round((1 - shield.wear) * 100)}%)`;
+      if (shield.fitted > 0) this.chuteEl.hidden = false;
     }
 
     // Update throttle bar

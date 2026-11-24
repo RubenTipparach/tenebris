@@ -410,7 +410,8 @@ export const MISSIONS: Mission[] = [
       { kind: 'chuteLanded', body: 'sequoia', count: 1, label: 'Chute landing' },
       { kind: 'surveyed', body: 'sequoia', count: 1, label: 'Beacon' },
     ],
-    unlocks: [],
+    // Sequoia's reward: the heat shield (gas giants, the Sun, thick air)
+    unlocks: [I.HEAT_SHIELD],
     visit: 'sequoia',
   },
   {

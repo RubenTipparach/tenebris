@@ -20,7 +20,7 @@ open where the density is 0.
 
 #### Scenario: Thin air
 - **WHEN** a rocket lands under one parachute on a thin-atmosphere body
-- **THEN** it touches down faster than on Earth, and the parachute count needed to land safely is shown before entry
+- **THEN** it touches down faster than on Earth, and the HUD shows the speed a chute lands at there
 
 ### Requirement: A heat shield protects a rocket entering a thick atmosphere
 

@@ -179,6 +179,8 @@ export enum ItemType {
   OIL_SAND = 197,
   // Space exploration (openspec space-exploration): planted on a body to survey it
   SURVEY_BEACON = 198,
+  // Rocket equipment: soaks up re-entry and solar heat (space-exploration)
+  HEAT_SHIELD = 199,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -427,6 +429,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // the ores' icons are their block textures as the other ores' are)
   [ItemType.CLAY]: { name: 'Clay', stackSize: 64, texture: '/textures/resources/clay.png', mineTime: 0.6 },
   [ItemType.OIL_SAND]: { name: 'Oil Sand', stackSize: 64, texture: '/textures/resources/oil_sand.png', mineTime: 0.9 },
+  [ItemType.HEAT_SHIELD]: { name: 'Heat Shield', stackSize: 4, texture: '/textures/rocket_parts/heat_shield_face.png', mineTime: 0.5 },
   [ItemType.SURVEY_BEACON]: { name: 'Survey Beacon', stackSize: 16, texture: '/textures/technology/survey_beacon_face.png', mineTime: 1.0 },
   [ItemType.ORE_URANIUM]: { name: 'Uranium Ore', stackSize: 64, texture: '/textures/resources/ore_uranium.png', mineTime: 3.5 },
   [ItemType.BRICK]: { name: 'Brick', stackSize: 64, texture: '/textures/icons/brick.png', mineTime: 0.3 },

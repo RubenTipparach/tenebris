@@ -534,6 +534,28 @@ def survey_beacon_face():
     return px
 
 
+def heat_shield_face():
+    """A heat shield (space-exploration): a dome of dark ceramic tiles, its
+    rim glowing where the heat meets it, lit from the top left"""
+    px, c = _canvas()
+    for y in range(3, 14):
+        for x in range(1, 15):
+            dx, dy = (x - 7.5) / 6.5, (y - 13.5) / 10.0
+            if dx * dx + dy * dy > 1:
+                continue
+            edge = dx * dx + dy * dy > 0.78
+            tile = (x // 3 + y // 2) % 2
+            if edge:
+                px[y][x] = c["navy"]
+            elif y >= 12:
+                px[y][x] = c["orange"] if (x + y) % 2 else c["red"]   # the hot underside
+            else:
+                px[y][x] = c["dgrey"] if tile else c["black"]
+            if not edge and y < 12 and (x < 6 and y < 8):
+                px[y][x] = c["lgrey"] if tile else c["dgrey"]     # light on the top left
+    return px
+
+
 def _outline(px, line):
     """Edge every drawn pixel that touches empty space (4-neighbour) in `line`."""
     clear = (0, 0, 0, 0)
@@ -801,6 +823,7 @@ if __name__ == "__main__":
     write("rocket_parts/parachute_face.png", chute_face())
     # ---- Space exploration (openspec space-exploration) ----
     write("technology/survey_beacon_face.png", survey_beacon_face())
+    write("rocket_parts/heat_shield_face.png", heat_shield_face())
     # ---- Solar power (wool-air-and-reentry, design 6) ----
     sol = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/solar_panel.png", recolour(read_png(os.path.join(techd, "computer.png")), sol))

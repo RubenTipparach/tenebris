@@ -210,19 +210,74 @@ export interface ReentryState {
   leftAtmosphere: boolean;   // been outside every atmosphere since launch
 }
 
+/** What else a re-entry step weighs (space-exploration): all optional, Earth-like by default */
+export interface ReentryOptions {
+  /** The air's density (BODY_ENVIRONMENTS, 1 = Earth's): heat gain scales with it, the safe speed inversely */
+  density?: number;
+  /** Heat gained this step from elsewhere (the Sun up close), heat units */
+  extraGain?: number;
+  /** The share of the heat gained that a fitted heat shield takes (0 = none fitted) */
+  shieldShare?: number;
+}
+
 /**
  * One step of re-entry heat: a flight that has left every atmosphere and is
- * back inside one heats while faster than safeSpeed, and cools otherwise.
- * Returns the new state and whether it is re-entering.
+ * back inside one heats while faster than the safe speed there (safeSpeed /
+ * density), by heatPerMs x density per m/s over it; any `extraGain` adds to
+ * that, and a heat shield takes `shieldShare` of the total (`absorbed`).
+ * With nothing gained it cools. Returns the new state, whether it is
+ * re-entering, and what the shield absorbed.
  */
-export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: number, dt: number): ReentryState & { reentering: boolean } {
+export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: number, dt: number, opts: ReentryOptions = {}): ReentryState & { reentering: boolean; absorbed: number } {
   const cfg = ROCKET_CONFIG.REENTRY;
+  const density = opts.density ?? 1;
   const leftAtmosphere = state.leftAtmosphere || !inAtmosphere;
   const reentering = leftAtmosphere && inAtmosphere;
-  const heat = reentering && speed > cfg.safeSpeed
-    ? Math.min(cfg.maxHeat, state.heat + (speed - cfg.safeSpeed) * cfg.heatPerMs * dt)
+  const safe = cfg.safeSpeed / Math.max(density, Number.EPSILON);
+  const gain = (reentering && speed > safe ? (speed - safe) * cfg.heatPerMs * density * dt : 0) + (opts.extraGain ?? 0);
+  const absorbed = gain * (opts.shieldShare ?? 0);
+  const net = gain - absorbed;
+  const heat = net > 0
+    ? Math.min(cfg.maxHeat, state.heat + net)
     : Math.max(0, state.heat - cfg.coolPerS * dt);
-  return { heat, leftAtmosphere, reentering };
+  return { heat, leftAtmosphere, reentering, absorbed };
+}
+
+/**
+ * The Sun's heat on a rocket at `distance` from its centre this step:
+ * nothing outside SUN_PASS.closePassRadii x `sunRadius`, rising to heatPerS
+ * at its surface.
+ */
+export function solarHeat(distance: number, sunRadius: number, dt: number): number {
+  const cfg = ROCKET_CONFIG.SUN_PASS;
+  const outer = sunRadius * cfg.closePassRadii;
+  if (distance >= outer) return 0;
+  const near = 1 - Math.max(0, distance - sunRadius) / (outer - sunRadius);
+  return cfg.heatPerS * near * dt;
+}
+
+/** Heat shields fitted in an equipment row (each soaks heatShield units before it wears through) */
+export function shieldsFitted(equipment: readonly InventorySlot[] | null | undefined): number {
+  let n = 0;
+  for (const s of equipment ?? []) if (equipmentStats(s.itemType)?.heatShield) n += s.quantity;
+  return n;
+}
+
+/** Wear one heat shield through: it leaves the equipment. False if none was fitted. */
+export function useShield(equipment: InventorySlot[] | null | undefined): boolean {
+  if (!equipment) return false;
+  const shield = equipment.find(s => (equipmentStats(s.itemType)?.heatShield ?? 0) > 0 && s.quantity > 0);
+  if (!shield) return false;
+  return slotStore(equipment).removeItem(shield.itemType, 1) === 1;
+}
+
+/** One heat shield's capacity (heat units it soaks before wearing through) */
+export function shieldCapacity(equipment: readonly InventorySlot[] | null | undefined): number {
+  for (const s of equipment ?? []) {
+    const cap = equipmentStats(s.itemType)?.heatShield;
+    if (cap && s.quantity > 0) return cap;
+  }
+  return 0;
 }
 
 /** Health heat takes off in `dt` (0 at or under damageFrom, damagePerS at maxHeat) */
@@ -259,16 +314,22 @@ export function openChuteFrom(equipment: InventorySlot[] | null | undefined, inA
  * bleeds at dragRate and the chute also holds this step's gravity, so it
  * settles on terminalVelocity exactly; under it, it falls freely.
  */
-export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number): number {
+export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number, density = 1): number {
   const cfg = ROCKET_CONFIG.PARACHUTE;
-  const t = cfg.terminalVelocity;
+  // Thick air brakes harder and lands slower; thin air the opposite
+  const t = chuteLandingSpeed(density);
   if (fallSpeed <= t) return fallSpeed;
-  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * dt) - g * dt);
+  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * density * dt) - g * dt);
+}
+
+/** The speed a chute lands at in air of this density (terminalVelocity in Earth's) */
+export function chuteLandingSpeed(density = 1): number {
+  return ROCKET_CONFIG.PARACHUTE.terminalVelocity / Math.max(density, Number.EPSILON);
 }
 
 /** Sideways speed kept per step under an open chute */
-export function chuteSideFactor(dt: number): number {
-  return Math.exp(-ROCKET_CONFIG.PARACHUTE.dragRate * dt);
+export function chuteSideFactor(dt: number, density = 1): number {
+  return Math.exp(-ROCKET_CONFIG.PARACHUTE.dragRate * density * dt);
 }
 
 /** Delta-v left with `fuelUnits` in the tanks */

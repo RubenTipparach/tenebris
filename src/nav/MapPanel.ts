@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
-import { getBodyConfig, GAS_GIANTS, CelestialBodyType } from '../config/SolarSystemConfig';
+import { getBodyConfig, GAS_GIANTS, CelestialBodyType, bodyEnvironment, describeEnvironment } from '../config/SolarSystemConfig';
 import { allOrbits, gameTimeS, positionAt } from '../world/Orbits';
 import { BlockColours } from './blockColours';
 import { compassHeading, fromLatLon, mapUV, V3 } from './compass';
@@ -267,6 +267,17 @@ export class MapPanel {
     el.querySelector('.map-system')!.addEventListener('click', () => this.setMode({ kind: 'system' }));
     const c = this.canvas;
     c.addEventListener('contextmenu', (e) => { e.preventDefault(); this.onRightClick(e); });
+    // System map: hovering a body names it and its environment (space-exploration)
+    c.addEventListener('mousemove', (e) => {
+      if (this.mode.kind !== 'system') { c.title = ''; return; }
+      const rect = c.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      const hit = this.systemHits.filter(h => Math.hypot(h.x - x, h.y - y) <= h.r + C.WAYPOINT_HIT_PX / 2).sort((a, b) => a.r - b.r)[0];
+      if (!hit) { c.title = ''; return; }
+      const name = getBodyConfig(hit.id)?.name ?? GAS_GIANTS.find(g => g.id === hit.id)?.name ?? hit.id;
+      const visited = this.nav.visited?.(hit.id) ? ' (visited)' : '';
+      c.title = `${name}${visited} - ${describeEnvironment(bodyEnvironment(hit.id))}`;
+    });
     c.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       this.drag = { x: e.clientX, y: e.clientY, cx: this.centre.x, cy: this.centre.y, moved: 0 };

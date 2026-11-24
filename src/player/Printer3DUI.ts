@@ -202,6 +202,21 @@ export const PRINTER_RECIPES: PrinterRecipe[] = [
     outputQuantity: 1,
     printTime: 20,
   },
+  // Heat shield (space-exploration): fired ceramic tiles on a titanium frame - B B B / T T T
+  {
+    name: 'Heat Shield',
+    inputs: [
+      { itemType: ItemType.BRICK, quantity: 1, slot: 0 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 1 },
+      { itemType: ItemType.BRICK, quantity: 1, slot: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 3 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 1, slot: 5 },
+    ],
+    output: ItemType.HEAT_SHIELD,
+    outputQuantity: 1,
+    printTime: 25,
+  },
   // Solar array (design 6): two panels on an aluminum mast - . Al . / P Al P / . Al .
   {
     name: 'Solar Array',

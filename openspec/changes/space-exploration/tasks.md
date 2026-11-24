@@ -13,14 +13,14 @@
 
 ## 2. Environments, atmospheres, heat shield, Sun and gas giants
 
-- [ ] 2.1 Add `environment { temperature, radiation, atmosphereDensity }` to every body and gas giant config (values from design §6-7); verify a test that `atmosphereDensity > 0` exactly where `hasAtmosphere` is true plus the gas giants.
-- [ ] 2.2 Generalise `Survival.ts` exposure into the hazard table (air, heat, cold, radiation) with `SurvivalConfig.ENVIRONMENT` gauge lengths, cabin and suit protection; verify `air.test.ts` is unchanged and new cases pass (cold drains on Tessaly in a space suit; the cabin protects; recovery when safe).
-- [ ] 2.3 Show one HUD chip per draining gauge in `AirSystem`; verify a headless screenshot on a cold body.
-- [ ] 2.4 Scale `reentryStep` heat and parachute braking by `atmosphereDensity`; verify `rocket-survival.test.ts` keeps Earth's numbers and adds thick- and thin-atmosphere cases.
-- [ ] 2.5 Add the heat shield equipment (icon, wear, removal when worn out); verify tests that a shield cuts heat gain and wears by what it absorbs.
-- [ ] 2.6 Give the gas giants a gravity well, an atmosphere shell, a crush depth and a `skimmed` event; verify a test of skim in/out completing the visit, and burning up without a shield.
-- [ ] 2.7 Add the Sun's radiant heat inside `SUN.closePassRadii` and the `closePass` event; verify a test of a shielded pass surviving and an unshielded one burning up.
-- [ ] 2.8 Show environment (temperature, radiation, atmosphere) on the system map and visit cards; verify in a headless screenshot. Ask the owner to check the gauges and re-entry feel in game.
+- [x] 2.1 Add `environment { temperature, radiation, atmosphereDensity }` to every body and gas giant config (values from design §6-7); verify a test that `atmosphereDensity > 0` exactly where `hasAtmosphere` is true plus the gas giants.
+- [x] 2.2 Generalise `Survival.ts` exposure into the hazard table (air, heat, cold, radiation) with `SurvivalConfig.ENVIRONMENT` gauge lengths, cabin and suit protection; verify `air.test.ts` is unchanged and new cases pass (cold drains on Tessaly in a space suit; the cabin protects; recovery when safe).
+- [x] 2.3 Show one HUD chip per draining gauge in `AirSystem`; verify a headless screenshot on a cold body.
+- [x] 2.4 Scale `reentryStep` heat and parachute braking by `atmosphereDensity`; verify `rocket-survival.test.ts` keeps Earth's numbers and adds thick- and thin-atmosphere cases.
+- [x] 2.5 Add the heat shield equipment (icon, wear, removal when worn out); verify tests that a shield cuts heat gain and wears by what it absorbs.
+- [x] 2.6 Give the gas giants a gravity well, an atmosphere shell, a crush depth and a `skimmed` event; verify a test of skim in/out completing the visit, and burning up without a shield.
+- [x] 2.7 Add the Sun's radiant heat inside `SUN.closePassRadii` and the `closePass` event; verify a test of a shielded pass surviving and an unshielded one burning up.
+- [x] 2.8 Show environment (temperature, radiation, atmosphere) on the system map and visit cards; verify in a headless screenshot. Ask the owner to check the gauges and re-entry feel in game.
 
 ## 3. Staging
 

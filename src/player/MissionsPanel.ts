@@ -5,6 +5,7 @@ import { getAssetPath } from '../utils/assetPath';
 import { showToast } from '../utils/toast';
 import { Inventory, ITEM_DATA, ItemType } from './Inventory';
 import { MissionSave, MissionTracker, WorldState } from './MissionTracker';
+import { bodyEnvironment, describeEnvironment } from '../config/SolarSystemConfig';
 import { setRecipeGate } from './RecipeGate';
 import { clampPan, packTree, plaqueLabel, plaqueProgress, plaqueVisits, TreeLayout } from './MissionTreeLayout';
 
@@ -386,6 +387,11 @@ export class MissionsPanel {
       v.className = 'mt-side-visits';
       v.textContent = `Bodies visited: ${done} / ${total}`;
       side.appendChild(v);
+      // The body's environment: what to bring (suits, a heat shield)
+      const e = document.createElement('div');
+      e.className = 'mt-side-env';
+      e.textContent = describeEnvironment(bodyEnvironment(m.visit));
+      side.appendChild(e);
     }
 
     // An open mission (its parent done) can be picked as the one to do now
@@ -577,6 +583,7 @@ function injectStyle(): void {
     .mt-pick-current:hover { background: transparent; }
     .mt-close { margin-left: auto; background: #333; color: #ddd; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
     .mt-side-visits { margin-top: 8px; font-size: 13px; color: #3ee0ff; }
+    .mt-side-env { margin-top: 4px; font-size: 13px; color: #ffa300; }
     .mt-side-section { margin: 12px 0 4px; font-family: var(--game-font); font-size: 13px; color: #9fe0a5; text-transform: uppercase; letter-spacing: 1px; }
     .mt-side-text { font-size: 13px; color: #c8d0da; }
     .mt-side-obj { margin: 4px 0; font-size: 13px; }
