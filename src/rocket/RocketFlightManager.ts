@@ -802,6 +802,10 @@ export class RocketFlightManager {
       if (e.code === ROCKET_INPUTS.STAGE) {
         this.rocketController?.dropStage();
       }
+      // Survey the airless body below with a drone (space-exploration)
+      if (e.code === ROCKET_INPUTS.DRONE) {
+        this.rocketController?.launchDrone();
+      }
 
       // Manual respawn: abandon the rocket (e.g. stranded in space)
       if (e.code === ROCKET_INPUTS.RESPAWN) {

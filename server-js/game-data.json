@@ -699,6 +699,86 @@
   "230": {
    "name": "Suit Heater Mk2",
    "icon": "/textures/icons/suit_heater_mk2.png"
+  },
+  "231": {
+   "name": "Fuel Tank Mk2",
+   "icon": "/textures/rocket_parts/fuel_tank_mk2_face.png"
+  },
+  "232": {
+   "name": "Fuel Tank Mk3",
+   "icon": "/textures/rocket_parts/fuel_tank_mk3_face.png"
+  },
+  "233": {
+   "name": "Cargo Bay Mk2",
+   "icon": "/textures/rocket_parts/cargo_bay_mk2_face.png"
+  },
+  "234": {
+   "name": "Large Cargo Bay",
+   "icon": "/textures/rocket_parts/large_cargo_bay_face.png"
+  },
+  "235": {
+   "name": "Cargo Bay Mk3",
+   "icon": "/textures/rocket_parts/cargo_bay_mk3_face.png"
+  },
+  "236": {
+   "name": "Compact Reactor Core",
+   "icon": "/textures/rocket_parts/compact_reactor_core_face.png"
+  },
+  "237": {
+   "name": "Cryo Tank",
+   "icon": "/textures/rocket_parts/cryo_tank_face.png"
+  },
+  "238": {
+   "name": "Battery Pack Mk2",
+   "icon": "/textures/rocket_parts/battery_pack_mk2_face.png"
+  },
+  "239": {
+   "name": "Battery Pack Mk3",
+   "icon": "/textures/rocket_parts/battery_pack_mk3_face.png"
+  },
+  "240": {
+   "name": "Solar Array Mk2",
+   "icon": "/textures/rocket_parts/solar_array_mk2_face.png"
+  },
+  "241": {
+   "name": "Radiator",
+   "icon": "/textures/rocket_parts/radiator_face.png"
+  },
+  "242": {
+   "name": "Radiator Mk2",
+   "icon": "/textures/rocket_parts/radiator_mk2_face.png"
+  },
+  "243": {
+   "name": "Drogue Chute",
+   "icon": "/textures/rocket_parts/drogue_chute_face.png"
+  },
+  "244": {
+   "name": "Radioisotope Generator",
+   "icon": "/textures/rocket_parts/rtg_face.png"
+  },
+  "245": {
+   "name": "Survey Drone",
+   "icon": "/textures/rocket_parts/survey_drone_face.png"
+  },
+  "246": {
+   "name": "Heat Shield Mk2",
+   "icon": "/textures/rocket_parts/heat_shield_mk2_face.png"
+  },
+  "247": {
+   "name": "Heat Shield Mk3",
+   "icon": "/textures/rocket_parts/heat_shield_mk3_face.png"
+  },
+  "248": {
+   "name": "Radiation Lining",
+   "icon": "/textures/icons/radiation_lining.png"
+  },
+  "249": {
+   "name": "Coolant Loop",
+   "icon": "/textures/icons/coolant_loop.png"
+  },
+  "250": {
+   "name": "Fuel Rod Mk2",
+   "icon": "/textures/icons/fuel_rod_mk2.png"
   }
  },
  "slots": {

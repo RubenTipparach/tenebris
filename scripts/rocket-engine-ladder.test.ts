@@ -38,8 +38,8 @@ const pn = engineNeeds([I.NUCLEAR_PULSE_DRIVE]);
 check('nuclear pulse drive consumes pulse units', (pn.consumes.get(I.PULSE_UNIT) ?? 0) > 0);
 
 // ---- 5.3 fusion
-const fus = computeRocketStats([I.FUSION_DRIVE, tank, cm]);
-const torch = computeRocketStats([I.FUSION_TORCH, tank, cm]);
+const fus = computeRocketStats([I.FUSION_DRIVE, I.CRYO_TANK, tank, cm]);
+const torch = computeRocketStats([I.FUSION_TORCH, I.CRYO_TANK, tank, cm]);
 const fn = engineNeeds([I.FUSION_DRIVE]), tn = engineNeeds([I.FUSION_TORCH]);
 check('fusion drive burns helium-3', (fn.consumes.get(I.HELIUM_3) ?? 0) > 0);
 check('fusion torch burns helium-3 and deuterium', (tn.consumes.get(I.HELIUM_3) ?? 0) > 0 && (tn.consumes.get(I.DEUTERIUM) ?? 0) > 0);

@@ -999,6 +999,45 @@ if __name__ == "__main__":
         face = recolour(read_png(os.path.join(parts, "medium_engine_face.png")), ramp)
         write(f"rocket_parts/{name}_face.png", trefoil(face) if name in ("gas_core_engine", "fission_fragment_drive", "nuclear_pulse_drive") else face)
     write("icons/refit_kit_mk2.png", refit_kit(True))
+    # ---- Upgrade parts (space-exploration, resources): each base part's own
+    # art in the upgrade's ramp, with mark pips (2 = mk2, 3 = mk3) in the
+    # top-right corner so the tiers read apart at a glance
+    def pips(px, n, colour="white"):
+        out = [list(r) for r in px]
+        for k in range(n):
+            x, y = 14 - k * 2, 1
+            out[y][x] = P8[colour] + (255,)
+            out[y + 1][x] = P8["black"] + (255,)
+        return out
+
+    def variant(src_name, out_name, keys, n=0, face_only=False):
+        ramp = [P8[k] for k in keys]
+        if not face_only:
+            write(f"rocket_parts/{out_name}.png", recolour(read_png(os.path.join(parts, f"{src_name}.png")), ramp))
+        face = recolour(read_png(os.path.join(parts, f"{src_name}_face.png")), ramp)
+        write(f"rocket_parts/{out_name}_face.png", pips(face, n) if n else face)
+
+    variant("large_fuel_tank", "fuel_tank_mk2", ("black", "navy", "indigo", "lgrey", "white"), 2)
+    variant("large_fuel_tank", "fuel_tank_mk3", ("black", "plum", "indigo", "pink", "white"), 3)
+    variant("cargo_bay", "cargo_bay_mk2", ("black", "dgrey", "brown", "orange", "peach"), 2)
+    variant("cargo_bay", "large_cargo_bay", ("black", "navy", "dgrey", "lgrey", "white"))
+    variant("cargo_bay", "cargo_bay_mk3", ("black", "plum", "red", "orange", "yellow"), 3)
+    variant("reactor_core", "compact_reactor_core", ("black", "dgrey", "green", "lime", "white"))
+    variant("cargo_bay", "cryo_tank", ("navy", "blue", "lgrey", "white", "white"))
+    variant("battery_pack", "battery_pack_mk2", ("black", "navy", "blue", "lgrey", "white"), 2, face_only=True)
+    variant("battery_pack", "battery_pack_mk3", ("black", "plum", "pink", "peach", "white"), 3, face_only=True)
+    variant("solar_array", "solar_array_mk2", ("black", "plum", "indigo", "pink", "white"), 2, face_only=True)
+    variant("solar_array", "radiator", ("black", "dgrey", "brown", "orange", "peach"), face_only=True)
+    variant("solar_array", "radiator_mk2", ("black", "plum", "red", "orange", "yellow"), 2, face_only=True)
+    variant("parachute", "drogue_chute", ("black", "navy", "orange", "yellow", "white"), face_only=True)
+    variant("reactor_core", "rtg", ("black", "dgrey", "orange", "yellow", "white"), face_only=True)
+    variant("heat_shield", "heat_shield_mk2", ("black", "navy", "indigo", "lgrey", "white"), 2, face_only=True)
+    variant("heat_shield", "heat_shield_mk3", ("black", "plum", "red", "pink", "white"), 3, face_only=True)
+    drone = recolour(read_png(os.path.join(techd, "survey_beacon_face.png")), [P8[k] for k in ("black", "navy", "blue", "lgrey", "white")])
+    write("rocket_parts/survey_drone_face.png", drone)
+    write("icons/radiation_lining.png", resource_icon("plate", "green", "lime", "black", "dgrey"))
+    write("icons/coolant_loop.png", resource_icon("coil", "blue", "white", "navy", None))
+    write("icons/fuel_rod_mk2.png", pips(recolour(read_png(os.path.join(tex, "icons", "fuel_rod.png")), [P8[k] for k in ("black", "navy", "blue", "lime", "white")]), 2))
     # Stage separator (rocket-staging): the tank's shape in hazard yellow,
     # a black-and-yellow stripe band round its middle on the icon
     sep = [P8[k] for k in ("black", "dgrey", "orange", "yellow", "white")]

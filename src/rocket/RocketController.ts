@@ -15,7 +15,7 @@ import { RocketPart } from '../planet/RocketPart';
 import { InventorySlot, ItemType, ITEM_DATA } from '../player/Inventory';
 import {
   computeRocketStats, stackItemTypes, cargoMass, gravityWellMultiplier, dampingFactor, EngineMode, engineModes, nextEngineMode, validEngineMode,
-  drainCharge, feedCharge, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
+  drainCharge, feedCharge, addCharge, droneTarget, equipmentStats, chargeSecondsLeft, inSunlight, solarCharge, poweredThrust, inAtmosphereShell, reentryStep, heatDamage, openChuteFrom, chuteDescentSpeed, chuteSideFactor,
   chuteLandingSpeed, shieldCapacity, shieldsFitted, useShield, solarHeat,
   stagesOf, stagedStats, fillStages, stagedDeltaVWith, engineNeeds, slotStore,
   chutesFitted,
@@ -187,6 +187,9 @@ export class RocketController {
   private batteryCapacityWh: number = 0;
   private powerDrawW: number = 0;
   private solarW: number = 0;          // the equipped solar arrays, full sun
+  private rtgW: number = 0;            // the equipped RTGs, always
+  private cooling: number = 0;         // share of heat its radiators shed
+  private chuteBrake: number = 1;      // a drogue's extra braking
   private sunlit: boolean = true;
   private flatWarned: boolean = false;
   private sunPosition: { x: number; y: number; z: number } = SUN_CONFIG_POSITION;
@@ -580,6 +583,9 @@ export class RocketController {
     this.batteryCapacityWh = stats.batteryWh;
     this.powerDrawW = stats.powerDrawW;
     this.solarW = stats.solarW;
+    this.rtgW = stats.rtgW;
+    this.cooling = stats.cooling;
+    this.chuteBrake = stats.chuteBrake;
     this.chargeWh = Math.min(this.chargeWh, this.batteryCapacityWh);
 
     // Start with full fuel
@@ -647,6 +653,25 @@ export class RocketController {
    * fall away, the stage above becomes active on its own tanks, and the
    * rocket's base moves up to the new bottom. Refused with one stage left.
    */
+  /**
+   * Launch a survey drone at the body below (space-exploration upgrade):
+   * one leaves the equipment and the body counts as surveyed, as a beacon
+   * planted there would. Refused without a drone or a body in reach.
+   */
+  public launchDrone(): boolean {
+    const slot = (this.equipment ?? []).find(s => equipmentStats(s.itemType)?.drone && s.quantity > 0);
+    if (!slot) { showToast('No survey drone aboard', { duration: 2000 }); return false; }
+    const body = droneTarget(this.position, this.planets);
+    if (!body) { showToast('No airless body in drone range', { duration: 2000 }); return false; }
+    slot.quantity -= 1;
+    if (slot.quantity <= 0) { slot.itemType = ItemType.NONE; slot.quantity = 0; }
+    this.refreshCargoMass();
+    this.onChanged?.();
+    emitGameEvent('surveyed', body.id);
+    showToast(`Survey drone: ${body.name} surveyed`, { duration: 3000 });
+    return true;
+  }
+
   public dropStage(): boolean {
     const stages = stagesOf(this.parts, p => p.itemType);
     if (stages.length <= 1) {
@@ -1108,7 +1133,7 @@ export class RocketController {
       const fall = -this.velocity.dot(up);
       const density = this.atmosphereDensity || 1;
       const side = this.velocity.clone().addScaledVector(up, fall).multiplyScalar(chuteSideFactor(deltaTime, density));
-      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime, density);
+      const newFall = chuteDescentSpeed(fall, gravity.magnitude, deltaTime, density, this.chuteBrake);
       this.velocity.copy(side).addScaledVector(up, -newFall);
       const rocketUp = this.getLocalUp();
       const axis = new THREE.Vector3().crossVectors(rocketUp, up);
@@ -1697,6 +1722,8 @@ export class RocketController {
    * flight or landed (design 6): the line to the sun must miss every body.
    */
   private updateSolar(deltaTime: number): void {
+    // An RTG charges sun or not (space-exploration upgrade)
+    if (this.rtgW > 0) this.chargeWh = addCharge(this.chargeWh, this.batteryCapacityWh, (this.rtgW * deltaTime) / 3600);
     if (this.solarW <= 0) return;
     this.sunlit = inSunlight(this.position, this.sunPosition, this.planets);
     this.chargeWh = solarCharge(this.chargeWh, this.batteryCapacityWh, this.solarW, this.sunlit, deltaTime);
@@ -1732,7 +1759,7 @@ export class RocketController {
 
   /** The speed a parachute would land at here (its HUD line; Infinity in vacuum) */
   public getChuteLandingSpeed(): number {
-    return this.atmosphereDensity > 0 ? chuteLandingSpeed(this.atmosphereDensity) : Infinity;
+    return this.atmosphereDensity > 0 ? chuteLandingSpeed(this.atmosphereDensity, this.chuteBrake) : Infinity;
   }
 
   /** Heat shields fitted, and how worn the one in use is (0-1) */
@@ -1754,6 +1781,7 @@ export class RocketController {
       density: this.atmosphereDensity || 1,
       extraGain: solar,
       shieldShare: shields > 0 ? cfg.shieldShare : 0,
+      cooling: this.cooling,
     });
     this.heat = step.heat;
     if (step.absorbed > 0) this.wearShield(step.absorbed);
@@ -1871,7 +1899,7 @@ export class RocketController {
       // The pass records the Sun's field: data into the hold (what fits)
       const want = ROCKET_CONFIG.SUN_PASS.coronalData;
       const left = this.cargo ? slotStore(this.cargo).addItem(ItemType.CORONAL_DATA, want) : want;
-      if (left < want) this.refreshCargoMass();
+      if (left < want) { this.refreshCargoMass(); this.onChanged?.(); }
       showToast(left < want ? `Close pass of the Sun - ${want - left} coronal field data recorded`
         : 'Close pass of the Sun - no room in the cargo hold for the field data', { duration: 3000 });
     }

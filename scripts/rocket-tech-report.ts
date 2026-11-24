@@ -97,8 +97,8 @@ const STACKS: [string, ItemType[]][] = [
   ['Ember: Gas-Core Engine + two Large Tanks', [ItemType.GAS_CORE_ENGINE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Lodestone: Gas-Core Engine (lift) + Fission-Fragment Drive + Reactor Core + Large Tank', [ItemType.GAS_CORE_ENGINE, ItemType.FISSION_FRAGMENT_DRIVE, ItemType.REACTOR_CORE, ItemType.LARGE_FUEL_TANK, ItemType.COMMAND_MODULE]],
   ['Brand: Nuclear Pulse Drive + three Large Tanks + Cargo Bay', [ItemType.NUCLEAR_PULSE_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
-  ['Aurelia: D-He3 Fusion Drive + two Large Tanks + Cargo Bay', [ItemType.FUSION_DRIVE, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
-  ['Brontes: Magnetic Fusion Torch + two Large Tanks + Cargo Bay', [ItemType.FUSION_TORCH, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Aurelia: D-He3 Fusion Drive + Cryo Tank + two Large Tanks + Cargo Bay', [ItemType.FUSION_DRIVE, ItemType.CRYO_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
+  ['Brontes: Magnetic Fusion Torch + Cryo Tank + two Large Tanks + Cargo Bay', [ItemType.FUSION_TORCH, ItemType.CRYO_TANK, ItemType.LARGE_FUEL_TANK, ItemType.LARGE_FUEL_TANK, ItemType.CARGO_BAY, ItemType.COMMAND_MODULE]],
 ];
 const TRIPS: [string, string][] = [
   ['earth', 'moon'], ['moon', 'earth'], ['earth', 'sequoia'], ['moon', 'sequoia'],

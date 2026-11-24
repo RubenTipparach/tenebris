@@ -510,18 +510,18 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.THERMAL_SUIT, quantity: 1 },
   },
-  // Hardened suit: the thermal suit with Umbra's fungus radiation lining, a
+  // Hardened suit: the thermal suit with Umbra's radiation lining, a
   // Halcyon crystal visor and ceramic plates
   //  .X.
-  //  FTF
+  //  RTR
   //  P.P
   {
     name: 'Hardened Suit',
     inputs: [
       { itemType: ItemType.CRYSTAL, quantity: 1, slot: 1 },
-      { itemType: ItemType.RADIOTROPHIC_FUNGUS, quantity: 1, slot: 3 },
+      { itemType: ItemType.RADIATION_LINING, quantity: 1, slot: 3 },
       { itemType: ItemType.THERMAL_SUIT, quantity: 1, slot: 4 },
-      { itemType: ItemType.RADIOTROPHIC_FUNGUS, quantity: 1, slot: 5 },
+      { itemType: ItemType.RADIATION_LINING, quantity: 1, slot: 5 },
       { itemType: ItemType.CERAMIC_PLATING, quantity: 1, slot: 6 },
       { itemType: ItemType.CERAMIC_PLATING, quantity: 1, slot: 8 },
     ],

@@ -29,6 +29,10 @@ export interface RocketStats {
   powerDrawW: number;       // what it draws in flight (the command module)
   solarW: number;           // what its equipped solar arrays charge in full sun
   chutes: number;           // parachutes fitted (each opens once)
+  cooling: number;          // share of heat gained its radiators shed (0..1)
+  rtgW: number;             // charge its RTGs give at all times
+  chuteBrake: number;       // how much harder its chute brakes (1 = a plain chute; a drogue more)
+  drones: number;           // survey drones aboard
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
   mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
@@ -112,6 +116,7 @@ export function computeRocketStats(
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
   let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
+  let keepHeat = 1, rtgW = 0, chuteBrake = 1, drones = 0;
   for (const slot of equipment ?? []) {
     const e = equipmentStats(slot.itemType);
     if (!e || slot.quantity <= 0) continue;
@@ -119,7 +124,14 @@ export function computeRocketStats(
     batteryWh += (e.batteryWh ?? 0) * slot.quantity;
     solarW += (e.solarW ?? 0) * slot.quantity;
     chutes += (e.chutes ?? 0) * slot.quantity;
+    keepHeat *= Math.pow(1 - (e.cooling ?? 0), slot.quantity);
+    rtgW += (e.rtgW ?? 0) * slot.quantity;
+    chuteBrake = Math.max(chuteBrake, e.chuteBrake ?? 1);
+    if (e.drone) drones += slot.quantity;
   }
+  // What each part counts as for `requires` (itself, and what it provides)
+  const present = new Set<ItemType>(itemTypes);
+  for (const t of itemTypes) { const p = partStats(t)?.provides; if (p !== undefined) present.add(p); }
   const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
@@ -131,7 +143,7 @@ export function computeRocketStats(
     batteryWh += s.batteryWh ?? 0;
     powerDrawW += s.powerDrawW ?? 0;
     tier = Math.max(tier, s.tier);
-    const missing = (s.requires ?? []).filter(r => !itemTypes.includes(r));
+    const missing = (s.requires ?? []).filter(r => !present.has(r));
     if (missing.length) {
       const msg = `${ITEM_DATA[itemType]?.name ?? 'Part'} needs a ${missing.map(r => ITEM_DATA[r]?.name ?? 'part').join(' and a ')}`;
       if (!problems.includes(msg)) problems.push(msg);
@@ -146,7 +158,7 @@ export function computeRocketStats(
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, tier, problems, mode: firing };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, cooling: 1 - keepHeat, rtgW, chuteBrake, drones, tier, problems, mode: firing };
 }
 
 // ---- Staging (openspec space-exploration, rocket-staging) ----
@@ -388,6 +400,8 @@ export interface ReentryOptions {
   extraGain?: number;
   /** The share of the heat gained that a fitted heat shield takes (0 = none fitted) */
   shieldShare?: number;
+  /** The share of the heat gained its radiators shed first (RocketStats.cooling) */
+  cooling?: number;
 }
 
 /**
@@ -404,7 +418,7 @@ export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: n
   const leftAtmosphere = state.leftAtmosphere || !inAtmosphere;
   const reentering = leftAtmosphere && inAtmosphere;
   const safe = cfg.safeSpeed / Math.max(density, Number.EPSILON);
-  const gain = (reentering && speed > safe ? (speed - safe) * cfg.heatPerMs * density * dt : 0) + (opts.extraGain ?? 0);
+  const gain = ((reentering && speed > safe ? (speed - safe) * cfg.heatPerMs * density * dt : 0) + (opts.extraGain ?? 0)) * (1 - (opts.cooling ?? 0));
   const absorbed = gain * (opts.shieldShare ?? 0);
   const net = gain - absorbed;
   const heat = net > 0
@@ -484,17 +498,18 @@ export function openChuteFrom(equipment: InventorySlot[] | null | undefined, inA
  * bleeds at dragRate and the chute also holds this step's gravity, so it
  * settles on terminalVelocity exactly; under it, it falls freely.
  */
-export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number, density = 1): number {
+export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number, density = 1, brake = 1): number {
   const cfg = ROCKET_CONFIG.PARACHUTE;
-  // Thick air brakes harder and lands slower; thin air the opposite
-  const t = chuteLandingSpeed(density);
+  // Thick air brakes harder and lands slower; thin air the opposite; a
+  // drogue (brake > 1) brakes harder in any air
+  const t = chuteLandingSpeed(density, brake);
   if (fallSpeed <= t) return fallSpeed;
-  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * density * dt) - g * dt);
+  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * density * brake * dt) - g * dt);
 }
 
-/** The speed a chute lands at in air of this density (terminalVelocity in Earth's) */
-export function chuteLandingSpeed(density = 1): number {
-  return ROCKET_CONFIG.PARACHUTE.terminalVelocity / Math.max(density, Number.EPSILON);
+/** The speed a chute lands at in air of this density (terminalVelocity in Earth's), a drogue's brake included */
+export function chuteLandingSpeed(density = 1, brake = 1): number {
+  return ROCKET_CONFIG.PARACHUTE.terminalVelocity / Math.max(density * brake, Number.EPSILON);
 }
 
 /** Sideways speed kept per step under an open chute */
@@ -873,4 +888,21 @@ export function drawFuel(wanted: number, stores: ItemStore[]): FuelDraw {
     }
   }
   return { supplied: Math.min(wanted, supplied), used: [...used].map(([itemType, count]) => ({ itemType, count })) };
+}
+
+/**
+ * The body a survey drone launched from `pos` surveys (space-exploration
+ * upgrade): the nearest airless, solid body within DRONE_RANGE_RADII of its
+ * radius - or null.
+ */
+export function droneTarget<B extends { id: string; center: { x: number; y: number; z: number }; radius: number; hasAtmosphere?: boolean; gasGiant?: boolean }>(
+  pos: { x: number; y: number; z: number }, bodies: readonly B[],
+): B | null {
+  let best: B | null = null, bestD = Infinity;
+  for (const b of bodies) {
+    if (b.hasAtmosphere || b.gasGiant) continue;
+    const d = Math.hypot(pos.x - b.center.x, pos.y - b.center.y, pos.z - b.center.z);
+    if (d <= b.radius * ROCKET_CONFIG.DRONE_RANGE_RADII && d < bestD) { best = b; bestD = d; }
+  }
+  return best;
 }

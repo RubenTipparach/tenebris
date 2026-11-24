@@ -75,9 +75,14 @@ export const MACHINE_CONFIG = {
   // Centrifuge: ENRICH_IN uranium ore -> 1 enriched uranium, every ENRICH_S
   ENRICH_IN: 4,
   ENRICH_S: 20,
-  // Reactor: up to ROD_SLOTS fuel rods, each lasting ROD_LIFE_S of running
+  // Reactor: up to ROD_SLOTS fuel rods, each lasting its REACTOR_RODS life of running
   REACTOR_ROD_SLOTS: 4,
-  REACTOR_ROD_LIFE_S: 30 * 60,
+  // The rods a reactor burns and how long each lasts (s): the mk2 rod
+  // (space-exploration upgrade) twice the plain one
+  REACTOR_RODS: {
+    [ItemType.FUEL_ROD]: 30 * 60,
+    [ItemType.FUEL_ROD_MK2]: 60 * 60,
+  } as Partial<Record<ItemType, number>>,
   // Gas collector (openspec wool-air-and-reentry, design 4): one empty tank
   // in -> one oxygen tank out every fillS while powered, where the air is breathable
   gasCollector: { fillS: 15 },
@@ -205,11 +210,39 @@ export const FABRICATOR_RECIPES: FabricatorRecipe[] = [
     inputs: [
       { itemType: ItemType.FUSION_DRIVE, quantity: 1 },
       { itemType: ItemType.MAGNETIC_COIL, quantity: 2 },
-      { itemType: ItemType.CRYO_COOLANT, quantity: 4 },
+      { itemType: ItemType.COOLANT_LOOP, quantity: 2 },
       { itemType: ItemType.METALLIC_HYDROGEN, quantity: 2 },
       { itemType: ItemType.LASER_CRYSTAL, quantity: 2 },
     ],
     timeS: 300,
+  },
+  // ---- upgrades (space-exploration): reactor-built ----
+  {
+    output: ItemType.COMPACT_REACTOR_CORE,
+    inputs: [
+      { itemType: ItemType.REACTOR_CORE, quantity: 1 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 4 },
+    ],
+    timeS: 150,
+  },
+  {
+    output: ItemType.RTG,
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 2 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 4 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1 },
+    ],
+    timeS: 120,
+  },
+  {
+    output: ItemType.FUEL_ROD_MK2,
+    inputs: [
+      { itemType: ItemType.FUEL_ROD, quantity: 2 },
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 2 },
+    ],
+    timeS: 90,
   },
 ];
 

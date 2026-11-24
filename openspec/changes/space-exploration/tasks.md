@@ -48,7 +48,7 @@
 
 - [x] 6.1 Add the body resources (resin, salvage and superconductor, rare-earth ore and magnets, radiotrophic fungus, silica and aerogel, crystal and laser crystal, cryogenic coolant, coronal field data, pulse units), each with an icon and blocks drawn by the block-textures skill, gathered only on their body; verify an icon test and a per-body gathering test.
 - [x] 6.2 Add the thermal and hardened suits (and suit heaters) with protection sets in `SurvivalConfig.SUITS`; verify tests: thermal on Tessaly holds, thermal on Glacia drains, hardened holds everywhere.
-- [ ] 6.3 Add the upgrade parts (mk2/mk3 tanks, cargo, batteries, solar, radiators, drogue chute, RTG, cryo tank, compact reactor core, survey drone); verify `computeRocketStats` tests for each new stat they bring.
+- [x] 6.3 Add the upgrade parts (mk2/mk3 tanks, cargo, batteries, solar, radiators, drogue chute, RTG, cryo tank, compact reactor core, survey drone); verify `computeRocketStats` tests for each new stat they bring.
 
 ## 7. Thalassa
 
