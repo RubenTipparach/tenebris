@@ -73,6 +73,10 @@ export const ROCKET_CONFIG = {
   // A rocket assembled on a NEW launch pad starts with empty tanks (pads from
   // older saves, and the starter rocket, keep launching full)
   NEW_PAD_FUEL: 0,
+  // The pad a rocket launched from keeps the fuel it burns: its record is
+  // written each time this many more units have burnt (and on any exit,
+  // respawn or crash), so a relaunch from the pad starts with what is left
+  PAD_FUEL_RECORD_STEP: 5,
   // Launch pads are built one Launch Pad Block (one hex) at a time. A rocket
   // and its tower need at least PAD_BLOCKS_PER_TOWER blocks laid as a middle
   // hex with the full ring around it; the rocket stands in the middle and
@@ -240,6 +244,17 @@ export const ROCKET_CONFIG = {
     strafeFuelConsumption: 2,     // Fuel units per second when strafing
     throttleStep: 0.1,            // Per shift/ctrl press
     throttleHoldRate: 0.5,        // Throttle change per second when holding
+  },
+
+  // === RCS THRUSTER LINES (rocket/RocketRcsVisuals.ts) ===
+  // Shown while WASD / Q / E turn the rocket: a pair of jets per turn
+  RCS_VISUAL: {
+    length: 2.5,                  // m, each jet's line
+    flicker: 0.3,                 // share of the length a jet flickers by
+    leverShare: 0.85,             // pitch / roll jets sit this far up the half-stack (nose and tail)
+    hullRadius: 1.0,              // m, where spin jets leave the hull's side
+    color: 0xe8f6ff,
+    opacity: 0.9,
   },
 
   // === CAMERA ===

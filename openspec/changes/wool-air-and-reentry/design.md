@@ -140,7 +140,7 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
   - with a worn suit and an oxygen tank in the inventory (hotbar or bag),
     the suit draws from the tank. Each tank holds `TANK_AIR_S` = 300 s and
     is swapped for an empty tank when it runs out;
-  - otherwise the player holds their breath for `BREATH_S` = 10 s, then
+  - otherwise the player holds their breath for `BREATH_S` = 90 s, then
     dies.
 - **Dying:** a death screen, then respawn at the world's spawn on Earth with
   the inventory kept. A pilot who dies in a cabin with no power is taken out

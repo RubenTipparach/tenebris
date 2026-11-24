@@ -263,6 +263,8 @@ export class RocketFlightManager {
     if (!this.rocketController) return;
 
     const respawnPosition = this.rocketController.getPosition().clone();
+    // The pad keeps what the flight burnt (it relaunches with what is left)
+    this.recordActiveRocket();
 
     // Clean up rocket
     this.flightUI.hide();
@@ -535,6 +537,13 @@ export class RocketFlightManager {
 
     // Update rocket controller
     this.rocketController.update(deltaTime, this.inputState);
+
+    // Taking off burns the pad's fuel: keep its record in step with the
+    // tanks, so a relaunch from the pad never starts on fuel already burnt
+    if (this.activePad) {
+      const burnt = (this.activePad.fuel ?? Infinity) - this.rocketController.getFuelUnits();
+      if (burnt >= ROCKET_CONFIG.PAD_FUEL_RECORD_STEP) this.recordActiveRocket();
+    }
 
     // Update explosion particles if crashed
     const state = this.rocketController.getState();

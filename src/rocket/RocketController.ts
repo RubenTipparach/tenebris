@@ -18,6 +18,7 @@ import {
 } from './RocketPerformance';
 import { showToast } from '../utils/toast';
 import { createHeatGlow, setHeatGlow, createCanopy, disposeObject } from './RocketReentryVisuals';
+import { rcsJets, createRcsLines, setRcsLines } from './RocketRcsVisuals';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { AudioManager } from '../engine/AudioManager';
 
@@ -132,6 +133,9 @@ export class RocketController {
 
   // Stack center offset (local space, for camera targeting)
   private stackCenterOffset: THREE.Vector3 = new THREE.Vector3();
+  // The turn WASD / Q / E commanded this frame (sign per local axis: x pitch, y spin, z roll) and its RCS lines
+  private rcsCommand = new THREE.Vector3();
+  private rcsLines: THREE.LineSegments | null = null;
 
   // Input tracking
   private lastThrustToggle: boolean = false;
@@ -712,7 +716,7 @@ export class RocketController {
     this.rocketCamera = new RocketCamera(camera);
     // Use stack center instead of pivot position for camera focus
     const stackCenter = this.getStackCenter();
-    this.rocketCamera.setRocketTransform(stackCenter, this.groundNormal);
+    this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
     this.rocketCamera.reset();
     this.rocketCamera.snap();
 
@@ -786,11 +790,13 @@ export class RocketController {
     this.pivot.position.copy(this.position);
     this.pivot.quaternion.copy(this.orientation);
 
+    // RCS thruster lines for the turn commanded this frame
+    this.updateRcsLines();
+
     // Update camera
     if (this.rocketCamera) {
-      const upVector = this.getLocalUp();
       const stackCenter = this.getStackCenter();
-      this.rocketCamera.setRocketTransform(stackCenter, upVector);
+      this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
       this.rocketCamera.update(deltaTime);
     }
 
@@ -825,6 +831,8 @@ export class RocketController {
    * Process control inputs
    */
   private processControls(deltaTime: number, input: RocketInputState, stateInfo: typeof STATE_INFO[RocketState]): void {
+    // No turn unless the steering below commands one (no power, can't steer: no jets)
+    this.rcsCommand.set(0, 0, 0);
     // Throttle control
     if (stateInfo.canThrust) {
       if (input.throttleUp) {
@@ -854,6 +862,12 @@ export class RocketController {
       if (input.yawRight) this.applyTorque(this.getLocalUp(), -cfg.yawSpeed * deltaTime);
       if (input.rollLeft) this.applyTorque(this.getLocalForward(), -cfg.rollSpeed * deltaTime);
       if (input.rollRight) this.applyTorque(this.getLocalForward(), cfg.rollSpeed * deltaTime);
+      // The same turn, per local axis, for the RCS thruster lines
+      this.rcsCommand.set(
+        (input.pitchUp ? 1 : 0) - (input.pitchDown ? 1 : 0),
+        (input.yawLeft ? 1 : 0) - (input.yawRight ? 1 : 0),
+        (input.rollRight ? 1 : 0) - (input.rollLeft ? 1 : 0),
+      );
 
       // Strafe thrusters (Arrow keys + C for descent - always available)
       const strafeDir = new THREE.Vector3();
@@ -1598,8 +1612,22 @@ export class RocketController {
     }
   }
 
-  /** Remove the re-entry visuals (landing, despawn) */
+  /** Draw the RCS jets of this frame's commanded turn (made the first time one fires) */
+  private updateRcsLines(): void {
+    if (!this.rcsLines) {
+      if (this.rcsCommand.lengthSq() === 0) return;
+      this.rcsLines = createRcsLines();
+      this.pivot.add(this.rcsLines);
+    }
+    setRcsLines(this.rcsLines, rcsJets(this.rcsCommand, this.stackHeight(), this.stackCenterOffset));
+  }
+
+  /** Remove the re-entry visuals and the RCS lines (landing, despawn) */
   private disposeReentryVisuals(): void {
+    if (this.rcsLines) {
+      disposeObject(this.rcsLines);
+      this.rcsLines = null;
+    }
     this.closeChute();
     if (this.heatGlow) {
       disposeObject(this.heatGlow);
@@ -1848,7 +1876,7 @@ export class RocketController {
     this.rocketCamera = new RocketCamera(camera);
     // Use stack center instead of pivot position for camera focus
     const stackCenter = this.getStackCenter();
-    this.rocketCamera.setRocketTransform(stackCenter, this.groundNormal);
+    this.rocketCamera.setRocketTransform(stackCenter, this.orientation);
     this.rocketCamera.reset();
     this.rocketCamera.snap();
 
