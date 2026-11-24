@@ -1063,22 +1063,34 @@
         // stand just outside the ring on this tile's side, so the line of
         // sight to its ground never grazes a pad block already laid
         let ok = false;
-        for (let tries = 0; tries < 2 && !ok; tries++) {
+        for (let tries = 0; tries < 3 && !ok; tries++) {
+          const tg = p.groundDepthOf(t);
           const centre = blockTop(site, p.groundDepthOf(site));
-          const target = blockTop(t, p.groundDepthOf(t));
-          const out = t === site ? target.clone().sub(player().position).negate() : target.clone().sub(centre);
+          const target = blockTop(t, tg);
           const up = upAt(target);
-          out.addScaledVector(up, -out.dot(up)).normalize();
-          const stand = target.clone().addScaledVector(out, t === site ? 4.5 : 2.6 + tries);
+          let stand;
+          if (tries < 2) {
+            // outside the ring on this tile's side
+            const out = t === site ? target.clone().sub(player().position).negate() : target.clone().sub(centre);
+            out.addScaledVector(up, -out.dot(up)).normalize();
+            stand = target.clone().addScaledVector(out, t === site ? 4.5 : 2.6 + tries);
+          } else {
+            // from the middle of the pad, looking down onto the tile's top
+            stand = centre.clone();
+          }
           await walkTo(stand, 0.8, 20000);
           closeMenus();
           if (!selectItem(I.LAUNCH_PAD_BLOCK)) return;
-          const before = count(I.LAUNCH_PAD_BLOCK);
           await lookAtPoint(target, 0.03, 1500);
+          // the block goes on the face the aim hits: only click when that's
+          // this tile's top (from below, the aim hits its side and the block
+          // lands on the neighbouring tile)
+          const h = rayHit();
+          if (!h || h.tileIndex !== t || h.depth !== tg || h.prevTileIndex !== t) continue;
           await click(2, 80);
           await sleep(900);
           closeMenus();   // a click on a pad opens its panel
-          ok = count(I.LAUNCH_PAD_BLOCK) < before || has(t);
+          ok = has(t);
         }
         if (ok) { say(`pad block laid on tile ${t}`); continue; }
         // try that block again on the next pass; give the site up only after a few rounds
