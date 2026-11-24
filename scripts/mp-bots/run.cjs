@@ -137,7 +137,9 @@ async function launchBotRetrying(bot, tries = 3) {
       fs.rmSync(cmd);
       let out;
       try { out = await b.page.evaluate(`(async () => { ${body} })()`); } catch (e) { out = { error: String(e) }; }
-      fs.writeFileSync(path.join(OUT, `cmd-${b.name}.out.json`), JSON.stringify(out, null, 1));
+      let text;
+      try { text = JSON.stringify(out, null, 1); } catch (e) { text = JSON.stringify({ error: 'result not serialisable: ' + String(e).slice(0, 200) }); }
+      fs.writeFileSync(path.join(OUT, `cmd-${b.name}.out.json`), text);
     }
     if (Date.now() - lastShot > 60000) {
       lastShot = Date.now();

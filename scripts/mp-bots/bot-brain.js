@@ -24,6 +24,8 @@
   let loopGen = 0;
   function waitPoint(gen) {
     if (gen !== undefined && gen !== loopGen) throw new Error('loop replaced');
+    // holding its breath off-world: any task unwinds when it is time to get back to the cabin
+    if (st.abortIf && !st.inAbort && st.abortIf()) { st.inAbort = true; throw new Error('out of breath - back to the rocket'); }
     st.where = (new Error().stack || '').split('\n').slice(3, 9).map(l => l.trim().replace(/^at /, '').replace(/ \(.*$/, '')).join(' < ');
   }
   const sleep = (ms) => { waitPoint(st.curGen); return new Promise(r => setTimeout(r, ms)); };
@@ -67,6 +69,7 @@
     BENCH = benchMod.ELECTRONICS_RECIPES;
     const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
     COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
+    BODY_RES = (await import(`${BASE}/config/Missions.ts`)).BODY_RESOURCES || {};
     I = inventory.ItemType;
     B = blocks.HexBlockType;
     RECIPES = crafting.CRAFTING_RECIPES;
@@ -769,9 +772,10 @@
       selectItem(I.BUCKET);
       const aim = water.clone().addScaledVector(upAt(water), lift);
       await lookAtPoint(aim, 0.04, 1500);
+      const had = count(I.WATER_BUCKET);
       await click(2, 80);
       await sleep(500);
-      if (count(I.WATER_BUCKET) > 0) { say('filled a water bucket'); return true; }
+      if (count(I.WATER_BUCKET) > had) { say('filled a water bucket'); return true; }
     }
     say(`could not fill the bucket at tile ${w} (water ${water.distanceTo(eye()).toFixed(1)} m away)`);
     st.badWater = (st.badWater || []).concat([w]);
@@ -876,6 +880,525 @@
   function doneIds() { return tracker().save().done; }
 
   // What the bot does for a mission. Returns when it made progress or gave up.
+  // ---- flying -------------------------------------------------------------
+  // The bot pilots a rocket through the pilot's own keys: W/S pitch and Q/E
+  // roll turn the thrust axis (A/D cancel spin about it), X/Z move the
+  // throttle, Space toggles thrust. Nothing is set on the rocket directly.
+  //
+  // Guidance, from the game's flight physics (RocketController):
+  //  - linear damping bleeds LAMBDA of the speed every second, so a coast
+  //    from speed v covers v / LAMBDA before it stops. The bot burns up to
+  //    the speed whose coast just reaches the approach height (v = LAMBDA *
+  //    distance), then rides it - damping does the braking for free.
+  //  - the command is the acceleration that takes the velocity to that
+  //    profile: a = KV (vWant - v) + LAMBDA v - gravity, pointed by the
+  //    thrust axis, its size set by the throttle.
+  const FLY = {
+    LAMBDA: -Math.log(0.995) * 60,   // ROCKET_CONFIG.PHYSICS.linearDamping per second
+    KV: 1.2,                         // velocity error gain (1/s)
+    TURN_GAIN: 2.0, MAX_TURN: 0.8,   // wanted turn rate per radian off (1/s), its cap (rad/s)
+    DEADBAND: 0.02,                  // rad/s: turn-rate error the keys ignore
+    CLIMB_ALT: 25,                   // m above the departure body before heading off
+    APPROACH_ALT: 10,                // m: the coast aims to stop here; below it, a powered descent
+    TOUCHDOWN: 1.2,                  // m/s final descent (impact limit is 5, safe landing 2)
+    MAX_SPEED: 80,                   // m/s cap in open space
+    AIR_SPEED: 32,                   // m/s cap inside an atmosphere shell (REENTRY.safeSpeed is 40)
+    UPRIGHT_ALT: 6,                  // m: below this the thrust axis is held near the local up
+    OFF_AXIS_CUT: 0.35,              // rad: throttle drops to zero this far off the wanted axis
+    TIMEOUT_MS: 10 * 60 * 1000,
+    SITE_ARRIVE_M: 6,                // m from the point above the site where the descent starts
+    SITE_GAIN: 0.4, SITE_MAX_DRIFT: 3, // sideways correction toward the site during the descent (1/s, m/s)
+  };
+  const fm = () => g().rocketFlightManager;
+  const rc = () => (fm() && fm().getRocketController ? fm().getRocketController() : null);
+  const held = {};
+  function hold(code, on) { if (!!held[code] !== on) { key(code, on); held[code] = on; } }
+  function releaseFlight() { for (const k of ['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'KeyX', 'KeyZ', 'Space']) hold(k, false); }
+  const bodyById = (id) => (rc().planets || []).find(p => p.id === id);
+  const surfR = (b, dir) => (b.getSurfaceHeight ? b.getSurfaceHeight(dir) : b.radius);
+  // One frame of turning the thrust axis (rocket local up) toward `dir`; returns the angle off
+  function pointThrust(dir) {
+    const r = rc();
+    const up = r.getLocalUp(), right = r.getLocalRight(), fwd = r.getLocalForward();
+    const c = Math.max(-1, Math.min(1, up.dot(dir)));
+    const ang = Math.acos(c);
+    const axis = new (T().Vector3)().crossVectors(up, dir);
+    if (axis.lengthSq() < 1e-10) axis.copy(c < 0 ? right : up.clone().multiplyScalar(0));
+    if (axis.lengthSq() > 0) axis.normalize().multiplyScalar(Math.min(FLY.MAX_TURN, ang * FLY.TURN_GAIN));
+    const w = r.angularVelocity;
+    const ex = axis.dot(right) - w.dot(right);   // pitch up spins +right
+    const ez = axis.dot(fwd) - w.dot(fwd);       // roll right spins +forward
+    const ey = -w.dot(up);                       // yaw left spins +up: hold the spin at zero
+    hold('KeyS', ex > FLY.DEADBAND); hold('KeyW', ex < -FLY.DEADBAND);
+    hold('KeyE', ez > FLY.DEADBAND); hold('KeyQ', ez < -FLY.DEADBAND);
+    hold('KeyA', ey > FLY.DEADBAND * 2); hold('KeyD', ey < -FLY.DEADBAND * 2);
+    return ang;
+  }
+  function throttleTo(t) {
+    const now = rc().getThrottle();
+    hold('KeyX', now < t - 0.03); hold('KeyZ', now > t + 0.03);
+  }
+  // Thrust on/off is an edge on Space: press for a frame, release the next
+  function thrustSwitch(on) {
+    const r = rc();
+    if (held.Space) { hold('Space', false); return; }
+    if (r.isThrustOn() !== on) hold('Space', true);
+  }
+
+  // Fly the boarded rocket to body `id` and land on it. Returns 'landed',
+  // 'crashed', 'fuel' (ran dry), 'gone' or 'timeout'.
+  // `siteDir`: where on the body to land, as a unit direction from its centre
+  // (bodies don't spin); without one, the nearest ground straight below
+  async function flyTo(id, siteDir = null) {
+    const V = T().Vector3;
+    const t0 = performance.now();
+    let last = performance.now(), lastCentre = null;
+    const tv = new V();                  // the target body's velocity (it orbits)
+    let phase = 'climb', fromId = rc() && rc().closestPlanet ? rc().closestPlanet.id : null;
+    let logAt = 0;
+    say(`flying from ${fromId} to ${id}`);
+    try {
+      while (true) {
+        await nextFrame();
+        const r = rc();
+        if (!r) return 'gone';
+        const s = r.getState();
+        if (s === 'CRASHED') return 'crashed';
+        if (s === 'LANDED' && phase !== 'climb') return 'landed';
+        if (performance.now() - t0 > FLY.TIMEOUT_MS) return 'timeout';
+        const now = performance.now(), dt = Math.max(1e-3, (now - last) / 1000); last = now;
+        const b = bodyById(id);
+        if (!b) return 'gone';
+        if (lastCentre) tv.lerp(b.center.clone().sub(lastCentre).divideScalar(dt), 0.1);
+        lastCentre = b.center.clone();
+        const pos = r.getPosition(), v = r.getVelocity();
+        const grav = r.getGravityInfo().totalAcceleration.clone();
+        const maxA = (r.totalThrust || 1) / r.getCurrentMass();
+        const rel = pos.clone().sub(b.center), dist = rel.length(), up = rel.clone().divideScalar(dist);
+        const alt = dist - surfR(b, up);
+        let vWant;
+        if (phase === 'climb') {
+          const home = r.closestPlanet;
+          const hUp = pos.clone().sub(home.center).normalize();
+          vWant = hUp.clone().multiplyScalar(FLY.MAX_SPEED);
+          if (r.getAltitude() > FLY.CLIMB_ALT || home.id === id && r.getAltitude() > FLY.APPROACH_ALT) phase = 'go';
+        } else {
+          // toward the body (or the point above the landing site); around the
+          // departure body if it is in the way
+          let toT = up.clone().negate(), togo = Math.max(0, alt - FLY.APPROACH_ALT);
+          let side = null;   // sideways miss from the landing site, in the local horizontal
+          if (siteDir) {
+            const sR = surfR(b, siteDir);
+            const above = b.center.clone().addScaledVector(siteDir, sR + FLY.APPROACH_ALT);
+            const toAbove = above.clone().sub(pos);
+            side = toAbove.clone().addScaledVector(up, -toAbove.dot(up));
+            if (phase !== 'land') { togo = toAbove.length(); toT = toAbove.normalize(); }
+          }
+          const home = r.closestPlanet;
+          if (home && home.id !== id) {
+            const hRel = pos.clone().sub(home.center), hUp = hRel.clone().normalize();
+            const k = toT.dot(hUp);
+            if (k < 0.3 && hRel.length() < home.radius * 2.5) toT.addScaledVector(hUp, 0.3 - k).normalize();
+          }
+          // the coast profile: the speed that damping alone turns into the distance left
+          let speed = Math.min(FLY.MAX_SPEED, FLY.LAMBDA * togo + FLY.TOUCHDOWN);
+          const inAir = (rc().planets || []).some(p => p.hasAtmosphere && pos.distanceTo(p.center) < p.radius * 1.8);
+          if (inAir) speed = Math.min(speed, FLY.AIR_SPEED);
+          if (phase !== 'land' && (siteDir ? togo < FLY.SITE_ARRIVE_M : alt < FLY.APPROACH_ALT * 2)) phase = 'land';
+          if (phase === 'land') {
+            // a powered descent, straight down, drifting over the site
+            const down = Math.max(FLY.TOUCHDOWN, alt * 0.3);
+            vWant = up.clone().multiplyScalar(-down);
+            if (side) vWant.add(side.multiplyScalar(FLY.SITE_GAIN).clampLength(0, FLY.SITE_MAX_DRIFT));
+            vWant.add(tv);
+          } else {
+            vWant = toT.multiplyScalar(speed).add(tv);
+          }
+        }
+        // the acceleration that reaches vWant, against gravity and the damping
+        const a = vWant.clone().sub(v).multiplyScalar(FLY.KV).addScaledVector(v, FLY.LAMBDA).sub(grav);
+        if (phase === 'land' && alt < FLY.UPRIGHT_ALT) {
+          // stay upright for touchdown: lean at most a little off the local up
+          const lat = a.clone().addScaledVector(up, -a.dot(up));
+          const vert = Math.max(a.dot(up), 0.1 * maxA);
+          if (lat.length() > 0.3 * vert) lat.setLength(0.3 * vert);
+          a.copy(up).multiplyScalar(vert).add(lat);
+        }
+        const along = a.length();
+        const dir = along > 1e-6 ? a.clone().divideScalar(along) : up.clone();
+        const off = pointThrust(dir);
+        let thr = Math.min(1, along / maxA);
+        if (off > FLY.OFF_AXIS_CUT) thr = 0;
+        else thr *= Math.cos(off);
+        if (r.getFuelUnits() <= 0) return 'fuel';
+        thrustSwitch(true);
+        throttleTo(thr);
+        if (now - logAt > 3000) {
+          logAt = now;
+          st.task = `${phase} ${id}: alt ${alt.toFixed(0)} m, ${v.clone().sub(tv).length().toFixed(0)} m/s, fuel ${r.getFuelPercent().toFixed(0)}%`;
+          st.flight = { phase, alt: +alt.toFixed(1), speed: +v.clone().sub(tv).length().toFixed(1), fuel: +r.getFuelPercent().toFixed(1), off: +off.toFixed(2), thr: +r.getThrottle().toFixed(2), state: s };
+        }
+      }
+    } finally {
+      releaseFlight();
+      const r = rc();
+      if (r && r.isThrustOn()) { key('Space', true); await new Promise(q => setTimeout(q, 80)); key('Space', false); }
+    }
+  }
+
+  // ---- rockets on the ground ----------------------------------------------
+  // Fuel items and the units each gives (ROCKET_CONFIG.FUEL_SOURCES)
+  let FUEL_SOURCES = null;
+  async function fuelTable() {
+    if (!FUEL_SOURCES) FUEL_SOURCES = (await import(`${BASE}/config/RocketConfig.ts`)).ROCKET_CONFIG.FUEL_SOURCES;
+    return FUEL_SOURCES;
+  }
+  async function fuelUnitsHeld() {
+    return (await fuelTable()).reduce((n, s) => n + count(s.itemType) * s.units, 0);
+  }
+  // Gather fuel items worth `units`: rocket fuel if it can be made here, else water buckets
+  async function gatherFuel(units) {
+    if (await fuelUnitsHeld() >= units) return true;
+    const noIce = [I.ROCKET_FUEL, I.ICE].some(x => (st.unknown || []).includes(x));
+    if (!noIce) {
+      st.task = 'making rocket fuel';
+      await obtain(I.ROCKET_FUEL, count(I.ROCKET_FUEL) + 1);
+      return await fuelUnitsHeld() >= units;
+    }
+    const want = Math.ceil((units - (await fuelUnitsHeld())) / 15);
+    // four buckets go round: refuelling hands the empty bucket back
+    const buckets = Math.min(4, want);
+    if (count(I.BUCKET) + count(I.WATER_BUCKET) < buckets) { await obtain(I.BUCKET, buckets - count(I.WATER_BUCKET)); return false; }
+    if (count(I.BUCKET) === 0) return true;
+    st.task = 'filling buckets with water for fuel';
+    await fillBucket();
+    return await fuelUnitsHeld() >= units;
+  }
+  function padCentre(pad) { return blockTop(pad.centerTileIndex, P().groundDepthOf(pad.centerTileIndex)); }
+  // Open the pad's panel: right-click the top of a ring hex (the centre one
+  // has the rocket standing on it and the tower hex the tower)
+  async function openPad(pad) {
+    const ui = bi().launchPadUI;
+    if (ui.isMenuOpen() && ui.getCurrentLaunchPad() === pad) return ui;
+    const ring = [...pad.placedTiles].filter(t => t !== pad.rocketTileIndex && t !== pad.towerTileIndex);
+    const pos = player().position;
+    const tops = ring.map(t => blockTop(t, P().groundDepthOf(t))).sort((a, b) => a.distanceTo(pos) - b.distanceTo(pos));
+    if (!tops.length) { say('the launch pad has no free ring hex to open it by'); return null; }
+    await approach(tops[0], 2.5);
+    for (const top of tops.slice(0, 4)) {
+      closeMenus(); selectEmptyHand();
+      await lookAtPoint(top.clone().addScaledVector(upAt(top), -0.05), 0.03, 2500);
+      await click(2, 80);
+      await sleep(600);
+      if (ui.isMenuOpen() && ui.getCurrentLaunchPad() === pad) return ui;
+      if (ui.isMenuOpen()) ui.close();
+    }
+    say('could not open the launch pad'); closeMenus();
+    return null;
+  }
+  // The pad's fuel units and capacity
+  async function padFuel(pad) {
+    const { computeRocketStats } = await import(`${BASE}/rocket/RocketPerformance.ts`);
+    const cap = computeRocketStats(pad.rocketParts.map(p => p.itemType)).fuelCapacity;
+    return { have: pad.fuel ?? cap, cap };
+  }
+  // Load items into the cargo hold of the pad's rocket (through the cargo panel)
+  async function loadCargo(pad, items) {
+    const ui = await openPad(pad);
+    if (!ui) return false;
+    ui.cargoBtn.click();
+    await sleep(500);
+    return await moveIntoStorage(pad.cargo, items);
+  }
+  // Choose the rocket to fly: our own pad's first, else any finished pad with a rocket nearby
+  function rocketPad() {
+    const lp = bi().launchPadManager;
+    let mySites = [];
+    try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+    const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0);
+    const pos = player().position;
+    const d = (p) => padCentre(p).distanceTo(pos);
+    const mine = pads.filter(p => [...p.hexes.keys()].some(t => mySites.includes(t)));
+    return (mine.length ? mine : pads).sort((a, b) => d(a) - d(b))[0] || null;
+  }
+  // Fuel the pad's rocket full, from what the bot carries
+  async function fuelPad(pad) {
+    let { have, cap } = await padFuel(pad);
+    if (have >= cap - 0.5) return true;
+    if (!(await gatherFuel(Math.min(cap - have, 25)))) return false;
+    const ui = await openPad(pad);
+    if (!ui) return false;
+    ui.refuelBtn.click();
+    await sleep(500);
+    closeMenus();
+    const after = (await padFuel(pad)).have;
+    say(`fuelled the rocket: ${have.toFixed(0)} -> ${after.toFixed(0)} of ${cap}`);
+    return after >= cap - 0.5;
+  }
+  async function boardPad(pad) {
+    const ui = await openPad(pad);
+    if (!ui) return false;
+    ui.boardRocketBtn.click();
+    await sleep(2500);
+    if (!fm().isInFlight()) { say('could not board the rocket'); closeMenus(); return false; }
+    return true;
+  }
+  async function climbOut() {
+    await sleep(800);
+    if (fm().isInFlight()) { key('KeyV', true); await sleep(150); key('KeyV', false); }
+    await sleep(1500);
+    holdLock();
+  }
+  async function cargoFuelUnits(cargo) {
+    const t = await fuelTable();
+    return (cargo || []).reduce((n, s) => n + (s && s.itemType ? (t.find(f => f.itemType === s.itemType)?.units || 0) * s.quantity : 0), 0);
+  }
+  // The parked rocket nearest the bot on this body
+  function nearestLanded() {
+    const list = fm().getLandedRocketManager().getAllLandedRockets();
+    const pos = player().position;
+    return list.slice().sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
+  }
+  // Open a parked rocket's panel: from the surface beside it (a rocket can't
+  // be clicked through rock), looking at its hull at a few heights
+  async function openLanded(rocket) {
+    const ui = fm().landedRocketUI;
+    if (feetDepth() < surfaceDepth() - 1) await toSurface();
+    await approach(rocket.position, 4);
+    for (const h of [1.5, 0.8, 2.5, 3.5]) {
+      closeMenus(); selectEmptyHand();
+      const at = rocket.position.clone().addScaledVector(upAt(rocket.position), h);
+      await lookAtPoint(at, 0.03, 1500);
+      await click(2, 80);
+      await sleep(500);
+      if (ui.isUIOpen() && ui.getCurrentRocket() === rocket) return ui;
+      if (ui.isUIOpen()) try { ui.close(); } catch {}
+    }
+    say(`could not open the parked rocket (${rocket.position.distanceTo(player().position).toFixed(1)} m away, depth ${feetDepth()} / surface ${surfaceDepth()})`);
+    closeMenus();
+    await sleep(1000);
+    return null;
+  }
+  // The rocket to fly from here, as fuel / cargo / load / board steps
+  const CRAFT_NEAR_M = 150;
+  function homeCraft() {
+    const lr = nearestLanded();
+    if (lr && lr.position.distanceTo(player().position) < CRAFT_NEAR_M) {
+      return {
+        cargo: () => lr.cargo,
+        fuel: async () => {
+          if (lr.fuelPercent >= 99.5) return true;
+          if (!(await gatherFuel(25))) return false;
+          const ui = await openLanded(lr);
+          if (!ui) return false;
+          const before = lr.fuelPercent;
+          ui.container.querySelector('.refuel-btn').click();
+          await sleep(400);
+          say(`fuelled the parked rocket: ${before.toFixed(0)}% -> ${lr.fuelPercent.toFixed(0)}%`);
+          ui.close();
+          return lr.fuelPercent >= 99.5;
+        },
+        load: async (items) => {
+          const ui = await openLanded(lr);
+          if (!ui) return false;
+          ui.container.querySelector('.cargo-btn').click();
+          await sleep(500);
+          return await moveIntoStorage(lr.cargo, items);
+        },
+        board: async () => {
+          const ui = await openLanded(lr);
+          if (!ui) return false;
+          ui.boardButton.click();
+          await sleep(2500);
+          if (!fm().isInFlight()) { say('could not board the parked rocket'); return false; }
+          return true;
+        },
+      };
+    }
+    const pad = rocketPad();
+    if (!pad) return null;
+    return { cargo: () => pad.cargo, fuel: () => fuelPad(pad), load: (items) => loadCargo(pad, items), board: () => boardPad(pad) };
+  }
+  // Move every stack of `items` from the inventory into the open storage panel showing `slots`
+  async function moveIntoStorage(slots, items) {
+    const sui = bi().storageUI;
+    if (!sui.isMenuOpen()) { say('could not open the cargo hold'); closeMenus(); return false; }
+    let moved = 0;
+    for (const item of items) {
+      for (const [i, s] of inv().getAllSlots().entries()) {
+        if (s.itemType !== item || !s.quantity) continue;
+        const slot = slots.findIndex(x => !x.itemType || !x.quantity);
+        if (slot < 0) break;
+        sui.transferFromInventory(i, slot);
+        moved++;
+        await sleep(80);
+      }
+    }
+    closeMenus();
+    say(`loaded ${moved} stack(s) into the cargo hold`);
+    return true;
+  }
+  // Breath: with no suit on an airless world the bot has AIR.BREATH_S; it
+  // heads back to the cabin while it still has time to walk there
+  const BREATH_RESERVE_S = 40, WALK_M_PER_S = 2, CLIMB_S_PER_BLOCK = 3;
+  function breathLow() {
+    const air = g().air;
+    if (!air || fm().isInFlight()) return false;
+    const s = air.getState();
+    if (s.worn && s.tankS > BREATH_RESERVE_S) return false;
+    const r = nearestLanded();
+    // the walk back, and the climb out of any pit it is mining in
+    const walk = (r ? r.position.distanceTo(player().position) / WALK_M_PER_S : 0) + Math.max(0, surfaceDepth() - feetDepth()) * CLIMB_S_PER_BLOCK;
+    return s.breathS < BREATH_RESERVE_S + walk;
+  }
+  async function restInCabin() {
+    const rocket = nearestLanded();
+    if (!rocket) return;
+    st.task = 'back to the rocket for air';
+    const ui = await openLanded(rocket);
+    if (!ui) return;
+    ui.boardButton.click();
+    await sleep(2000);
+    if (!fm().isInFlight()) { say('could not get into the rocket for air'); return; }
+    const t0 = performance.now();
+    while (performance.now() - t0 < 60000 && g().air.getState().breathS < 85) await sleep(1000);
+    say(`caught its breath in the cabin (${g().air.getState().breathS.toFixed(0)} s)`);
+    await climbOut();
+  }
+  // Out of fuel in flight: chute out where there is air, and ride it down
+  async function rideDown() {
+    say('out of fuel - riding it down');
+    st.task = 'out of fuel, falling';
+    if (rc() && rc().getAtmosphereDensity() > 0 && !rc().isChuteOpen()) { key('KeyP', true); await sleep(150); key('KeyP', false); }
+    const t0 = performance.now();
+    while (performance.now() - t0 < 5 * 60 * 1000 && fm().isInFlight() && rc() && !['LANDED', 'CRASHED'].includes(rc().getState())) await sleep(1000);
+    const s = rc() ? rc().getState() : 'gone';
+    say(`came down without fuel: ${s}`);
+    if (s === 'LANDED') { st.flyingTo = null; await climbOut(); }
+    else await sleep(5000);
+  }
+  // A launch window: the target must be on the near side of the body we
+  // leave from (going round it burns the tank - a basic rocket ran dry so)
+  const WINDOW_MIN_DOT = 0.2, WINDOW_WAIT_MS = 20 * 60 * 1000;
+  // Only a strong pull makes the way round costly: off a light body (the
+  // Moon) the rocket climbs out and goes round for little fuel
+  const WINDOW_MIN_GRAVITY = 0.5;
+  function launchWindowOpen(target) {
+    const lrm = fm().getLandedRocketManager();
+    const from = (lrm.planets || []).find(p => p.id === bodyId());
+    if (from && from.gravityStrength < WINDOW_MIN_GRAVITY) return true;
+    const here = P().center;
+    const tc = getTargetCentre(target);
+    if (!tc) return true;
+    const at = fm().isInFlight() && rc() ? rc().getPosition() : player().position;
+    const up = at.clone().sub(here).normalize();
+    return tc.clone().sub(at).normalize().dot(up) >= WINDOW_MIN_DOT;
+  }
+  function getTargetCentre(id) {
+    const lrm = fm().getLandedRocketManager();
+    const b = (lrm.planets || []).find(p => p.id === id);
+    return b ? b.center : null;
+  }
+  // Where to land at home: beside the nearest launch pad (dry, flat, and
+  // where the stash and the next rocket are), else where it took off from
+  const HOME_SITE_OFFSET_M = 12, HOME_PAD_SEARCH_M = 400;
+  function rememberHomeSite() {
+    const c = P().center;
+    const pads = bi().launchPadManager.getLaunchPads().filter(p => p.isComplete);
+    const pos = player().position;
+    const near = pads.map(p => padCentre(p)).filter(q => q.distanceTo(pos) < HOME_PAD_SEARCH_M).sort((a, b) => a.distanceTo(pos) - b.distanceTo(pos))[0];
+    let spot = pos.clone();
+    if (near) {
+      const up = near.clone().sub(c).normalize();
+      const side = new (T().Vector3)(1, 0, 0).cross(up).normalize();
+      spot = near.clone().addScaledVector(side, HOME_SITE_OFFSET_M);
+    }
+    st.homeSite = spot.sub(c).normalize().toArray();
+    try { localStorage.setItem('bot_homeSite', JSON.stringify(st.homeSite)); } catch {}
+  }
+  function homeSite() {
+    if (!st.homeSite) try { st.homeSite = JSON.parse(localStorage.getItem('bot_homeSite') || 'null'); } catch {}
+    return st.homeSite ? new (T().Vector3)().fromArray(st.homeSite) : null;
+  }
+  // Fuel units a trip home from `from` needs, with a margin (measured flights)
+  const RETURN_FUEL = { moon: 60 };
+  // A visit: fly to `target`, land, plant a survey beacon, gather what's
+  // there, fly home and land
+  async function visitBody(target, home = 'earth') {
+    const here = bodyId();
+    const m = tracker().openMissions().find(x => x.visit === target);
+    const prog = m ? tracker().progress(m) : [];
+    const beaconLeft = m ? m.objectives.some((o, i) => o.kind === 'surveyed' && (prog[i] || 0) < o.count) : false;
+    if (fm().isInFlight()) {
+      // aboard (a restart mid-flight): finish the leg we were on
+      const to = st.flyingTo || (here === target ? home : target);
+      if (rc() && rc().getFuelUnits() <= 0) { await rideDown(); return; }
+      const res = await flyTo(to, to === home ? homeSite() : null);
+      say(`flight to ${to}: ${res}`);
+      if (res === 'landed') { st.flyingTo = null; await climbOut(); }
+      return;
+    }
+    if (here !== target) {
+      // at home: beacon, fuel, the fuel home in the cargo hold
+      if (beaconLeft && count(I.SURVEY_BEACON) < 1) { st.task = 'making a survey beacon'; await obtain(I.SURVEY_BEACON, 1); return; }
+      // the craft: a rocket parked on this world near by (one that came back
+      // lands beside its pad, not on it), else a rocket standing on a pad
+      const craft = homeCraft();
+      if (!craft) { say('no rocket to fly'); st.cannot = (st.cannot || []).concat([m ? m.id : target]); return; }
+      if (!(await craft.fuel())) return;
+      const need = RETURN_FUEL[target] || 100;
+      const inHold = await cargoFuelUnits(craft.cargo());
+      if (inHold < need) {
+        if (!(await gatherFuel(need - inHold))) return;
+        await craft.load((await fuelTable()).map(f => f.itemType));
+        return;
+      }
+      say(`rocket fuelled, ${inHold.toFixed(0)} units of fuel in the hold - boarding`);
+      if (!launchWindowOpen(target)) { st.task = `waiting for ${target} to come round`; say(`${target} is behind this world - waiting for a launch window`); await sleep(30000); return; }
+      rememberHomeSite();
+      if (!(await craft.board())) return;
+      st.flyingTo = target;
+      const res = await flyTo(target);
+      say(`flight to ${target}: ${res}${rc() ? `, fuel left ${rc().getFuelPercent().toFixed(0)}%` : ''}`);
+      if (res === 'landed') { st.flyingTo = null; await climbOut(); }
+      return;
+    }
+    // on the target body
+    if (beaconLeft && count(I.SURVEY_BEACON) > 0) {
+      await placeNearby(I.SURVEY_BEACON);
+      return;
+    }
+    // what it came for (the bot holds its breath: AIR.BREATH_S, and rests in the cabin)
+    const ex = st.expedition;
+    if (ex && ex.body === target && count(ex.item) < ex.n) {
+      if (breathLow()) { await restInCabin(); return; }
+      st.task = `mining ${itemName(ex.item)} on ${target}`;
+      st.abortIf = breathLow;
+      try { await obtain(ex.item, ex.n); } finally { st.abortIf = null; st.inAbort = false; }
+      return;
+    }
+    if (ex && ex.body === target) { say(`got the ${itemName(ex.item)} it came for (${count(ex.item)})`); st.expedition = null; }
+    const rocket = nearestLanded();
+    if (!rocket) { say(`no rocket here on ${target} - stranded`); await wander(); return; }
+    const ui = await openLanded(rocket);
+    if (!ui) return;
+    ui.container.querySelector('.refuel-btn').click();
+    await sleep(400);
+    say(`parked rocket fuel ${rocket.fuelPercent.toFixed(0)}% - boarding for home`);
+    ui.boardButton.click();
+    await sleep(2500);
+    if (!fm().isInFlight()) { say('could not board the parked rocket'); return; }
+    // wait for the window in the cabin, where there is air
+    if (!launchWindowOpen(home)) say(`${home} is behind this world - waiting in the cabin for a launch window`);
+    const w0 = performance.now();
+    while (!launchWindowOpen(home) && performance.now() - w0 < WINDOW_WAIT_MS) { st.task = `waiting for ${home} to come round`; await sleep(5000); }
+    st.flyingTo = home;
+    const res = await flyTo(home, homeSite());
+    say(`flight to ${home}: ${res}${rc() ? `, fuel left ${rc().getFuelPercent().toFixed(0)}%` : ''}`);
+    if (res === 'landed') { st.flyingTo = null; await climbOut(); }
+  }
+  const bodyId = () => { const p = planet(); return p ? bi().getPlanetId(p) : null; };
+
   const PLAYBOOK = {
     logs: async () => { await chopTree(); },
     planks: async () => {
@@ -1153,6 +1676,8 @@
     // Launch: board our rocket from its pad panel, thrust on (Space), throttle
     // up (hold X) until it lifts off; then a short hop - thrust off, parachute
     // (P), wait for the ground, climb out (V)
+    moon: async () => { await visitBody('moon'); },
+    moonmetal: async () => { await generic(tracker().openMissions().find(x => x.id === 'moonmetal')); },
     launch: async () => {
       const lp = bi().launchPadManager;
       let mySites = [];
@@ -1700,6 +2225,16 @@
   // its block out of the ground. Returns true once `n` are held; false when
   // this pass made progress but isn't done yet, so the mission loop comes back.
   const itemName = (it) => Object.keys(I).find(k => I[k] === it);
+  // The other body an item is gathered on, if it is only found off this world
+  let BODY_RES = null;
+  // A trip off-world brings back at least this many (later recipes want more than the first mission)
+  const EXPEDITION_MIN = 12;
+  function elsewhere(item) {
+    if (!BODY_RES) return null;
+    const here = bodyId();
+    for (const [body, items] of Object.entries(BODY_RES)) if (body !== here && items.includes(item)) return body;
+    return null;
+  }
   async function obtain(item, n, depth = 0) {
     if (count(item) >= n) return true;
     if (depth > 6) return false;
@@ -1771,10 +2306,18 @@
       await cookAt(ck.kind, ck.inputs, item);
       return count(item) >= n;
     }
-    // dug out of the ground
-    const block = name !== undefined ? B[name] : undefined;
+    // only on another world (BODY_RESOURCES): plan a trip there
+    const there = elsewhere(item);
+    if (there) {
+      if (!st.expedition || st.expedition.body !== there) say(`${name} is only found on ${there} - planning a trip there`);
+      st.expedition = { body: there, item, n: Math.max(n, EXPEDITION_MIN, st.expedition && st.expedition.item === item ? st.expedition.n : 0) };
+      return false;
+    }
+    // dug out of the ground: the block of that name, or a world's own kind of it (MOON_ORE_IRON)
+    const blocks = name !== undefined ? Object.keys(B).filter(k => isNaN(+k) && (k === name || k.endsWith('_' + name))).map(k => B[k]) : [];
+    const block = blocks[0];
     if (block !== undefined) {
-      if (name.startsWith('ORE_')) await goMining(count(I.COAL) < 16 && block !== B.ORE_COAL ? [block, B.ORE_COAL] : [block], () => count(item) >= n);
+      if (name.startsWith('ORE_')) await goMining(count(I.COAL) < 16 && block !== B.ORE_COAL && bodyId() === 'earth' ? [...blocks, B.ORE_COAL] : blocks, () => count(item) >= n);
       else if (block === B.STONE) await digForStone(n);
       else if (!(await findAndDig([block], () => count(item) >= n)) && count(item) < n) {
         // searched six patches and saw none: not on this world (sulfur, moon rock...)
@@ -1803,7 +2346,7 @@
       const o = m.objectives[i];
       const left = o.count - (prog[i] || 0);
       if (left <= 0) continue;
-      if ((st.unknown || []).includes(o.item)) { st.cannot = (st.cannot || []).concat([m.id]); return; }
+      if ((st.unknown || []).includes(o.item) && !elsewhere(o.item)) { st.cannot = (st.cannot || []).concat([m.id]); return; }
       if (o.kind === 'gained') { await obtain(o.item, count(o.item) + left); return; }
       if (o.kind === 'crafted') {
         const r = RECIPES.find(r => r.output.itemType === o.item) || (BENCH || []).find(r => r.output.itemType === o.item);
@@ -1835,7 +2378,7 @@
 
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
-    miner: ['pad', 'assemble', 'launch', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    miner: ['pad', 'assemble', 'launch', 'moon', 'moonmetal', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
     builder: ['pad', 'assemble', 'launch', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
@@ -1863,7 +2406,25 @@
       st.iterAt = Date.now();
       try {
         closeMenus();
-        await ensureSpace();
+        // in flight, or away from home with nothing left to do there: carry on / fly home
+        if (fm() && fm().isInFlight()) { await visitBody(st.flyingTo || 'earth'); continue; }
+        const away = bodyId();
+        // a new world: what wasn't to be found on the last one may be here
+        if (away && st.lastBody && away !== st.lastBody) {
+          // each world keeps its own list of what isn't to be found there
+          st.unknownBy = st.unknownBy || {};
+          st.unknownBy[st.lastBody] = [...new Set(st.unknown || [])];
+          st.unknown = (st.unknownBy[away] || []).slice();
+          st.cannot = [];
+        }
+        if (away) st.lastBody = away;
+        if (away && away !== 'earth' && !tracker().openMissions().some(m => m.visit === away && PLAYBOOK[m.id])) { await visitBody(away); continue; }
+        if (st.expedition && away && away !== st.expedition.body) {
+          if (count(st.expedition.item) >= st.expedition.n) st.expedition = null;
+          else { await visitBody(st.expedition.body); continue; }
+        }
+        if (st.expedition && away === st.expedition.body) { await visitBody(away); continue; }
+        if (away === 'earth' || !away) await ensureSpace();
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }
         const m = tracker().openMissions().find(x => x.id === id);
@@ -1893,6 +2454,19 @@
       await loadModules();
       st.role = role;
       try { st.badWater = JSON.parse(localStorage.getItem('bot_badWater') || '[]'); } catch {}
+      // what it found is not on this world survives a restart (it re-searched for ice every run)
+      try { st.unknownBy = JSON.parse(localStorage.getItem('bot_unknownBy') || '{}'); } catch { st.unknownBy = {}; }
+      st.lastBody = bodyId();
+      // a trip off-world under way survives a restart (it flew home empty-handed once)
+      try { st.expedition = JSON.parse(localStorage.getItem('bot_expedition') || 'null'); } catch {}
+      st.unknown = (st.unknownBy[st.lastBody] || []).filter(x => !elsewhere(x));
+      setInterval(() => {
+        try {
+          if (st.lastBody) st.unknownBy[st.lastBody] = [...new Set(st.unknown || [])];
+          localStorage.setItem('bot_unknownBy', JSON.stringify(st.unknownBy));
+          localStorage.setItem('bot_expedition', JSON.stringify(st.expedition || null));
+        } catch {}
+      }, 30000);
       st.running = true;
       holdLock();
       await calibrate();
@@ -1917,12 +2491,12 @@
       return {
         role: st.role, task: st.task, goal: st.goal, done: s.done, now: t.now()?.id ?? null,
         pos: player().position.toArray().map(v => +v.toFixed(1)), tile: myTile(), depth: feetDepth(),
-        items: hot, errors: st.errors, log: st.log.slice(-12), where: st.where,
+        items: hot, errors: st.errors, log: st.log.slice(-12), where: st.where, flight: st.flight, body: bodyId(),
         mem: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, geo: g().engine.renderer.info.memory.geometries, tex: g().engine.renderer.info.memory.textures },
       };
     },
     // exposed for poking at a running bot from the runner's REPL
-    x: { P, I: () => I, B: () => B, rayHit, eye, lookDir, nearestWaterTile, blockCenter, blockTop, upAt, bi, count, lookAtPoint, click, sleep, closeMenus, selectItem, walkTo, st },
+    x: { P, I: () => I, B: () => B, rayHit, eye, lookDir, nearestWaterTile, blockCenter, blockTop, upAt, bi, count, lookAtPoint, click, sleep, closeMenus, selectItem, walkTo, st, flyTo, fuelPad, rocketPad, boardPad, climbOut, loadCargo, gatherFuel, bodyId, rc, padFuel },
     skills: { cookAt, chopTree, walkTo, mineBlock, digDown, craft, placeNearby, smelt, goMining, pillarUpTo, fillBucket },
   };
 })();
