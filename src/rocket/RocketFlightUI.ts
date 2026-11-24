@@ -237,18 +237,16 @@ export class RocketFlightUI {
     }
 
     if (this.respawnBtn) {
-      this.respawnBtn.addEventListener('click', () => {
-        // Reload the page to restore rocket on launch pad from last save
-        window.location.reload();
-      });
+      // The game's one respawn path (beside the pad the flight left from,
+      // else the nearest planet's spawn). It used to reload the page, which
+      // put the pilot back at their last saved pose - in the rocket, in space.
+      this.respawnBtn.addEventListener('click', () => this.onRespawnCallback?.());
     }
   }
 
-  // Note: Respawn callback is kept for API compatibility but not used
-  // since respawn now triggers a page reload
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public setOnRespawnCallback(_callback: () => void): void {
-    // No-op: respawn now reloads the page instead of using a callback
+  private onRespawnCallback: (() => void) | null = null;
+  public setOnRespawnCallback(callback: () => void): void {
+    this.onRespawnCallback = callback;
   }
 
   private addStyles(): void {
