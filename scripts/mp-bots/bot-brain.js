@@ -1237,8 +1237,12 @@
   const CRAFT_NEAR_M = 150;
   function homeCraft() {
     // an upgraded (staged) rocket standing on our pad comes first
-    const up = padHere();
-    if (up && up.rocketParts.some(p => p.itemType === I.STAGE_SEPARATOR)) {
+    // the staged rocket with the most fuel aboard (don't fill a second one)
+    const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
+    const up = bi().launchPadManager.getLaunchPads()
+      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR))
+      .sort((a, b) => (b.fuel ?? 0) - (a.fuel ?? 0))[0];
+    if (up) {
       return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
     }
     const lr = nearestLanded();
@@ -2695,8 +2699,10 @@
         if (away === 'earth' || !away) await ensureSpace();
         // after the vacuum engine: rebuild our rocket as a two-stage one, once
         if (doneIds().includes('vacuum') && !resting('upgrade') && (bodyId() === 'earth')) {
+          // once: when no rocket of ours has stages yet
+          const staged = bi().launchPadManager.getLaunchPads().some(p => p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR));
           const pad = padHere();
-          if (pad && !pad.rocketParts.some(p => p.itemType === I.STAGE_SEPARATOR)) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
+          if (!staged && pad) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
         }
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }

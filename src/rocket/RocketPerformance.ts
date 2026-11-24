@@ -310,9 +310,17 @@ export function stackProblems(itemTypes: readonly ItemType[]): string[] {
     if (tanks.length < reqs.minFuelTanks) errors.push(`${ITEM_DATA[engine].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
     if (reqs.requiresCommandModule && capsules.length === 0) errors.push(`${ITEM_DATA[engine].name} requires a Command Module`);
   }
+  // One engine per stage, as the stage's bottom part: an engine stacked on
+  // another (or on a tank) would fire into the part beneath it
+  const stages = stagesOf(itemTypes, t => t);
+  stages.forEach((stage, i) => {
+    const at = stage.map((t, k) => typeOf(t) === RocketPartType.ENGINE ? k : -1).filter(k => k >= 0);
+    const label = stages.length > 1 ? `Stage ${i + 1}` : 'The rocket';
+    if (at.length > 1) errors.push(`${label} has more than one engine: an engine can't fire into the part below it`);
+    else if (at.length === 1 && at[0] !== 0) errors.push(`${label}'s engine must be its bottom part`);
+  });
   // Staged: every stage needs an engine of its own, or dropping the stage
   // below leaves a rocket that cannot fly
-  const stages = stagesOf(itemTypes, t => t);
   if (stages.length > 1) {
     stages.forEach((stage, i) => {
       if (!stage.some(t => typeOf(t) === RocketPartType.ENGINE)) errors.push(`Stage ${i + 1} has no engine`);

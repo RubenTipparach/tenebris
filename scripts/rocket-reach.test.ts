@@ -107,9 +107,10 @@ const hops: [string, ItemType[], string, string, number][] = [
   ['tier 2 vacuum: Moon -> Sequoia (sunward)', [I.VACUUM_ENGINE, L, CM], 'moon', 'sequoia', 0.4],
   ['tier 2 vacuum: Moon -> Kessel (outward)', [I.VACUUM_ENGINE, L, CM], 'moon', 'kessel', 0.4],
   // tier 2 leaves Earth on an Earth engine beside the vacuum one (lift on both, cruise on the vacuum engine)
-  ['tier 2 off Earth: Rocket Engine + Vacuum Engine: Earth -> Moon', [I.ROCKET_ENGINE, I.VACUUM_ENGINE, L, CM], 'earth', 'moon', 1],
+  // one engine per stage (an engine can't fire into the part below it): a Rocket Engine booster under a vacuum stage
+  ['tier 2 off Earth: Rocket Engine booster + Vacuum Engine stage: Earth -> Moon', [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, CM], 'earth', 'moon', 1],
   ['gas-core (Ember): Sequoia -> Metropole Prime', [I.GAS_CORE_ENGINE, L, L, CM], 'sequoia', 'ferrum', 1],
-  ['fission-fragment (Lodestone): Metropole Prime -> Umbra', [I.GAS_CORE_ENGINE, I.FISSION_FRAGMENT_DRIVE, I.REACTOR_CORE, L, CM], 'ferrum', 'umbra', 1],
+  ['fission-fragment (Lodestone): Metropole Prime -> Umbra', [I.GAS_CORE_ENGINE, L, I.STAGE_SEPARATOR, I.FISSION_FRAGMENT_DRIVE, I.REACTOR_CORE, L, CM], 'ferrum', 'umbra', 1],
   ['nuclear pulse (Brand): Umbra -> Vesper', [I.NUCLEAR_PULSE_DRIVE, L, L, L, I.CARGO_BAY, CM], 'umbra', 'vesper', 0.5],
   ['gas-core: Kessel -> Thalassa (outward)', [I.GAS_CORE_ENGINE, L, L, CM], 'kessel', 'thalassa', 0.35],
   ['fusion drive (Aurelia): Cinder -> Nerith', [I.FUSION_DRIVE, I.CRYO_TANK, L, L, I.CARGO_BAY, CM], 'cinder', 'nerith', 0.6],

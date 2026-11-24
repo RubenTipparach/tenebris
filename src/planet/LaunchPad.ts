@@ -685,7 +685,8 @@ export class LaunchPadManager {
   /** Lay one more block on a pad. Returns false if that hex is already pad. */
   public addHex(pad: PlacedLaunchPad, tile: PlatformTile): boolean {
     if (pad.hexes.has(tile.index) || !this.baseMaterial) return false;
-    const inner = Math.min(tile.innerRadius, pad.outerRadius - this.BASE_HEIGHT * this.blockHeightOf(pad));
+    // a slab set into the ground's top: no skirt down to lower ground (the ground under it is filled)
+    const inner = pad.outerRadius - ROCKET_CONFIG.PAD_THICKNESS * this.blockHeightOf(pad);
     const mesh = new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, pad.outerRadius, pad.planetCenter), this.baseMaterial);
     mesh.userData.padTileIndex = tile.index;
     pad.mesh.add(mesh);
