@@ -172,7 +172,7 @@ export const ROCKET_CONFIG = {
     // edge (GRAVITY_WELL.FALLOFF_RADIUS_MULT), 80 m deep on Earth: the
     // whole descent through a body's pull is "in the air".
     shellRadiusMult: 1.8,
-    // Earth's free-fall speed with the flight damping is ~33 m/s, so a
+    // Earth's free-fall speed with the flight damping is ~37 m/s, so a
     // passive fall stays cool; only a powered dive heats
     safeSpeed: 40,                // m/s
     heatPerMs: 1.5,               // heat per second per m/s over safeSpeed (80 m/s: maxHeat in under 2 s)
@@ -198,7 +198,7 @@ export const ROCKET_CONFIG = {
   // there; sideways motion bleeds at the same rate; it rights the rocket.
   PARACHUTE: {
     deployAltitude: 50,           // m above the surface (auto-open while falling)
-    maxOpenSpeed: 45,             // m/s (above a passive fall's ~33 m/s)
+    maxOpenSpeed: 45,             // m/s (above a passive fall's ~37 m/s)
     terminalVelocity: 3,          // m/s, under HEALTH.impactDamageThreshold
     dragRate: 1.5,                // 1/s
     uprightRate: 1.5,             // 1/s, how fast it swings the nose up
@@ -216,8 +216,9 @@ export const ROCKET_CONFIG = {
   // === PHYSICS ===
   PHYSICS: {
     dragCoefficient: 0.5,         // Atmospheric drag
-    angularDamping: 0.95,         // Rotation slowdown per reference frame
-    linearDamping: 0.99,          // Linear slowdown per reference frame (noticeable drag to prevent infinite drift)
+    angularDamping: 0.98,         // Rotation kept per reference frame (0.98^60: 30% of a spin left after 1 s; was 0.95, ~5%)
+    linearDamping: 0.995,         // Speed kept per reference frame (0.995^60: 74% after 1 s; was 0.99, 55%) - drift still settles.
+                                  // Higher and a passive fall back from space passes REENTRY.safeSpeed (0.997: 41.6 m/s)
     dampingReferenceFps: 60,      // the damping above is per frame at this rate; scaled by dt so it is frame-rate independent
     gravityConstant: 9.81,        // m/s^2 for TWR/delta-V calculations
   },

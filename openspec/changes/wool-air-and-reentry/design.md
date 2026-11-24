@@ -94,7 +94,7 @@ Every number below lives in a config table (`SurvivalConfig.ts`,
 - **When heat applies:** a flight that has been outside every atmosphere
   since launch, and then enters one, is "re-entering" until it lands.
 - **Heating:** while re-entering, faster than `REENTRY.safeSpeed` (40 m/s,
-  above Earth's ~33 m/s free fall, so only a powered dive heats),
+  above Earth's ~37 m/s free fall, so only a powered dive heats),
   `heat += (speed - safeSpeed) * REENTRY.heatPerMs * dt`. Otherwise it cools
   at `REENTRY.coolPerS`.
 - **Overheating:**
