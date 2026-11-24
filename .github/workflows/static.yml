@@ -161,6 +161,12 @@ jobs:
       - name: Pad stash - stash on board, merge, take back, hold-only away from a pad
         run: npx --yes tsx scripts/pad-stash.test.ts
 
+      # Rocket reach (space-exploration): every tier-1 (Earth-built) stack is
+      # an Earth <-> Moon rocket, and each later tier reaches its route's next
+      # hop - flown through the transfer physics
+      - name: Rocket reach - tier 1 to the Moon, each tier its next hop
+        run: npx --yes tsx scripts/rocket-reach.test.ts
+
   # The experimental `webgpu-build` job (Stage 0 of the C tree's
   # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.
   # It built tenebris-c with -DTENEBRIS_WEBGPU=ON and had been failing at

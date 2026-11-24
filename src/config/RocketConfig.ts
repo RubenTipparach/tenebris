@@ -39,6 +39,10 @@ export interface RocketPartStats {
   requires?: ItemType[];
   // This part counts as another for `requires` (the compact reactor core is a reactor core)
   provides?: ItemType;
+  // A booster engine: it only fires as the bottom stage, never above a stage
+  // separator (a sea-level engine that can't be lit in flight). stackProblems
+  // refuses one in an upper stage
+  boosterOnly?: boolean;
   // An engine that draws the rocket's charge while it fires, W at full
   // throttle (the solar-electric ion thruster): no charge, no thrust
   firingDrawW?: number;
@@ -72,6 +76,13 @@ export const ROCKET_CONFIG = {
     // A parked rocket docks onto a free, complete pad this close (m) on the same body
     DOCK_RADIUS_M: 25,
   },
+
+  // === STACK SIZE ===
+  // Most parts one rocket stack holds - the launch tower's height (the pad
+  // shows this many part slots). stackProblems refuses a taller stack, so a
+  // refit can't grow one past it either. With the tier-1 numbers in PARTS
+  // it bounds how far a stack of Earth-built parts flies.
+  MAX_STACK_PARTS: 8,
 
   // === STAGING (space-exploration, rocket-staging) ===
   // A dropped stage falls away under gravity for this long (s), then is
@@ -132,9 +143,22 @@ export const ROCKET_CONFIG = {
   },
 
   // === THE TECH TREE: per-part stats ===
-  // Tier 1 (Earth): Rocket Engine + Medium Fuel Tank + Command Module. Enough
-  // delta-v to fly Earth -> Moon and land with a good margin (and Earth's
-  // near neighbours), not the rock worlds 1.5-4.5 km out.
+  // Tier 1 (Earth): Rocket Engine + Medium Fuel Tank + Command Module - an
+  // Earth <-> Moon rocket and no more (space-exploration: the Moon is the
+  // root of the tree). Hand-flown, Earth -> Moon takes about four fifths of
+  // the tank (the careful simulated pilot: under a third); the trip home is a
+  // refuel on the Moon (ice there, or the starter kit's cargo fuel). What
+  // keeps every Earth-built stack near the Moon:
+  //   - a heavy steel tank (200 kg dry for 450 kg of fuel): the rocket
+  //     equation flattens out, so more tanks or engines add little (the best
+  //     tier-1 stack flies ~1.6x as far as the basic one);
+  //   - boosterOnly: the Rocket Engine can't fire above a stage separator, so
+  //     tier-1 parts can't be staged (an upper stage needs a Moon engine);
+  //   - MAX_STACK_PARTS (the tower's height).
+  // Neighbours whose orbits swing close (Sequoia, Vesper, Kessel...) are
+  // in tier-1 reach for a share of their window; the report prints it.
+  // scripts/rocket-reach.test.ts holds tier 1 to the Moon and each later
+  // tier to its route's next hop; scripts/rocket-tech-report.ts prints it all.
   // Tier 2 (Moon titanium): the Vacuum Engine - efficient but weak, it can't
   // lift off Earth (TWR < 1) but flies fine off the Moon and in space - and
   // the Large Fuel Tank. Together they reach the other planets.
@@ -143,10 +167,10 @@ export const ROCKET_CONFIG = {
   // The derived numbers (delta-v, TWR, Earth->Moon cost) are printed by
   // scripts/rocket-tech-report.ts.
   PARTS: {
-    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 90 },
+    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 90, boosterOnly: true },
     [ItemType.VACUUM_ENGINE]: { tier: 2, dryMass: 150, thrust: 26000, specificImpulse: 200 },
-    [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },
-    [ItemType.FUEL_TANK]: { tier: 1, dryMass: 50, fuelCapacity: 100 },   // legacy tank
+    [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },
+    [ItemType.FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },  // legacy tank (the Medium tank's numbers)
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
     // 3 equipment slots: a parachute, a solar array and a battery pack at once
     [ItemType.COMMAND_MODULE]: { tier: 1, dryMass: 200, cargoSlots: 4, equipmentSlots: 3, batteryWh: CELL_WH, powerDrawW: CELL_DRAW_W },

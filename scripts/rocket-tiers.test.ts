@@ -54,7 +54,7 @@ check('G cycles All -> Rocket Engine -> Ion Drive -> All', nextEngineMode(both, 
 check('a mode the stack no longer has falls back to All', validEngineMode([ItemType.ROCKET_ENGINE, tank, cm], ItemType.ION_DRIVE) === null);
 check('mode for a missing engine computes as All', computeRocketStats([ItemType.ROCKET_ENGINE, tank, cm], 0, ItemType.ION_DRIVE).thrust === chem.thrust);
 const prof = liftCruiseProfile(both);
-check('lift/cruise profile picks the rocket engine to lift and the ion drive to cruise', !!prof && prof.lift.thrust === lift.thrust && prof.cruise.exhaustVelocity === cruise.exhaustVelocity);
+check('lift/cruise profile lifts on every engine (most thrust) and cruises on the ion drive', !!prof && prof.lift.thrust === all.thrust && prof.lift.mode === null && prof.cruise.exhaustVelocity === cruise.exhaustVelocity);
 check('no profile with one engine type', liftCruiseProfile([ItemType.ROCKET_ENGINE, tank, cm]) === null);
 
 if (failed) { console.log(`${failed} failed`); process.exit(1); }
