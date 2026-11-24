@@ -1280,6 +1280,29 @@
   // fewer than MIN_FREE slots are left, put the spare stacks in a chest - the
   // second and later stacks of anything, and snow - keeping the first stack
   const MIN_FREE = 4;
+  // Everything the open missions could use: their items and, down through the
+  // crafting / workbench / smelting / cooking recipes, what those are made of;
+  // plus the basics a bot always works with
+  function neededItems() {
+    const need = new Set([I.LOG, I.STICK, I.WOOD, I.COAL, I.ORE_COAL, I.DIRT, I.STONE, I.BUCKET, I.WATER_BUCKET, I.STORAGE_CHEST, I.FURNACE]);
+    const inputsOf = (it) => {
+      const out = [];
+      for (const r of RECIPES.filter(r => r.output.itemType === it)) out.push(...r.inputs.map(i => i.itemType));
+      for (const r of (BENCH || []).filter(r => r.output.itemType === it)) out.push(...r.inputs.map(i => i.itemType));
+      for (const r of (SMELTS || []).filter(r => r.output === it)) out.push(r.input);
+      for (const r of (ESMELTS || []).filter(r => r.output === it)) { out.push(r.input); if (r.with) out.push(r.with.itemType); }
+      for (const r of (COOKS || []).filter(r => r.output === it)) out.push(...r.inputs.filter(x => x !== 'fish'));
+      return out;
+    };
+    const queue = tracker().openMissions().flatMap(m => m.objectives.map(o => o.item)).filter(x => x !== undefined);
+    while (queue.length) {
+      const it = queue.pop();
+      if (need.has(it)) continue;
+      need.add(it);
+      queue.push(...inputsOf(it));
+    }
+    return need;
+  }
   const freeSlots = () => inv().getAllSlots().filter(x => !x.itemType || !x.quantity).length;
   async function ensureSpace() {
     if (freeSlots() >= MIN_FREE) return;
@@ -1291,6 +1314,11 @@
       if (seen.has(x.itemType) || x.itemType === I.SNOW) spare.push(i);
       seen.add(x.itemType);
     });
+    if (!spare.length) {
+      // no second stacks: store whatever no open mission needs
+      const need = neededItems();
+      all.forEach((x, i) => { if (x.itemType && x.quantity && !need.has(x.itemType)) spare.push(i); });
+    }
     if (!spare.length) { say('inventory full and nothing spare to store'); return; }
     say(`inventory full - storing ${spare.length} spare stack(s) in a chest`);
     const sm = bi().storageChestManager;
