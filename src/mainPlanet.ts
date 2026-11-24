@@ -49,6 +49,7 @@ import { validateFaunaRosters } from './config/FaunaConfig';
 import { setImprovedTreeShading } from './planet/Tree';
 import { AudioManager } from './engine/AudioManager';
 import { MusicManager } from './engine/MusicManager';
+import { MUSIC_SETTINGS, VOLUME_SLIDERS } from './config/AudioConfig';
 import { showToast } from './utils/toast';
 import { AirSystem } from './player/AirSystem';
 import type { ExposureInput } from './player/Survival';
@@ -1353,6 +1354,30 @@ class PlanetGame {
         MusicManager.setEnabled(musicToggle.checked);
       });
     }
+
+    // Volume sliders: music and sound effects, 0-100 on screen, saved 0-1 per browser
+    const volumeSlider = (id: string, key: string, fallback: number, apply: (v: number) => void): void => {
+      const input = document.getElementById(id) as HTMLInputElement | null;
+      const label = document.getElementById(`${id}-value`);
+      let v = fallback;
+      try {
+        const saved = parseFloat(localStorage.getItem(key) ?? '');
+        if (Number.isFinite(saved)) v = Math.max(0, Math.min(1, saved));
+      } catch { /* no storage: the default */ }
+      apply(v);
+      if (!input) return;
+      const show = () => { if (label) label.textContent = `${input.value}%`; };
+      input.value = String(Math.round(v * 100));
+      show();
+      input.addEventListener('input', () => {
+        const next = Number(input.value) / 100;
+        apply(next);
+        show();
+        try { localStorage.setItem(key, String(next)); } catch { /* not saved */ }
+      });
+    };
+    volumeSlider('volume-music', VOLUME_SLIDERS.MUSIC_KEY, MUSIC_SETTINGS.DEFAULT_VOLUME, v => MusicManager.setVolume(v));
+    volumeSlider('volume-sfx', VOLUME_SLIDERS.SFX_KEY, VOLUME_SLIDERS.SFX_DEFAULT, v => AudioManager.setMasterVolume(v));
 
     // Screenshot button: the game view without the menu over it (as F9)
     document.getElementById('screenshot-btn')?.addEventListener('click', () => this.engine.saveScreenshot());

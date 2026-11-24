@@ -395,6 +395,44 @@
       font-size: 26px;
     }
 
+    /* Volume sliders (Settings: music, sound effects) */
+    .volume-slider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .volume-slider input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 160px;
+      height: 8px;
+      border-radius: 4px;
+      background: #444;
+      outline: none;
+      cursor: pointer;
+    }
+    .volume-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: 2px solid #fff;
+    }
+    .volume-slider input[type="range"]::-moz-range-thumb {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #4CAF50;
+      border: 2px solid #fff;
+    }
+    .volume-value {
+      width: 48px;
+      text-align: right;
+      font-size: 22px;
+    }
+
     .toggle-switch {
       position: relative;
       width: 56px;
@@ -1443,6 +1481,20 @@
         <div class="toggle-switch">
           <input type="checkbox" id="toggle-music">
           <span class="toggle-slider"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="volume-music">Music Volume</label>
+        <div class="volume-slider">
+          <input type="range" id="volume-music" min="0" max="100" step="1">
+          <span class="volume-value" id="volume-music-value"></span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <label for="volume-sfx">Sound Effects Volume</label>
+        <div class="volume-slider">
+          <input type="range" id="volume-sfx" min="0" max="100" step="1">
+          <span class="volume-value" id="volume-sfx-value"></span>
         </div>
       </div>
       <div class="settings-row">
