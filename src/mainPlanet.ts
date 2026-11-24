@@ -599,6 +599,9 @@ class PlanetGame {
           give: (t, n) => { const left = inv().addItem(t, n); this.blockInteraction.onInventoryChanged(); return left; },
         });
       }
+      // Only the cargo hold flies (openspec pad-stash): boarding stows what
+      // the player carries in the pad's stash or a parked rocket's hold
+      this.rocketFlightManager.setBoardingStow((into, where) => this.blockInteraction.stowForBoarding(into, where));
       this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
         this.blockInteraction.openRocketCargo(slots, title, accepts);
       });

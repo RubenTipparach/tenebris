@@ -7,6 +7,7 @@ import { ItemType, ITEM_DATA, RocketPartType, InventorySlot } from '../player/In
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { cargoSlotsFor, equipmentSlotsFor, compactCargo, computeRocketStats } from '../rocket/RocketPerformance';
 import { RocketPart } from './RocketPart';
+import { emptyStash, stashUsed } from '../rocket/CarryRules';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 import launchPadVert from '../shaders/launchPad/launchPad.vert';
@@ -77,6 +78,10 @@ export interface PlacedLaunchPad {
   // equipmentSlots). Shared with the flying / landed rocket the same way
   // as the cargo hold, and saved with the pad
   equipment: InventorySlot[];
+  // What players left here when they boarded (openspec pad-stash): every
+  // non-exempt hotbar / bag item moves in on boarding, CARRY.STASH_SLOTS
+  // slots, saved with the pad (absent in the record = empty)
+  stash: InventorySlot[];
   // Fuel units in the rocket's tanks; null = full (pads from older saves)
   fuel: number | null;
   engineMode?: ItemType | null;  // which engines fire (design 6b); null/undefined = all
@@ -666,6 +671,7 @@ export class LaunchPadManager {
       rocketParts: [],
       cargo: [],
       equipment: [],
+      stash: emptyStash(),
       fuel: ROCKET_CONFIG.NEW_PAD_FUEL,
       hasRocketEngine: false,
       rocketEngineMesh: null,
@@ -695,7 +701,7 @@ export class LaunchPadManager {
    * built on it can be absorbed.
    */
   public mergeInto(target: PlacedLaunchPad, other: PlacedLaunchPad): boolean {
-    if (other === target || other.rocketParts.length > 0 || other.segmentCount > 0) return false;
+    if (other === target || other.rocketParts.length > 0 || other.segmentCount > 0 || stashUsed(other.stash) > 0) return false;
     const tiles = [...other.hexes.values()].map(h => h.tile);
     this.removeLaunchPad(other);
     for (const t of tiles) this.addHex(target, t);
@@ -712,6 +718,8 @@ export class LaunchPadManager {
       return 'Take the rocket and tower down before breaking up the pad under them';
     }
     if (pad.segmentCount > 0 && tileIndex === pad.towerTileIndex) return 'Take the tower down first';
+    // The last block takes the pad (and its stash) with it
+    if (pad.hexes.size <= 1 && stashUsed(pad.stash) > 0) return "Empty the pad's stash first";
     return null;
   }
 

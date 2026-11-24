@@ -155,6 +155,12 @@ jobs:
       - name: Shared objects + chat - conflict rule, refresh, simulator, chat lines
         run: npx --yes tsx scripts/shared-objects.test.ts
 
+      # Only the cargo hold flies (openspec pad-stash): boarding at a pad
+      # stashes the carried items (gear exempt by config), a parked rocket's
+      # hold takes them or the board is refused, older pads load unchanged
+      - name: Pad stash - stash on board, merge, take back, hold-only away from a pad
+        run: npx --yes tsx scripts/pad-stash.test.ts
+
   # The experimental `webgpu-build` job (Stage 0 of the C tree's
   # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.
   # It built tenebris-c with -DTENEBRIS_WEBGPU=ON and had been failing at

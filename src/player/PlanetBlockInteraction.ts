@@ -58,6 +58,7 @@ import { planetObjectScene } from '../world/PlanetFrames';
 import { gameStorage, torchKey, SavedCooker, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
 import { diffCounts, netSync } from '../net/NetSync';
 import { copySlotsInPlace } from '../net/SharedState';
+import { stowCarried, takeAllInto, stashFromSave, stashForSave, copyStashInPlace } from '../rocket/CarryRules';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
 import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine, panelSunlight } from '../planet/Machines';
@@ -697,6 +698,12 @@ export class PlanetBlockInteraction {
       this.launchPadUI.close();
       this.openRocketCargo(pad.cargo);
     });
+    // What boarders left here (openspec pad-stash): the same slot panel
+    this.launchPadUI.setOnOpenStashCallback((pad) => {
+      this.launchPadUI.close();
+      this.openPadStash(pad);
+    });
+    this.launchPadUI.setOnTakeStashCallback((pad) => this.takeStash(pad));
     // Equipment fitted or taken out: the pad and the inventory save now
     this.launchPadUI.setOnEquipmentChangedCallback(() => {
       this.saveLaunchPadStates();
@@ -4204,6 +4211,57 @@ export class PlanetBlockInteraction {
   }
 
   /**
+   * Boarding a rocket (openspec pad-stash): every hotbar / bag item that is
+   * not exempt (CARRY) moves into `into` - the pad's stash when boarding at
+   * a pad, the rocket's cargo hold when boarding a parked one - all or
+   * nothing. Saved the same frame (inventory + the pad record, which also
+   * holds a parked rocket's shared cargo array). Returns why boarding is
+   * refused (nothing moved), or null.
+   */
+  public stowForBoarding(into: InventorySlot[] | null, where: 'stash' | 'cargo'): string | null {
+    this.inventory.returnHeld();
+    const r = stowCarried(this.inventory.getAllSlots(), into);
+    if (r.overflow > 0) {
+      const what = `${r.overflow} item${r.overflow === 1 ? '' : 's'}`;
+      return where === 'stash'
+        ? `The pad's stash is full - take ${what} out of it first`
+        : !into || into.length === 0
+          ? `This rocket has no cargo hold - store or drop your ${what} first`
+          : `Not enough room in the cargo hold - store or drop ${what} first`;
+    }
+    if (r.moved > 0) {
+      this.updateHotbarUI();
+      this.craftingSystem.updateInventorySlotsPublic();
+      this.saveInventory();
+      this.saveLaunchPadStates();
+      showToast(where === 'stash'
+        ? `${r.moved} item${r.moved === 1 ? '' : 's'} left in the pad's stash - only the cargo hold flies with you`
+        : `${r.moved} item${r.moved === 1 ? '' : 's'} loaded into the cargo hold`, { duration: 3500 });
+    }
+    return null;
+  }
+
+  /** Open a launch pad's stash beside the hotbar + bag (the cargo hold's panel) */
+  public openPadStash(pad: PlacedLaunchPad): void {
+    this.openRocketCargo(pad.stash, "Pad Stash");
+  }
+
+  /**
+   * Take everything that fits from a pad's stash back into the hotbar + bag,
+   * saved the same frame. Returns how many items moved.
+   */
+  public takeStash(pad: PlacedLaunchPad): number {
+    const moved = takeAllInto(pad.stash, this.inventory.getAllSlots());
+    if (moved > 0) {
+      this.updateHotbarUI();
+      this.craftingSystem.updateInventorySlotsPublic();
+      this.saveInventory();
+      this.saveLaunchPadStates();
+    }
+    return moved;
+  }
+
+  /**
    * Open a rocket's cargo hold beside the hotbar + bag (from its launch pad
    * or a landed rocket's panel)
    */
@@ -4353,6 +4411,7 @@ export class PlanetBlockInteraction {
         fuel: pad.fuel ?? undefined,
         cargo: pad.cargo.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
         equipment: pad.equipment.map(slot => ({ itemType: slot.itemType, quantity: slot.quantity })),
+        stash: stashForSave(pad.stash),
         engineMode: pad.engineMode ?? null,
       });
     }
@@ -4897,7 +4956,7 @@ export class PlanetBlockInteraction {
     if (shown === o) return true;
     const pad = o as Partial<PlacedLaunchPad>;
     const slots = (shown as { slots?: unknown }).slots;
-    return !!pad.cargo && (slots === pad.cargo || slots === pad.equipment);
+    return !!pad.cargo && (slots === pad.cargo || slots === pad.equipment || slots === pad.stash);
   }
 
   /** Redraw any open panel showing `o` - in place: the viewer's held stack and cursor stay. */
@@ -4990,6 +5049,8 @@ export class PlanetBlockInteraction {
           Array.from({ length: n }, (_, i) => list?.[i] && ITEM_DATA[list[i].itemType as ItemType] ? list[i] : { itemType: ItemType.NONE, quantity: 0 });
         copySlots(pad.cargo, slotsOf(r.cargo, pad.cargo.length));
         copySlots(pad.equipment, slotsOf(r.equipment, pad.equipment.length));
+        // The stash: absent = empty (openspec pad-stash)
+        copyStashInPlace(pad.stash, stashFromSave(r.stash, pad.stash.length));
         return true;
       }
     }
@@ -5219,6 +5280,8 @@ export class PlanetBlockInteraction {
               pad.cargo[i] = { itemType: slot.itemType as ItemType, quantity: slot.quantity };
             }
           });
+          // What boarders left on the pad (absent in older saves: empty)
+          copyStashInPlace(pad.stash, stashFromSave(savedPad.stash, pad.stash.length));
           // Its equipment slots (absent in older saves: empty)
           savedPad.equipment?.forEach((slot, i) => {
             if (i < pad.equipment.length && ITEM_DATA[slot.itemType as ItemType]) {
