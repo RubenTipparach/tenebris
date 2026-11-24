@@ -971,14 +971,16 @@ export class CraftingSystem {
 
   private setupKeyboardHandler(): void {
     document.addEventListener('keydown', (e) => {
-      // M: the same panel on its Map tab (M again, or on the map, closes it)
-      if ((e.key === 'm' || e.key === 'M') && !isTypingTarget(e.target)) {
-        if (this.isOpen && this.currentPanel === 'map') {
+      // M: the panel on its Map tab, G on Missions (the same key again closes
+      // it). G is the rocket's engine-mode key in flight, so not while flying.
+      const tab = PANEL_KEYS[e.key.toLowerCase()];
+      if (tab && !isTypingTarget(e.target) && !(tab === 'missions' && this.isFlying())) {
+        if (this.isOpen && this.currentPanel === tab) {
           this.close();
           MenuManager.closeMenuViaKeyboard();
           e.preventDefault();
         } else if (this.isOpen || document.pointerLockElement) {
-          this.openPanel('map');
+          this.openPanel(tab);
           e.preventDefault();
         }
         return;
@@ -1007,6 +1009,10 @@ export class CraftingSystem {
   // here and draw into their container (#panel-<name>) when shown.
   private panels = new Map<string, { show: (el: HTMLElement) => void; hide?: () => void }>();
   private currentPanel = 'inventory';
+
+  /** Riding a rocket (its keys come first: G is engine mode there) */
+  private isFlying: () => boolean = () => false;
+  public setFlyingCheck(fn: () => boolean): void { this.isFlying = fn; }
 
   public registerPanel(name: string, panel: { show: (el: HTMLElement) => void; hide?: () => void }): void {
     this.panels.set(name, panel);
@@ -1622,6 +1628,9 @@ export class CraftingSystem {
     }
   }
 }
+
+/** Keys that open the E panel straight on a tab */
+const PANEL_KEYS: Record<string, string> = { m: 'map', g: 'missions' };
 
 /** A key pressed in a text field (a name, a chat line) is text, not a game key */
 function isTypingTarget(t: EventTarget | null): boolean {

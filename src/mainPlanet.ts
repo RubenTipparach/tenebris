@@ -601,6 +601,8 @@ class PlanetGame {
       this.inputManager.setInventoryToggleCallback(() => {
         this.blockInteraction.getCraftingSystem().toggle();
       });
+      // G opens Missions except in flight, where G is the engine mode
+      this.blockInteraction.getCraftingSystem().setFlyingCheck(() => !!this.rocketFlightManager?.isInFlight());
 
       // Setup mobile pause callback - shows the main menu
       this.inputManager.setPauseToggleCallback(() => {
