@@ -379,7 +379,7 @@
     const out = [];
     for (const t of tilesWithin(myTile(), radius)) {
       if (!p.isTileLoaded(t)) continue;
-      for (let d = Math.max(1, fd - 3); d <= fd + 3; d++) {
+      for (let d = Math.max(1, fd - 6); d <= fd + 4; d++) {
         const b = p.getBlock(t, d);
         if (wanted.includes(b)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
       }
@@ -1190,7 +1190,7 @@
     // dug out of the ground
     const block = name !== undefined ? B[name] : undefined;
     if (block !== undefined) {
-      if (name.startsWith('ORE_')) await goMining([block, B.ORE_COAL], () => count(item) >= n);
+      if (name.startsWith('ORE_')) await goMining(count(I.COAL) < 16 && block !== B.ORE_COAL ? [block, B.ORE_COAL] : [block], () => count(item) >= n);
       else if (block === B.STONE) await digForStone(n);
       else await findAndDig([block], () => count(item) >= n);
       return count(item) >= n;
