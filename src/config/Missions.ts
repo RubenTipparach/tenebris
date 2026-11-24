@@ -173,11 +173,6 @@ export function visitCoverageProblems(bodyIds: string[], missions: { visit?: str
 }
 
 /**
- * What visiting a body unlocks (design 2). The Moon's and Sequoia's live on
- * their own missions above; rewards arrive here phase by phase as their
- * items are built.
- */
-/**
  * What each body yields that no other body does (space-exploration,
  * resources): the one table for where a body resource is gathered. The
  * gating test (scripts/engine-gating.test.ts) checks every engine past
@@ -198,6 +193,11 @@ export const BODY_RESOURCES: Partial<Record<string, ItemType[]>> = {
   brontes: [I.METALLIC_HYDROGEN],
 };
 
+/**
+ * What visiting a body unlocks (design 2). The Moon's and Sequoia's live on
+ * their own missions below. scripts/missions.test.ts holds that every visit
+ * unlocks at least one recipe it alone owns, with an icon.
+ */
 export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   // sunward
   rime: [I.REFIT_KIT],
