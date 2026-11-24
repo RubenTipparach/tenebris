@@ -563,6 +563,10 @@
   "196": {
    "name": "Glimmer Sprat",
    "icon": "/textures/fish/sprat.png"
+  },
+  "197": {
+   "name": "Oil Sand",
+   "icon": "/textures/resources/oil_sand.png"
   }
  },
  "slots": {

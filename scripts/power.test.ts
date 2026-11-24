@@ -113,6 +113,21 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   ok(fuel?.units === 40, 'kerosene is a rocket fuel source at 40 units');
 }
 
+// ---- oil sand dug out whole refines too (no bucket back)
+{
+  const r = newMachineState(ItemType.REFINERY, 2, 30, new THREE.Vector3(), 0);
+  r.powered = true;
+  const need = MACHINE_CONFIG.REFINE_OIL_SAND_IN;
+  loadInput(r, ItemType.OIL_SAND, need - 1);
+  ok(!wantsPower(r, false), `a refinery with ${need - 1} oil sand waits`);
+  loadInput(r, ItemType.OIL_SAND, 1);
+  const fx = tickMachine(r, MACHINE_CONFIG.REFINE_S, { oilBelow: false, reactorPower: false });
+  const out = (t: ItemType) => r.outputs.filter(s => s.itemType === t).reduce((n, s) => n + s.quantity, 0);
+  const left = r.inputs.filter(s => s.itemType === ItemType.OIL_SAND).reduce((n, s) => n + s.quantity, 0);
+  ok(fx.event === 'refined' && out(ItemType.KEROSENE) === 2 && out(ItemType.PLASTIC) === 1 && out(ItemType.BUCKET) === 0 && left === 0,
+    `${need} oil sand refine into 2 kerosene + 1 plastic, no bucket`);
+}
+
 // ---- 5.1 centrifuge + fuel rod recipe
 {
   const c = newMachineState(ItemType.CENTRIFUGE, 3, 30, new THREE.Vector3(), 0);

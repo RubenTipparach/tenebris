@@ -456,7 +456,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- oil: crude from the deep, refined into kerosene and plastic
   {
-    id: 'crude', branch: 'oil', icon: I.CRUDE_OIL_BUCKET, parent: 'chips', after: ['bucket'], title: 'Strike oil', help: 'Dig deep for oil sand and scoop it with a bucket.',
+    id: 'crude', branch: 'oil', icon: I.CRUDE_OIL_BUCKET, parent: 'chips', after: ['bucket'], title: 'Strike oil', help: 'Dig deep for oil sand and scoop it with a bucket (or dig it out for the refinery).',
     objectives: [{ kind: 'gained', item: I.CRUDE_OIL_BUCKET, count: 1, label: 'Crude oil' }],
     unlocks: [I.PUMP_JACK],
   },
