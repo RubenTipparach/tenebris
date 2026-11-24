@@ -1,4 +1,4 @@
-import { machineLightUniforms } from './MachineLight';
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -106,7 +106,6 @@ export class CopperPipeManager {
         ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        skyLight: { value: 1.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -121,7 +120,7 @@ export class CopperPipeManager {
   // Create mesh for a single pipe node
   private createPipeMesh(position: THREE.Vector3): THREE.Mesh {
     const geometry = new THREE.BoxGeometry(this.PIPE_SIZE, this.PIPE_SIZE, this.PIPE_SIZE);
-    const material = this.pipeMaterial!.clone();
+    const material = withMachineLight(this.pipeMaterial!.clone());
     const mesh = new THREE.Mesh(geometry, material);
 
     // Orient to surface
@@ -182,7 +181,7 @@ export class CopperPipeManager {
     }
     uvAttribute.needsUpdate = true;
 
-    const material = this.pipeMaterial!.clone();
+    const material = withMachineLight(this.pipeMaterial!.clone());
     const mesh = new THREE.Mesh(geometry, material);
 
     mesh.position.copy(midpoint);

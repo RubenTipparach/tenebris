@@ -1,4 +1,4 @@
-import { machineLightUniforms } from './MachineLight';
+import { machineLightUniforms, withMachineLight } from './MachineLight';
 import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
@@ -140,7 +140,6 @@ export class CableNodeManager {
         ...machineLightUniforms(),
         ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
-        skyLight: { value: 1.0 },
       },
       vertexShader: techVert,
       fragmentShader: techFrag,
@@ -155,7 +154,7 @@ export class CableNodeManager {
   // Create mesh for a single cable node
   private createCableMesh(position: THREE.Vector3): THREE.Mesh {
     const geometry = new THREE.BoxGeometry(this.CABLE_SIZE, this.CABLE_SIZE, this.CABLE_SIZE);
-    const material = this.cableMaterial!.clone();
+    const material = withMachineLight(this.cableMaterial!.clone());
     const mesh = new THREE.Mesh(geometry, material);
 
     // Orient to surface
@@ -222,7 +221,7 @@ export class CableNodeManager {
     }
     uvAttribute.needsUpdate = true;
 
-    const material = this.cableMaterial!.clone();
+    const material = withMachineLight(this.cableMaterial!.clone());
     const mesh = new THREE.Mesh(geometry, material);
 
     mesh.position.copy(midpoint);

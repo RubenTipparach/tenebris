@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { getAssetPath } from '../utils/assetPath';
 import { AvatarConfig } from '../config/AvatarConfig';
 import { LoopAction, ShotAction } from './AvatarPose';
+import { PlayerConfig } from '../config/PlayerConfig';
+import { machineLightUniforms } from '../planet/MachineLight';
+import techVert from '../shaders/tech/tech.vert';
+import techFrag from '../shaders/tech/tech.frag';
 
 /**
  * A player's avatar: a blocky humanoid built from their look (skin, hair,
@@ -147,9 +151,32 @@ export class Avatar {
   private lastActionClip: string | null = null;
   private held: { key: string; mesh: THREE.Mesh } | null = null;
 
-  constructor(look: Look, name?: string) {
+  /**
+   * `lighting`: 'world' (an avatar in the game) is lit like the ground and
+   * the placed machines - the planet's sun and sky fill by time of day plus
+   * nearby torches (the tech shader's flat-colour mode, MachineLight's shared
+   * uniforms) - so it doesn't glow at night. 'studio' (the character
+   * creator's preview, off any planet) keeps plain lights.
+   */
+  constructor(look: Look, name?: string, lighting: 'world' | 'studio' = 'world') {
     loadAnim();
-    const mat = (c: string) => { const m = new THREE.MeshLambertMaterial({ color: c }); this.materials.push(m); return m; };
+    const mat = (c: string) => {
+      const m = lighting === 'studio'
+        ? new THREE.MeshLambertMaterial({ color: c })
+        : new THREE.ShaderMaterial({
+          defines: { TECH_COLOR: '' },
+          uniforms: {
+            ...machineLightUniforms(),
+            techColor: { value: new THREE.Color(c) },
+            ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
+            directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
+          },
+          vertexShader: techVert,
+          fragmentShader: techFrag,
+        });
+      this.materials.push(m);
+      return m;
+    };
     const box = (w: number, h: number, d: number, m: THREE.Material, y = 0, x = 0, z = 0) => {
       const g = new THREE.BoxGeometry(w, h, d);
       this.geometries.push(g);
