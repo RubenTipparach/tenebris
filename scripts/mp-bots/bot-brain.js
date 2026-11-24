@@ -26,6 +26,7 @@
   let RECIPES = null;    // CRAFTING_RECIPES
   let SMELTS = null;     // furnace SMELTING_RECIPES
   let ESMELTS = null;    // electric furnace ELECTRIC_SMELTING_RECIPES
+  let COOKS = null;      // campfire / kiln / oven recipes, with their station kind
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -48,6 +49,8 @@
     const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
     SMELTS = smeltMod.SMELTING_RECIPES;
     ESMELTS = smeltMod.ELECTRIC_SMELTING_RECIPES;
+    const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
+    COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
     I = inventory.ItemType;
     B = blocks.HexBlockType;
     RECIPES = crafting.CRAFTING_RECIPES;
@@ -1139,6 +1142,16 @@
     }
     // electric furnace
     if (ESMELTS && ESMELTS.some(r => r.output === item)) { await electricSmelt(item, n); return count(item) >= n; }
+    // a cooking station (campfire, kiln, oven): one dish per cook
+    const ck = COOKS && COOKS.find(r => r.output === item && tracker().recipeOpen(item));
+    if (ck) {
+      for (const inp of ck.inputs) {
+        if (inp === 'fish') { if (!fishItems().some(f => count(f) > 0)) { await goFishing(3); return false; } continue; }
+        if (count(inp) < 1 && !(await obtain(inp, 1, depth + 1))) return false;
+      }
+      await cookAt(ck.kind, ck.inputs, item);
+      return count(item) >= n;
+    }
     // dug out of the ground
     const block = name !== undefined ? B[name] : undefined;
     if (block !== undefined) {
@@ -1147,13 +1160,21 @@
       else await findAndDig([block], () => count(item) >= n);
       return count(item) >= n;
     }
-    say(`does not know how to get ${name}`);
+    if (!(st.unknown || []).includes(item)) say(`does not know how to get ${name}`);
     st.unknown = (st.unknown || []).concat([item]);
     return false;
   }
 
   // Play any mission whose objectives are holding, making, smelting or placing things
   async function generic(m) {
+    const unknown0 = (st.unknown || []).length;
+    await genericStep(m);
+    if ((st.unknown || []).length > unknown0) {
+      say(`${m.title} needs something it cannot get - skipping it`);
+      st.cannot = (st.cannot || []).concat([m.id]);
+    }
+  }
+  async function genericStep(m) {
     const prog = tracker().progress(m);
     for (let i = 0; i < m.objectives.length; i++) {
       const o = m.objectives[i];
