@@ -15,6 +15,10 @@
  *   that move every frame and only matter while someone is watching
  *   (animals simulated by a planet's host, rockets in flight).
  *
+ * - Map uploads: a picture of a planet's map for the admin portal (openspec
+ *   admin-monitor), sent over HTTP by the transport, signed with the key
+ *   the server gave this connection.
+ *
  * Handlers for remote traffic are registered per kind / channel. They run
  * for OTHER players' messages only; a system applying a remote record must
  * not send it back (use `applyingRemote()` to tell).
@@ -28,6 +32,7 @@ export type LocalRecords = () => Array<{ planet: string; key: string; data: obje
 interface Transport {
   sendRecord(kind: string, planet: string, key: string, data: object | null): void;
   sendLive(ch: string, data: unknown): void;
+  uploadMap(planet: string, image: Blob): Promise<boolean>;
 }
 
 const recordHandlers = new Map<string, RecordHandler>();
@@ -74,6 +79,8 @@ let myId = 0;
 const peers = new Map<number, string>();
 // ...and where they are (world position, last reported)
 const peerPos = new Map<number, [number, number, number]>();
+// The world's planet maps on the server: planet -> when made (local clock)
+let maps: Record<string, number> = {};
 
 export const netSync = {
   /** Connected to a server world? */
@@ -121,6 +128,19 @@ export const netSync = {
     return remoteDepth > 0;
   },
 
+  /** The server's planet maps of this world: planet -> when made (local clock ms). */
+  serverMaps(): Readonly<Record<string, number>> {
+    return maps;
+  },
+
+  /** Upload a planet's map picture for the admin portal. False offline or when refused. */
+  async uploadMap(planet: string, image: Blob): Promise<boolean> {
+    if (!transport) return false;
+    const ok = await transport.uploadMap(planet, image);
+    if (ok) maps = { ...maps, [planet]: Date.now() };
+    return ok;
+  },
+
   /** Ids of the other players on a planet. */
   peersOn(planet: string): number[] {
     const out: number[] = [];
@@ -160,13 +180,16 @@ export const netSync = {
 
 // ---- used by Multiplayer only ------------------------------------------
 
-export function attachTransport(t: Transport | null, id = 0, serverNow?: number, epoch?: number, worldId?: string): void {
+export function attachTransport(t: Transport | null, id = 0, serverNow?: number, epoch?: number, worldId?: string, serverMaps?: Record<string, number>): void {
   transport = t;
   myId = id;
   lastState.clear();
   if (!t) { peers.clear(); peerPos.clear(); }
   if (t && worldId) loadKnown(worldId);
   if (serverNow !== undefined) clockOffsetMs = serverNow - Date.now();
+  // the server's times on this client's clock
+  maps = {};
+  for (const [planet, at] of Object.entries(serverMaps ?? {})) if (typeof at === 'number') maps[planet] = at - clockOffsetMs;
   worldEpochMs = epoch ?? null;
 }
 

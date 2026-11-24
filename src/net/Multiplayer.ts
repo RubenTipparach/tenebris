@@ -4,6 +4,7 @@ import { gameStorage } from '../engine/GameStorage';
 import { showToast } from '../utils/toast';
 import { clearWorldSave } from '../engine/GameStorage';
 import { Avatar, Look, SUIT_ON, sanitizeLook } from './Avatar';
+import { serverHttpBase } from './WorldSession';
 import { applySnapshot, attachTransport, dispatchLive, dispatchRecord, setPeer } from './NetSync';
 
 /**
@@ -161,6 +162,20 @@ export class Multiplayer {
     }
   }
 
+  // A planet map picture for the admin portal: POST /maps/<world>/<planet>,
+  // signed with this connection's upload key (server-js/server.js)
+  private async uploadMap(worldId: string, planet: string, image: Blob, key: string): Promise<boolean> {
+    if (!worldId || !key) return false;
+    const q = new URLSearchParams({ player: String(this.myId), key });
+    const url = `${serverHttpBase()}/maps/${encodeURIComponent(worldId)}/${encodeURIComponent(planet)}?${q}`;
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': image.type }, body: image });
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
   private sendJson(msg: object): void {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
@@ -174,7 +189,8 @@ export class Multiplayer {
         attachTransport({
           sendRecord: (kind, planet, key, data) => this.sendJson({ t: 'rec', kind, planet, key, data }),
           sendLive: (ch, data) => this.sendJson({ t: 'live', ch, data }),
-        }, m.id, m.now, m.world?.created, m.world?.id);
+          uploadMap: (planet, image) => this.uploadMap(String(m.world?.id ?? ''), planet, image, String(m.uploadKey ?? '')),
+        }, m.id, m.now, m.world?.created, m.world?.id, m.maps);
         for (const [planet, tile, depth, block] of m.edits as Array<[string, number, number, number]>) {
           this.planets.get(planet)?.setBlock(tile, depth, block);
         }
