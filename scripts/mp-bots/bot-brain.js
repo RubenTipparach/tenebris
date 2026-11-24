@@ -1260,6 +1260,7 @@
         role: st.role, task: st.task, goal: st.goal, done: s.done, now: t.now()?.id ?? null,
         pos: player().position.toArray().map(v => +v.toFixed(1)), tile: myTile(), depth: feetDepth(),
         items: hot, errors: st.errors, log: st.log.slice(-12),
+        mem: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, geo: g().engine.renderer.info.memory.geometries, tex: g().engine.renderer.info.memory.textures },
       };
     },
     // exposed for poking at a running bot from the runner's REPL
