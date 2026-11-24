@@ -1,0 +1,32 @@
+{
+ "role": "Gear",
+ "mass_kg": 50,
+ "impact_tolerance_mps": 12,
+ "tier": "T2",
+ "recipe": "iron 3 + bronze 1",
+ "blurb": "Three or more give a stable stance. Without gear you land on the hull.",
+ "label": "Landing Skid",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    1,
+    0
+   ],
+   "kind": "Gear"
+  }
+ ],
+ "texture": "ship_landing_skid.png",
+ "atlas_px": 256,
+ "uv_islands": 5
+}

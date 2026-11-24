@@ -1,0 +1,46 @@
+{
+ "role": "Tank",
+ "mass_kg": 480,
+ "dry_mass_kg": 60,
+ "fuel_cap": 100,
+ "tier": "T2",
+ "recipe": "iron 5",
+ "blurb": "100 units of propellant, drawn from one ship-wide pool.",
+ "label": "Fuel Cell",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    0,
+    0,
+    2.2
+   ],
+   "dir": [
+    0,
+    0,
+    1
+   ],
+   "kind": "Stack"
+  }
+ ],
+ "texture": "ship_fuel_cell.png",
+ "atlas_px": 320,
+ "uv_islands": 5
+}

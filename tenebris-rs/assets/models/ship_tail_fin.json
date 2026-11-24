@@ -1,0 +1,33 @@
+{
+ "role": "Aero",
+ "mass_kg": 45,
+ "lift_area_m2": 1.4,
+ "lift_coef": 0.7,
+ "tier": "T2",
+ "recipe": "iron 2",
+ "blurb": "Yaw damping in atmosphere. Mostly it makes the ship read as a ship.",
+ "label": "Tail Fin",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0.95
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ],
+ "texture": "ship_tail_fin.png",
+ "atlas_px": 256,
+ "uv_islands": 4
+}

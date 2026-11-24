@@ -1,0 +1,32 @@
+{
+ "role": "Drill",
+ "mass_kg": 180,
+ "mine_rate_m3_s": 0.6,
+ "tier": "T2",
+ "recipe": "iron 6 + bronze 2",
+ "blurb": "Auger Drill. Cuts 0.6 m3/s. Fits a Drill mount - Prospector Cab only.",
+ "label": "Auger Drill",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Drill"
+  }
+ ],
+ "texture": "ship_auger_drill.png",
+ "atlas_px": 256,
+ "uv_islands": 7
+}

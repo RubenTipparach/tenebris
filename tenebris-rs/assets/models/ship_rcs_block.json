@@ -1,0 +1,33 @@
+{
+ "role": "Rcs",
+ "mass_kg": 22,
+ "torque_nm": 3000,
+ "fuel_per_s": 0.15,
+ "tier": "T3",
+ "recipe": "bronze 2 + wire 2",
+ "blurb": "Flat attitude authority - 3 kN-m wherever you bolt it. Cheap, but you need a lot of them.",
+ "label": "RCS Block",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    -1,
+    0
+   ],
+   "kind": "Radial"
+  }
+ ],
+ "texture": "ship_rcs_block.png",
+ "atlas_px": 256,
+ "uv_islands": 6
+}

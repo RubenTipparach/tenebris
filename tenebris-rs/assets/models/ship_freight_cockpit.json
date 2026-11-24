@@ -1,0 +1,59 @@
+{
+ "role": "Cockpit",
+ "mass_kg": 340,
+ "torque_nm": 9500,
+ "cargo": 8,
+ "tier": "T3",
+ "recipe": "iron 7 + copper 4 + circuit 1 + wire 2",
+ "blurb": "Freight cab. A high seat over a flat deck and a handling mount down each flank.",
+ "label": "Freight Cab",
+ "pivot": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "nodes": [
+  {
+   "pos": [
+    0,
+    0,
+    0
+   ],
+   "dir": [
+    0,
+    0,
+    -1
+   ],
+   "kind": "Stack"
+  },
+  {
+   "pos": [
+    -0.8832,
+    0.0,
+    1.7
+   ],
+   "dir": [
+    -1,
+    0,
+    0
+   ],
+   "kind": "Cargo"
+  },
+  {
+   "pos": [
+    0.8832,
+    0.0,
+    1.7
+   ],
+   "dir": [
+    1,
+    0,
+    0
+   ],
+   "kind": "Cargo"
+  }
+ ],
+ "texture": "ship_freight_cockpit.png",
+ "atlas_px": 320,
+ "uv_islands": 10
+}
