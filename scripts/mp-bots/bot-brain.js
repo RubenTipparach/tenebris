@@ -1521,12 +1521,39 @@
 
   // ---- the 3D printer (needs power) -------------------------------------------------
   // Queue `jobs` prints of recipe `r` at a powered printer and collect them
+  // Place `item` (a machine) on dry ground beside a cable of a network that has
+  // a generator on it, so it is powered. Returns the tile or false.
+  async function placeOnPower(item) {
+    const b = bi();
+    const pos = player().position;
+    const live = b.cableNodeManager.getNetworks().filter(n =>
+      n.nodes.some(x => x.kind === 'hydroGenerator') ||
+      n.connectedSteamEngines.some(t => b.steamEngineManager.getSteamEngineAtTile(t)?.isRunning));
+    const cables = b.cableNodeManager.getPlacedCables()
+      .filter(c => live.some(n => n.cables.includes(c.id)))
+      .sort((a, c) => a.position.distanceTo(pos) - c.position.distanceTo(pos));
+    for (const c of cables.slice(0, 6)) {
+      const t = neighbors(c.tileIndex).find(isDryTile);
+      if (t !== undefined && (await placeOnTile(item, t))) return t;
+    }
+    return false;
+  }
+
   async function printCraft(r, jobs) {
     const pm = bi().printer3DManager;
     const pos = player().position;
-    const pr = pm.getAllPrinters().filter(x => x.isPowered)
+    let pr = pm.getAllPrinters().filter(x => x.isPowered)
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
-    if (!pr) { say('no powered 3D printer'); st.unknown = (st.unknown || []).concat([r.output]); return false; }
+    if (!pr) {
+      // none powered: make one and set it on a powered cable network
+      say('no powered 3D printer - setting one up on power');
+      if (!(await obtain(I.PRINTER_3D, 1))) return false;
+      const t = await placeOnPower(I.PRINTER_3D);
+      if (t === false) { say('no powered cable to set the printer by'); return false; }
+      await sleep(3000);   // the grid solves every so often
+      pr = pm.getAllPrinters().find(x => x.tileIndex === t && x.isPowered);
+      if (!pr) { say('the new printer has no power yet'); return false; }
+    }
     st.task = 'at the 3D printer';
     await approach(pr.position, 2.2);
     closeMenus(); selectEmptyHand();
