@@ -164,7 +164,7 @@ export class RocketFlightUI {
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | ${ROCKET_INPUTS.STAGE.replace('Key', '')}: Stage | ${ROCKET_INPUTS.DRONE.replace('Key', '')}: Drone | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | ${ROCKET_INPUTS.STAGE.replace('Key', '')}: Stage | ${ROCKET_INPUTS.DRONE.replace('Key', '')}: Drone | ${ROCKET_INPUTS.DIVER.replace('Key', '')}: Diver | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">

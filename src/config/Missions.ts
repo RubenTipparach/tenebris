@@ -202,7 +202,7 @@ export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   // sunward
   rime: [I.REFIT_KIT],
   ember: [I.CERAMIC_PLATING, I.GAS_CORE_ENGINE],
-  ferrum: [I.SUPERCONDUCTOR],
+  ferrum: [I.SUPERCONDUCTOR, I.SUBMARINE],
   lodestone: [I.MAGNET, I.FISSION_FRAGMENT_DRIVE],
   umbra: [I.RADIATION_LINING],
   nyx: [I.BATTERY_PACK_MK2],
@@ -216,6 +216,7 @@ export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   // outward
   kessel: [I.RTG],
   sleet: [I.CRYO_TANK],
+  thalassa: [I.GAS_GIANT_DIVER],
   aurelia: [I.FUSION_DRIVE],
   mirewood: [I.DROGUE_CHUTE],
   ashfall: [I.HEAT_SHIELD_MK2],
@@ -223,6 +224,7 @@ export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   cinder: [I.COMPACT_REACTOR_CORE],
   scoria: [I.RADIATOR_MK2],
   nickel: [I.FUEL_ROD_MK2],
+  nerith: [I.DEEP_SUBMARINE],
   ferrite: [I.FUEL_TANK_MK3],
   glint: [I.SURVEY_DRONE],
   tessaly: [I.COOLANT_LOOP],
@@ -230,6 +232,7 @@ export const VISIT_REWARDS: Partial<Record<string, ItemType[]>> = {
   halcyon: [I.LASER_CRYSTAL, I.HARDENED_SUIT],
   clinker: [I.REFIT_KIT_MK2],
   brontes: [I.FUSION_TORCH],
+  verdance: [I.DEEP_DIVER],
   glacia: [I.SUIT_HEATER_MK2],
   pyrra: [I.HEAT_SHIELD_MK3],
   obol: [I.BATTERY_PACK_MK3],

@@ -243,6 +243,12 @@ export enum ItemType {
   FISH_MULLET = 251,
   FISH_KELPEEL = 252,
   FISH_GROUPER = 253,
+  // Submarines and gas-giant divers (space-exploration, submarines): the
+  // hull is the item (DivingConfig SUBMARINE.HULLS)
+  SUBMARINE = 254,
+  DEEP_SUBMARINE = 255,
+  GAS_GIANT_DIVER = 256,
+  DEEP_DIVER = 257,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -502,6 +508,10 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_MULLET]: { name: 'Pearl Mullet', stackSize: 16, texture: '/textures/fish/pearl_mullet.png', mineTime: 0.3 },
   [ItemType.FISH_KELPEEL]: { name: 'Kelp Eel', stackSize: 16, texture: '/textures/fish/kelp_eel.png', mineTime: 0.3 },
   [ItemType.FISH_GROUPER]: { name: 'Abyss Grouper', stackSize: 16, texture: '/textures/fish/abyss_grouper.png', mineTime: 0.3 },
+  [ItemType.SUBMARINE]: { name: 'Submarine', stackSize: 1, texture: '/textures/icons/submarine.png', mineTime: 1.0 },
+  [ItemType.DEEP_SUBMARINE]: { name: 'Deep-Hull Submarine', stackSize: 1, texture: '/textures/icons/deep_submarine.png', mineTime: 1.0 },
+  [ItemType.GAS_GIANT_DIVER]: { name: 'Gas-Giant Diver', stackSize: 1, texture: '/textures/icons/gas_giant_diver.png', mineTime: 1.0 },
+  [ItemType.DEEP_DIVER]: { name: 'Deep Diver', stackSize: 1, texture: '/textures/icons/deep_diver.png', mineTime: 1.0 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)

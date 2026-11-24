@@ -14,6 +14,7 @@ import { LandedRocketUI } from './LandedRocketUI';
 import { InventorySlot, ItemType, ITEM_DATA } from '../player/Inventory';
 import { computeRocketStats, stackItemTypes, addCharge, swapBatteryWh, isEquipment, stackProblems, slotStore, cargoSlotsFor, equipmentSlotsFor, fitSlots, validEngineMode } from './RocketPerformance';
 import { emitGameEvent } from '../engine/GameEvents';
+import { diverInCargo } from '../vehicles/Submarine';
 import { showToast } from '../utils/toast';
 
 /**
@@ -546,15 +547,16 @@ export class RocketFlightManager {
    * wool-air-and-reentry design 4): the ship is parked where it is, as on any
    * exit, so it never vanishes.
    */
-  public exitFlightMode(force = false): void {
+  /** Returns the parked rocket (null: it went back to its pad, or nobody could climb out) */
+  public exitFlightMode(force = false): LandedRocket | null {
     if (!this.isInFlightMode || !this.rocketController) {
-      return;
+      return null;
     }
 
     // Check if we can exit
     if (!this.rocketController.canExitNow() && !force) {
       console.log('Cannot exit rocket in current state');
-      return;
+      return null;
     }
 
     // Check if rocket has ever launched - if so, it should persist
@@ -577,10 +579,11 @@ export class RocketFlightManager {
     // Hide flight UI
     this.flightUI.hide();
 
+    let parked: LandedRocket | null = null;
     if (hasLaunched) {
       // Persist the rocket - it has left its original launch pad
       // Player can explore the world and re-board later
-      this.landedRocketManager.createLandedRocket(
+      parked = this.landedRocketManager.createLandedRocket(
         this.rocketController.getPivot(),
         this.rocketController.getParts(),
         this.rocketController.getPosition(),
@@ -592,7 +595,8 @@ export class RocketFlightManager {
         undefined,
         this.rocketController.getChargeWh(),
         this.rocketController.getEquipment()
-      ).engineMode = this.rocketController.getEngineMode();
+      );
+      parked.engineMode = this.rocketController.getEngineMode();
 
       // Don't dispose - the rocket stays in the world
       // But we need to clean up the controller's resources that aren't part of the visual
@@ -617,6 +621,45 @@ export class RocketFlightManager {
     }
 
     console.log('Exited flight mode');
+    return parked;
+  }
+
+  // ---- the gas-giant diver (openspec space-exploration, submarines) ----
+
+  private onDiverRelease: ((rocket: LandedRocket, giant: PlanetGravitySource, hull: ItemType) => void) | null = null;
+  /** Who takes over when a diver is let out (the SubmarineManager) */
+  public setOnDiverRelease(callback: (rocket: LandedRocket, giant: PlanetGravitySource, hull: ItemType) => void): void {
+    this.onDiverRelease = callback;
+  }
+
+  /**
+   * Let a diver out (ROCKET_INPUTS.DIVER): below a gas giant's cloud tops,
+   * with a diver hull in the cargo hold. The rocket parks where it is (the
+   * one exit path, as climbing out anywhere) and the pilot takes the diver;
+   * the diver docks back into this rocket's cargo.
+   */
+  public releaseDiver(): boolean {
+    const rc = this.rocketController;
+    if (!rc || !this.onDiverRelease) return false;
+    const giant = rc.getGasGiantDip();
+    if (!giant) {
+      showToast("Dive below a gas giant's cloud tops to let a diver out", { duration: 2500 });
+      return false;
+    }
+    const hull = diverInCargo(rc.getCargo());
+    if (!hull) {
+      showToast('No gas-giant diver in the cargo hold', { duration: 2500 });
+      return false;
+    }
+    const rocket = this.exitFlightMode(true);
+    if (!rocket) return false;
+    this.onDiverRelease(rocket, giant, hull.item);
+    return true;
+  }
+
+  /** A parked rocket's cargo changed outside its panel (a diver docked): save its record now */
+  public rocketChanged(rocket: LandedRocket): void {
+    this.onRocketChangedCallback?.(rocket.pad);
   }
 
   /**
@@ -801,6 +844,10 @@ export class RocketFlightManager {
       // Drop the spent stage (rocket-staging)
       if (e.code === ROCKET_INPUTS.STAGE) {
         this.rocketController?.dropStage();
+      }
+      // Let a gas-giant diver out of the cargo hold (space-exploration)
+      if (e.code === ROCKET_INPUTS.DIVER && !e.repeat) {
+        this.releaseDiver();
       }
       // Survey the airless body below with a drone (space-exploration)
       if (e.code === ROCKET_INPUTS.DRONE) {
