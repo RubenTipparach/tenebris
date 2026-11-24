@@ -2,6 +2,10 @@
 //
 //   GET  /admin                              the portal page (admin.html)
 //   GET  /admin/api/status                   server + every world, who is online
+//                                            (where, items, missions), its maps
+//   GET  /admin/api/game-data                items / missions / bodies (game-data.json)
+//                                            plus where the item icons are served
+//   GET  /admin/api/maps/<world>/<planet>    a planet map players uploaded
 //   POST /admin/api/worlds/<id>/rename       { name }
 //   POST /admin/api/worlds/<id>/reset        every edit and object gone (same seed)
 //   POST /admin/api/worlds/<id>/delete       not 'main'
@@ -21,6 +25,9 @@ import { fileURLToPath } from 'node:url';
 const PAGE = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'admin.html'), 'utf8');
 const MAX_FAILS_PER_MINUTE = 10;   // per address: wrong tokens before a lockout
 const MAX_BODY_BYTES = 2048;
+// The item icons: the game's textures as the GitHub Pages build serves them
+// (vite base /tenebris/js/ + an ITEM_DATA texture path)
+const ICON_BASE = 'https://rubentipparach.github.io/tenebris/js';
 const fails = new Map();           // address -> { start, count }
 
 function json(res, status, body) {
@@ -73,6 +80,15 @@ export async function handleAdmin(req, res, url, admin) {
 
   const parts = url.pathname.slice('/admin/api/'.length).split('/');
   if (req.method === 'GET' && parts[0] === 'status') return json(res, 200, admin.serverStatus());
+  if (req.method === 'GET' && parts[0] === 'game-data') return json(res, 200, { ...admin.gameData, iconBase: ICON_BASE });
+  if (req.method === 'GET' && parts[0] === 'maps' && parts.length === 3) {
+    const w = admin.worlds.get(parts[1]);
+    const m = w && admin.mapFile(w, parts[2]);
+    if (!m) return json(res, 404, { error: 'No map yet' });
+    res.writeHead(200, { 'content-type': m.type, 'cache-control': 'no-store' });
+    fs.createReadStream(m.file).on('error', () => res.end()).pipe(res);
+    return;
+  }
   if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
   const body = await readBody(req);
 

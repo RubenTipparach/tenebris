@@ -28,6 +28,12 @@ const BODIES: BodySpec[] = [
   { id: 'aurelia', kind: 'gas', colors: [0x6b5a2b, 0xe0c068, 0xfff1c2], rings: true, atmosphere: 0xffe8b8 },
 ];
 
+/** A giant's middle band colour as '#rrggbb' (its dot on a map, e.g. the admin portal's diagram). */
+export function gasGiantColour(id: string): string {
+  const b = BODIES.find(x => x.id === id);
+  return b ? '#' + b.colors[1].toString(16).padStart(6, '0') : '';
+}
+
 /**
  * How the giants look (the owner: "better ring shaders, and have planet cast
  * shadow over the rings ... gas giants have atmospheres too"). Shared by the

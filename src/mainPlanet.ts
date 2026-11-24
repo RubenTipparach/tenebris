@@ -27,6 +27,7 @@ import { toolIndexFor } from './player/Tools';
 import { FishingSystem } from './player/Fishing';
 import { Multiplayer } from './net/Multiplayer';
 import { MissionsPanel } from './player/MissionsPanel';
+import { AdminReport } from './net/AdminReport';
 import { MissionHud } from './player/MissionHud';
 import { emitGameEvent, onGameEvent } from './engine/GameEvents';
 import { advanceGameTime, Frame, framePositionAt, frameVelocityAt, frameYawAt, gameTimeS, nextFrame, orbitOf, setLocalGameTime, spinOf, spinYawAt, useNetworkClock } from './world/Orbits';
@@ -127,6 +128,7 @@ class PlanetGame {
   private releaseTimer = 0;
   private missions: MissionsPanel | null = null;
   private missionHud: MissionHud | null = null;
+  private adminReport: AdminReport | null = null;
   // Air and the space suit (openspec wool-air-and-reentry, design 4)
   private air: AirSystem | null = null;
   // Live orbits: the body whose frame the player is in (it never moves),
@@ -848,6 +850,7 @@ class PlanetGame {
     }
     this.navigation.update();
     this.multiplayer?.update(deltaTime);
+    this.updateAdminReport(deltaTime);
     this.rocketSync?.update(deltaTime);
     // Ground clutter (pixel grass tufts, rocks) on every world
     if (!this.groundClutter) {
@@ -1790,6 +1793,33 @@ class PlanetGame {
       this.player.setEnabled(true);
       void this.teleportToPlanet(SOLAR_SYSTEM.startingBody);
     });
+  }
+
+  // Online: tell the server what the admin portal shows - items, suit,
+  // missions, and a map of the planet underfoot (openspec admin-monitor)
+  private updateAdminReport(dt: number): void {
+    if (!this.multiplayer || !this.navigation) return;
+    if (!this.adminReport) {
+      const nav = this.navigation;
+      this.adminReport = new AdminReport({
+        status: () => {
+          const tracker = this.missions?.getTracker();
+          const now = tracker?.now() ?? null;
+          const air = this.air?.getState();
+          return {
+            slots: this.blockInteraction.getInventory().exportForSave(),
+            suit: air ? { worn: air.worn, tankS: air.tankS } : null,
+            riding: this.rocketFlightManager?.isInFlight() ?? false,
+            missions: tracker ? { done: tracker.save().done, now: now?.id ?? null, prog: now ? tracker.progress(now) : [] } : null,
+          };
+        },
+        planet: () => (this.rocketFlightManager?.isInFlight() ? null : this.player.getCurrentPlanet()?.getName() ?? null),
+        mapImage: (planet, w, h) => nav.mapImage(planet, w, h),
+        onEdit: (planet, fn) => { this.planets.get(planet)?.onBlockEdit(fn); },
+        planets: () => this.planets.keys(),
+      });
+    }
+    this.adminReport.update(dt);
   }
 
   // Missions: the Missions tab of the E panel, counted from play

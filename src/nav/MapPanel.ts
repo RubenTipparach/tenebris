@@ -6,7 +6,7 @@ import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
 import { getBodyConfig, GAS_GIANTS, CelestialBodyType } from '../config/SolarSystemConfig';
 import { allOrbits, gameTimeS, positionAt } from '../world/Orbits';
 import { BlockColours } from './blockColours';
-import { compassHeading, fromLatLon, latLon, V3 } from './compass';
+import { compassHeading, fromLatLon, mapUV, V3 } from './compass';
 import { Waypoints } from './Waypoints';
 
 /**
@@ -57,8 +57,8 @@ class PlanetRaster {
 
   /** Raster px of a direction on the planet. */
   project(dir: V3): { x: number; y: number } {
-    const { lat, lon } = latLon(dir);
-    return { x: ((lon + Math.PI) / (2 * Math.PI)) * this.width, y: ((Math.PI / 2 - lat) / Math.PI) * this.height };
+    const { u, v } = mapUV(dir);
+    return { x: u * this.width, y: v * this.height };
   }
 
   /** The direction under a raster px. */
@@ -320,6 +320,22 @@ export class MapPanel {
       this.centre = { x: 0, y: 0 };
       this.status.textContent = 'Click a world to open its map';
     }
+  }
+
+  /**
+   * A planet's map - the raster this tab shows, built if it isn't yet -
+   * scaled to `width` x `height` (the admin portal's map upload, openspec
+   * admin-monitor). Null for a body that isn't a planet here.
+   */
+  async mapImage(id: string, width: number, height: number): Promise<HTMLCanvasElement | null> {
+    if (!this.nav.planets.has(id)) return null;
+    const r = this.raster(id);
+    if (!r.ready || r.needsRebuild()) await r.build();
+    const c = document.createElement('canvas');
+    c.width = width;
+    c.height = height;
+    c.getContext('2d')!.drawImage(r.canvas, 0, 0, width, height);
+    return c;
   }
 
   private raster(id: string): PlanetRaster {
