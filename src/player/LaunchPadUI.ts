@@ -162,6 +162,9 @@ export class LaunchPadUI {
         <span class="status-text">Tower Height: 0/8</span>
       </div>
 
+      <div class="launchpad-body">
+      <!-- Left: the rocket and tower stack -->
+      <div class="launchpad-stack-col">
       <div class="launchpad-columns">
         <div class="launchpad-column-header">
           <span class="column-label">Rocket</span>
@@ -178,7 +181,10 @@ export class LaunchPadUI {
           <img style="display:none;">
         </div>
       </div>
+      </div>
 
+      <!-- Right: the rocket's controls, in their own column beside the stack -->
+      <div class="launchpad-control-col">
       <div class="launchpad-equipment">
         <span class="equip-label">Equipment:</span>
         <div class="launchpad-equip-row" id="launchpad-equip-row"></div>
@@ -204,6 +210,8 @@ export class LaunchPadUI {
         <p>Drag rocket parts from inventory to rocket slots</p>
         <p>Drag a parachute, solar array or battery pack to Equipment; click to take it out</p>
         <p>Press E or ESC to close</p>
+      </div>
+      </div>
       </div>
     `;
 
@@ -826,6 +834,24 @@ export class LaunchPadUI {
         border-left: 1px solid #444;
         margin-left: 15px;
         min-width: 200px;
+      }
+
+      /* Two columns under the title: the stack, and the rocket's controls */
+      .launchpad-body {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+      }
+      .launchpad-stack-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .launchpad-control-col {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: 200px;
       }
 
       .launchpad-section h3 {
