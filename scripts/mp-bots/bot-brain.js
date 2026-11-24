@@ -1630,7 +1630,7 @@
   async function printCraft(r, jobs) {
     const pm = bi().printer3DManager;
     const pos = player().position;
-    let pr = pm.getAllPrinters().filter(x => x.isPowered)
+    let pr = pm.getAllPrinters().filter(x => x.isPowered && !(st.badPrinters || []).includes(x.tileIndex))
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
     if (!pr) {
       // none powered: make one and set it on a powered cable network
@@ -1649,7 +1649,17 @@
     await click(2, 80);
     await sleep(600);
     const ui = bi().printer3DUI;
-    if (!ui.isMenuOpen()) { say('could not open the 3D printer'); closeMenus(); return false; }
+    if (!ui.isMenuOpen()) {
+      closeMenus();
+      st.printerFails = st.printerFails || {};
+      st.printerFails[pr.tileIndex] = (st.printerFails[pr.tileIndex] || 0) + 1;
+      if (st.printerFails[pr.tileIndex] >= 3) {
+        say(`can't get at the 3D printer on tile ${pr.tileIndex} - using another`);
+        st.badPrinters = (st.badPrinters || []).concat([pr.tileIndex]);
+      } else say('could not open the 3D printer');
+      await sleep(1500);
+      return false;
+    }
     const before = count(r.output);
     // jobs for it already queued or printing (a printer that isn't run here
     // yet - multiplayer host) are still coming: don't pay for them twice
