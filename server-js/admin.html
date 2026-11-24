@@ -488,10 +488,24 @@ function renderWorlds(s) {
       : el('div', { class: 'empty' }, 'Nobody online');
     const kinds = Object.entries(w.kinds).sort((a, b) => b[1] - a[1]);
     const maps = Object.keys(w.maps ?? {});
+    // Recent joins and leaves, newest first
+    const acts = [...(w.activity ?? [])].reverse();
+    const stayed = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; };
+    const activity = acts.length
+      ? el('details', {},
+          el('summary', { class: 'label' }, `Recent activity (${acts.length})`),
+          el('table', {}, el('tr', {}, el('th', {}, 'when'), el('th', {}, ''), el('th', {}, 'player'), el('th', {}, 'stayed')),
+            ...acts.map((e) => el('tr', {},
+              el('td', {}, `${new Date(e.at).toLocaleString()} (${ago(e.at)} ago)`),
+              el('td', { class: e.kind === 'join' ? 'online' : '' }, e.kind === 'join' ? 'joined' : e.reason ? `left (${e.reason})` : 'left'),
+              el('td', {}, e.name),
+              el('td', {}, e.stayedMs !== undefined ? stayed(e.stayedMs) : '')))))
+      : el('div', { class: 'empty' }, 'No joins or leaves recorded yet');
     return el('section', { class: 'card' },
       el('div', { class: 'row' }, name, rename),
       el('div', { class: 'meta' }, `id ${w.id} - seed ${w.seed}${w.created ? ` - created ${new Date(w.created).toLocaleString()}` : ''} - ${w.edits} block edits - ${w.records} objects - ${maps.length} planet map(s)`),
       players,
+      activity,
       kinds.length ? el('div', {}, el('div', { class: 'label' }, 'Objects (clear removes every one of that kind)'),
         el('div', { class: 'chips' }, ...kinds.map(([k, n]) => el('span', { class: 'chip' }, `${k} ${n}`,
           confirmButton('clear', 'sure?', () => api(`worlds/${w.id}/clear-kind`, { kind: k }).then((r) => say(`Removed ${r.removed} ${k}`))))))) : '',
