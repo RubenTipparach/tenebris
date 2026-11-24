@@ -699,10 +699,21 @@
     }
     const slot = inv().getAllSlots().findIndex(s => s.itemType === ore && s.quantity > 0);
     if (slot >= 0) ui.handleDropFromInventory(slot, 'furnace-input');
+    // no fuel in it: coal from the inventory (made from coal ore if need be)
+    if (f.fuelAmount <= 0 && f.inputCount > 0) {
+      if (count(I.COAL) < 1 && count(I.ORE_COAL) > 0) { closeMenus(); await craft(I.COAL, 1); if (!(await openFurnace(f))) return false; }
+      if (count(I.COAL) > 0) { selectItem(I.COAL); for (let k = 0; k < Math.min(count(I.COAL), Math.ceil(f.inputCount / 8)); k++) ui.handleFuelSlotClick(); }
+    }
     say(`furnace loaded: ${f.inputCount} to smelt, fuel ${f.fuelAmount}`);
-    // wait at the furnace while it works (10 s an item)
+    if (f.fuelAmount <= 0) { say('no fuel for the furnace'); closeMenus(); return false; }
+    // wait at the furnace while it works (10 s an item); give up if it stalls
     const t0 = performance.now();
-    while ((f.inputCount > 0) && performance.now() - t0 < (n + 2) * 11000) await sleep(1000);
+    let lastIn = f.inputCount, lastMove = performance.now();
+    while ((f.inputCount > 0) && performance.now() - t0 < (n + 2) * 11000) {
+      await sleep(1000);
+      if (f.inputCount !== lastIn || f.smeltingProgress > 0.01) { lastIn = f.inputCount; lastMove = performance.now(); }
+      if (performance.now() - lastMove > 30000 || f.fuelAmount <= 0) break;
+    }
     ui.handleOutputSlotClick();
     await sleep(300);
     closeMenus();
