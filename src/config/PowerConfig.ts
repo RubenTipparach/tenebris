@@ -12,7 +12,9 @@ export type PowerNodeKind =
   | 'electricFurnace' | 'computer' | 'printer3D'
   | 'pumpJack' | 'refinery' | 'centrifuge' | 'nuclearFabricator'
   | 'gasCollector' | 'solarPanel'
-  | 'battery';
+  | 'battery'
+  // A survey beacon (openspec space-exploration): no power, no slots - it marks a body surveyed
+  | 'surveyBeacon';
 
 export const POWER_CONFIG = {
   // How often the grid is solved (s); energy is integrated over the step
@@ -160,4 +162,5 @@ export const MACHINE_KIND_OF: Partial<Record<ItemType, PowerNodeKind>> = {
   [ItemType.BATTERY_LEAD_ACID]: 'battery',
   [ItemType.BATTERY_LITHIUM]: 'battery',
   [ItemType.BATTERY_SOLID_STATE]: 'battery',
+  [ItemType.SURVEY_BEACON]: 'surveyBeacon',
 };

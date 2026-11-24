@@ -177,6 +177,8 @@ export enum ItemType {
   FISH_SPRAT = 196,
   // Oil sand dug out whole, for the refinery (it can also be scooped with a bucket)
   OIL_SAND = 197,
+  // Space exploration (openspec space-exploration): planted on a body to survey it
+  SURVEY_BEACON = 198,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -425,6 +427,7 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   // the ores' icons are their block textures as the other ores' are)
   [ItemType.CLAY]: { name: 'Clay', stackSize: 64, texture: '/textures/resources/clay.png', mineTime: 0.6 },
   [ItemType.OIL_SAND]: { name: 'Oil Sand', stackSize: 64, texture: '/textures/resources/oil_sand.png', mineTime: 0.9 },
+  [ItemType.SURVEY_BEACON]: { name: 'Survey Beacon', stackSize: 16, texture: '/textures/technology/survey_beacon_face.png', mineTime: 1.0 },
   [ItemType.ORE_URANIUM]: { name: 'Uranium Ore', stackSize: 64, texture: '/textures/resources/ore_uranium.png', mineTime: 3.5 },
   [ItemType.BRICK]: { name: 'Brick', stackSize: 64, texture: '/textures/icons/brick.png', mineTime: 0.3 },
   [ItemType.CLAY_POT]: { name: 'Clay Pot', stackSize: 16, texture: '/textures/icons/clay_pot.png', mineTime: 0.3 },

@@ -4576,6 +4576,8 @@ export class PlanetBlockInteraction {
     this.saveInventory();
     this.saveMachine(placed);
     if (kind === 'reactor') emitGameEvent('reactorBuilt', itemType, 1);
+    // A survey beacon surveys the body it stands on (a visit mission's step)
+    if (kind === 'surveyBeacon') emitGameEvent('surveyed', planetId, 1);
     this.cableNodeManager.updateCablesNearTile(tileIndex);
     this.cableNodeManager.rebuildAllConnections();
   }

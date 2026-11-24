@@ -37,7 +37,8 @@ export type GameEventType = 'crafted' | 'placed' | 'padComplete' | 'assembled' |
   | 'smelted' | 'caught' | 'caughtOn' | 'reached' | 'cooked' | 'ate'
   | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
   | 'onBattery' | 'fueled' | 'launchedWith'
-  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged';
+  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged'
+  | 'surveyed' | 'closePass' | 'skimmed';
 export type GameEventKey = number | string | undefined;
 type Listener = (type: GameEventType, key: GameEventKey, n: number) => void;
 

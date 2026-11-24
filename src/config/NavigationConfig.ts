@@ -49,6 +49,10 @@ export const NAVIGATION_CONFIG = {
   SYSTEM_MAX_ZOOM: 60,
   // Smallest drawn body radius, px (so far worlds stay clickable)
   SYSTEM_MIN_BODY_PX: 3,
+  // A body the player has visited (space exploration) is ringed on the system map
+  VISITED_RING_COLOR: '#3ee0ff',
+  VISITED_RING_W: 1.5,        // px
+  VISITED_RING_GAP: 2.5,      // px outside the body's disc
   // Moons' and asteroids' names are drawn from this on-screen spacing (px)
   // from their parent; planets and the Sun are always named
   SYSTEM_MOON_LABEL_PX: 18,

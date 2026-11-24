@@ -445,6 +445,21 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.EMPTY_TANK, quantity: 2 },
   },
+  // Survey beacon (space-exploration): a glass lamp on a copper mast, an iron foot
+  //  .G.
+  //  .C.
+  //  III
+  {
+    name: 'Survey Beacon',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.SURVEY_BEACON, quantity: 2 },
+  },
   // Gas collector: an iron box, copper vents, a cable in the middle
   //  ICI
   //  .K.

@@ -567,6 +567,10 @@
   "197": {
    "name": "Oil Sand",
    "icon": "/textures/resources/oil_sand.png"
+  },
+  "198": {
+   "name": "Survey Beacon",
+   "icon": "/textures/technology/survey_beacon_face.png"
   }
  },
  "slots": {
@@ -930,11 +934,15 @@
   {
    "id": "moon",
    "title": "Land on the Moon",
-   "branch": "rocketry",
+   "branch": "space",
    "icon": 49,
    "objectives": [
     {
      "label": "Moon",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
      "count": 1
     }
    ]
@@ -1005,12 +1013,16 @@
   },
   {
    "id": "sequoia",
-   "title": "Another world",
-   "branch": "moon",
+   "title": "Visit Sequoia",
+   "branch": "sunward",
    "icon": 50,
    "objectives": [
     {
-     "label": "Sequoia",
+     "label": "Chute landing",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
      "count": 1
     }
    ]
@@ -1018,7 +1030,7 @@
   {
    "id": "explorer",
    "title": "Explorer",
-   "branch": "moon",
+   "branch": "sunward",
    "icon": 45,
    "objectives": [
     {
@@ -1654,11 +1666,559 @@
   {
    "id": "recharge",
    "title": "Fresh battery",
-   "branch": "rocketry",
+   "branch": "space",
    "icon": 93,
    "objectives": [
     {
      "label": "Battery swapped",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_rime",
+   "title": "Visit Rime",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Rime",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_ember",
+   "title": "Visit Ember",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Ember",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_ferrum",
+   "title": "Visit Metropole Prime",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Chute landing",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_lodestone",
+   "title": "Visit Lodestone",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Lodestone",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_umbra",
+   "title": "Visit Umbra",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Umbra",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_nyx",
+   "title": "Visit Nyx",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Nyx",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_brand",
+   "title": "Visit Brand",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Brand",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_grit",
+   "title": "Visit Grit",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Grit",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_vesper",
+   "title": "Visit Vesper",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Vesper",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_sable",
+   "title": "Visit Sable",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Sable",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_talus",
+   "title": "Visit Talus",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Talus",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_magnetite",
+   "title": "Visit Magnetite",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Magnetite",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_sun",
+   "title": "Pass the Sun",
+   "branch": "sunward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Close pass",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_kessel",
+   "title": "Visit Kessel",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Kessel",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_sleet",
+   "title": "Visit Sleet",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Sleet",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_aurelia",
+   "title": "Skim Aurelia",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Skim",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_mirewood",
+   "title": "Visit Mirewood",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Chute landing",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_ashfall",
+   "title": "Visit Ashfall",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Ashfall",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_ingot",
+   "title": "Visit Ingot",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Ingot",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_calyx",
+   "title": "Visit Calyx",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Calyx",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_cinder",
+   "title": "Visit Cinder",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Cinder",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_scoria",
+   "title": "Visit Scoria",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Scoria",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_nickel",
+   "title": "Visit Nickel",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Nickel",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_nerith",
+   "title": "Visit Nerith",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Nerith",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_ferrite",
+   "title": "Visit Ferrite",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Ferrite",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_halcyon",
+   "title": "Visit Halcyon",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Halcyon",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_glint",
+   "title": "Visit Glint",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Glint",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_tessaly",
+   "title": "Visit Tessaly",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Tessaly",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_clinker",
+   "title": "Visit Clinker",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Clinker",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_brontes",
+   "title": "Skim Brontes",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Skim",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_verdance",
+   "title": "Visit Verdance",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Chute landing",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_pyrra",
+   "title": "Visit Pyrra",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Pyrra",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_glacia",
+   "title": "Visit Glacia",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Glacia",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_obol",
+   "title": "Visit Obol",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Obol",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
+     "count": 1
+    }
+   ]
+  },
+  {
+   "id": "visit_hailstone",
+   "title": "Visit Hailstone",
+   "branch": "outward",
+   "icon": 198,
+   "objectives": [
+    {
+     "label": "Hailstone",
+     "count": 1
+    },
+    {
+     "label": "Beacon",
      "count": 1
     }
    ]
@@ -1696,6 +2256,19 @@
   {
    "id": "rocketry",
    "name": "Rocketry"
+  },
+  {
+   "id": "space",
+   "name": "Space exploration",
+   "announcedBy": "assemble"
+  },
+  {
+   "id": "sunward",
+   "name": "Sunward"
+  },
+  {
+   "id": "outward",
+   "name": "Outward"
   },
   {
    "id": "moon",

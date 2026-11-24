@@ -1,4 +1,5 @@
 import { ItemType } from '../player/Inventory';
+import { SOLAR_SYSTEM, GAS_GIANTS } from './SolarSystemConfig';
 
 /**
  * The mission tree (openspec navigation-and-orbits, missions; Pale Blue
@@ -40,10 +41,13 @@ import { ItemType } from '../player/Inventory';
  *   fueled      refuel a rocket with `item`
  *   launchedWith take off in a rocket whose stack or equipment holds `item`
  *   sheared     shear a sheep
- *   chuteLanded land a rocket under an open parachute
+ *   chuteLanded land a rocket under an open parachute (on `body`, if given)
  *   bottled     a gas collector fills an oxygen tank
  *   suited      seconds breathed from tank air while exposed
  *   recharged   swap a battery into a landed rocket
+ *   surveyed    place a survey beacon on `body`
+ *   closePass   fly a rocket inside the Sun's close-pass distance and survive
+ *   skimmed     dip a rocket into gas giant `body`'s atmosphere and climb out
  * `distinct` counts different keys once each (kinds of fish, worlds).
  *
  * Text is shown in game: plain ASCII, short.
@@ -53,7 +57,8 @@ export type ObjectiveKind =
   | 'launched' | 'landed' | 'caught' | 'caughtOn' | 'reached'
   | 'cooked' | 'ate' | 'pumped' | 'refined' | 'enriched' | 'reactorBuilt'
   | 'onBattery' | 'fueled' | 'launchedWith'
-  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged';
+  | 'sheared' | 'chuteLanded' | 'bottled' | 'suited' | 'recharged'
+  | 'surveyed' | 'closePass' | 'skimmed';
 
 export interface MissionObjective {
   kind: ObjectiveKind;
@@ -69,7 +74,8 @@ export type MissionBranch =
   | 'trunk' | 'mining' | 'power' | 'electronics' | 'rocketry' | 'moon'
   | 'light' | 'fishing' | 'about'
   | 'cooking' | 'construction' | 'oil' | 'storage' | 'nuclear'
-  | 'ranching' | 'air';
+  | 'ranching' | 'air'
+  | 'space' | 'sunward' | 'outward';
 
 export interface Mission {
   id: string;
@@ -81,10 +87,15 @@ export interface Mission {
   after?: string[];          // hidden gates: also done before it opens
   objectives: MissionObjective[];
   unlocks: ItemType[];       // recipe outputs
+  /** A space exploration visit mission: the body it visits (openspec space-exploration) */
+  visit?: string;
 }
 
-/** Branch rows, top to bottom, with their plaque names. */
-export const MISSION_BRANCHES: { id: MissionBranch; name: string }[] = [
+/**
+ * Branch rows, top to bottom, with their plaque names. `announcedBy`: when
+ * that mission is done, a toast says the branch is unlocked (once per world).
+ */
+export const MISSION_BRANCHES: { id: MissionBranch; name: string; announcedBy?: string }[] = [
   { id: 'trunk', name: 'Hands to fire' },
   { id: 'mining', name: 'Mining and smelting' },
   { id: 'cooking', name: 'Clay and cooking' },
@@ -93,6 +104,9 @@ export const MISSION_BRANCHES: { id: MissionBranch; name: string }[] = [
   { id: 'electronics', name: 'Electronics' },
   { id: 'oil', name: 'Oil' },
   { id: 'rocketry', name: 'Rocketry' },
+  { id: 'space', name: 'Space exploration', announcedBy: 'assemble' },
+  { id: 'sunward', name: 'Sunward' },
+  { id: 'outward', name: 'Outward' },
   { id: 'moon', name: 'The Moon and beyond' },
   { id: 'nuclear', name: 'Nuclear' },
   { id: 'light', name: 'Light and storage' },
@@ -110,6 +124,74 @@ const I = ItemType;
  * ask for (Make planks). Everything else waits on a mission.
  */
 export const STARTER_RECIPES: ItemType[] = [I.WOOD, I.STICK];
+
+/**
+ * The space exploration route (openspec space-exploration, design 1). The
+ * Moon is the root; from it a SUNWARD and an OUTWARD route, each major body
+ * after the one before it, moons after their planet, and each asteroid off
+ * the major body nearest it. The Moon and Sequoia keep their older missions
+ * ('moon', 'sequoia'); every other body gets 'visit_<id>'.
+ * scripts/missions.test.ts holds that every body has exactly one visit.
+ */
+interface Visit { body: string; parent: string; branch: MissionBranch }
+const V = (body: string, parent: string, branch: MissionBranch): Visit => ({ body, parent, branch });
+const VISIT_OF = (body: string): string => (body === 'moon' || body === 'sequoia' ? body : `visit_${body}`);
+export const VISIT_ROUTE: Visit[] = [
+  // sunward: Sequoia (its own mission), Metropole Prime, Umbra, Vesper, the Sun
+  V('rime', 'sequoia', 'sunward'), V('ember', 'sequoia', 'sunward'),
+  V('ferrum', 'sequoia', 'sunward'), V('lodestone', 'visit_ferrum', 'sunward'),
+  V('umbra', 'visit_ferrum', 'sunward'), V('nyx', 'visit_umbra', 'sunward'), V('brand', 'visit_umbra', 'sunward'), V('grit', 'visit_umbra', 'sunward'),
+  V('vesper', 'visit_umbra', 'sunward'), V('sable', 'visit_vesper', 'sunward'), V('talus', 'visit_vesper', 'sunward'), V('magnetite', 'visit_vesper', 'sunward'),
+  V('sun', 'visit_vesper', 'sunward'),
+  // outward: Kessel, Aurelia, Cinder, Nerith, Halcyon, Tessaly, Brontes
+  V('kessel', 'moon', 'outward'), V('sleet', 'visit_kessel', 'outward'),
+  V('aurelia', 'visit_kessel', 'outward'),
+  V('mirewood', 'visit_aurelia', 'outward'), V('ashfall', 'visit_aurelia', 'outward'), V('ingot', 'visit_aurelia', 'outward'), V('calyx', 'visit_aurelia', 'outward'),
+  V('cinder', 'visit_aurelia', 'outward'), V('scoria', 'visit_cinder', 'outward'), V('nickel', 'visit_cinder', 'outward'),
+  V('nerith', 'visit_cinder', 'outward'), V('ferrite', 'visit_nerith', 'outward'),
+  V('halcyon', 'visit_nerith', 'outward'), V('glint', 'visit_halcyon', 'outward'),
+  V('tessaly', 'visit_halcyon', 'outward'), V('clinker', 'visit_tessaly', 'outward'),
+  V('brontes', 'visit_tessaly', 'outward'),
+  V('verdance', 'visit_brontes', 'outward'), V('pyrra', 'visit_brontes', 'outward'), V('glacia', 'visit_brontes', 'outward'),
+  V('obol', 'visit_brontes', 'outward'), V('hailstone', 'visit_brontes', 'outward'),
+];
+
+/** Every body that needs a visit: the solar system's bodies and the gas giants, but Earth */
+export function exploredBodyIds(): string[] {
+  return [...SOLAR_SYSTEM.bodies.map(b => b.id), ...GAS_GIANTS.map(g => g.id)].filter(id => id !== 'earth');
+}
+
+/** Bodies in `bodyIds` without exactly one visit mission (missing, or twice), as messages */
+export function visitCoverageProblems(bodyIds: string[], missions: { visit?: string }[]): string[] {
+  const out: string[] = [];
+  for (const id of bodyIds) {
+    const n = missions.filter(m => m.visit === id).length;
+    if (n !== 1) out.push(`${id}: ${n === 0 ? 'no visit mission' : `${n} visit missions`}`);
+  }
+  return out;
+}
+
+/** A body's visit mission: land and survey it (a chute landing where there is air), skim a gas giant, pass the Sun. */
+function visitMission(v: Visit): Mission {
+  const giant = GAS_GIANTS.find(g => g.id === v.body);
+  const body = SOLAR_SYSTEM.bodies.find(b => b.id === v.body);
+  const name = giant?.name ?? body?.name ?? v.body;
+  const base = { id: VISIT_OF(v.body), branch: v.branch, icon: I.SURVEY_BEACON, parent: v.parent, unlocks: [] as ItemType[], visit: v.body };
+  if (v.body === 'sun') {
+    return { ...base, title: 'Pass the Sun', help: 'Fly close past the Sun with a heat shield and get out alive.',
+      objectives: [{ kind: 'closePass', body: 'sun', count: 1, label: 'Close pass' }] };
+  }
+  if (giant) {
+    return { ...base, title: `Skim ${name}`, help: 'Dip into its upper air with a heat shield and climb back out.',
+      objectives: [{ kind: 'skimmed', body: v.body, count: 1, label: 'Skim' }] };
+  }
+  const land: MissionObjective = body?.hasAtmosphere
+    ? { kind: 'chuteLanded', body: v.body, count: 1, label: 'Chute landing' }
+    : { kind: 'landed', body: v.body, count: 1, label: name };
+  return { ...base, title: `Visit ${name}`,
+    help: body?.hasAtmosphere ? 'Land under a parachute and plant a survey beacon.' : 'Land and plant a survey beacon.',
+    objectives: [land, { kind: 'surveyed', body: v.body, count: 1, label: 'Beacon' }] };
+}
 
 // Order matters only for which open mission is "Now": the first open one.
 export const MISSIONS: Mission[] = [
@@ -273,7 +355,8 @@ export const MISSIONS: Mission[] = [
   {
     id: 'assemble', branch: 'rocketry', icon: I.COMMAND_MODULE, parent: 'parts', title: 'Build the rocket', help: 'Open the pad: add the tower, then the parts.',
     objectives: [{ kind: 'assembled', count: 1, label: 'Rocket built' }],
-    unlocks: [],
+    // Survey beacons: what every space exploration visit plants
+    unlocks: [I.SURVEY_BEACON],
   },
   {
     id: 'launch', branch: 'rocketry', icon: I.ROCKET_FUEL, parent: 'assemble', title: 'Launch', help: 'Fuel the rocket, board it and throttle up.',
@@ -281,9 +364,14 @@ export const MISSIONS: Mission[] = [
     unlocks: [I.CARGO_BAY],
   },
   {
-    id: 'moon', branch: 'rocketry', icon: I.MOON_ROCK, parent: 'launch', title: 'Land on the Moon', help: 'Fly to the Moon and land on your engine.',
-    objectives: [{ kind: 'landed', body: 'moon', count: 1, label: 'Moon' }],
+    // The Moon's visit: the root of the space exploration tree
+    id: 'moon', branch: 'space', icon: I.MOON_ROCK, parent: 'launch', title: 'Land on the Moon', help: 'Fly to the Moon, land on your engine and plant a survey beacon.',
+    objectives: [
+      { kind: 'landed', body: 'moon', count: 1, label: 'Moon' },
+      { kind: 'surveyed', body: 'moon', count: 1, label: 'Beacon' },
+    ],
     unlocks: [I.VACUUM_ENGINE, I.LARGE_FUEL_TANK],
+    visit: 'moon',
   },
   {
     id: 'cargo', branch: 'rocketry', icon: I.CARGO_BAY, parent: 'launch', title: 'Cargo bay', help: 'Print a cargo bay from a storage chest.',
@@ -316,12 +404,17 @@ export const MISSIONS: Mission[] = [
     unlocks: [],
   },
   {
-    id: 'sequoia', branch: 'moon', icon: I.SEQ_DIRT, parent: 'icefuel', title: 'Another world', help: 'Fly to Sequoia and land.',
-    objectives: [{ kind: 'landed', body: 'sequoia', count: 1, label: 'Sequoia' }],
+    // Sequoia's visit: the first stop sunward (its air means a chute landing)
+    id: 'sequoia', branch: 'sunward', icon: I.SEQ_DIRT, parent: 'moon', title: 'Visit Sequoia', help: 'Land under a parachute and plant a survey beacon.',
+    objectives: [
+      { kind: 'chuteLanded', body: 'sequoia', count: 1, label: 'Chute landing' },
+      { kind: 'surveyed', body: 'sequoia', count: 1, label: 'Beacon' },
+    ],
     unlocks: [],
+    visit: 'sequoia',
   },
   {
-    id: 'explorer', branch: 'moon', icon: I.ROCKET_ENGINE, parent: 'sequoia', title: 'Explorer', help: 'Land on three more worlds.',
+    id: 'explorer', branch: 'sunward', icon: I.ROCKET_ENGINE, parent: 'sequoia', title: 'Explorer', help: 'Land on three more worlds.',
     objectives: [{ kind: 'landed', body: '*', exclude: ['earth', 'moon', 'sequoia'], distinct: true, count: 3, label: 'Worlds' }],
     unlocks: [],
   },
@@ -619,10 +712,13 @@ export const MISSIONS: Mission[] = [
     unlocks: [],
   },
   {
-    id: 'recharge', branch: 'rocketry', icon: I.BATTERY_LITHIUM, parent: 'moon', after: ['lithium'], title: 'Fresh battery', help: 'Right-click a landed rocket holding a lithium-ion battery.',
+    id: 'recharge', branch: 'space', icon: I.BATTERY_LITHIUM, parent: 'moon', after: ['lithium'], title: 'Fresh battery', help: 'Right-click a landed rocket holding a lithium-ion battery.',
     objectives: [{ kind: 'recharged', count: 1, label: 'Battery swapped' }],
     unlocks: [],
   },
+
+  // ---- space exploration: one visit for every body (openspec space-exploration)
+  ...VISIT_ROUTE.map(visitMission),
 ];
 
 // How often (s) held items are read for "gained" objectives
@@ -650,6 +746,12 @@ export const MISSION_TREE_UI = {
   SIDE_W: 300,          // side panel width, px
   DRAG_SLOP_PX: 4,      // a click under this much movement opens a card
   PAN_KEEP_PX: 40,      // panning stops with at least this much of a card in view
+};
+
+/** A branch's unlock toast (MISSION_BRANCHES announcedBy): after the mission-done toast fades */
+export const MISSION_ANNOUNCE = {
+  DELAY_MS: 5000,       // the mission-done toast shows this long first
+  DURATION_MS: 6000,
 };
 
 /** The HUD mission tracker: the mission to do now, shown during play. */

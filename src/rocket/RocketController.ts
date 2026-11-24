@@ -1139,15 +1139,16 @@ export class RocketController {
       // (it was used up as it opened)
       this.leftAtmosphere = false;
       this.reentering = false;
+      // the gravity source is named by its display name; missions use body ids
+      const name = this.closestPlanet?.name;
+      const bodyId = name === undefined ? undefined
+        : SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase();
       if (this.chuteOpen) {
-        emitGameEvent('chuteLanded');
+        // keyed by the body, so a visit can ask for a chute landing there
+        emitGameEvent('chuteLanded', bodyId);
         this.closeChute();
       }
-      if (this.closestPlanet) {
-        // the gravity source is named by its display name; missions use body ids
-        const name = this.closestPlanet.name;
-        emitGameEvent('landed', SOLAR_SYSTEM.bodies.find(b => b.name === name || b.id === name)?.id ?? name.toLowerCase());
-      }
+      if (bodyId !== undefined) emitGameEvent('landed', bodyId);
     } else {
       // Too fast - crash!
       console.log(`Crash! Impact too fast: ${impactVelocity.toFixed(1)} m/s`);

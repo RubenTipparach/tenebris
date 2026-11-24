@@ -23,6 +23,8 @@ export interface NavContext {
   player(): { planetId: string | null; position: THREE.Vector3; forward: THREE.Vector3 };
   /** Other players online. */
   remotes(): Array<{ name: string; planet: string; position: THREE.Vector3 }>;
+  /** Bodies the player has visited (space exploration): ringed on the system map */
+  visited?(bodyId: string): boolean;
   waypoints: Waypoints;
 }
 
@@ -460,6 +462,14 @@ export class MapPanel {
       ctx.beginPath();
       ctx.arc(q.x, q.y, rr, 0, Math.PI * 2);
       ctx.fill();
+      if (this.nav.visited?.(id)) {
+        // surveyed: a cyan ring round the body
+        ctx.strokeStyle = C.VISITED_RING_COLOR;
+        ctx.lineWidth = C.VISITED_RING_W;
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, rr + C.VISITED_RING_GAP, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       hits.push({ id, x: q.x, y: q.y, r: rr });
       const o = orbits.get(id)!;
       const isMoon = o.parent && o.parent !== 'sun';

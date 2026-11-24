@@ -1,4 +1,4 @@
-import { MISSIONS, MISSION_BRANCHES, MISSION_SAMPLE_S, MISSION_TREE_UI as UI, Mission, MissionObjective } from '../config/Missions';
+import { MISSIONS, MISSION_BRANCHES, MISSION_SAMPLE_S, MISSION_ANNOUNCE, MISSION_TREE_UI as UI, Mission, MissionObjective } from '../config/Missions';
 import { onGameEvent } from '../engine/GameEvents';
 import { gameStorage } from '../engine/GameStorage';
 import { getAssetPath } from '../utils/assetPath';
@@ -6,7 +6,7 @@ import { showToast } from '../utils/toast';
 import { Inventory, ITEM_DATA, ItemType } from './Inventory';
 import { MissionSave, MissionTracker, WorldState } from './MissionTracker';
 import { setRecipeGate } from './RecipeGate';
-import { clampPan, packTree, TreeLayout } from './MissionTreeLayout';
+import { clampPan, packTree, plaqueLabel, plaqueProgress, plaqueVisits, TreeLayout } from './MissionTreeLayout';
 
 /**
  * Missions (openspec navigation-and-orbits, missions): the tracker fed from
@@ -26,6 +26,10 @@ const KIND_ICON: Record<string, string> = {
   caught: '/textures/fish/minnow.png',
   caughtOn: '/textures/fish/minnow.png',
   reached: '/textures/grass.png',
+  chuteLanded: '/textures/rocket_parts/parachute_face.png',
+  surveyed: '/textures/technology/survey_beacon_face.png',
+  closePass: '/textures/rocket_parts/medium_engine.png',
+  skimmed: '/textures/rocket_parts/medium_engine.png',
 };
 
 /** An objective's icon: its item's texture, else its kind's. */
@@ -39,6 +43,11 @@ const BRANCH_NAME = new Map(MISSION_BRANCHES.map(b => [b.id, b.name]));
 
 export class MissionsPanel {
   private tracker: MissionTracker;
+
+  /** Has the player visited (landed on and surveyed) this body? (the system map rings it) */
+  public visited(bodyId: string): boolean {
+    return this.tracker.visited(bodyId);
+  }
   private el: HTMLElement | null = null;
   private sinceSample = 0;
   // view state, kept while the game runs
@@ -62,6 +71,12 @@ export class MissionsPanel {
     this.tracker.onComplete = (m) => {
       const names = m.unlocks.map(u => ITEM_DATA[u]?.name).filter(Boolean);
       showToast(`Mission done: ${m.title}${names.length ? ` - unlocked ${names.join(', ')}` : ''}`, { duration: 5000 });
+      // A branch this mission opens is announced once, after the mission-done toast
+      for (const b of this.tracker.announceAfter(m.id)) {
+        const branch = MISSION_BRANCHES.find(x => x.id === b)!;
+        const { total } = this.tracker.visits();
+        window.setTimeout(() => showToast(`${branch.name} unlocked - visit ${total} bodies`, { duration: MISSION_ANNOUNCE.DURATION_MS }), MISSION_ANNOUNCE.DELAY_MS);
+      }
     };
     this.tracker.onChange = () => {
       gameStorage.saveMissionState(this.tracker.save());
@@ -251,7 +266,10 @@ export class MissionsPanel {
     for (const p of this.packed().plaques.values()) {
       const plaque = document.createElement('div');
       plaque.className = 'mt-plaque';
-      plaque.textContent = p.label;
+      // A branch with visit missions shows its bodies visited (space exploration)
+      const visits = plaqueVisits(p.branch);
+      plaque.textContent = plaqueLabel(p.branch) +
+        (visits.length ? plaqueProgress(visits.filter(m => this.tracker.isDone(m.id)).length, visits.length) : '');
       plaque.style.left = `${p.x}px`;
       plaque.style.top = `${p.y}px`;
       plaque.style.fontSize = `${L.font}px`;
@@ -360,6 +378,15 @@ export class MissionsPanel {
     t.append(title, sub);
     head.append(t, close);
     side.appendChild(head);
+
+    // A visit mission shows how much of the solar system is surveyed
+    if (m.visit) {
+      const { done, total } = this.tracker.visits();
+      const v = document.createElement('div');
+      v.className = 'mt-side-visits';
+      v.textContent = `Bodies visited: ${done} / ${total}`;
+      side.appendChild(v);
+    }
 
     // An open mission (its parent done) can be picked as the one to do now
     if (state === 'open') {
@@ -549,6 +576,7 @@ function injectStyle(): void {
     .mt-pick-current { cursor: default; color: #ffa300; background: transparent; border-color: #ffa300; }
     .mt-pick-current:hover { background: transparent; }
     .mt-close { margin-left: auto; background: #333; color: #ddd; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
+    .mt-side-visits { margin-top: 8px; font-size: 13px; color: #3ee0ff; }
     .mt-side-section { margin: 12px 0 4px; font-family: var(--game-font); font-size: 13px; color: #9fe0a5; text-transform: uppercase; letter-spacing: 1px; }
     .mt-side-text { font-size: 13px; color: #c8d0da; }
     .mt-side-obj { margin: 4px 0; font-size: 13px; }

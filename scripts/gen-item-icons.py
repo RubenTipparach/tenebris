@@ -512,6 +512,28 @@ def solar_face(wings=False):
     return px
 
 
+def survey_beacon_face():
+    """A survey beacon's face (space-exploration): a steel plate with a mast and
+    an orange beacon lamp, lit from the top left. Opaque: it faces a machine cube"""
+    px, c = _canvas()
+    for y in range(16):
+        for x in range(16):
+            edge = x in (0, 15) or y in (0, 15)
+            px[y][x] = c["navy"] if edge else c["lgrey"] if (x == 1 or y == 1) else c["dgrey"]
+    for y in range(5, 14):                    # the mast
+        px[y][7] = c["lgrey"]
+        px[y][8] = c["indigo"]
+    for x in range(4, 12):                    # its foot
+        px[13][x] = c["indigo"] if x > 7 else c["lgrey"]
+    for (x, y, k) in ((6, 2, "orange"), (7, 2, "yellow"), (8, 2, "orange"), (9, 2, "red"),
+                      (6, 3, "orange"), (7, 3, "orange"), (8, 3, "red"), (9, 3, "red"),
+                      (7, 4, "red"), (8, 4, "red")):
+        px[y][x] = c[k]                       # the lamp
+    for (x, y) in ((4, 2), (11, 2), (5, 1), (10, 1)):
+        px[y][x] = c["yellow"]                # its glow
+    return px
+
+
 def _outline(px, line):
     """Edge every drawn pixel that touches empty space (4-neighbour) in `line`."""
     clear = (0, 0, 0, 0)
@@ -777,6 +799,8 @@ if __name__ == "__main__":
     write("technology/gas_collector.png", recolour(read_png(os.path.join(techd, "hydro_generator.png")), gas))
     write("technology/gas_collector_face.png", recolour(read_png(os.path.join(techd, "hydro_generator_face.png")), gas))
     write("rocket_parts/parachute_face.png", chute_face())
+    # ---- Space exploration (openspec space-exploration) ----
+    write("technology/survey_beacon_face.png", survey_beacon_face())
     # ---- Solar power (wool-air-and-reentry, design 6) ----
     sol = [P8[k] for k in ("navy", "dgrey", "blue", "lgrey", "white")]
     write("technology/solar_panel.png", recolour(read_png(os.path.join(techd, "computer.png")), sol))

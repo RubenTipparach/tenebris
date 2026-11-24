@@ -2,14 +2,14 @@
 
 ## 1. Exploration tree, toast and survey beacons
 
-- [ ] 1.1 Add `space`, `sunward` and `outward` branches to `MISSION_BRANCHES`, with an `announcedBy: 'assemble'` field on `space`; verify the tree panel shows the three rows in a headless screenshot.
-- [ ] 1.2 Announce the exploration tree: show the unlock toast (with the body count) when `assemble` completes, and keep `announced` in the mission save so it shows once; verify with a `missions.test.ts` case (toast once, not again after reload) and a headless run.
-- [ ] 1.3 Add the survey beacon item (icon, recipe unlocked by `assemble`) as a placed object saved and synced through the existing placed-object path, emitting `surveyed` with the body id and showing on the system map; verify placing one on the Moon persists across a reload and a second MP client sees it.
-- [ ] 1.4 Add the `surveyed`, `closePass` and `skimmed` objective kinds, and pass the body id on `chuteLanded`; verify with `missions.test.ts` cases for each kind and body matching.
-- [ ] 1.5 Add one visit mission for every body in the order of design §1: reuse the `moon` and `sequoia` ids, put moons under their planet and asteroids under their nearest major body, and give each a placeholder unlock of an existing item; verify the tree renders both routes in a headless screenshot.
-- [ ] 1.6 Add the coverage and route tests: one visit mission per body in `SOLAR_SYSTEM` + `GAS_GIANTS` (except Earth), naming any missing body; moons after their parent; asteroids under their nearest major body. Verify the tests pass, and fail when a test body is added without a mission.
-- [ ] 1.7 Show exploration progress (visited / total) on the branch plaque and visit-mission side panels; verify in a headless screenshot.
-- [ ] 1.8 Keep veteran worlds: count a body already landed on as surveyed in `satisfiedNow`; verify a saved-world fixture that landed on the Moon and Sequoia loads with both visits done and no recipe re-locked.
+- [x] 1.1 Add `space`, `sunward` and `outward` branches to `MISSION_BRANCHES`, with an `announcedBy: 'assemble'` field on `space`; verify the tree panel shows the three rows in a headless screenshot.
+- [x] 1.2 Announce the exploration tree: show the unlock toast (with the body count) when `assemble` completes, and keep `announced` in the mission save so it shows once; verify with a `missions.test.ts` case (toast once, not again after reload) and a headless run.
+- [x] 1.3 Add the survey beacon item (icon, recipe unlocked by `assemble`) as a placed object saved and synced through the existing placed-object path, emitting `surveyed` with the body id and showing on the system map; verify placing one on the Moon persists across a reload and a second MP client sees it.
+- [x] 1.4 Add the `surveyed`, `closePass` and `skimmed` objective kinds, and pass the body id on `chuteLanded`; verify with `missions.test.ts` cases for each kind and body matching.
+- [x] 1.5 Add one visit mission for every body in the order of design §1: reuse the `moon` and `sequoia` ids, put moons under their planet and asteroids under their nearest major body. Unlocks start empty, because a placeholder unlock of an existing item would break the "each recipe is unlocked by exactly one mission" rule; the rewards arrive with their items (phases 2-8) and the reward test turns on in 9.1. Verify the tree renders both routes in a headless screenshot.
+- [x] 1.6 Add the coverage and route tests: one visit mission per body in `SOLAR_SYSTEM` + `GAS_GIANTS` (except Earth), naming any missing body; moons after their parent; asteroids under their nearest major body. Verify the tests pass, and fail when a test body is added without a mission.
+- [x] 1.7 Show exploration progress (visited / total) on the branch plaque and visit-mission side panels; verify in a headless screenshot.
+- [x] 1.8 Keep veteran worlds: their done missions are saved by id, so the `moon` and `sequoia` visits stay done. (Landings can't be read back from a world, so `satisfiedNow` can't count them.) Verify a saved-world fixture that landed on the Moon and Sequoia loads with both visits done and no recipe re-locked.
 
 ## 2. Environments, atmospheres, heat shield, Sun and gas giants
 

@@ -863,6 +863,7 @@ class PlanetGame {
           };
         },
         remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
+        visited: (bodyId) => this.missions?.visited(bodyId) ?? false,
       }, this.blockInteraction.getCraftingSystem());
     }
     this.navigation.update();
