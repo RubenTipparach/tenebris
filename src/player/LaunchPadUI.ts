@@ -430,14 +430,14 @@ export class LaunchPadUI {
       if (this.onRemoveRocketPartCallback) {
         const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
         if (removedPart) {
-          this.inventory.addItem(removedPart.itemType, 1);
+          this.inventory.give(removedPart.itemType, 1);
           this.updateUI();
           this.notifyChanges();
         }
       } else if (this.currentLaunchPad.hasRocketEngine && this.onRemoveRocketEngineCallback) {
         // Legacy fallback
         if (this.onRemoveRocketEngineCallback(this.currentLaunchPad)) {
-          this.inventory.addItem(ItemType.ROCKET_ENGINE, 1);
+          this.inventory.give(ItemType.ROCKET_ENGINE, 1);
           this.updateUI();
           this.notifyChanges();
         }
@@ -476,7 +476,7 @@ export class LaunchPadUI {
         if (this.currentLaunchPad.rocketBlocks <= slotIndex) {
           if (this.onRemoveSegmentCallback && this.onRemoveSegmentCallback(this.currentLaunchPad)) {
             // Return segment to inventory
-            this.inventory.addItem(ItemType.LAUNCH_PAD_SEGMENT, 1);
+            this.inventory.give(ItemType.LAUNCH_PAD_SEGMENT, 1);
             this.updateUI();
             this.notifyChanges();
           }
@@ -561,7 +561,7 @@ export class LaunchPadUI {
       if (this.onRemoveRocketPartCallback) {
         const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
         if (removedPart) {
-          this.inventory.addItem(removedPart.itemType, 1);
+          this.inventory.give(removedPart.itemType, 1);
           console.log(`Removed rocket part via drag: ${ITEM_DATA[removedPart.itemType].name}`);
           this.updateUI();
           this.notifyChanges();

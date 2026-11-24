@@ -25,6 +25,7 @@ Writes, under public/textures/:
   texture)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
   gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
+  technology/sack.png: the overflow sack a full inventory drops
   tools: icons/tools/<tier>_<kind>.png - pickaxe, axe and shovel in the
   rock, copper, iron, steel and titanium tiers
 Deterministic - rerun to regenerate.
@@ -885,6 +886,26 @@ def tool_icon(kind, tier):
     return px
 
 
+def sack():
+    """A burlap sack, wrapped round a lathe (u = around, v = up): the tied
+    tuft at the top rows, the rope, then a brown weave down to the seam"""
+    px, c = _canvas()
+    for y in range(16):
+        for x in range(16):
+            if y <= 2:
+                px[y][x] = c["peach"] if (x + 2 * y) % 5 == 0 else c["brown"]
+            elif y <= 4:
+                px[y][x] = c["dgrey"] if (x + y) % 3 else c["navy"]
+            elif y == 15:
+                px[y][x] = c["plum"]
+            elif (x + y) % 4 == 0:
+                px[y][x] = c["plum"]       # the weave, on the diagonal
+            elif y % 3 == 1 and x % 4 == 2:
+                px[y][x] = c["peach"]      # a fleck of light thread
+            else:
+                px[y][x] = c["brown"]
+    return px
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -946,6 +967,8 @@ if __name__ == "__main__":
         face = recolour(read_png(os.path.join(techd, src + "_face.png")), ramp)
         write(f"technology/{name}_face.png", trefoil(face) if nuclear else face)
     write("technology/campfire_face.png", campfire())
+    # Overflow sack: what a full inventory drops on the ground
+    write("technology/sack.png", sack())
     # Batteries: one tier mark per tier (I, II, III)
     write("technology/battery_lead_acid_face.png", battery("dgrey", "red", [(8, 7), (9, 7), (10, 7)]))
     write("technology/battery_lithium_face.png", battery("lgrey", "blue", [(8, 6), (9, 6), (10, 6), (8, 8), (9, 8), (10, 8)]))

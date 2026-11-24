@@ -851,8 +851,8 @@ export class CraftingSystem {
   /** Put a held stack back (the panel closing). */
   private returnHeld(): void {
     if (!this.inventory.getHeld()) return;
-    const lost = this.inventory.returnHeld();
-    if (lost > 0) showToast(`No room: ${lost} dropped`, { duration: TOOLBOX.TOAST_MS });
+    // What has no room to go back drops in the sack (Inventory.returnHeld)
+    this.inventory.returnHeld();
     this.afterHeldChange();
   }
 
@@ -1667,19 +1667,6 @@ export class CraftingSystem {
   private craftSelectedRecipe(): void {
     if (!this.selectedRecipe || !this.canCraft(this.selectedRecipe)) return;
 
-    // Room for what it makes, once the ingredients are spent - else nothing
-    // is spent (addItem would drop the result). A tool whose toolbox slot is
-    // free equips there and needs no inventory room.
-    const made = this.selectedRecipe.output;
-    const tool = toolOf(made.itemType);
-    const toolboxFree = !!tool && this.inventory.getToolbox()[this.inventory.toolboxIndex(tool.kind)]?.itemType === ItemType.NONE;
-    const give = [...(toolboxFree ? [] : [made]), ...(this.selectedRecipe.returns ? [this.selectedRecipe.returns] : [])];
-    const take = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS ? [] : this.selectedRecipe.inputs;
-    if (!this.inventory.fitsAfter(take, give)) {
-      showToast(`No room in the inventory for the ${ITEM_DATA[made.itemType].name}`, { duration: TOOLBOX.TOAST_MS });
-      return;
-    }
-
     // Remove input items (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       for (const input of this.selectedRecipe.inputs) {
@@ -1695,13 +1682,14 @@ export class CraftingSystem {
         const went = this.inventory.giveTool(out.itemType);
         const name = ITEM_DATA[out.itemType].name;
         showToast(went === 'toolbox' ? `${name} equipped in the toolbox`
-          : went === 'inventory' ? `${name} added to the inventory` : `No room for the ${name}`, { duration: TOOLBOX.TOAST_MS });
+          : went === 'inventory' ? `${name} added to the inventory` : `${name} dropped in a sack - no room`, { duration: TOOLBOX.TOAST_MS });
       }
     } else {
-      this.inventory.addItem(out.itemType, out.quantity);
+      // What doesn't fit drops in a sack at the player's feet (Inventory.give)
+      this.inventory.give(out.itemType, out.quantity);
     }
     const returned = this.selectedRecipe.returns;
-    if (returned) this.inventory.addItem(returned.itemType, returned.quantity);
+    if (returned) this.inventory.give(returned.itemType, returned.quantity);
     emitGameEvent('crafted', this.selectedRecipe.output.itemType, this.selectedRecipe.output.quantity);
 
     // Update UI

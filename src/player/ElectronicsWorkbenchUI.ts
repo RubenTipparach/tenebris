@@ -3,7 +3,6 @@ import { recipeLockedBy, recipeLockedLabel, recipeOpen } from './RecipeGate';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { getAssetPath } from '../utils/assetPath';
-import { showToast } from '../utils/toast';
 import { MenuManager } from './MenuManager';
 import { PlayerConfig } from '../config/PlayerConfig';
 
@@ -732,13 +731,6 @@ export class ElectronicsWorkbenchUI {
     // Check if we have all ingredients in inventory
     if (!this.canCraftRecipe(recipe)) return;
 
-    // Room for the part once the ingredients are spent - else nothing is spent
-    const take = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS ? [] : recipe.inputs;
-    if (!this.inventory.fitsAfter(take, [recipe.output])) {
-      showToast(`No room in the inventory for the ${ITEM_DATA[recipe.output.itemType]?.name ?? 'part'}`, { duration: 3000 });
-      return;
-    }
-
     // Remove ingredients from inventory (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {
       for (const input of recipe.inputs) {
@@ -747,7 +739,7 @@ export class ElectronicsWorkbenchUI {
     }
 
     // Give output
-    this.inventory.addItem(recipe.output.itemType, recipe.output.quantity);
+    this.inventory.give(recipe.output.itemType, recipe.output.quantity);
     emitGameEvent('crafted', recipe.output.itemType, recipe.output.quantity);
 
     this.updateUI();
@@ -858,8 +850,8 @@ export class ElectronicsWorkbenchUI {
       }
     }
 
-    // Give output (addItem returns remaining items that couldn't be added)
-    this.inventory.addItem(matchedRecipe.output.itemType, matchedRecipe.output.quantity);
+    // Give output (what doesn't fit drops in a sack)
+    this.inventory.give(matchedRecipe.output.itemType, matchedRecipe.output.quantity);
     emitGameEvent('crafted', matchedRecipe.output.itemType, matchedRecipe.output.quantity);
 
     this.updateUI();
@@ -922,8 +914,7 @@ export class ElectronicsWorkbenchUI {
     for (let i = 0; i < 9; i++) {
       const slot = this.craftingSlots[i];
       if (slot.itemType !== ItemType.NONE && slot.quantity > 0) {
-        this.inventory.addItem(slot.itemType, slot.quantity);
-        // If can't add all, items are lost (edge case)
+        this.inventory.give(slot.itemType, slot.quantity);
         this.craftingSlots[i] = { itemType: ItemType.NONE, quantity: 0 };
       }
     }

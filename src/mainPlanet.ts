@@ -594,7 +594,7 @@ class PlanetGame {
         this.rocketFlightManager.setRefitSupport(this.blockInteraction.getLaunchPadManager(), {
           count: (t) => inv().getItemCount(t),
           take: (t, n) => { const got = inv().removeItem(t, n); this.blockInteraction.onInventoryChanged(); return got; },
-          give: (t, n) => { const left = inv().addItem(t, n); this.blockInteraction.onInventoryChanged(); return left; },
+          give: (t, n) => { const left = inv().give(t, n); this.blockInteraction.onInventoryChanged(); return left; },
         });
       }
       this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
@@ -2043,7 +2043,7 @@ class PlanetGame {
         this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
         // The rocket carries fuel for the way back in its hold; a bucket
         // lets the player top up from any water
-        this.blockInteraction.getInventory().addItem(ItemType.BUCKET, ROCKET_CONFIG.STARTER_KIT.buckets);
+        this.blockInteraction.getInventory().give(ItemType.BUCKET, ROCKET_CONFIG.STARTER_KIT.buckets);
         this.blockInteraction.onInventoryChanged();
       }
       return;

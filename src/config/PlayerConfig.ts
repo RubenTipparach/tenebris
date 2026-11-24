@@ -202,3 +202,21 @@ export const PlayerConfig = {
   DEBUG_JETPACK_ENABLED: false,              // Enable infinite jetpack mode
   DEBUG_JUMP_LOGGING: false,                 // Log detailed position/velocity for 5 seconds after each jump
 };
+
+/**
+ * The overflow sack: what doesn't fit in a full inventory (hotbar + bag)
+ * drops at the player's feet as a sack, merging into a sack already on that
+ * tile. Anyone walking up to a sack picks up what fits.
+ */
+export const SACK = {
+  SLOTS: 27,                 // a sack holds as much as a chest
+  PICKUP_RADIUS_M: 1.2,      // walk this close (feet to sack) to pick it up
+  // Neighbouring tile rings tried when the sack on the drop tile is full
+  SPILL_RINGS: 2,
+  // How far down (blocks) a drop looks for ground below the player's feet
+  GROUND_SCAN_BLOCKS: 64,
+  // Lathe profile of the sack: [radius, height] pairs (m), bottom to the tied top
+  PROFILE: [[0, 0], [0.22, 0.02], [0.3, 0.12], [0.31, 0.26], [0.24, 0.4], [0.1, 0.48], [0.09, 0.52], [0.14, 0.6], [0, 0.62]] as [number, number][],
+  SEGMENTS: 10,              // lathe segments round the sack (low-poly)
+  TOAST_MS: 2500,
+};

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { PlanetPlayer } from './PlanetPlayer';
-import { HexBlockType } from '../planet/HexBlock';
+import { HexBlockType, isSolid } from '../planet/HexBlock';
 import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
 import { emitGameEvent } from '../engine/GameEvents';
@@ -58,7 +58,7 @@ import { planetObjectScene } from '../world/PlanetFrames';
 import { gameStorage, torchKey, SavedCooker, SavedTorch, SavedFurnace, SavedStorageChest, SavedGarbagePile, SavedSteamEngine, SavedHydroGenerator, SavedCopperPipe, SavedCable, SavedElectricFurnace, SavedElectronicsWorkbench, SavedComputer, SavedPrinter3D, SavedLaunchPad } from '../engine/GameStorage';
 import { diffCounts, netSync } from '../net/NetSync';
 import { copySlotsInPlace } from '../net/SharedState';
-import { PlayerConfig } from '../config/PlayerConfig';
+import { PlayerConfig, SACK } from '../config/PlayerConfig';
 import { TechBlockRegistry, TechBlockInfo } from '../engine/TechBlockRegistry';
 import { MachineManager, PlacedMachine, newMachineState, tickMachine, wantsPower, machineSupplyW, machineFromRecord, machineRecord, SavedMachine, panelSunlight } from '../planet/Machines';
 import { passesLight } from '../shared/voxelLight';
@@ -428,6 +428,8 @@ export class PlanetBlockInteraction {
     this.scene = scene;
     this.raycaster = new THREE.Raycaster();
     this.inventory = new Inventory();
+    // What a full inventory can't take drops in a sack at the player's feet
+    this.inventory.setOverflowSink((items) => this.dropAtFeet(items));
 
     // Initialize torch systems
     this.torchManager = new TorchManager(planetObjectScene(scene));
@@ -578,14 +580,14 @@ export class PlanetBlockInteraction {
     this.printer3DManager = new Printer3DManager(planetObjectScene(scene), planetCenter, sunDirection);
     this.printer3DUI = new Printer3DUI(this.inventory);
     this.printer3DUI.setOnItemCrafted((itemType, quantity) => {
-      this.inventory.addItem(itemType, quantity);
+      this.inventory.give(itemType, quantity);
       this.updateHotbarUI();
       this.saveInventory();
     });
     this.printer3DUI.setOnRefundItems((ingredients) => {
       // Refund items when canceling a queued print job
       for (const [itemType, quantity] of ingredients) {
-        this.inventory.addItem(itemType, quantity);
+        this.inventory.give(itemType, quantity);
       }
       this.updateHotbarUI();
       this.saveInventory();
@@ -1463,6 +1465,9 @@ export class PlanetBlockInteraction {
     // refused record undoes
     this.beginTrade();
 
+    // Walking up to a sack picks it up (a trade: a refused write undoes it)
+    this.pickUpNearbySacks();
+
     // Raycast to find targeted block or tree
     const origin = this.player.getRaycastOrigin();
     const direction = this.player.getForwardVector();
@@ -2138,12 +2143,12 @@ export class PlanetBlockInteraction {
       // Trunks drop 4-8 logs AND 4-8 sticks
       const logCount = Math.floor(Math.random() * 5) + 4;  // 4-8 logs
       const stickCount = Math.floor(Math.random() * 5) + 4; // 4-8 sticks
-      this.inventory.addItem(ItemType.LOG, logCount);
-      this.inventory.addItem(ItemType.STICK, stickCount);
+      this.inventory.give(ItemType.LOG, logCount);
+      this.inventory.give(ItemType.STICK, stickCount);
     } else {
       // Leaves drop 1-3 sticks
       const stickCount = Math.floor(Math.random() * 3) + 1;
-      this.inventory.addItem(ItemType.STICK, stickCount);
+      this.inventory.give(ItemType.STICK, stickCount);
     }
     this.updateHotbarUI();
     this.saveInventory();
@@ -2195,23 +2200,23 @@ export class PlanetBlockInteraction {
 
   private breakFurnace(furnace: PlacedFurnace): void {
     // Give the furnace item back to the player
-    this.inventory.addItem(ItemType.FURNACE, 1);
+    this.inventory.give(ItemType.FURNACE, 1);
 
     // Also return any items that were in the furnace
     if (furnace.smeltingItem !== null) {
-      this.inventory.addItem(furnace.smeltingItem as ItemType, 1);
+      this.inventory.give(furnace.smeltingItem as ItemType, 1);
     }
     if (furnace.outputItem !== null && furnace.outputCount > 0) {
-      this.inventory.addItem(furnace.outputItem as ItemType, furnace.outputCount);
+      this.inventory.give(furnace.outputItem as ItemType, furnace.outputCount);
     }
     // The unburnt fuel stack comes back as it went in
     if (furnace.fuelItem !== null && furnace.fuelCount > 0) {
-      this.inventory.addItem(furnace.fuelItem as ItemType, furnace.fuelCount);
+      this.inventory.give(furnace.fuelItem as ItemType, furnace.fuelCount);
     }
     // Convert the burning remainder back to coal (approximately)
     if (furnace.fuelAmount > 0) {
       const coalToReturn = Math.ceil(furnace.fuelAmount / SMELTS_PER_COAL);
-      this.inventory.addItem(ItemType.COAL, coalToReturn);
+      this.inventory.give(ItemType.COAL, coalToReturn);
     }
 
     this.updateHotbarUI();
@@ -2379,7 +2384,7 @@ export class PlanetBlockInteraction {
 
   private breakStorageChest(chest: PlacedStorageChest): void {
     // Give the storage chest item back to the player
-    this.inventory.addItem(ItemType.STORAGE_CHEST, 1);
+    this.inventory.give(ItemType.STORAGE_CHEST, 1);
 
     // Also return all items that were in the chest - overflow creates garbage pile
     const items = this.storageChestManager.getAllItemsFromChest(chest);
@@ -2436,38 +2441,9 @@ export class PlanetBlockInteraction {
     }
   }
 
+  // Mining a sack takes what fits; the rest stays in it
   private breakGarbagePile(pile: PlacedGarbagePile): void {
-    // Return all items that were in the pile - overflow creates new garbage pile
-    const items = this.garbagePileManager.getAllItemsFromPile(pile);
-    const overflowItems: { itemType: ItemType; quantity: number }[] = [];
-
-    for (const item of items) {
-      const remaining = this.inventory.addItem(item.itemType, item.quantity);
-      if (remaining > 0) {
-        overflowItems.push({ itemType: item.itemType, quantity: remaining });
-      }
-    }
-
-    this.updateHotbarUI();
-    this.saveInventory();
-
-    // Remove pile from save
-    for (let i = 0; i < this.planets.length; i++) {
-      const planetId = this.getPlanetId(this.planets[i]);
-      gameStorage.removeGarbagePile(planetId, pile.tileIndex);
-    }
-
-    // Store position before removing
-    const pilePosition = pile.position.clone();
-    const pileTileIndex = pile.tileIndex;
-
-    // Remove the pile from the world
-    this.garbagePileManager.removePile(pile);
-
-    // If there's overflow, create a new garbage pile at the same location
-    if (overflowItems.length > 0) {
-      this.createGarbagePileWithItems(pilePosition, pileTileIndex, overflowItems);
-    }
+    if (this.takeFromSack(pile) === 0) showToast('No room in the inventory', { duration: SACK.TOAST_MS });
   }
 
   private handleSteamEngineMining(deltaTime: number, steamEngine: PlacedSteamEngine): void {
@@ -2499,7 +2475,7 @@ export class PlanetBlockInteraction {
 
   private breakSteamEngine(steamEngine: PlacedSteamEngine): void {
     // Give the steam engine item back to the player
-    this.inventory.addItem(ItemType.STEAM_ENGINE, 1);
+    this.inventory.give(ItemType.STEAM_ENGINE, 1);
 
     this.updateHotbarUI();
     this.saveInventory();
@@ -2549,7 +2525,7 @@ export class PlanetBlockInteraction {
 
   private breakHydroGenerator(hydroGenerator: PlacedHydroGenerator): void {
     // Give the hydro generator item back to the player
-    this.inventory.addItem(ItemType.HYDRO_GENERATOR, 1);
+    this.inventory.give(ItemType.HYDRO_GENERATOR, 1);
 
     this.updateHotbarUI();
     this.saveInventory();
@@ -2600,7 +2576,7 @@ export class PlanetBlockInteraction {
 
   private breakCopperPipe(pipe: PlacedCopperPipe): void {
     // Give the copper pipe item back to the player
-    this.inventory.addItem(ItemType.COPPER_PIPE, 1);
+    this.inventory.give(ItemType.COPPER_PIPE, 1);
 
     this.updateHotbarUI();
     this.saveInventory();
@@ -2648,7 +2624,7 @@ export class PlanetBlockInteraction {
 
   private breakCable(cable: PlacedCable): void {
     // Give the cable item back to the player
-    this.inventory.addItem(ItemType.CABLE, 1);
+    this.inventory.give(ItemType.CABLE, 1);
 
     this.updateHotbarUI();
     this.saveInventory();
@@ -2728,7 +2704,7 @@ export class PlanetBlockInteraction {
 
   private breakElectronicsWorkbench(workbench: PlacedElectronicsWorkbench): void {
     // Give the electronics workbench item back to the player
-    this.inventory.addItem(ItemType.ELECTRONICS_WORKBENCH, 1);
+    this.inventory.give(ItemType.ELECTRONICS_WORKBENCH, 1);
     this.updateHotbarUI();
     this.saveInventory();
 
@@ -2777,7 +2753,7 @@ export class PlanetBlockInteraction {
 
   private breakComputer(computer: PlacedComputer): void {
     // Give the computer item back to the player
-    this.inventory.addItem(ItemType.COMPUTER, 1);
+    this.inventory.give(ItemType.COMPUTER, 1);
     this.updateHotbarUI();
     this.saveInventory();
 
@@ -2827,7 +2803,7 @@ export class PlanetBlockInteraction {
 
   private breakPrinter3D(printer: PlacedPrinter3D): void {
     // Give the 3D printer item back to the player
-    this.inventory.addItem(ItemType.PRINTER_3D, 1);
+    this.inventory.give(ItemType.PRINTER_3D, 1);
     this.updateHotbarUI();
     this.saveInventory();
 
@@ -2883,7 +2859,7 @@ export class PlanetBlockInteraction {
       showToast(blocker, { duration: 3000 });
       return;
     }
-    this.inventory.addItem(ItemType.LAUNCH_PAD_BLOCK, 1);
+    this.inventory.give(ItemType.LAUNCH_PAD_BLOCK, 1);
     this.updateHotbarUI();
     this.saveInventory();
 
@@ -2917,7 +2893,7 @@ export class PlanetBlockInteraction {
 
   private breakElectricFurnace(furnace: PlacedElectricFurnace): void {
     // Give the electric furnace item back to the player
-    this.inventory.addItem(ItemType.ELECTRIC_FURNACE, 1);
+    this.inventory.give(ItemType.ELECTRIC_FURNACE, 1);
 
     // If there are items in the furnace, drop them as a garbage pile or add to inventory
     const droppedItems: { itemType: ItemType; quantity: number }[] = [];
@@ -2954,38 +2930,140 @@ export class PlanetBlockInteraction {
     this.electricFurnaceManager.removeElectricFurnace(furnace);
   }
 
-  private async createGarbagePileWithItems(
+  // ---- the overflow sack -----------------------------------------------------
+
+  /**
+   * Leave items on the ground in a sack at `position` (configured frame, on
+   * the ground) on tile `tileIndex`: into the sack already on that tile if
+   * there is one, then the neighbouring tiles' sacks once it is full. The one
+   * path every overflow takes - a full inventory (dropAtFeet), a broken
+   * chest, machine or station. Saved (and synced) the same frame.
+   */
+  private createGarbagePileWithItems(
     position: THREE.Vector3,
     tileIndex: number,
     items: { itemType: ItemType; quantity: number }[]
-  ): Promise<void> {
-    // Find the planet for this position
-    let targetPlanet: Planet | null = null;
-    for (const planet of this.planets) {
-      const tile = planet.getTileByIndex(tileIndex);
-      if (tile) {
-        targetPlanet = planet;
-        break;
+  ): void {
+    const planet = this.planetOf(position);
+    if (!planet) return;
+    const planetId = this.getPlanetId(planet);
+    let left = items.filter(i => i.itemType !== ItemType.NONE && i.quantity > 0).map(i => ({ ...i }));
+    for (const t of this.tileRings(planet, tileIndex, SACK.SPILL_RINGS)) {
+      if (left.length === 0) break;
+      let pile = this.sackOn(planetId, t);
+      if (!pile) {
+        const ground = t === tileIndex ? position : this.groundOnTile(planet, t, position);
+        if (!ground) continue;
+        pile = this.garbagePileManager.placePile(ground, planet.configuredCenter, t);
       }
+      const into = pile;
+      left = left
+        .map(i => ({ itemType: i.itemType, quantity: this.garbagePileManager.addItemsToPile(into, i.itemType, i.quantity) }))
+        .filter(i => i.quantity > 0);
+      this.saveSack(planetId, into);
+      this.refreshPanelsFor(into);
     }
+    if (left.length > 0) console.warn('[sack] no ground for', left);
+  }
 
-    if (!targetPlanet) return;
+  /** What a full inventory couldn't take: a sack at the player's feet. */
+  private dropAtFeet(items: { itemType: ItemType; quantity: number }[]): void {
+    const planet = this.player.getCurrentPlanet();
+    const n = items.reduce((sum, i) => sum + i.quantity, 0);
+    if (!planet || n <= 0) return;
+    // The player stands in the live frame; sacks live in the configured one
+    const feet = this.player.position.clone().sub(planet.center).add(planet.configuredCenter);
+    const tileIndex = planet.getTileIndexInDirection(this.player.position.clone().sub(planet.center));
+    if (tileIndex === null) return;
+    this.createGarbagePileWithItems(this.groundOnTile(planet, tileIndex, feet) ?? feet, tileIndex, items);
+    const what = items.length === 1 ? `${n} ${ITEM_DATA[items[0].itemType].name}` : `${n} items`;
+    showToast(`Inventory full - ${what} dropped in a sack`, { duration: SACK.TOAST_MS });
+  }
 
-    // Place the garbage pile
-    const pile = await this.garbagePileManager.placePile(
-      position,
-      targetPlanet.center,
-      tileIndex,
-      items
-    );
+  /** The sack on this tile of this planet (tile indices repeat between planets). */
+  private sackOn(planetId: string, tileIndex: number): PlacedGarbagePile | undefined {
+    return this.garbagePileManager.getPlacedPiles().find(p => p.tileIndex === tileIndex && this.planetIdAt(p.position) === planetId);
+  }
 
-    if (pile) {
-      const planetId = this.getPlanetId(targetPlanet);
-      gameStorage.saveGarbagePile(planetId, tileIndex, {
-        position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
-        slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
-      });
+  /** Save a sack's contents now - or, emptied, take it out of the world and the save. */
+  private saveSack(planetId: string, pile: PlacedGarbagePile): void {
+    if (this.garbagePileManager.isPileEmpty(pile)) {
+      this.closePanelsFor(pile);
+      this.garbagePileManager.removePile(pile);
+      gameStorage.removeGarbagePile(planetId, pile.tileIndex);
+      return;
     }
+    gameStorage.saveGarbagePile(planetId, pile.tileIndex, {
+      position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
+      slots: pile.slots.map(sl => ({ itemType: sl.itemType, quantity: sl.quantity })),
+    });
+  }
+
+  /** Move what fits from a sack into the inventory (hotbar first). Returns how many moved. */
+  private takeFromSack(pile: PlacedGarbagePile): number {
+    let moved = 0;
+    for (const slot of pile.slots) {
+      if (slot.itemType === ItemType.NONE || slot.quantity <= 0) continue;
+      const left = this.inventory.addItem(slot.itemType, slot.quantity);
+      moved += slot.quantity - left;
+      slot.quantity = left;
+      if (left <= 0) slot.itemType = ItemType.NONE;
+    }
+    if (moved === 0) return 0;
+    this.saveSack(this.planetIdAt(pile.position), pile);
+    this.refreshPanelsFor(pile);
+    this.updateHotbarUI();
+    this.craftingSystem.updateInventorySlotsPublic();
+    this.saveInventory();
+    return moved;
+  }
+
+  /** Walk up to a sack and you pick up what fits - anyone's sack, any player. */
+  private pickUpNearbySacks(): void {
+    const planet = this.player.getCurrentPlanet();
+    if (!planet) return;
+    const planetId = this.getPlanetId(planet);
+    const feet = this.player.position.clone().sub(planet.center).add(planet.configuredCenter);
+    for (const pile of [...this.garbagePileManager.getPlacedPiles()]) {
+      if (pile.position.distanceTo(feet) > SACK.PICKUP_RADIUS_M || this.planetIdAt(pile.position) !== planetId) continue;
+      const moved = this.takeFromSack(pile);
+      if (moved > 0) showToast(`Picked up ${moved} from a sack`, { duration: SACK.TOAST_MS });
+    }
+  }
+
+  /** The ground (top of the first solid block) on a tile, looking down from `near`'s height. */
+  private groundOnTile(planet: Planet, tileIndex: number, near: THREE.Vector3): THREE.Vector3 | null {
+    const tile = planet.getTileByIndex(tileIndex);
+    if (!tile) return null;
+    const bh = planet.getBlockHeight();
+    const r = near.distanceTo(planet.configuredCenter);
+    // Block `depth` spans (depthToRadius(depth) - blockHeight, depthToRadius(depth)]
+    const from = Math.min(planet.getMaxDepth() - 1, Math.ceil((r - planet.depthToRadius(0)) / bh));
+    for (let d = from; d >= Math.max(1, from - SACK.GROUND_SCAN_BLOCKS); d--) {
+      if (!isSolid(planet.getBlock(tileIndex, d))) continue;
+      return tile.center.clone().normalize().multiplyScalar(planet.depthToRadius(d)).add(planet.configuredCenter);
+    }
+    return null;
+  }
+
+  /** A tile, then its neighbours ring by ring (`rings` deep): where a sack spills. */
+  private tileRings(planet: Planet, start: number, rings: number): number[] {
+    const out = [start];
+    const seen = new Set(out);
+    let ring = [start];
+    for (let k = 0; k < rings; k++) {
+      const next: number[] = [];
+      for (const t of ring) {
+        for (const n of planet.getTileNeighbors(t)) {
+          if (seen.has(n)) continue;
+          seen.add(n);
+          next.push(n);
+        }
+      }
+      out.push(...next);
+      ring = next;
+    }
+    return out;
   }
 
   // Play mining hit sound at regular intervals during mining
@@ -3029,7 +3107,7 @@ export class PlanetBlockInteraction {
     const itemType = blockToItem(blockType);
     this.wearToolFor(itemType);
     if (itemType !== ItemType.NONE) {
-      this.inventory.addItem(itemType, 1);
+      this.inventory.give(itemType, 1);
       this.updateHotbarUI();
       this.saveInventory();
     }
@@ -4108,7 +4186,7 @@ export class PlanetBlockInteraction {
         this.torchManager.removeTorch(torch);
 
         // Give the torch back to the player
-        this.inventory.addItem(ItemType.TORCH, 1);
+        this.inventory.give(ItemType.TORCH, 1);
         this.updateHotbarUI();
         this.saveInventory();
 
@@ -4146,7 +4224,7 @@ export class PlanetBlockInteraction {
   public setFauna(fauna: Fauna | null): void {
     this.fauna = fauna;
     fauna?.setRewardHandler((kind, count) => {
-      this.inventory.addItem(kind === 'wool' ? ItemType.WOOL : ItemType.LEATHER, count);
+      this.inventory.give(kind === 'wool' ? ItemType.WOOL : ItemType.LEATHER, count);
       this.updateHotbarUI();
       this.saveInventory();
     });
@@ -4237,7 +4315,7 @@ export class PlanetBlockInteraction {
           if (!this.inventory.useSelectedItem()) return false;
           const name = ITEM_DATA[fill.fills].name;
           if (this.inventory.addItem(fill.fills, 1) > 0) {
-            this.inventory.addItem(ItemType.BUCKET, 1);   // no room: keep the empty bucket
+            this.inventory.give(ItemType.BUCKET, 1);   // no room: keep the empty bucket
             showToast(`No room for a ${name}`, { duration: 2000 });
           } else {
             showToast(`Filled a ${name}`, { duration: 2000 });
@@ -4639,15 +4717,9 @@ export class PlanetBlockInteraction {
       });
     }
 
-    // Save garbage piles
-    const piles = this.garbagePileManager.getPlacedPiles();
-    for (const pile of piles) {
-      const planetId = this.planetIdAt(pile.position);
-
-      gameStorage.saveGarbagePile(planetId, pile.tileIndex, {
-        position: { x: pile.position.x, y: pile.position.y, z: pile.position.z },
-        slots: pile.slots.map(s => ({ itemType: s.itemType, quantity: s.quantity }))
-      });
+    // Save the overflow sacks (one emptied from its panel goes)
+    for (const pile of [...this.garbagePileManager.getPlacedPiles()]) {
+      this.saveSack(this.planetIdAt(pile.position), pile);
     }
   }
 
@@ -5075,7 +5147,7 @@ export class PlanetBlockInteraction {
           itemType: s.itemType as ItemType,
           quantity: s.quantity
         }));
-        pending = this.garbagePileManager.restorePile(savedPosition, planet.configuredCenter, savedPile.tileIndex, slots);
+        this.garbagePileManager.restorePile(savedPosition, planet.configuredCenter, savedPile.tileIndex, slots);
         break;
       }
       case 'steamEngine': {
@@ -5228,7 +5300,7 @@ export class PlanetBlockInteraction {
           if (legacy.equipment.length > 0) {
             // equipment slots first, then the cargo hold, then the player
             const lost = stowLegacyEquipment(legacy.equipment, pad.equipment, pad.cargo);
-            for (const t of lost) this.inventory.addItem(t, 1);
+            for (const t of lost) this.inventory.give(t, 1);
             if (lost.length > 0) this.saveInventory();
             this.saveLaunchPadStates();
           }
