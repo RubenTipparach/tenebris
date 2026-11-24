@@ -9,6 +9,9 @@ attribute float skyLight;
 attribute float torchLight;
 // Light from emitting blocks (lamps, neon, lit windows), flooded on the CPU
 attribute float blockLight;
+// The block's per-hex seed (ChunkGeometryBuilder hexSeedOf; 0 where a mesh has none)
+attribute vec3 color;
+varying vec3 vHexSeed;
 
 varying vec3 vNormal;
 varying vec3 vWorldPosition;
@@ -23,6 +26,7 @@ varying float vDistanceFromCamera;
 
 void main() {
   vUv = uv;
+  vHexSeed = color;
   vSkyLight = skyLight;
   vTorchLight = torchLight;
   vBlockLight = blockLight;

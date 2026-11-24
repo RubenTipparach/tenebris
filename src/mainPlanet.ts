@@ -209,6 +209,8 @@ class PlanetGame {
       planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
         ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
         : null));
+      // ... and the same air hazing its surface seen from space
+      planet.setFarAtmosphere(bodyConfig.visual.atmosphereTint, !!bodyConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED);
     }
 
     // Things placed on a planet ride it round its orbit: the object
@@ -1039,6 +1041,7 @@ class PlanetGame {
       // every planet's water material gets the depth texture (registering twice is a no-op)
       const waterMaterial = planet.getWaterShaderMaterial();
       if (waterMaterial) this.engine.registerWaterMaterial(waterMaterial);
+      planet.setFarTime(this.elapsedTime);
       if (planet !== this.earth && planet.isInitialTerrainReady() && getBodyConfig(id)?.terrain.hasWater) {
         planet.updateWaterShader(this.elapsedTime, isUnderwater);
       }
