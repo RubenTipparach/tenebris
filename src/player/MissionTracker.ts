@@ -26,6 +26,9 @@ export interface MissionSave {
   /** The gate rule the save was made under: GATE_RULE_ALL_LOCKED once every
    *  recipe waits on a mission; missing in a save from before that. */
   rule?: number;
+  /** The open mission the player picked to work on (null/missing: the
+   *  first open one in the tree's order) */
+  focus?: string | null;
 }
 
 /** Saves made since every recipe (not only the ones a mission named) waits on a mission. */
@@ -54,6 +57,7 @@ export class MissionTracker implements RecipeGate {
   private low: Record<string, Record<string, number>> = {};
   private seen: Record<string, string[][]> = {};
   private legacy = new Set<number>();
+  private focus: string | null = null;
   public onComplete: ((mission: Mission) => void) | null = null;
   public onChange: (() => void) | null = null;
 
@@ -65,6 +69,7 @@ export class MissionTracker implements RecipeGate {
       this.low = { ...(s.low ?? {}) };
       this.seen = { ...(s.seen ?? {}) };
       for (const o of s.legacy ?? []) this.legacy.add(o);
+      this.focus = typeof s.focus === 'string' ? s.focus : null;
     } else if (saved && Number.isInteger((saved as LinearSave).index)) {
       // the first version's line: everything before its index is done
       LINEAR_IDS.slice(0, (saved as LinearSave).index).forEach(id => this.done.add(id));
@@ -74,7 +79,7 @@ export class MissionTracker implements RecipeGate {
   }
 
   public save(): MissionSave {
-    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED };
+    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED, focus: this.focus };
   }
 
   // ---- the tree ----------------------------------------------------------
@@ -93,9 +98,26 @@ export class MissionTracker implements RecipeGate {
     return MISSIONS.filter(m => this.isOpen(m));
   }
 
-  /** The mission to do next: the first open one in the tree's order. */
+  /** The mission to do next: the one the player picked while it is still
+   *  open, else the first open one in the tree's order. */
   public now(): Mission | null {
+    const picked = this.focus ? BY_ID.get(this.focus) : undefined;
+    if (picked && this.isOpen(picked)) return picked;
     return MISSIONS.find(m => this.isOpen(m)) ?? null;
+  }
+
+  /**
+   * Pick the mission to work on. Only an open mission can be picked - one
+   * whose parent (and every gate) is done, so it sits next to a completed
+   * node. False (and nothing changes) for a done or locked one. Once the
+   * picked mission is done, now() falls back to the tree's order.
+   */
+  public setFocus(id: string): boolean {
+    const m = BY_ID.get(id);
+    if (!m || !this.isOpen(m)) return false;
+    this.focus = id;
+    this.onChange?.();
+    return true;
   }
 
   public state(m: Mission): MissionStateName {
@@ -227,6 +249,7 @@ export class MissionTracker implements RecipeGate {
       for (const m of this.openMissions()) {
         if (m.objectives.every((o, i) => this.prog[m.id][i] >= o.count)) {
           this.done.add(m.id);
+          if (this.focus === m.id) this.focus = null;
           delete this.prog[m.id];
           delete this.low[m.id];
           delete this.seen[m.id];
