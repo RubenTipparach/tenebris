@@ -1015,7 +1015,6 @@
     // A launch pad: a pad block on a centre tile and one on each of its six
     // neighbours, on free, dry, level-ish ground
     pad: async () => {
-      if (count(I.LAUNCH_PAD_BLOCK) < 7) { await obtain(I.LAUNCH_PAD_BLOCK, 7); return; }
       const p = P();
       await toSurface();
       const lp = bi().launchPadManager;
@@ -1046,6 +1045,9 @@
         say(`laying a launch pad round tile ${site}`);
       }
       const has = (t) => lp.getLaunchPads().some(pad => pad.hexes.has(t));
+      // only as many pad blocks as this site still lacks
+      const missing = [site, ...neighbors(site)].filter(t => !has(t)).length;
+      if (count(I.LAUNCH_PAD_BLOCK) < missing) { await obtain(I.LAUNCH_PAD_BLOCK, missing); return; }
       // still level? (the ground may have been dug since) - else give the site up now
       const sg = p.groundDepthOf(site);
       // (the game takes a pad block within PAD_MAX_STEP = 1 of the pad's level)
