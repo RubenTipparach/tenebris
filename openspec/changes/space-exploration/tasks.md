@@ -41,7 +41,7 @@
 - [x] 5.1 Add the solar-electric ion thruster: it draws charge while firing, with no reactor needed; verify `rocket-power` tests that it thrusts on charge and stops when the charge is empty.
 - [x] 5.2 Add the gas-core engine, fission-fragment drive (requires a reactor core and magnets) and nuclear pulse drive (pulse units from cargo); verify tests of the specs' orderings (more Isp and thrust than nuclear thermal; refused without a reactor core; TWR above 1 for heavy stacks; pulse units consumed).
 - [x] 5.3 Add the D-He3 fusion drive and magnetic fusion torch, drawing helium-3 and deuterium from cargo through the fuel-source path; verify tests that the torch has the highest delta-v and TWR above 1 on Earth.
-- [ ] 5.4 Extend `scripts/rocket-tech-report.ts` with every tier and tune the config numbers until each route's next hop is reachable with that tier; verify the report output is committed in the PR description.
+- [x] 5.4 Extend `scripts/rocket-tech-report.ts` with every tier and tune the config numbers until each route's next hop is reachable with that tier; verify the report output is committed in the PR description.
 - [x] 5.5 Add a gating test: each new engine is unlocked by one visit mission and uses a resource from that body or an earlier body on its route; verify it passes.
 
 ## 6. Resources and suits
