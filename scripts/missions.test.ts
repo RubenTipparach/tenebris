@@ -310,3 +310,59 @@ MISSION_TREE_UI.LEVELS.forEach((L, i) => {
   const back = machineFromRecord(JSON.parse(JSON.stringify(machineRecord(m))));
   ok(back.kind === 'surveyBeacon' && back.tileIndex === 42 && back.position.distanceTo(m.position) < 1e-6, 'its saved record restores it');
 }
+
+// ---- rewards (openspec space-exploration 9.1): every visit mission unlocks a
+// recipe it owns - a real recipe output, with an icon, that no other mission
+// (and no starter) also unlocks - so no visit is empty
+{
+  const { existsSync } = await import('fs');
+  const { join, dirname } = await import('path');
+  const { fileURLToPath } = await import('url');
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const visits = MISSIONS.filter(m => m.visit);
+  const empty = visits.filter(m => m.unlocks.length === 0).map(m => m.id);
+  ok(empty.length === 0, `every visit mission unlocks at least one recipe${empty.length ? ': empty ' + empty.join(', ') : ''} (${visits.length} visits)`);
+  const rewards = visits.flatMap(m => m.unlocks.map(u => ({ m, u })));
+  const notRecipe = rewards.filter(r => !outputs.has(r.u)).map(r => `${r.m.id}:${ItemType[r.u]}`);
+  ok(notRecipe.length === 0, `every visit reward is a recipe output${notRecipe.length ? ': ' + notRecipe.join(', ') : ''}`);
+  const shared = rewards.filter(r => starters.has(r.u) || MISSIONS.some(o => o !== r.m && o.unlocks.includes(r.u))).map(r => `${r.m.id}:${ItemType[r.u]}`);
+  ok(shared.length === 0, `every visit reward is owned by its visit alone (unlocked by exactly one mission)${shared.length ? ': ' + shared.join(', ') : ''}`);
+  const noIcon = rewards.filter(r => { const tex = ITEM_DATA[r.u]?.texture; return !tex || !existsSync(join(ROOT, 'public', tex)); }).map(r => ItemType[r.u]);
+  ok(noIcon.length === 0, `every visit reward has an icon on disk${noIcon.length ? ': ' + noIcon.join(', ') : ''}`);
+}
+
+// ---- cross-route (openspec space-exploration 9.2): with every sunward visit
+// done and no outward one, the fusion torch stays locked and its card names
+// the outward visit whose reward it is; the outward route alone leaves the
+// Sun's coil locked. Finishing the tree needs both routes.
+{
+  const { setRecipeGate, recipeLockedLabel } = await import('../src/player/RecipeGate');
+  // A mission is on a route when it, or any mission it waits on, is on that route's branch
+  const onRoute = (id: string, branch: string): boolean => {
+    const m = byId.get(id)!;
+    return m.branch === branch || [m.parent, ...(m.after ?? [])].some(p => !!p && onRoute(p, branch));
+  };
+  const doneAllBut = (branch: string) => new MissionTracker({ v: 2, done: MISSIONS.filter(m => !onRoute(m.id, branch)).map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [], rule: 2 });
+  const sunwardOnly = doneAllBut('outward');
+  const sunwardVisits = MISSIONS.filter(m => m.visit && m.branch === 'sunward');
+  ok(sunwardVisits.length > 0 && sunwardVisits.every(m => sunwardOnly.isDone(m.id)) && sunwardOnly.isDone('moon')
+    && !MISSIONS.some(m => m.branch === 'outward' && sunwardOnly.isDone(m.id)), 'the fixture: the Moon and every sunward visit done, no outward one');
+  ok(!sunwardOnly.recipeOpen(ItemType.FUSION_TORCH), 'with only the sunward route done the fusion torch stays locked');
+  const torchBy = MISSIONS.find(m => m.unlocks.includes(ItemType.FUSION_TORCH))!;
+  setRecipeGate(sunwardOnly);
+  const label = recipeLockedLabel(ItemType.FUSION_TORCH);
+  ok(torchBy.branch === 'outward' && label === `Unlocked by: ${torchBy.title}`, `its card names the outward reward it needs ("${label}")`);
+  ok(sunwardOnly.recipeOpen(ItemType.MAGNETIC_COIL), "the Sun's coil (the sunward half of the torch) is open");
+  // The torch's own parts (fabricator inputs that are recipes) still locked all wait on outward visits
+  const torchParts = FABRICATOR_RECIPES.find(r => r.output === ItemType.FUSION_TORCH)!.inputs.map(i => i.itemType).filter(i => outputs.has(i));
+  const lockedParts = torchParts.filter(i => !sunwardOnly.recipeOpen(i));
+  ok(lockedParts.length > 0 && lockedParts.every(i => unlockedBy.get(i) !== undefined && byId.get(unlockedBy.get(i)!)!.branch === 'outward'),
+    `the torch's locked parts all wait on outward visits (${lockedParts.map(i => `${ItemType[i]}: ${recipeLockedLabel(i)}`).join('; ')})`);
+  const outwardOnly = doneAllBut('sunward');
+  setRecipeGate(outwardOnly);
+  ok(!outwardOnly.recipeOpen(ItemType.MAGNETIC_COIL) && recipeLockedLabel(ItemType.MAGNETIC_COIL) === 'Unlocked by: Pass the Sun',
+    "with only the outward route done the torch's coil waits on the Sun pass");
+  const both = new MissionTracker({ v: 2, done: MISSIONS.map(m => m.id), prog: {}, low: {}, seen: {}, legacy: [], rule: 2 });
+  ok(both.recipeOpen(ItemType.FUSION_TORCH) && torchParts.every(i => both.recipeOpen(i)), 'with both routes done the torch and every part of it is open');
+  setRecipeGate(null);
+}
