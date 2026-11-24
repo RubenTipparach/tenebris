@@ -151,11 +151,11 @@ function blockToItem(blockType: HexBlockType): ItemType {
     case HexBlockType.BLUE_ICE: return ItemType.ICE;
     case HexBlockType.IRON_NICKEL: return ItemType.ORE_IRON;
     // Industry resources: clay (Earth's, and Vesper's clay ground - it is
-    // clay), uranium ore; oil sand gives nothing dug (oil is pumped or
-    // scooped with a bucket)
+    // clay), uranium ore; oil sand comes out whole, for the refinery (a
+    // bucket still scoops crude straight from it)
     case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
     case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
-    case HexBlockType.OIL_SAND: return ItemType.NONE;
+    case HexBlockType.OIL_SAND: return ItemType.OIL_SAND;
     // Building materials come back as themselves
     case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
     case HexBlockType.CARPET: return ItemType.CARPET;
@@ -197,6 +197,7 @@ function itemToBlock(itemType: ItemType): HexBlockType {
     case ItemType.BASALT: return HexBlockType.BASALT;
     case ItemType.SULFUR: return HexBlockType.SULFUR;
     case ItemType.CLAY: return HexBlockType.CLAY;
+    case ItemType.OIL_SAND: return HexBlockType.OIL_SAND;
     case ItemType.ORE_URANIUM: return HexBlockType.ORE_URANIUM;
     case ItemType.BRICK_BLOCK: return HexBlockType.BRICK_BLOCK;
     case ItemType.CARPET: return HexBlockType.CARPET;
