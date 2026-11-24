@@ -476,8 +476,9 @@ export class Printer3DManager {
         }
       }
 
-      // Process current job (no power requirement anymore)
-      if (printer.currentJob) {
+      // Process current job - only while the printer's cable network powers
+      // it (isPowered, set from the grid solve: it draws DEMAND_W.printer3D)
+      if (printer.currentJob && printer.isPowered) {
         printer.currentJob.progress += deltaTime / printer.currentJob.totalTime;
         if (printer.currentJob.progress >= 1) {
           printer.currentJob.progress = 1;

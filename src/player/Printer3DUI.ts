@@ -391,6 +391,10 @@ export class Printer3DUI {
         font-weight: bold;
       }
 
+      .printer3d-status .status-value.no-power {
+        color: #FF004D;
+      }
+
       .printer3d-status .status-value.printing {
         color: #FFAA00;
       }
@@ -939,7 +943,10 @@ export class Printer3DUI {
     // Update status and progress
     const job = this.currentPrinter?.currentJob;
     if (this.statusElement) {
-      if (job) {
+      if (job && !this.currentPrinter?.isPowered) {
+        this.statusElement.textContent = 'No power - cable it to a generator';
+        this.statusElement.className = 'status-value no-power';
+      } else if (job) {
         const itemName = ITEM_DATA[job.itemType]?.name || 'Unknown';
         this.statusElement.textContent = `Printing: ${itemName}`;
         this.statusElement.className = 'status-value printing';

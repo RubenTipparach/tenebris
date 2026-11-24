@@ -227,7 +227,7 @@ export const MISSIONS: Mission[] = [
     unlocks: [I.COMPUTER, I.PRINTER_3D],
   },
   {
-    id: 'printer', branch: 'electronics', icon: I.PRINTER_3D, parent: 'chips', title: 'Build a 3D printer', help: 'Make a print nozzle, then the printer.',
+    id: 'printer', branch: 'electronics', icon: I.PRINTER_3D, parent: 'chips', title: 'Build a 3D printer', help: 'Make a print nozzle, then the printer. Cable it to power - it only prints while powered.',
     objectives: [
       { kind: 'crafted', item: I.PRINT_NOZZLE, count: 1, label: 'Print nozzle' },
       { kind: 'placed', item: I.PRINTER_3D, count: 1, label: '3D printer' },
