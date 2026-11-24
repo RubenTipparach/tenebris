@@ -398,14 +398,29 @@
 
   // Tunnel toward the nearest wanted ore and mine it
   async function tunnelToOre(wanted, radius = 6) {
-    const list = oreAround(radius, wanted);
+    const list = oreAround(radius, wanted).filter(o => !(st.badDig || []).includes(`${o.tile}:${o.depth}`));
     if (!list.length) return false;
     const o = list[0];
     st.task = `tunnelling to ore ${o.block}`;
-    for (let step = 0; step < 12; step++) {
+    const giveUp = () => { st.badDig = (st.badDig || []).concat([`${o.tile}:${o.depth}`]); say(`could not reach ore at tile ${o.tile} depth ${o.depth} - skipping it`); return false; };
+    for (let step = 0; step < 16; step++) {
       const c = blockCenter(o.tile, o.depth);
-      if (c.distanceTo(eye()) < 4.5) { await mineBlock(o.tile, o.depth, 20000); return true; }
-      // dig the two blocks in front (foot + head) and step forward
+      if (P().getBlock(o.tile, o.depth) !== o.block) return true;   // already gone
+      if (c.distanceTo(eye()) < 4.5) {
+        const ok = await mineBlock(o.tile, o.depth, 20000);
+        if (ok) say(`mined ore ${o.block} at depth ${o.depth}`);
+        return ok || giveUp();
+      }
+      const fd = feetDepth();
+      if (o.depth < fd - 1) {
+        // the ore lies deeper: dig the block under your feet and drop
+        const tile = myTile();
+        if (fd - 1 <= 1) return giveUp();
+        if (!(await mineBlock(tile, fd - 1, 12000))) return giveUp();
+        await sleep(400);
+        continue;
+      }
+      // level with it: dig the two blocks in front (foot + head) and step forward
       const pos = player().position;
       const up = upAt(pos);
       const flat = c.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
@@ -414,7 +429,7 @@
       key('KeyW', true); await sleep(450); key('KeyW', false);
       await sleep(150);
     }
-    return false;
+    return giveUp();
   }
 
   // Climb out of a shaft: jump and place a block under your feet, again and again
