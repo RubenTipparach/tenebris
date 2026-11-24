@@ -1,5 +1,6 @@
 import { Deposit, SHORE_CLAY } from '../config/ResourceConfig';
 import * as THREE from 'three';
+import { SURFACE_RELIEF, FAR_SURFACE, FAR_WATER, SPACE_HAZE } from '../config/LightingConfig';
 import { GoldbergPolyhedron, HexTile } from './GoldbergPolyhedron';
 import { HexBlockType, HexBlockMeshBuilder } from './HexBlock';
 import { blockFaces, MATERIAL_RENDER_ORDER, baseTerrainType, isClearSolid } from '../shared/blockTypes';
@@ -47,6 +48,7 @@ export interface PlanetConfig {
   maxDepth?: number;    // Blocks below sea level (default PlayerConfig.TERRAIN_MAX_DEPTH); small bodies need fewer
   // Rock-world landforms and crusts (single-texture bodies)
   volcanoes?: number;   // volcano cones with a crater
+  seaBias?: number;     // an ocean world: lowers the height field so the sea covers most of it (terrainShape)
   iceCover?: boolean;   // frozen crust: frost over glacier ice
   metalRich?: boolean;  // meteoric iron at the surface, extra ore below
   extraOres?: Deposit[];  // deposits beyond the common ores (ResourceConfig)
@@ -253,6 +255,7 @@ export class Planet {
   private wasAboveLODThreshold: boolean = true;
   private onLODTransitionCallback: ((enteringDetailedTerrain: boolean) => void) | null = null;
   private lastLODLevel: number | undefined = undefined;  // For debug logging only
+
 
   // Intermediate LOD system - simplified terrain between chunked LOD and detailed terrain
   private intermediateLODMesh: THREE.Group | null = null;
@@ -2179,6 +2182,7 @@ export class Planet {
       const uvs: number[] = [];
       const colors: number[] = [];
       const torchLightArray: number[] = []; // Vertex-baked torch light (1 per tile, single tile range)
+      const waterArray: number[] = []; // 1 on sea tiles (planet.frag's water)
       const indices: number[] = [];
       let vertexOffset = 0;
 
@@ -2305,6 +2309,7 @@ export class Planet {
         uvs.push(centerUV.u, centerUV.v);
         colors.push(color.r, color.g, color.b);
         torchLightArray.push(centerTorchValue); // Full brightness at center
+        waterArray.push(tileData.isWater ? 1 : 0);
         vertexOffset++;
 
         for (let i = 0; i < vertices.length; i++) {
@@ -2313,6 +2318,7 @@ export class Planet {
           uvs.push(tileUVs[i].u, tileUVs[i].v);
           colors.push(color.r, color.g, color.b);
           torchLightArray.push(edgeTorchValue); // Dimmer at edges
+          waterArray.push(tileData.isWater ? 1 : 0);
           vertexOffset++;
 
           indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
@@ -2394,6 +2400,7 @@ export class Planet {
               torchLightArray.push(edgeTorchValue);
               torchLightArray.push(edgeTorchValue);
               torchLightArray.push(edgeTorchValue);
+              waterArray.push(0, 0, 0, 0);
 
               // Same winding as HexBlock: (0,1,2), (0,2,3)
               indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
@@ -2410,6 +2417,7 @@ export class Planet {
       geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
       geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(torchLightArray, 1));
+      geometry.setAttribute('water', new THREE.Float32BufferAttribute(waterArray, 1));
       geometry.setIndex(indices);
 
       // Create custom shader material for planet with day/night lighting
@@ -2422,6 +2430,7 @@ export class Planet {
           directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
           darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
           ...skyLightUniforms(this.skyLight),
+          ...this.farReliefUniforms(),
         },
         vertexShader: planetVert,
         fragmentShader: planetFrag,
@@ -2459,6 +2468,7 @@ export class Planet {
     const uvs: number[] = [];
     const colors: number[] = [];
     const torchLightArray: number[] = [];
+    const waterArray: number[] = []; // 1 on sea tiles (planet.frag's water)
     const indices: number[] = [];
     let vertexOffset = 0;
 
@@ -2549,6 +2559,7 @@ export class Planet {
       uvs.push(centerUV.u, centerUV.v);
       colors.push(color.r, color.g, color.b);
       torchLightArray.push(0);
+      waterArray.push(tileData.isWater ? 1 : 0);
       vertexOffset++;
 
       for (let i = 0; i < vertices.length; i++) {
@@ -2557,6 +2568,7 @@ export class Planet {
         uvs.push(tileUVs[i].u, tileUVs[i].v);
         colors.push(color.r, color.g, color.b);
         torchLightArray.push(0);
+        waterArray.push(tileData.isWater ? 1 : 0);
         vertexOffset++;
 
         indices.push(centerIdx, centerIdx + 1 + i, centerIdx + 1 + ((i + 1) % vertices.length));
@@ -2629,6 +2641,7 @@ export class Planet {
             colors.push(sideColor.r, sideColor.g, sideColor.b);
 
             torchLightArray.push(0, 0, 0, 0);
+            waterArray.push(0, 0, 0, 0);
 
             // Same winding as HexBlock: (0,1,2), (0,2,3)
             indices.push(baseIdx, baseIdx + 1, baseIdx + 2);
@@ -2645,6 +2658,7 @@ export class Planet {
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     geometry.setAttribute('torchLight', new THREE.Float32BufferAttribute(torchLightArray, 1));
+    geometry.setAttribute('water', new THREE.Float32BufferAttribute(waterArray, 1));
     geometry.setIndex(indices);
 
     // Create material matching distant LOD exactly - same shaders, uniforms, and settings
@@ -2656,6 +2670,7 @@ export class Planet {
         directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
         darkSideAmbient: { value: PlayerConfig.PLANET_DARK_SIDE_AMBIENT },
         ...skyLightUniforms(this.skyLight),
+        ...this.farReliefUniforms(),
       },
       vertexShader: planetVert,
       fragmentShader: planetFrag,
@@ -3703,6 +3718,52 @@ export class Planet {
    * Create a planet shader material with a base color
    * Uses the same shader as terrain for consistent lighting across LOD levels
    */
+  // The far surface's uniforms, one set shared by every far material (so
+  // setFarAtmosphere reaches them all)
+  private farShared: Record<string, THREE.IUniform> | null = null;
+
+  /** The distant sphere's surface look (planet.frag, LightingConfig SURFACE_RELIEF / FAR_SURFACE) */
+  private farReliefUniforms(): Record<string, THREE.IUniform> {
+    if (!this.farShared) {
+      const hasSea = this.config.hasWater !== false && !this.config.texturePath;
+      this.farShared = {
+        reliefRadius: { value: this.radius },
+        reliefScale: { value: SURFACE_RELIEF.FAR_SCALE },
+        reliefStrength: { value: SURFACE_RELIEF.FAR_STRENGTH },
+        reliefTone: { value: SURFACE_RELIEF.FAR_TONE },
+        farWaterRadius: { value: hasSea ? this.depthToRadius(this.getSeaLevelDepth()) : 0 },
+        farSmooth: { value: FAR_SURFACE.SMOOTH },
+        farMottle: { value: FAR_SURFACE.MOTTLE },
+        farMottleScale: { value: FAR_SURFACE.MOTTLE_SCALE },
+        farOpacity: { value: 1 },
+        farTime: { value: 0 },
+        farWaterShelf: { value: new THREE.Vector3(...FAR_WATER.SHELF) },
+        farWaterVariation: { value: FAR_WATER.VARIATION },
+        farWaveScale: { value: FAR_WATER.WAVE_SCALE },
+        farWaveStrength: { value: FAR_WATER.WAVE_STRENGTH },
+        farWaveSpeed: { value: FAR_WATER.WAVE_SPEED },
+        farSpecular: { value: FAR_WATER.SPECULAR },
+        farShininess: { value: FAR_WATER.SHININESS },
+        farSheen: { value: FAR_WATER.SHEEN },
+        farFresnel: { value: FAR_WATER.FRESNEL },
+        farLimb: { value: FAR_SURFACE.LIMB_DARKENING },
+        farHazeColour: { value: new THREE.Vector3(0, 0, 0) },
+        farHazeStrength: { value: 0 },
+        farTerminatorTint: { value: new THREE.Vector3(...SPACE_HAZE.TERMINATOR_TINT) },
+        farNight: { value: FAR_SURFACE.NIGHT },
+      };
+    }
+    return this.farShared;
+  }
+
+  /** The air seen over the far surface: its tint, or null for an airless world (no haze) */
+  public setFarAtmosphere(tint: string | null | undefined, hasAtmosphere: boolean): void {
+    const u = this.farReliefUniforms();
+    const c = new THREE.Color(tint || '#ffffff');
+    (u.farHazeColour.value as THREE.Vector3).set(SPACE_HAZE.COLOUR[0] * c.r, SPACE_HAZE.COLOUR[1] * c.g, SPACE_HAZE.COLOUR[2] * c.b);
+    u.farHazeStrength.value = hasAtmosphere ? FAR_SURFACE.HAZE : 0;
+  }
+
   private createPlanetShaderMaterial(color: THREE.Color): THREE.ShaderMaterial {
     const material = new THREE.ShaderMaterial({
       uniforms: {
@@ -4200,6 +4261,7 @@ export class Planet {
         oceanDepthPower: PlayerConfig.TERRAIN_OCEAN_DEPTH_POWER,
         terrainMaxDepth: this.MAX_DEPTH - this.SEA_LEVEL,
         volcanoes: this.config.volcanoes ?? 0,
+        seaBias: this.config.seaBias ?? 0,
         radius: this.radius,
         spawnDir: d ? { x: d.x, y: d.y, z: d.z } : undefined,
       };
@@ -4323,6 +4385,7 @@ export class Planet {
 
     if (distantLODLevel >= 0) {
       // Use distant LOD mesh - hide all other meshes
+      this.setFarFade(1);
       this.setDistantLODVisible(distantLODLevel);
       if (this.lodMesh) this.lodMesh.visible = false;
       if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
@@ -4353,7 +4416,12 @@ export class Planet {
     // 2. Medium altitude (> intermediateLODAltitude): Intermediate LOD
     // 3. Low altitude: Detailed terrain
 
-    if (altitude > highLODAlt) {
+    // The intermediate tier is skipped unless PlayerConfig.LOD_INTERMEDIATE_TIER:
+    // it read as near-flat colour between two textured looks, so the climb
+    // went textured -> flat -> textured -> colour. Without it: textured
+    // terrain all the way up, then one cross-fade to the far planet.
+    const highFrom = PlayerConfig.LOD_INTERMEDIATE_TIER ? highLODAlt : intermediateLODAlt;
+    if (altitude > highFrom) {
       // HIGH ALTITUDE: Show only chunked LOD (no detailed terrain needed)
       // Clear cached nearby tiles when going to orbit view
       if (this.cachedNearbyTiles.size > 0) {
@@ -4375,9 +4443,15 @@ export class Planet {
         if (this.lodWaterMesh) this.lodWaterMesh.visible = true;
         if (this.intermediateLODMesh) this.intermediateLODMesh.visible = false;
         if (this.batchedMeshGroup) this.batchedMeshGroup.visible = false;
-        this.setDistantLODVisible(-1); // Hide distant LOD
+        // Nearing the far planet's altitude: it fades in over the terrain
+        // (PlayerConfig.LOD_FADE_BAND) instead of cutting
+        const distantAlt = this.getDistantLODAltitude();
+        const fade = THREE.MathUtils.smoothstep(altitude, distantAlt * (1 - PlayerConfig.LOD_FADE_BAND), distantAlt);
+        this.setFarFade(fade);
+        this.setDistantLODVisible(fade > 0 ? 0 : -1);
       } else {
         // HIGH LOD not ready - use distant LOD level 0 as fallback
+        this.setFarFade(1);
         this.setDistantLODVisible(0);
         if (this.lodMesh) this.lodMesh.visible = false;
         if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
@@ -4412,6 +4486,7 @@ export class Planet {
         this.setDistantLODVisible(-1);
       } else {
         // Neither intermediate nor HIGH LOD ready - use distant LOD level 0 as fallback
+        this.setFarFade(1);
         this.setDistantLODVisible(0);
         if (this.lodMesh) this.lodMesh.visible = false;
         if (this.lodWaterMesh) this.lodWaterMesh.visible = false;
@@ -6031,6 +6106,31 @@ export class Planet {
 
   // Set the visibility of distant LOD meshes
   // level = -1 hides all, 0-2 shows only that level
+  // The far planet's fade over the terrain (0 hidden, 1 opaque): while it
+  // fades it draws over the terrain (pulled forward, no depth write, blended)
+  private farFade = 1;
+  private setFarFade(f: number): void {
+    if (this.farFade === f) return;
+    const fading = f < 1;
+    this.farReliefUniforms().farOpacity.value = f;
+    if (fading !== this.farFade < 1) {
+      for (const m of this.distantLODMaterials) {
+        m.transparent = fading;
+        m.depthWrite = !fading;
+        m.polygonOffsetFactor = fading ? -4 : 1;
+        m.polygonOffsetUnits = fading ? -4 : 1;
+        m.needsUpdate = true;
+      }
+      for (const mesh of this.distantLODMeshes) mesh.renderOrder = fading ? 5 : -2;
+    }
+    this.farFade = f;
+  }
+
+  /** The far surface's clock (the sea's waves) */
+  public setFarTime(t: number): void {
+    this.farReliefUniforms().farTime.value = t;
+  }
+
   private setDistantLODVisible(level: number): void {
     if (this.currentDistantLODLevel === level) return; // No change needed
 

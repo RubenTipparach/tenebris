@@ -177,6 +177,72 @@ export enum ItemType {
   FISH_SPRAT = 196,
   // Oil sand dug out whole, for the refinery (it can also be scooped with a bucket)
   OIL_SAND = 197,
+  // Space exploration (openspec space-exploration): planted on a body to survey it
+  SURVEY_BEACON = 198,
+  // Rocket equipment: soaks up re-entry and solar heat (space-exploration)
+  HEAT_SHIELD = 199,
+  // A rocket part that splits the stack into stages (space-exploration, rocket-staging)
+  STAGE_SEPARATOR = 200,
+  // Rocket equipment: lets a parked rocket's stack be changed away from a pad (rocket-refit)
+  REFIT_KIT = 201,
+  REFIT_KIT_MK2 = 202,
+  // The engine ladder (space-exploration, rocket-tiers)
+  ION_THRUSTER = 203,
+  GAS_CORE_ENGINE = 204,
+  FISSION_FRAGMENT_DRIVE = 205,
+  NUCLEAR_PULSE_DRIVE = 206,
+  FUSION_DRIVE = 207,
+  FUSION_TORCH = 208,
+  // Body resources and what they make (space-exploration, resources)
+  RESIN = 209,
+  SALVAGE = 210,
+  SUPERCONDUCTOR = 211,
+  RARE_EARTH_ORE = 212,
+  MAGNET = 213,
+  RADIOTROPHIC_FUNGUS = 214,
+  SILICA = 215,
+  AEROGEL = 216,
+  CRYSTAL = 217,
+  LASER_CRYSTAL = 218,
+  CRYO_COOLANT = 219,
+  CORONAL_DATA = 220,
+  PULSE_UNIT = 221,
+  HELIUM_3 = 222,
+  DEUTERIUM = 223,
+  METALLIC_HYDROGEN = 224,
+  CERAMIC_PLATING = 225,
+  MAGNETIC_COIL = 226,
+  // Suit tiers and heaters (space-exploration, body-environments)
+  THERMAL_SUIT = 227,
+  HARDENED_SUIT = 228,
+  SUIT_HEATER = 229,
+  SUIT_HEATER_MK2 = 230,
+  // Upgrade parts (space-exploration, resources): rewards of the moons and
+  // asteroids, so no visit is empty
+  FUEL_TANK_MK2 = 231,
+  FUEL_TANK_MK3 = 232,
+  CARGO_BAY_MK2 = 233,
+  LARGE_CARGO_BAY = 234,
+  CARGO_BAY_MK3 = 235,
+  COMPACT_REACTOR_CORE = 236,
+  CRYO_TANK = 237,
+  BATTERY_PACK_MK2 = 238,
+  BATTERY_PACK_MK3 = 239,
+  SOLAR_ARRAY_MK2 = 240,
+  RADIATOR = 241,
+  RADIATOR_MK2 = 242,
+  DROGUE_CHUTE = 243,
+  RTG = 244,
+  SURVEY_DRONE = 245,
+  HEAT_SHIELD_MK2 = 246,
+  HEAT_SHIELD_MK3 = 247,
+  RADIATION_LINING = 248,
+  COOLANT_LOOP = 249,
+  FUEL_ROD_MK2 = 250,
+  // Thalassa's fish (space-exploration, ocean-world)
+  FISH_MULLET = 251,
+  FISH_KELPEEL = 252,
+  FISH_GROUPER = 253,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -185,6 +251,7 @@ export enum RocketPartType {
   FUEL_TANK = 'fuel_tank',
   CAPSULE = 'capsule',
   CARGO = 'cargo',      // a cargo bay: hold slots, no thrust or fuel
+  SEPARATOR = 'separator', // a stage separator: splits the stack into stages (it drops with the stage below)
   // Add more types as needed
 }
 
@@ -392,6 +459,18 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
       heightUnits: 1,
     },
   },
+  [ItemType.STAGE_SEPARATOR]: {
+    name: 'Stage Separator',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/stage_separator_face.png',
+    mineTime: 2.0,
+    rocketPart: {
+      partType: RocketPartType.SEPARATOR,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/stage_separator.png',
+      heightUnits: 1,
+    },
+  },
   [ItemType.BUCKET]: { name: 'Bucket', stackSize: 16, texture: '/textures/icons/bucket.png', mineTime: 0.3 },
   [ItemType.WATER_BUCKET]: { name: 'Water Bucket', stackSize: 16, texture: '/textures/icons/water_bucket.png', mineTime: 0.3 },
   [ItemType.ORE_TITANIUM]: { name: 'Titanium Ore', stackSize: 64, texture: '/textures/moon/ore_titanium.png', mineTime: 2.5 },
@@ -420,11 +499,120 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_GOURAMI]: { name: 'Mire Gourami', stackSize: 16, texture: '/textures/fish/gourami.png', mineTime: 0.3 },
   [ItemType.FISH_GAR]: { name: 'Violet Gar', stackSize: 16, texture: '/textures/fish/violet_gar.png', mineTime: 0.3 },
   [ItemType.FISH_SPRAT]: { name: 'Glimmer Sprat', stackSize: 16, texture: '/textures/fish/sprat.png', mineTime: 0.3 },
+  [ItemType.FISH_MULLET]: { name: 'Pearl Mullet', stackSize: 16, texture: '/textures/fish/pearl_mullet.png', mineTime: 0.3 },
+  [ItemType.FISH_KELPEEL]: { name: 'Kelp Eel', stackSize: 16, texture: '/textures/fish/kelp_eel.png', mineTime: 0.3 },
+  [ItemType.FISH_GROUPER]: { name: 'Abyss Grouper', stackSize: 16, texture: '/textures/fish/abyss_grouper.png', mineTime: 0.3 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)
   [ItemType.CLAY]: { name: 'Clay', stackSize: 64, texture: '/textures/resources/clay.png', mineTime: 0.6 },
   [ItemType.OIL_SAND]: { name: 'Oil Sand', stackSize: 64, texture: '/textures/resources/oil_sand.png', mineTime: 0.9 },
+  [ItemType.ION_THRUSTER]: {
+    name: 'Ion Thruster',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/ion_thruster_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/ion_thruster.png',
+      heightUnits: 1,
+      modelScale: { x: 0.7, y: 1, z: 0.7 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.GAS_CORE_ENGINE]: {
+    name: 'Gas-Core Engine',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/gas_core_engine_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/gas_core_engine.png',
+      heightUnits: 1,
+      modelScale: { x: 1.05, y: 1, z: 1.05 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.FISSION_FRAGMENT_DRIVE]: {
+    name: 'Fission-Fragment Drive',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fission_fragment_drive_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/fission_fragment_drive.png',
+      heightUnits: 1,
+      modelScale: { x: 0.9, y: 1, z: 0.9 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.NUCLEAR_PULSE_DRIVE]: {
+    name: 'Nuclear Pulse Drive',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/nuclear_pulse_drive_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/nuclear_pulse_drive.png',
+      heightUnits: 1,
+      modelScale: { x: 1.25, y: 1, z: 1.25 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.FUSION_DRIVE]: {
+    name: 'D-He3 Fusion Drive',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fusion_drive_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/fusion_drive.png',
+      heightUnits: 1,
+      modelScale: { x: 1.0, y: 1, z: 1.0 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.FUSION_TORCH]: {
+    name: 'Magnetic Fusion Torch',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fusion_torch_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.ENGINE,
+      modelPath: '/models/medium_rocket_nozzlel.obj',
+      texturePath: '/textures/rocket_parts/fusion_torch.png',
+      heightUnits: 1,
+      modelScale: { x: 1.15, y: 1, z: 1.15 },
+      engineRequirements: { minFuelTanks: 1, requiresCommandModule: true },
+    },
+  },
+  [ItemType.RESIN]: { name: 'Resin', stackSize: 64, texture: '/textures/icons/resin.png', mineTime: 0.5 },
+  [ItemType.SALVAGE]: { name: 'Salvage', stackSize: 64, texture: '/textures/icons/salvage.png', mineTime: 0.5 },
+  [ItemType.SUPERCONDUCTOR]: { name: 'Superconductor', stackSize: 32, texture: '/textures/icons/superconductor.png', mineTime: 0.5 },
+  [ItemType.RARE_EARTH_ORE]: { name: 'Rare-Earth Ore', stackSize: 64, texture: '/textures/icons/rare_earth_ore.png', mineTime: 0.5 },
+  [ItemType.MAGNET]: { name: 'Magnet', stackSize: 32, texture: '/textures/icons/magnet.png', mineTime: 0.5 },
+  [ItemType.RADIOTROPHIC_FUNGUS]: { name: 'Radiotrophic Fungus', stackSize: 64, texture: '/textures/icons/radiotrophic_fungus.png', mineTime: 0.5 },
+  [ItemType.SILICA]: { name: 'Silica', stackSize: 64, texture: '/textures/icons/silica.png', mineTime: 0.5 },
+  [ItemType.AEROGEL]: { name: 'Aerogel', stackSize: 32, texture: '/textures/icons/aerogel.png', mineTime: 0.5 },
+  [ItemType.CRYSTAL]: { name: 'Crystal', stackSize: 64, texture: '/textures/icons/crystal.png', mineTime: 0.5 },
+  [ItemType.LASER_CRYSTAL]: { name: 'Laser Crystal', stackSize: 16, texture: '/textures/icons/laser_crystal.png', mineTime: 0.5 },
+  [ItemType.CRYO_COOLANT]: { name: 'Cryo Coolant', stackSize: 16, texture: '/textures/icons/cryo_coolant.png', mineTime: 0.5 },
+  [ItemType.CORONAL_DATA]: { name: 'Coronal Field Data', stackSize: 8, texture: '/textures/icons/coronal_data.png', mineTime: 0.5 },
+  [ItemType.PULSE_UNIT]: { name: 'Pulse Unit', stackSize: 64, texture: '/textures/icons/pulse_unit.png', mineTime: 0.5 },
+  [ItemType.HELIUM_3]: { name: 'Helium-3', stackSize: 64, texture: '/textures/icons/helium_3.png', mineTime: 0.5 },
+  [ItemType.DEUTERIUM]: { name: 'Deuterium', stackSize: 64, texture: '/textures/icons/deuterium.png', mineTime: 0.5 },
+  [ItemType.METALLIC_HYDROGEN]: { name: 'Metallic Hydrogen', stackSize: 16, texture: '/textures/icons/metallic_hydrogen.png', mineTime: 0.5 },
+  [ItemType.CERAMIC_PLATING]: { name: 'Ceramic Plating', stackSize: 32, texture: '/textures/icons/ceramic_plating.png', mineTime: 0.5 },
+  [ItemType.MAGNETIC_COIL]: { name: 'Magnetic Coil', stackSize: 8, texture: '/textures/icons/magnetic_coil.png', mineTime: 0.5 },
+  [ItemType.REFIT_KIT]: { name: 'Refit Kit', stackSize: 4, texture: '/textures/icons/refit_kit.png', mineTime: 0.5 },
+  [ItemType.REFIT_KIT_MK2]: { name: 'Refit Kit Mk2', stackSize: 1, texture: '/textures/icons/refit_kit_mk2.png', mineTime: 0.5 },
+  [ItemType.HEAT_SHIELD]: { name: 'Heat Shield', stackSize: 4, texture: '/textures/rocket_parts/heat_shield_face.png', mineTime: 0.5 },
+  [ItemType.SURVEY_BEACON]: { name: 'Survey Beacon', stackSize: 16, texture: '/textures/technology/survey_beacon_face.png', mineTime: 1.0 },
   [ItemType.ORE_URANIUM]: { name: 'Uranium Ore', stackSize: 64, texture: '/textures/resources/ore_uranium.png', mineTime: 3.5 },
   [ItemType.BRICK]: { name: 'Brick', stackSize: 64, texture: '/textures/icons/brick.png', mineTime: 0.3 },
   [ItemType.CLAY_POT]: { name: 'Clay Pot', stackSize: 16, texture: '/textures/icons/clay_pot.png', mineTime: 0.3 },
@@ -526,6 +714,113 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.OXYGEN_TANK]: { name: 'Oxygen Tank', stackSize: 16, texture: '/textures/icons/oxygen_tank.png', mineTime: 0.5 },
   [ItemType.GAS_COLLECTOR]: { name: 'Gas Collector', stackSize: 8, texture: '/textures/technology/gas_collector_face.png', mineTime: 2.0 },
   [ItemType.SPACE_SUIT]: { name: 'Space Suit', stackSize: 1, texture: '/textures/icons/space_suit.png', mineTime: 0.5 },
+  [ItemType.THERMAL_SUIT]: { name: 'Thermal Suit', stackSize: 1, texture: '/textures/icons/thermal_suit.png', mineTime: 0.5 },
+  [ItemType.HARDENED_SUIT]: { name: 'Hardened Suit', stackSize: 1, texture: '/textures/icons/hardened_suit.png', mineTime: 0.5 },
+  [ItemType.SUIT_HEATER]: { name: 'Suit Heater', stackSize: 1, texture: '/textures/icons/suit_heater.png', mineTime: 0.5 },
+  [ItemType.SUIT_HEATER_MK2]: { name: 'Suit Heater Mk2', stackSize: 1, texture: '/textures/icons/suit_heater_mk2.png', mineTime: 0.5 },
+  // ---- upgrade parts (space-exploration, resources) ----
+  [ItemType.FUEL_TANK_MK2]: {
+    name: 'Fuel Tank Mk2',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fuel_tank_mk2_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/fuel_tank_mk2.png',
+      heightUnits: 2,
+      modelScale: { x: 1, y: 2, z: 1 },
+    },
+  },
+  [ItemType.FUEL_TANK_MK3]: {
+    name: 'Fuel Tank Mk3',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/fuel_tank_mk3_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.FUEL_TANK,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/fuel_tank_mk3.png',
+      heightUnits: 2,
+      modelScale: { x: 1, y: 2, z: 1 },
+    },
+  },
+  [ItemType.CARGO_BAY_MK2]: {
+    name: 'Cargo Bay Mk2',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/cargo_bay_mk2_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/cargo_bay_mk2.png',
+      heightUnits: 1,
+    },
+  },
+  [ItemType.LARGE_CARGO_BAY]: {
+    name: 'Large Cargo Bay',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/large_cargo_bay_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/large_cargo_bay.png',
+      heightUnits: 2,
+      modelScale: { x: 1, y: 2, z: 1 },
+    },
+  },
+  [ItemType.CARGO_BAY_MK3]: {
+    name: 'Cargo Bay Mk3',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/cargo_bay_mk3_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/cargo_bay_mk3.png',
+      heightUnits: 2,
+      modelScale: { x: 1, y: 2, z: 1 },
+    },
+  },
+  [ItemType.COMPACT_REACTOR_CORE]: {
+    name: 'Compact Reactor Core',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/compact_reactor_core_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/compact_reactor_core.png',
+      heightUnits: 1,
+    },
+  },
+  [ItemType.CRYO_TANK]: {
+    name: 'Cryo Tank',
+    stackSize: 8,
+    texture: '/textures/rocket_parts/cryo_tank_face.png',
+    mineTime: 3.0,
+    rocketPart: {
+      partType: RocketPartType.CARGO,
+      modelPath: '/models/medium_fuel_tank.obj',
+      texturePath: '/textures/rocket_parts/cryo_tank.png',
+      heightUnits: 1,
+    },
+  },
+  // rocket equipment (ROCKET_CONFIG.EQUIPMENT), not parts of the stack
+  [ItemType.BATTERY_PACK_MK2]: { name: 'Battery Pack Mk2', stackSize: 8, texture: '/textures/rocket_parts/battery_pack_mk2_face.png', mineTime: 3.0 },
+  [ItemType.BATTERY_PACK_MK3]: { name: 'Battery Pack Mk3', stackSize: 8, texture: '/textures/rocket_parts/battery_pack_mk3_face.png', mineTime: 3.0 },
+  [ItemType.SOLAR_ARRAY_MK2]: { name: 'Solar Array Mk2', stackSize: 8, texture: '/textures/rocket_parts/solar_array_mk2_face.png', mineTime: 3.0 },
+  [ItemType.RADIATOR]: { name: 'Radiator', stackSize: 8, texture: '/textures/rocket_parts/radiator_face.png', mineTime: 3.0 },
+  [ItemType.RADIATOR_MK2]: { name: 'Radiator Mk2', stackSize: 8, texture: '/textures/rocket_parts/radiator_mk2_face.png', mineTime: 3.0 },
+  [ItemType.DROGUE_CHUTE]: { name: 'Drogue Chute', stackSize: 8, texture: '/textures/rocket_parts/drogue_chute_face.png', mineTime: 3.0 },
+  [ItemType.RTG]: { name: 'Radioisotope Generator', stackSize: 4, texture: '/textures/rocket_parts/rtg_face.png', mineTime: 3.0 },
+  [ItemType.SURVEY_DRONE]: { name: 'Survey Drone', stackSize: 8, texture: '/textures/rocket_parts/survey_drone_face.png', mineTime: 3.0 },
+  [ItemType.HEAT_SHIELD_MK2]: { name: 'Heat Shield Mk2', stackSize: 4, texture: '/textures/rocket_parts/heat_shield_mk2_face.png', mineTime: 3.0 },
+  [ItemType.HEAT_SHIELD_MK3]: { name: 'Heat Shield Mk3', stackSize: 4, texture: '/textures/rocket_parts/heat_shield_mk3_face.png', mineTime: 3.0 },
+  [ItemType.RADIATION_LINING]: { name: 'Radiation Lining', stackSize: 16, texture: '/textures/icons/radiation_lining.png', mineTime: 0.5 },
+  [ItemType.COOLANT_LOOP]: { name: 'Coolant Loop', stackSize: 16, texture: '/textures/icons/coolant_loop.png', mineTime: 0.5 },
+  [ItemType.FUEL_ROD_MK2]: { name: 'Fuel Rod Mk2', stackSize: 16, texture: '/textures/icons/fuel_rod_mk2.png', mineTime: 0.5 },
   [ItemType.SOLAR_PANEL]: { name: 'Solar Panel', stackSize: 16, texture: '/textures/technology/solar_panel_face.png', mineTime: 1.5 },
   [ItemType.SOLAR_ARRAY]: {
     name: 'Solar Array',
@@ -776,6 +1071,40 @@ export class Inventory {
     }
 
     return removed;
+  }
+
+  /**
+   * Would `give` fit in the hotbar + bag once `take` is removed? A craft asks
+   * this before it spends anything: addItem drops whatever doesn't fit, so a
+   * craft into a full inventory used to eat the ingredients and the result.
+   */
+  public fitsAfter(take: { itemType: ItemType; quantity: number }[], give: { itemType: ItemType; quantity: number }[]): boolean {
+    const sim = this.slots.slice(0, this.totalSlots).map(s => ({ itemType: s.itemType, quantity: s.quantity }));
+    for (const t of take) {
+      let left = t.quantity;
+      for (let i = sim.length - 1; i >= 0 && left > 0; i--) {
+        if (sim[i].itemType !== t.itemType) continue;
+        const n = Math.min(left, sim[i].quantity);
+        sim[i].quantity -= n;
+        left -= n;
+        if (sim[i].quantity === 0) sim[i].itemType = ItemType.NONE;
+      }
+    }
+    for (const g of give) {
+      if (g.itemType === ItemType.NONE) continue;
+      const stack = ITEM_DATA[g.itemType].stackSize;
+      let left = g.quantity;
+      for (const s of sim) {
+        if (left <= 0) break;
+        if (s.itemType === g.itemType && s.quantity < stack) { const n = Math.min(left, stack - s.quantity); s.quantity += n; left -= n; }
+      }
+      for (const s of sim) {
+        if (left <= 0) break;
+        if (s.itemType === ItemType.NONE) { const n = Math.min(left, stack); s.itemType = g.itemType; s.quantity = n; left -= n; }
+      }
+      if (left > 0) return false;
+    }
+    return true;
   }
 
   // Check if inventory (hotbar + bag) has at least this many of an item

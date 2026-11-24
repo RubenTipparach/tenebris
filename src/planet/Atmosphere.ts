@@ -3,7 +3,7 @@ import atmosphereVert from '../shaders/atmosphere/atmosphere.vert';
 import atmosphereFrag from '../shaders/atmosphere/atmosphere.frag';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { SkyParams } from '../shared/skyLight';
-import { SKY_LOOK } from '../config/LightingConfig';
+import { SKY_LOOK, SPACE_HAZE } from '../config/LightingConfig';
 
 export interface AtmosphereConfig {
   planetRadius: number;     // Actual planet surface radius
@@ -75,6 +75,15 @@ function createAtmosphereShaderMaterial(config: AtmosphereConfig): THREE.ShaderM
       duskStrength: { value: sky.duskStrength },
       horizonGlow: { value: new THREE.Vector3(...sky.horizonGlow) },
       horizonPower: { value: sky.horizonPower },
+      // Seen from space: the gas giants' haze (LightingConfig SPACE_HAZE)
+      spaceFadeFrom: { value: SPACE_HAZE.FADE_FROM },
+      spaceFadeTo: { value: SPACE_HAZE.FADE_TO },
+      spaceScaleHeight: { value: SPACE_HAZE.SCALE_HEIGHT },
+      spaceDensity: { value: SPACE_HAZE.DENSITY },
+      spaceStrength: { value: SPACE_HAZE.STRENGTH },
+      spaceColour: { value: new THREE.Vector3(...SPACE_HAZE.COLOUR) },
+      spaceTerminatorTint: { value: new THREE.Vector3(...SPACE_HAZE.TERMINATOR_TINT) },
+      spaceSamples: { value: SPACE_HAZE.SAMPLES },
     },
     vertexShader: atmosphereVert,
     fragmentShader: atmosphereFrag,

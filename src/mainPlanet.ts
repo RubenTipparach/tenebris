@@ -15,7 +15,7 @@ import { skyLightTexture } from './planet/SkyLightTexture';
 import { CloudSystem, createEarthClouds } from './planet/Clouds';
 import { PlayerConfig } from './config/PlayerConfig';
 import { MACHINE_KIND_OF } from './config/PowerConfig';
-import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems } from './config/SolarSystemConfig';
+import { SOLAR_SYSTEM, getBodyConfig, getGravityRadii, GAS_GIANTS, CelestialBodyType, bodyClearanceProblems, bodyEnvironment } from './config/SolarSystemConfig';
 import { profiler } from './engine/Profiler';
 import { gameStorage } from './engine/GameStorage';
 import { loadingManager } from './engine/LoadingManager';
@@ -191,6 +191,7 @@ class PlanetGame {
           blockRemap: bodyConfig.terrain.blockRemap,
           maxDepth: bodyConfig.terrain.maxDepth,
           volcanoes: bodyConfig.terrain.volcanoes,
+          seaBias: bodyConfig.terrain.seaBias,
           iceCover: bodyConfig.terrain.iceCover,
           metalRich: bodyConfig.terrain.metalRich,
           extraOres: bodyConfig.terrain.extraOres,
@@ -208,6 +209,8 @@ class PlanetGame {
       planet.setSkyLight(skyLightTexture(bodyConfig.hasAtmosphere
         ? skyParamsFor(planet.radius, groundRadiusOf(planet), bodyConfig.visual.atmosphereTint)
         : null));
+      // ... and the same air hazing its surface seen from space
+      planet.setFarAtmosphere(bodyConfig.visual.atmosphereTint, !!bodyConfig.hasAtmosphere && PlayerConfig.ATMOSPHERE_ENABLED);
     }
 
     // Things placed on a planet ride it round its orbit: the object
@@ -458,15 +461,30 @@ class PlanetGame {
 
         const planet = this.planets.get(bodyConfig.id);
         if (planet) {
-          this.rocketFlightManager.addPlanet(
-            bodyConfig.name,
-            planet.center,
-            planet.radius,
-            bodyConfig.gravity.strength,
-            (direction) => planet.getSurfaceHeightInDirection(direction),
-            bodyConfig.hasAtmosphere
-          );
+          this.rocketFlightManager.addPlanet({
+            id: bodyConfig.id,
+            name: bodyConfig.name,
+            center: planet.center,
+            radius: planet.radius,
+            gravityStrength: bodyConfig.gravity.strength,
+            getSurfaceHeight: (direction) => planet.getSurfaceHeightInDirection(direction),
+            hasAtmosphere: bodyConfig.hasAtmosphere,
+            atmosphereDensity: bodyEnvironment(bodyConfig.id).atmosphereDensity,
+          });
         }
+      }
+      // The gas giants: wells of thick air with no ground (space-exploration)
+      for (const g of GAS_GIANTS) {
+        this.rocketFlightManager.addPlanet({
+          id: g.id,
+          name: g.name,
+          center: new THREE.Vector3(g.position.x, g.position.y, g.position.z),
+          radius: g.radius,
+          gravityStrength: ROCKET_CONFIG.GAS_GIANT_FLIGHT.gravityStrength,
+          hasAtmosphere: true,
+          atmosphereDensity: bodyEnvironment(g.id).atmosphereDensity,
+          gasGiant: true,
+        });
       }
 
       // Set up close all menus callback for boarding rocket
@@ -572,6 +590,15 @@ class PlanetGame {
       this.rocketFlightManager.setOnRocketChangedCallback(() => {
         this.blockInteraction.saveLaunchPadStates();
       });
+      // Docking and refits away from home: the pads, and the player's own items
+      {
+        const inv = () => this.blockInteraction.getInventory();
+        this.rocketFlightManager.setRefitSupport(this.blockInteraction.getLaunchPadManager(), {
+          count: (t) => inv().getItemCount(t),
+          take: (t, n) => { const got = inv().removeItem(t, n); this.blockInteraction.onInventoryChanged(); return got; },
+          give: (t, n) => { const left = inv().addItem(t, n); this.blockInteraction.onInventoryChanged(); return left; },
+        });
+      }
       this.rocketFlightManager.setOnOpenCargoCallback((slots, title, accepts) => {
         this.blockInteraction.openRocketCargo(slots, title, accepts);
       });
@@ -863,6 +890,7 @@ class PlanetGame {
           };
         },
         remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
+        visited: (bodyId) => this.missions?.visited(bodyId) ?? false,
       }, this.blockInteraction.getCraftingSystem());
     }
     this.navigation.update();
@@ -1013,6 +1041,7 @@ class PlanetGame {
       // every planet's water material gets the depth texture (registering twice is a no-op)
       const waterMaterial = planet.getWaterShaderMaterial();
       if (waterMaterial) this.engine.registerWaterMaterial(waterMaterial);
+      planet.setFarTime(this.elapsedTime);
       if (planet !== this.earth && planet.isInitialTerrainReady() && getBodyConfig(id)?.terrain.hasWater) {
         planet.updateWaterShader(this.elapsedTime, isUnderwater);
       }
@@ -1133,6 +1162,11 @@ class PlanetGame {
     this.engine.setSkyYaw(yaw);
     this.solarSystemMockup?.setFrameYaw(yaw);
     const center = new THREE.Vector3();
+    // The gas giants' wells ride their orbits too (rocket gravity, skims)
+    for (const g of GAS_GIANTS) {
+      framePositionAt(g.id, frame, t, p);
+      this.rocketFlightManager?.setPlanetCenter(g.id, center.set(p.x, p.y, p.z));
+    }
     for (const [id, planet] of this.planets) {
       framePositionAt(id, frame, t, p);
       center.set(p.x, p.y, p.z);
@@ -1883,7 +1917,7 @@ class PlanetGame {
     this.air = air;
     this.blockInteraction.setAirSystem(air);
     const crafting = this.blockInteraction.getCraftingSystem();
-    crafting.setSuitSlot({ worn: () => air.isSuitWorn(), takeOff: () => air.takeOffSuit() });
+    crafting.setSuitSlot({ item: () => air.getSuitItem(), takeOff: () => air.takeOffSuit() });
     // The suit rides the synced look, so other players see it
     this.multiplayer?.setSuit(air.isSuitWorn());
     air.onSuitChanged((worn) => {
@@ -1911,6 +1945,8 @@ class PlanetGame {
       inGravityWell: well !== null,
       bodyBreathable: bodyId !== null && getBodyConfig(bodyId)?.breathable === true,
       jetpack: this.player.getJetpackEnabled(),
+      // Heat, cold and radiation of the body underfoot (body-environments)
+      environment: bodyId !== null ? bodyEnvironment(bodyId) : null,
     };
   }
 

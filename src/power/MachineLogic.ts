@@ -92,9 +92,14 @@ export function wantsPower(m: MachineState, oilBelow: boolean): boolean {
   }
 }
 
+/** How long a rod of this kind runs a reactor (s); 0 = not a rod */
+export function rodLifeS(itemType: ItemType | undefined): number {
+  return itemType === undefined ? 0 : MACHINE_CONFIG.REACTOR_RODS[itemType] ?? 0;
+}
+
 /** Is a reactor fuelled (it supplies power)? */
 export function reactorFuelled(m: MachineState): boolean {
-  return m.kind === 'reactor' && m.rodLifeS.some((life, i) => life > 0 || (m.inputs[i]?.itemType === ItemType.FUEL_ROD && m.inputs[i].quantity > 0));
+  return m.kind === 'reactor' && m.rodLifeS.some((life, i) => life > 0 || (rodLifeS(m.inputs[i]?.itemType) > 0 && m.inputs[i].quantity > 0));
 }
 
 export interface TickEffects {
@@ -187,10 +192,11 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
       // Burn the rods: a fresh rod in a slot starts its life when the old one ends
       let running = false;
       for (let i = 0; i < m.rodLifeS.length; i++) {
-        if (m.rodLifeS[i] <= 0 && m.inputs[i]?.itemType === ItemType.FUEL_ROD && m.inputs[i].quantity > 0) {
+        const life = rodLifeS(m.inputs[i]?.itemType);
+        if (m.rodLifeS[i] <= 0 && life > 0 && m.inputs[i].quantity > 0) {
           m.inputs[i].quantity -= 1;
           if (m.inputs[i].quantity <= 0) m.inputs[i] = empty();
-          m.rodLifeS[i] = MACHINE_CONFIG.REACTOR_ROD_LIFE_S;
+          m.rodLifeS[i] = life;
         }
         if (m.rodLifeS[i] > 0) { running = true; m.rodLifeS[i] = Math.max(0, m.rodLifeS[i] - dtS); }
       }
@@ -205,8 +211,9 @@ export function tickMachine(m: MachineState, dtS: number, ctx: { oilBelow: boole
       m.progressS += dtS;
       m.status = 'Building';
       if (m.progressS >= recipe.timeS) {
-        if (!addToSlots(m.outputs, recipe.output, 1)) { m.status = 'Output full'; m.progressS = recipe.timeS; break; }
-        fx.made = [{ itemType: recipe.output, quantity: 1 }];
+        const made = recipe.outputQuantity ?? 1;
+        if (!addToSlots(m.outputs, recipe.output, made)) { m.status = 'Output full'; m.progressS = recipe.timeS; break; }
+        fx.made = [{ itemType: recipe.output, quantity: made }];
         fx.event = 'fabricated';
         m.job = null;
         m.progressS = 0;
@@ -280,7 +287,7 @@ export function acceptsInput(kind: PowerNodeKind, itemType: ItemType): boolean {
     case 'pumpJack': return itemType === ItemType.BUCKET;
     case 'refinery': return itemType === ItemType.CRUDE_OIL_BUCKET || itemType === ItemType.OIL_SAND;
     case 'centrifuge': return itemType === ItemType.ORE_URANIUM;
-    case 'reactor': return itemType === ItemType.FUEL_ROD;
+    case 'reactor': return rodLifeS(itemType) > 0;
     case 'gasCollector': return itemType === ItemType.EMPTY_TANK;
     default: return false;
   }

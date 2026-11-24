@@ -1,4 +1,4 @@
-import { MISSIONS, Mission, MissionObjective, STARTER_RECIPES } from '../config/Missions';
+import { MISSIONS, MISSION_BRANCHES, Mission, MissionBranch, MissionObjective, STARTER_RECIPES } from '../config/Missions';
 import type { GameEventType, GameEventKey } from '../engine/GameEvents';
 import type { RecipeGate } from './RecipeGate';
 
@@ -29,6 +29,8 @@ export interface MissionSave {
   /** The open mission the player picked to work on (null/missing: the
    *  first open one in the tree's order) */
   focus?: string | null;
+  /** Branches whose unlock toast has been shown (MISSION_BRANCHES announcedBy) */
+  announced?: string[];
 }
 
 /** Saves made since every recipe (not only the ones a mission named) waits on a mission. */
@@ -58,6 +60,7 @@ export class MissionTracker implements RecipeGate {
   private seen: Record<string, string[][]> = {};
   private legacy = new Set<number>();
   private focus: string | null = null;
+  private announced = new Set<string>();
   public onComplete: ((mission: Mission) => void) | null = null;
   public onChange: (() => void) | null = null;
 
@@ -70,6 +73,7 @@ export class MissionTracker implements RecipeGate {
       this.seen = { ...(s.seen ?? {}) };
       for (const o of s.legacy ?? []) this.legacy.add(o);
       this.focus = typeof s.focus === 'string' ? s.focus : null;
+      for (const b of s.announced ?? []) this.announced.add(b);
     } else if (saved && Number.isInteger((saved as LinearSave).index)) {
       // the first version's line: everything before its index is done
       LINEAR_IDS.slice(0, (saved as LinearSave).index).forEach(id => this.done.add(id));
@@ -79,7 +83,7 @@ export class MissionTracker implements RecipeGate {
   }
 
   public save(): MissionSave {
-    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED, focus: this.focus };
+    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED, focus: this.focus, announced: [...this.announced] };
   }
 
   // ---- the tree ----------------------------------------------------------
@@ -124,6 +128,32 @@ export class MissionTracker implements RecipeGate {
     if (this.done.has(m.id)) return 'done';
     if (!this.isOpen(m)) return 'locked';
     return this.now() === m ? 'now' : 'open';
+  }
+
+  /**
+   * The branches a just-finished mission announces (MISSION_BRANCHES
+   * `announcedBy`), each only the first time - the caller shows the toast.
+   */
+  public announceAfter(missionId: string): MissionBranch[] {
+    const out: MissionBranch[] = [];
+    for (const b of MISSION_BRANCHES) {
+      if (b.announcedBy !== missionId || this.announced.has(b.id)) continue;
+      this.announced.add(b.id);
+      out.push(b.id);
+    }
+    return out;
+  }
+
+  /** Has this body's visit mission been done (space exploration)? */
+  public visited(bodyId: string): boolean {
+    const m = MISSIONS.find(x => x.visit === bodyId);
+    return !!m && this.done.has(m.id);
+  }
+
+  /** Space exploration progress: bodies visited (visit missions done) of all of them */
+  public visits(): { done: number; total: number } {
+    const all = MISSIONS.filter(m => m.visit);
+    return { done: all.filter(m => this.done.has(m.id)).length, total: all.length };
   }
 
   /** Counts per objective: full for a done mission, zero for a locked one. */

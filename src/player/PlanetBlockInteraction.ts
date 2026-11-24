@@ -6,7 +6,7 @@ import { Inventory, ItemType, ITEM_DATA, InventorySlot } from './Inventory';
 import { showToast } from '../utils/toast';
 import { emitGameEvent } from '../engine/GameEvents';
 import type { Fauna } from '../planet/Fauna';
-import { RANCHING } from '../config/SurvivalConfig';
+import { RANCHING, SUITS } from '../config/SurvivalConfig';
 import { CookerManager, PlacedCooker } from '../planet/Cookers';
 import { COOKERS, CookerKind, cookerKindOf, FOOD_CONFIG } from '../config/CookingConfig';
 import type { AirSystem } from './AirSystem';
@@ -118,9 +118,10 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // The jungle moons: their grounds and soil drop dirt, their rock stone
     case HexBlockType.VERD_JUNGLE: case HexBlockType.VERD_SWAMP: case HexBlockType.VERD_SOIL:
     case HexBlockType.MIRE_JUNGLE: case HexBlockType.MIRE_SWAMP: case HexBlockType.MIRE_SOIL:
+    case HexBlockType.THAL_TURF: case HexBlockType.THAL_MOSS: case HexBlockType.THAL_SOIL:
       return ItemType.DIRT;
-    case HexBlockType.VERD_BANK: case HexBlockType.MIRE_BANK: return ItemType.SAND;
-    case HexBlockType.VERD_ROCK: case HexBlockType.MIRE_ROCK: return ItemType.STONE;
+    case HexBlockType.VERD_BANK: case HexBlockType.MIRE_BANK: case HexBlockType.THAL_BANK: return ItemType.SAND;
+    case HexBlockType.VERD_ROCK: case HexBlockType.MIRE_ROCK: case HexBlockType.THAL_ROCK: return ItemType.STONE;
     // The Moon's minerals give the ordinary ores
     case HexBlockType.MOON_ORE_IRON: return ItemType.ORE_IRON;
     case HexBlockType.MOON_ORE_ALUMINUM: return ItemType.ORE_ALUMINUM;
@@ -155,6 +156,14 @@ function blockToItem(blockType: HexBlockType): ItemType {
     // bucket still scoops crude straight from it)
     case HexBlockType.CLAY: case HexBlockType.VESPER_CLAY: return ItemType.CLAY;
     case HexBlockType.ORE_URANIUM: return ItemType.ORE_URANIUM;
+    // Body resources (space-exploration): mined, never placed back
+    case HexBlockType.RESIN_AMBER: return ItemType.RESIN;
+    case HexBlockType.SALVAGE_SCRAP: return ItemType.SALVAGE;
+    case HexBlockType.ORE_RARE_EARTH: return ItemType.RARE_EARTH_ORE;
+    case HexBlockType.FUNGUS_SEAM: return ItemType.RADIOTROPHIC_FUNGUS;
+    case HexBlockType.SILICA_SAND: return ItemType.SILICA;
+    case HexBlockType.CRYSTAL_VEIN: return ItemType.CRYSTAL;
+    case HexBlockType.CRYO_ICE: return ItemType.CRYO_COOLANT;
     case HexBlockType.OIL_SAND: return ItemType.OIL_SAND;
     // Building materials come back as themselves
     case HexBlockType.BRICK_BLOCK: return ItemType.BRICK_BLOCK;
@@ -1635,8 +1644,8 @@ export class PlanetBlockInteraction {
       this.usedRightClick(ShotAction.INTERACT);
       return;
     }
-    // A space suit in hand: right click puts it on (the suit slot takes it)
-    if (rightClick && this.rightClickCooldown === 0 && selectedItem.itemType === ItemType.SPACE_SUIT && selectedItem.quantity > 0 &&
+    // A suit in hand (any tier): right click puts it on (the suit slot takes it)
+    if (rightClick && this.rightClickCooldown === 0 && SUITS[selectedItem.itemType] && selectedItem.quantity > 0 &&
         closestObjectDistance === Infinity && this.airSystem?.wearSuitInHand()) {
       this.usedRightClick(ShotAction.INTERACT);
       return;
@@ -4576,6 +4585,8 @@ export class PlanetBlockInteraction {
     this.saveInventory();
     this.saveMachine(placed);
     if (kind === 'reactor') emitGameEvent('reactorBuilt', itemType, 1);
+    // A survey beacon surveys the body it stands on (a visit mission's step)
+    if (kind === 'surveyBeacon') emitGameEvent('surveyed', planetId, 1);
     this.cableNodeManager.updateCablesNearTile(tileIndex);
     this.cableNodeManager.rebuildAllConnections();
   }

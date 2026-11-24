@@ -33,6 +33,7 @@ export interface PlacedCable {
   connections: CableConnectionTarget[];
   // Visual connector meshes to adjacent cables
   connectorMeshes: THREE.Mesh[];
+  connectorSig?: string;  // what its connectors join, last rebuild (rebuildConnectorsForCable)
 }
 
 // Network represents a connected set of cables linking machines
@@ -374,7 +375,34 @@ export class CableNodeManager {
   }
 
   // Rebuild just the connector meshes for a single cable
+  // The connectors a rebuild would draw, as a signature: where each one ends
+  // (null = none). rebuildAllConnections runs every second; when nothing it
+  // connects to has changed, the existing connector meshes stay - remaking
+  // them churned ~40 geometries + materials a second in a wired-up world.
+  private connectorSigFor(cable: PlacedCable): { sig: string; count: number } {
+    const ends = cable.connections.map(conn => {
+      if (conn.type === 'cable') {
+        const n = this.cables.get(conn.cableId);
+        return n && cable.id < n.id ? n.position : null;
+      }
+      if (conn.type === 'node') return this.getPowerNodeAtTile?.(conn.tileIndex, cable.position)?.position ?? null;
+      const get = conn.type === 'steam-engine' ? this.getSteamEngineAtTile
+        : conn.type === 'electric-furnace' ? this.getElectricFurnaceAtTile
+        : conn.type === 'electronics-workbench' ? this.getElectronicsWorkbenchAtTile
+        : conn.type === 'computer' ? this.getComputerAtTile
+        : conn.type === 'printer-3d' ? this.getPrinter3DAtTile : undefined;
+      return (get?.(conn.tileIndex) as { position?: THREE.Vector3 } | undefined)?.position ?? null;
+    });
+    return {
+      sig: ends.map(p => (p ? `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}` : '-')).join('|'),
+      count: ends.filter(Boolean).length,
+    };
+  }
+
   private rebuildConnectorsForCable(cable: PlacedCable): void {
+    const { sig, count } = this.connectorSigFor(cable);
+    if (cable.connectorSig === sig && cable.connectorMeshes.length === count) return;
+    cable.connectorSig = sig;
     // Clear existing connectors
     for (const connector of cable.connectorMeshes) {
       this.scene.remove(connector);

@@ -638,9 +638,69 @@ def mirewood_rock(rng):
     return t.px
 
 
+# ---- Thalassa (openspec space-exploration, ocean-world) ----------------------
+# A sea world: salt-meadow turf on its few islands, tide moss where it is
+# wet, white shell sand on its beaches and its whole sea bed, slate soil
+# and black columnar basalt.
+
+THAL = {
+    'turf': R('#0c2f44', '#204f63', '#53998b', '#84e3b5', '#c1f1d8'),
+    'tide': R('#011c34', '#0c2f44', '#204f63', '#297537', '#559642'),
+    'pinks': R('#561c27', '#c34988', '#dd576d', '#eab798'),
+    'shell': R('#a09f91', '#cfaa81', '#eab798', '#fffefe'),
+    'slate': R('#170916', '#2b1f35', '#3e3551', '#522b2f', '#7d4636'),
+    'basalt': R('#010e1a', '#191954', '#1f3b52', '#3e586e', '#5d778d'),
+}
+
+
+def thalassa_turf(rng):
+    """Salt meadow: tufts of blue-green sea grass"""
+    t = Tile(THAL['turf'], 1)
+    t.ground(rng, THAL['turf'], [0, 1, 2], [2, 3, 2])
+    cushions(t, rng, THAL['turf'], 12, [2, 3], ((2, 3), (2, 2), (3, 2)))
+    return t.px
+
+
+def thalassa_moss(rng):
+    """Tide moss: dark wet cushions with sea-pink flowers"""
+    t = Tile(THAL['tide'], 2)
+    t.ground(rng, THAL['tide'], [1, 2], [3, 2])
+    cushions(t, rng, THAL['tide'], 9, [2, 3], ((3, 2), (3, 3), (2, 2)))
+    for _ in range(4):
+        x, y = rng.randrange(N), rng.randrange(N)
+        t.put(x, y, THAL['pinks'][2]); t.put(x + 1, y, THAL['pinks'][1]); t.put(x, y + 1, THAL['pinks'][1])
+    return t.px
+
+
+def thalassa_bank(rng):
+    """Shell sand: pale grains with broken shells, pink and white"""
+    t = Tile(THAL['shell'], 1)
+    t.ground(rng, THAL['shell'], [1, 2], [3, 2])
+    cushions(t, rng, THAL['shell'], 4, [2], ((2, 2), (3, 2)))
+    cushions(t, rng, THAL['pinks'], 3, [2], ((2, 2),))
+    specks(t, rng, THAL['shell'][3], 4)
+    return t.px
+
+
+def thalassa_soil(rng):
+    t = Tile(THAL['slate'], 2)
+    t.ground(rng, THAL['slate'], [1, 2, 3], [2, 4, 2])
+    cushions(t, rng, THAL['slate'], 5, [2, 3], ((2, 2), (3, 2)))
+    return t.px
+
+
+def thalassa_rock(rng):
+    """Columnar basalt: tight plates, a dark joint round each"""
+    t = Tile(THAL['basalt'], 2)
+    plates(t, rng, THAL['basalt'][1:], 4, THAL['basalt'][0])
+    return t.px
+
+
 JUNGLE_MOONS = {
     'verdance': (verdance_soil, verdance_rock, verdance_bank, [('jungle', verdance_jungle), ('swamp', verdance_swamp)]),
     'mirewood': (mirewood_soil, mirewood_rock, mirewood_bank, [('jungle', mirewood_jungle), ('swamp', mirewood_swamp)]),
+    # last, so the moons above draw from the shared rng unchanged
+    'thalassa': (thalassa_soil, thalassa_rock, thalassa_bank, [('turf', thalassa_turf), ('moss', thalassa_moss)]),
 }
 
 
@@ -745,6 +805,106 @@ def res_ore_uranium(rng):
     return t.px
 
 
+
+# ---- Body resources (openspec space-exploration, resources) ------------------
+# Each is gathered on one body only (src/config/Missions.ts BODY_RESOURCES):
+# its own host rock, and its own mineral drawn into it - never a tint of
+# another ore.
+
+BODY_RES = {
+    # Sequoia: amber resin seams in red-brown rock
+    'seqrock': R('#2f1525', '#522b2f', '#7d4636', '#a8633e'),
+    'amber': R('#681712', '#c56d25', '#fb902f', '#faaf5c', '#eab798'),
+    # Metropole Prime: rusted girders and plating in rubble
+    'rubble': R('#2c2c25', '#434137', '#a09f91', '#bfcad7'),
+    'rust': R('#2e0d06', '#733126', '#8d4526', '#c56d25'),
+    'plate': R('#1f3b52', '#3e586e', '#5d778d', '#92a3b2'),
+    # Lodestone: dark iron-grey rock, magenta-violet rare-earth grains
+    'lrock': R('#010e1a', '#1f3b52', '#3e586e', '#5d778d'),
+    'rareearth': R('#2b1f35', '#9e3ba2', '#c34988', '#dd576d', '#eab798'),
+    # Umbra: black shale threaded with glowing radiotrophic fungus
+    'ushale': R('#010000', '#161612', '#2b1f35', '#3e3551'),
+    'fungus': R('#0c2f44', '#204f63', '#53998b', '#84e3b5', '#c1f1d8'),
+    # Vesper: pale silica sand in ochre ground
+    'ochre': R('#7d4636', '#8d4526', '#ab8465', '#cfaa81'),
+    'silica': R('#92a3b2', '#bfcad7', '#d2f8ff', '#fffefe'),
+    # Halcyon: geode rock with clear cyan crystal points
+    'hrock': R('#170916', '#2b1f35', '#3e3551', '#69608b'),
+    'crystal': R('#15578a', '#1096c3', '#74effe', '#d2f8ff', '#fffefe'),
+    # Tessaly: frozen coolant - deep blue cryo ice in frost rock
+    'frock': R('#1f3b52', '#3e586e', '#5d778d', '#92a3b2'),
+    'cryo': R('#010e1a', '#191954', '#15578a', '#1096c3', '#74effe'),
+}
+
+
+def body_ore(rng, rock, mineral, nodules, bodies, sizes, glints):
+    """Host rock (its ramp, mottled) with the mineral clumped through it,
+    each clump lit top-left; a few glints on the mineral"""
+    t = Tile(rock, 1)
+    t.ground(rng, rock, [0, 1, 2], [2, 4, 2])
+    cushions(t, rng, rock, 5, [1, 2], ((3, 2), (2, 3), (3, 3)))
+    cushions(t, rng, mineral, nodules, bodies, sizes)
+    specks(t, rng, mineral[-1], glints)
+    return t.px
+
+
+def res_resin(rng):
+    return body_ore(rng, BODY_RES['seqrock'], BODY_RES['amber'], 5, [2, 3], ((3, 2), (4, 2), (3, 3)), 3)
+
+
+def res_salvage(rng):
+    """Rubble with rusted plates and a girder run across it"""
+    t = Tile(BODY_RES['rubble'], 1)
+    t.ground(rng, BODY_RES['rubble'], [0, 1, 2], [3, 4, 2])
+    cushions(t, rng, BODY_RES['plate'], 4, [1, 2], ((4, 3), (3, 3), (4, 2)))
+    cushions(t, rng, BODY_RES['rust'], 4, [1, 2], ((3, 2), (2, 3), (3, 3)))
+    y = rng.randrange(N)                                   # a girder: 2 px tall, the whole width
+    for x in range(N):
+        t.put(x, y, BODY_RES['plate'][3])
+        t.put(x, (y + 1) % N, BODY_RES['plate'][1])
+        if x % 4 == 0:
+            t.put(x, (y + 1) % N, BODY_RES['plate'][0])    # rivets
+    return t.px
+
+
+def res_rare_earth(rng):
+    return body_ore(rng, BODY_RES['lrock'], BODY_RES['rareearth'], 6, [1, 2, 3], ((2, 2), (3, 2), (2, 3)), 3)
+
+
+def res_fungus(rng):
+    return body_ore(rng, BODY_RES['ushale'], BODY_RES['fungus'], 7, [2, 3, 4], ((2, 2), (3, 2), (2, 3), (4, 2)), 4)
+
+
+def res_silica(rng):
+    return body_ore(rng, BODY_RES['ochre'], BODY_RES['silica'], 7, [1, 2], ((3, 2), (2, 2), (3, 3), (4, 2)), 2)
+
+
+def res_crystal(rng):
+    """Geode rock with crystal points: each a 2-wide upright shard, lit left"""
+    t = Tile(BODY_RES['hrock'], 1)
+    t.ground(rng, BODY_RES['hrock'], [0, 1, 2], [2, 4, 2])
+    cushions(t, rng, BODY_RES['hrock'], 5, [1, 2], ((3, 2), (2, 3), (3, 3)))
+    c = BODY_RES['crystal']
+    for _ in range(5):
+        x0, y0 = rng.randrange(N), rng.randrange(N)
+        h = rng.choice([4, 5, 6])
+        for dy in range(h):
+            y = (y0 + dy) % N
+            t.put(x0, y, c[3] if dy > 0 else c[4])         # the lit left face, a bright tip
+            t.put((x0 + 1) % N, y, c[1] if dy > 0 else c[3])
+        t.put((x0 + 1) % N, (y0 + h - 1) % N, c[0])        # its foot in shadow
+    return t.px
+
+
+def res_cryo(rng):
+    return body_ore(rng, BODY_RES['frock'], BODY_RES['cryo'], 6, [2, 3], ((3, 2), (3, 3), (4, 3), (2, 3)), 3)
+
+
+BODY_RESOURCE_TILES = [('resin', res_resin), ('salvage', res_salvage), ('ore_rare_earth', res_rare_earth),
+                       ('fungus', res_fungus), ('silica_sand', res_silica), ('crystal_vein', res_crystal),
+                       ('cryo_ice', res_cryo)]
+
+
 def resources():
     out = os.path.join(ROOT, 'resources')
     os.makedirs(out, exist_ok=True)
@@ -754,6 +914,12 @@ def resources():
         check(px)
         write_png(os.path.join(out, f'{name}.png'), px)
         print('wrote resource', name)
+    brng = random.Random(6161)                             # own rng again: adding these changes nothing above
+    for name, draw in BODY_RESOURCE_TILES:
+        px = draw(brng)
+        check(px)
+        write_png(os.path.join(out, f'{name}.png'), px)
+        print('wrote body resource', name)
 
 
 # ---- Building materials (openspec industry-and-nuclear, decision 9) ---------

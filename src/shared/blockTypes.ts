@@ -129,6 +129,23 @@ export enum HexBlockType {
   STEEL_GLASS = 98,      // steel-framed glass: see-through like GLASS
   // Wool carpet (openspec wool-air-and-reentry): a full block, soft underfoot
   CARPET = 99,
+  // Body resources (openspec space-exploration, resources): each in one
+  // body's rock only (src/config/Missions.ts BODY_RESOURCES)
+  RESIN_AMBER = 100,
+  SALVAGE_SCRAP = 101,
+  ORE_RARE_EARTH = 102,
+  FUNGUS_SEAM = 103,
+  SILICA_SAND = 104,
+  CRYSTAL_VEIN = 105,
+  CRYO_ICE = 106,
+  // Thalassa, the ocean world (space-exploration, ocean-world): salt-meadow
+  // turf, tide moss, shell sand (beaches and the whole sea bed), slate soil,
+  // columnar basalt
+  THAL_TURF = 107,
+  THAL_MOSS = 108,
+  THAL_BANK = 109,
+  THAL_SOIL = 110,
+  THAL_ROCK = 111,
 }
 
 // The Earth block a native planet variant behaves like (LOD colouring,
@@ -185,6 +202,11 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.VERD_BANK]: HexBlockType.SAND,
   [HexBlockType.VERD_SOIL]: HexBlockType.DIRT,
   [HexBlockType.VERD_ROCK]: HexBlockType.STONE,
+  [HexBlockType.THAL_TURF]: HexBlockType.GRASS,
+  [HexBlockType.THAL_MOSS]: HexBlockType.SNOW,
+  [HexBlockType.THAL_BANK]: HexBlockType.SAND,
+  [HexBlockType.THAL_SOIL]: HexBlockType.DIRT,
+  [HexBlockType.THAL_ROCK]: HexBlockType.STONE,
   [HexBlockType.MIRE_JUNGLE]: HexBlockType.GRASS,
   [HexBlockType.MIRE_SWAMP]: HexBlockType.SNOW,
   [HexBlockType.MIRE_BANK]: HexBlockType.SAND,
@@ -206,6 +228,13 @@ const BASE_TERRAIN_TYPE: Partial<Record<number, HexBlockType>> = {
   [HexBlockType.STEEL_GIRDER]: HexBlockType.STONE,
   [HexBlockType.STEEL_GLASS]: HexBlockType.GLASS,
   [HexBlockType.CARPET]: HexBlockType.DIRT,
+  [HexBlockType.RESIN_AMBER]: HexBlockType.STONE,
+  [HexBlockType.SALVAGE_SCRAP]: HexBlockType.STONE,
+  [HexBlockType.ORE_RARE_EARTH]: HexBlockType.STONE,
+  [HexBlockType.FUNGUS_SEAM]: HexBlockType.STONE,
+  [HexBlockType.SILICA_SAND]: HexBlockType.STONE,
+  [HexBlockType.CRYSTAL_VEIN]: HexBlockType.STONE,
+  [HexBlockType.CRYO_ICE]: HexBlockType.STONE,
 };
 export function baseTerrainType(blockType: HexBlockType | number): HexBlockType {
   return BASE_TERRAIN_TYPE[blockType] ?? (blockType as HexBlockType);
@@ -232,6 +261,13 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.CLAY]: sameFaces('clay'),
   [HexBlockType.OIL_SAND]: sameFaces('oilSand'),
   [HexBlockType.ORE_URANIUM]: sameFaces('oreUranium'),
+  [HexBlockType.RESIN_AMBER]: sameFaces('resinAmber'),
+  [HexBlockType.SALVAGE_SCRAP]: sameFaces('salvageScrap'),
+  [HexBlockType.ORE_RARE_EARTH]: sameFaces('oreRareEarth'),
+  [HexBlockType.FUNGUS_SEAM]: sameFaces('fungusSeam'),
+  [HexBlockType.SILICA_SAND]: sameFaces('silicaSand'),
+  [HexBlockType.CRYSTAL_VEIN]: sameFaces('crystalVein'),
+  [HexBlockType.CRYO_ICE]: sameFaces('cryoIce'),
   [HexBlockType.BRICK_BLOCK]: sameFaces('brickBlock'),
   [HexBlockType.CARPET]: sameFaces('carpet'),
   [HexBlockType.CONCRETE_BLOCK]: sameFaces('concrete'),
@@ -289,6 +325,11 @@ const BLOCK_FACES: Partial<Record<number, BlockFaces>> = {
   [HexBlockType.VERD_BANK]: sameFaces('verdBank'),
   [HexBlockType.VERD_SOIL]: sameFaces('verdSoil'),
   [HexBlockType.VERD_ROCK]: sameFaces('verdRock'),
+  [HexBlockType.THAL_TURF]: { top: 'thalTurf', side: 'thalTurfSide', bottom: 'thalSoil' },
+  [HexBlockType.THAL_MOSS]: { top: 'thalMoss', side: 'thalMossSide', bottom: 'thalSoil' },
+  [HexBlockType.THAL_BANK]: sameFaces('thalBank'),
+  [HexBlockType.THAL_SOIL]: sameFaces('thalSoil'),
+  [HexBlockType.THAL_ROCK]: sameFaces('thalRock'),
   [HexBlockType.MIRE_JUNGLE]: { top: 'mireJungle', side: 'mireJungleSide', bottom: 'mireSoil' },
   [HexBlockType.MIRE_SWAMP]: { top: 'mireSwamp', side: 'mireSwampSide', bottom: 'mireSoil' },
   [HexBlockType.MIRE_BANK]: sameFaces('mireBank'),

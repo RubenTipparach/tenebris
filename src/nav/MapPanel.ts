@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { Planet } from '../planet/Planet';
 import { HexBlockType } from '../shared/blockTypes';
 import { NAVIGATION_CONFIG as C } from '../config/NavigationConfig';
-import { getBodyConfig, GAS_GIANTS, CelestialBodyType } from '../config/SolarSystemConfig';
+import { getBodyConfig, GAS_GIANTS, CelestialBodyType, bodyEnvironment } from '../config/SolarSystemConfig';
+import { environmentCard } from '../player/Survival';
 import { allOrbits, gameTimeS, positionAt } from '../world/Orbits';
 import { BlockColours } from './blockColours';
 import { compassHeading, fromLatLon, mapUV, V3 } from './compass';
@@ -23,6 +24,8 @@ export interface NavContext {
   player(): { planetId: string | null; position: THREE.Vector3; forward: THREE.Vector3 };
   /** Other players online. */
   remotes(): Array<{ name: string; planet: string; position: THREE.Vector3 }>;
+  /** Bodies the player has visited (space exploration): ringed on the system map */
+  visited?(bodyId: string): boolean;
   waypoints: Waypoints;
 }
 
@@ -265,6 +268,17 @@ export class MapPanel {
     el.querySelector('.map-system')!.addEventListener('click', () => this.setMode({ kind: 'system' }));
     const c = this.canvas;
     c.addEventListener('contextmenu', (e) => { e.preventDefault(); this.onRightClick(e); });
+    // System map: hovering a body names it and its environment (space-exploration)
+    c.addEventListener('mousemove', (e) => {
+      if (this.mode.kind !== 'system') { c.title = ''; return; }
+      const rect = c.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+      const hit = this.systemHits.filter(h => Math.hypot(h.x - x, h.y - y) <= h.r + C.WAYPOINT_HIT_PX / 2).sort((a, b) => a.r - b.r)[0];
+      if (!hit) { c.title = ''; return; }
+      const name = getBodyConfig(hit.id)?.name ?? GAS_GIANTS.find(g => g.id === hit.id)?.name ?? hit.id;
+      const visited = this.nav.visited?.(hit.id) ? ' (visited)' : '';
+      c.title = `${name}${visited} - ${environmentCard(bodyEnvironment(hit.id))}`;
+    });
     c.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       this.drag = { x: e.clientX, y: e.clientY, cx: this.centre.x, cy: this.centre.y, moved: 0 };
@@ -460,6 +474,14 @@ export class MapPanel {
       ctx.beginPath();
       ctx.arc(q.x, q.y, rr, 0, Math.PI * 2);
       ctx.fill();
+      if (this.nav.visited?.(id)) {
+        // surveyed: a cyan ring round the body
+        ctx.strokeStyle = C.VISITED_RING_COLOR;
+        ctx.lineWidth = C.VISITED_RING_W;
+        ctx.beginPath();
+        ctx.arc(q.x, q.y, rr + C.VISITED_RING_GAP, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       hits.push({ id, x: q.x, y: q.y, r: rr });
       const o = orbits.get(id)!;
       const isMoon = o.parent && o.parent !== 'sun';

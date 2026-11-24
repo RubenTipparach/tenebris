@@ -4,7 +4,7 @@ import { HexTile } from './GoldbergPolyhedron';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { TilesetConfig, EARTH_TILESET, MOON_TILESET, SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { getAssetPath } from '../utils/assetPath';
-import { LIGHTING_CONFIG } from '../config/LightingConfig';
+import { LIGHTING_CONFIG, SURFACE_RELIEF } from '../config/LightingConfig';
 import waterVert from '../shaders/water/water.vert';
 import { flowTile, FlowTile } from '../water/FlowTile';
 import { WaterConfig } from '../config/WaterConfig';
@@ -38,6 +38,7 @@ const BIOME_TEXTURES: [string, string][] = [
   ['moonOreTitanium', 'moon/ore_titanium'],
   // Industry resources (scripts/gen-biome-textures.py)
   ['clay', 'resources/clay'], ['oilSand', 'resources/oil_sand'], ['oreUranium', 'resources/ore_uranium'],
+  ['resinAmber', 'resources/resin'], ['salvageScrap', 'resources/salvage'], ['oreRareEarth', 'resources/ore_rare_earth'], ['fungusSeam', 'resources/fungus'], ['silicaSand', 'resources/silica_sand'], ['crystalVein', 'resources/crystal_vein'], ['cryoIce', 'resources/cryo_ice'],
   // Building materials (scripts/gen-biome-textures.py)
   ['brickBlock', 'building/brick_block'], ['carpet', 'building/carpet'], ['concrete', 'building/concrete'],
   // The ecumenopolis (scripts/gen-city-textures.py)
@@ -62,6 +63,9 @@ const BIOME_TEXTURES: [string, string][] = [
   ['verdJungle', 'alien/verdance_jungle'], ['verdJungleSide', 'alien/verdance_jungle_side'],
   ['verdSwamp', 'alien/verdance_swamp'], ['verdSwampSide', 'alien/verdance_swamp_side'],
   ['verdBank', 'alien/verdance_bank'], ['verdSoil', 'alien/verdance_soil'], ['verdRock', 'alien/verdance_rock'],
+  ['thalTurf', 'alien/thalassa_turf'], ['thalTurfSide', 'alien/thalassa_turf_side'],
+  ['thalMoss', 'alien/thalassa_moss'], ['thalMossSide', 'alien/thalassa_moss_side'],
+  ['thalBank', 'alien/thalassa_bank'], ['thalSoil', 'alien/thalassa_soil'], ['thalRock', 'alien/thalassa_rock'],
   ['mireJungle', 'alien/mirewood_jungle'], ['mireJungleSide', 'alien/mirewood_jungle_side'],
   ['mireSwamp', 'alien/mirewood_swamp'], ['mireSwampSide', 'alien/mirewood_swamp_side'],
   ['mireBank', 'alien/mirewood_bank'], ['mireSoil', 'alien/mirewood_soil'], ['mireRock', 'alien/mirewood_rock'],
@@ -367,6 +371,10 @@ export class HexBlockMeshBuilder {
           underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
           underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
           underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          reliefStrength: { value: SURFACE_RELIEF.DEFAULT },
+          reliefCavity: { value: SURFACE_RELIEF.CAVITY },
+          reliefHexTilt: { value: SURFACE_RELIEF.HEX_TILT },
+          reliefHexTone: { value: SURFACE_RELIEF.HEX_TONE },
         },
         vertexShader: terrainVert,
         fragmentShader: terrainFrag,
@@ -616,6 +624,10 @@ export class HexBlockMeshBuilder {
           underwaterFogNear: { value: PlayerConfig.UNDERWATER_FOG_NEAR },
           underwaterFogFar: { value: PlayerConfig.UNDERWATER_FOG_FAR },
           underwaterDimming: { value: PlayerConfig.UNDERWATER_TERRAIN_DIMMING ?? 0.3 },
+          reliefStrength: { value: SURFACE_RELIEF.DEFAULT },
+          reliefCavity: { value: SURFACE_RELIEF.CAVITY },
+          reliefHexTilt: { value: SURFACE_RELIEF.HEX_TILT },
+          reliefHexTone: { value: SURFACE_RELIEF.HEX_TONE },
         },
         vertexShader: terrainVert,
         fragmentShader: terrainFrag,
@@ -648,6 +660,7 @@ export class HexBlockMeshBuilder {
     waterLODMat.side = THREE.DoubleSide;
     waterLODMat.transparent = false;
     this.materials.set('waterLOD', waterLODMat);
+    this.applyRelief();
   }
 
   private loadTexture(path: string): Promise<THREE.Texture> {
@@ -676,6 +689,21 @@ export class HexBlockMeshBuilder {
     });
     textureCache.set(fullPath, promise);
     return promise;
+  }
+
+  /** Surface relief for a terrain material by its key (LightingConfig SURFACE_RELIEF) */
+  private static reliefFor(key: string): number {
+    if (SURFACE_RELIEF.SOFT_KEYS.test(key)) return SURFACE_RELIEF.SOFT;
+    if (SURFACE_RELIEF.ROCK_KEYS.test(key)) return SURFACE_RELIEF.ROCK;
+    return SURFACE_RELIEF.DEFAULT;
+  }
+
+  /** Give every terrain material its relief by the key it is stored under */
+  private applyRelief(): void {
+    for (const [key, mat] of this.materials) {
+      const u = (mat as THREE.ShaderMaterial).uniforms;
+      if (u?.reliefStrength) u.reliefStrength.value = HexBlockMeshBuilder.reliefFor(key.replace(/LOD$/, ''));
+    }
   }
 
   public getMaterial(faceType: string): THREE.Material {

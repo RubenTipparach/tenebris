@@ -12,7 +12,9 @@ export type PowerNodeKind =
   | 'electricFurnace' | 'computer' | 'printer3D'
   | 'pumpJack' | 'refinery' | 'centrifuge' | 'nuclearFabricator'
   | 'gasCollector' | 'solarPanel'
-  | 'battery';
+  | 'battery'
+  // A survey beacon (openspec space-exploration): no power, no slots - it marks a body surveyed
+  | 'surveyBeacon';
 
 export const POWER_CONFIG = {
   // How often the grid is solved (s); energy is integrated over the step
@@ -73,9 +75,14 @@ export const MACHINE_CONFIG = {
   // Centrifuge: ENRICH_IN uranium ore -> 1 enriched uranium, every ENRICH_S
   ENRICH_IN: 4,
   ENRICH_S: 20,
-  // Reactor: up to ROD_SLOTS fuel rods, each lasting ROD_LIFE_S of running
+  // Reactor: up to ROD_SLOTS fuel rods, each lasting its REACTOR_RODS life of running
   REACTOR_ROD_SLOTS: 4,
-  REACTOR_ROD_LIFE_S: 30 * 60,
+  // The rods a reactor burns and how long each lasts (s): the mk2 rod
+  // (space-exploration upgrade) twice the plain one
+  REACTOR_RODS: {
+    [ItemType.FUEL_ROD]: 30 * 60,
+    [ItemType.FUEL_ROD_MK2]: 60 * 60,
+  } as Partial<Record<ItemType, number>>,
   // Gas collector (openspec wool-air-and-reentry, design 4): one empty tank
   // in -> one oxygen tank out every fillS while powered, where the air is breathable
   gasCollector: { fillS: 15 },
@@ -103,6 +110,8 @@ export interface FabricatorRecipe {
   output: ItemType;
   inputs: { itemType: ItemType; quantity: number }[];
   timeS: number;
+  /** Items one job makes (default 1) */
+  outputQuantity?: number;
 }
 
 export const FABRICATOR_RECIPES: FabricatorRecipe[] = [
@@ -146,6 +155,95 @@ export const FABRICATOR_RECIPES: FabricatorRecipe[] = [
     ],
     timeS: 90,
   },
+  // ---- the engine ladder (space-exploration, rocket-tiers): reactor-built ----
+  {
+    output: ItemType.GAS_CORE_ENGINE,
+    inputs: [
+      { itemType: ItemType.NUCLEAR_THERMAL_ENGINE, quantity: 1 },
+      { itemType: ItemType.FUEL_ROD, quantity: 3 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 4 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 10 },
+    ],
+    timeS: 120,
+  },
+  {
+    output: ItemType.FISSION_FRAGMENT_DRIVE,
+    inputs: [
+      { itemType: ItemType.FUEL_ROD, quantity: 4 },
+      { itemType: ItemType.MAGNET, quantity: 6 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 8 },
+    ],
+    timeS: 150,
+  },
+  {
+    output: ItemType.PULSE_UNIT,
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 1 },
+      { itemType: ItemType.SULFUR, quantity: 2 },
+    ],
+    timeS: 20,
+    outputQuantity: 4,
+  },
+  {
+    output: ItemType.NUCLEAR_PULSE_DRIVE,
+    inputs: [
+      { itemType: ItemType.STEEL_INGOT, quantity: 10 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 20 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 6 },
+      { itemType: ItemType.CPU_CHIP, quantity: 2 },
+    ],
+    timeS: 180,
+  },
+  {
+    output: ItemType.FUSION_DRIVE,
+    inputs: [
+      { itemType: ItemType.REACTOR_CORE, quantity: 1 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 8 },
+      { itemType: ItemType.CPU_CHIP, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 12 },
+    ],
+    timeS: 200,
+  },
+  {
+    output: ItemType.FUSION_TORCH,
+    inputs: [
+      { itemType: ItemType.FUSION_DRIVE, quantity: 1 },
+      { itemType: ItemType.MAGNETIC_COIL, quantity: 2 },
+      { itemType: ItemType.COOLANT_LOOP, quantity: 2 },
+      { itemType: ItemType.METALLIC_HYDROGEN, quantity: 2 },
+      { itemType: ItemType.LASER_CRYSTAL, quantity: 2 },
+    ],
+    timeS: 300,
+  },
+  // ---- upgrades (space-exploration): reactor-built ----
+  {
+    output: ItemType.COMPACT_REACTOR_CORE,
+    inputs: [
+      { itemType: ItemType.REACTOR_CORE, quantity: 1 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 4 },
+    ],
+    timeS: 150,
+  },
+  {
+    output: ItemType.RTG,
+    inputs: [
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 2 },
+      { itemType: ItemType.STEEL_INGOT, quantity: 4 },
+      { itemType: ItemType.CPU_CHIP, quantity: 1 },
+    ],
+    timeS: 120,
+  },
+  {
+    output: ItemType.FUEL_ROD_MK2,
+    inputs: [
+      { itemType: ItemType.FUEL_ROD, quantity: 2 },
+      { itemType: ItemType.ENRICHED_URANIUM, quantity: 2 },
+      { itemType: ItemType.INGOT_TITANIUM, quantity: 2 },
+    ],
+    timeS: 90,
+  },
 ];
 
 /** The machines this file configures, by the item that places them. */
@@ -160,4 +258,5 @@ export const MACHINE_KIND_OF: Partial<Record<ItemType, PowerNodeKind>> = {
   [ItemType.BATTERY_LEAD_ACID]: 'battery',
   [ItemType.BATTERY_LITHIUM]: 'battery',
   [ItemType.BATTERY_SOLID_STATE]: 'battery',
+  [ItemType.SURVEY_BEACON]: 'surveyBeacon',
 };

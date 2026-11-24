@@ -65,7 +65,7 @@ export interface Rect { x0: number; y0: number; x1: number; y1: number }
 export interface Link { parent: string; child: string; x1: number; y1: number; mid: number; y2: number; x2: number }
 export interface TreeLayout {
   cards: Map<string, { x: number; y: number }>;
-  plaques: Map<string, { x: number; y: number; label: string }>;
+  plaques: Map<string, { x: number; y: number; label: string; branch: string }>;
   links: Link[];
   w: number;
   h: number;
@@ -75,6 +75,20 @@ export interface TreeLayout {
 export function plaqueLabel(branch: string): string {
   const i = MISSION_BRANCHES.findIndex(b => b.id === branch);
   return `${i}. ${MISSION_BRANCHES[i].name}`;
+}
+
+/**
+ * The visit missions a branch's plaque counts (space exploration): the
+ * Space exploration branch counts every visit, a route branch its own.
+ */
+export function plaqueVisits(branch: string): Mission[] {
+  if (MISSION_BRANCHES.find(b => b.id === branch)?.announcedBy) return MISSIONS.filter(m => m.visit);
+  return MISSIONS.filter(m => m.visit && m.branch === branch);
+}
+
+/** The plaque's progress suffix: bodies visited of the ones it counts */
+export function plaqueProgress(done: number, total: number): string {
+  return ` - ${done}/${total} visited`;
 }
 
 /** The branch a branch grows from (undefined for the trunk). */
@@ -166,7 +180,7 @@ export function linkProblems(L: Level, t: TreeLayout): Array<{ link: Link; what:
 function packOnce(L: Level, order: string[]): TreeLayout {
   const stepX = L.cardW + L.gapX, stepY = L.cardH + L.gapY;
   const cards = new Map<string, { x: number; y: number }>();
-  const plaques = new Map<string, { x: number; y: number; label: string }>();
+  const plaques = new Map<string, { x: number; y: number; label: string; branch: string }>();
   const blocks: Rect[] = [];
   const channels: Rect[] = [];  // the vertical runs of lines already placed
   let w = 0, h = 0;
@@ -178,7 +192,9 @@ function packOnce(L: Level, order: string[]): TreeLayout {
       c0 = Math.min(c0, sl.col); c1 = Math.max(c1, sl.col);
       rows = Math.max(rows, sl.row + 1);
     }
-    const label = plaqueLabel(branch);
+    // Room for the progress suffix too, at its widest (every body visited)
+    const visits = plaqueVisits(branch).length;
+    const label = plaqueLabel(branch) + (visits ? plaqueProgress(visits, visits) : '');
     const x0 = UI.PAD + c0 * stepX;
     const x1 = Math.max(UI.PAD + c1 * stepX + L.cardW, x0 + plaqueWidth(L, label));
     const height = L.plaque + rows * stepY - L.gapY;
@@ -201,7 +217,7 @@ function packOnce(L: Level, order: string[]): TreeLayout {
       }
     }
     blocks.push({ x0, x1, y0: y, y1: y + height });
-    plaques.set(branch, { x: x0, y, label });
+    plaques.set(branch, { x: x0, y, label, branch });
     for (const m of members) {
       const sl = SLOTS.get(m.id)!;
       cards.set(m.id, { x: UI.PAD + sl.col * stepX, y: y + L.plaque + sl.row * stepY });

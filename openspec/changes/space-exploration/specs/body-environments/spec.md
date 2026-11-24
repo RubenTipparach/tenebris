@@ -21,10 +21,10 @@ system map and a visit mission's card SHALL show them.
 
 ### Requirement: Hostile environments harm an unprotected player
 
-On a body whose temperature is not temperate, or whose radiation is not none,
-a player without a suit rated for it SHALL take harm over time, on a gauge
-like the air gauge, and SHALL die when it runs out. Back in a safe place the
-gauge SHALL recover.
+On a body whose temperature is not temperate, or whose radiation is high, a
+player without a suit rated for it SHALL take harm over time, on a gauge like
+the air gauge, and SHALL die when it runs out. Back in a safe place the gauge
+SHALL recover. Low radiation (an airless body) is shown but does no harm.
 
 #### Scenario: Cold without protection
 - **WHEN** the player walks on Tessaly in a plain space suit

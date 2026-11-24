@@ -149,7 +149,7 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   ok(loadInput(r, ItemType.FUEL_ROD, 9) === MACHINE_CONFIG.REACTOR_ROD_SLOTS, 'a reactor holds up to 4 fuel rods');
   tickMachine(r, 1, { oilBelow: false, reactorPower: false });
   ok(machineSupplyW(r) === 50000 && r.status === 'Running', 'a fuelled reactor supplies 50 kW');
-  tickMachine(r, MACHINE_CONFIG.REACTOR_ROD_LIFE_S, { oilBelow: false, reactorPower: false });
+  tickMachine(r, MACHINE_CONFIG.REACTOR_RODS[ItemType.FUEL_ROD]!, { oilBelow: false, reactorPower: false });
   ok(machineSupplyW(r) === 0, 'each rod lasts 30 minutes (all four burn together)');
   const rec = machineFromRecord(JSON.parse(JSON.stringify(machineRecord(r))));
   ok(rec.rodLifeS.length === 4 && rec.kind === 'reactor', 'reactor rods survive the record');
@@ -166,8 +166,17 @@ const lead = POWER_CONFIG.BATTERIES[ItemType.BATTERY_LEAD_ACID];
   const fx = tickMachine(f, recipe.timeS, { oilBelow: false, reactorPower: true });
   ok(fx.event === 'fabricated' && f.outputs[0].itemType === ItemType.ION_DRIVE && f.job === null, 'on reactor power it builds the part');
   const outs = FABRICATOR_RECIPES.map(r => r.output).sort();
-  ok(JSON.stringify(outs) === JSON.stringify([ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.BATTERY_PACK].sort()),
-    'it makes the nuclear thermal engine, ion drive, reactor core and battery pack');
+  ok(JSON.stringify(outs) === JSON.stringify([ItemType.NUCLEAR_THERMAL_ENGINE, ItemType.ION_DRIVE, ItemType.REACTOR_CORE, ItemType.BATTERY_PACK,
+    ItemType.GAS_CORE_ENGINE, ItemType.FISSION_FRAGMENT_DRIVE, ItemType.PULSE_UNIT, ItemType.NUCLEAR_PULSE_DRIVE,
+    ItemType.FUSION_DRIVE, ItemType.FUSION_TORCH, ItemType.COMPACT_REACTOR_CORE, ItemType.RTG, ItemType.FUEL_ROD_MK2].sort()),
+    'it makes the nuclear parts and the engine ladder past the Moon');
+  // a pulse-unit job makes a batch (outputQuantity)
+  const pu = newMachineState(ItemType.NUCLEAR_FABRICATOR, 7, 30, new THREE.Vector3(), 0);
+  pu.powered = true; pu.job = ItemType.PULSE_UNIT;
+  const puRecipe = FABRICATOR_RECIPES.find(r => r.output === ItemType.PULSE_UNIT)!;
+  const pfx = tickMachine(pu, puRecipe.timeS, { oilBelow: false, reactorPower: true });
+  ok(pfx.event === 'fabricated' && pu.outputs[0].quantity === puRecipe.outputQuantity && (puRecipe.outputQuantity ?? 1) > 1,
+    'a pulse-unit job makes a batch of charges');
   // a 20 kW fabricator on a 2 kW engine: the network can't carry it
   const steam = solveNetwork([{ id: 'e', watts: S.steamEngine! }], [{ id: 'n', watts: D.nuclearFabricator! }], [], 1);
   const nuke = solveNetwork([{ id: 'r', watts: S.reactor!, nuclear: true }], [{ id: 'n', watts: D.nuclearFabricator! }], [], 1);

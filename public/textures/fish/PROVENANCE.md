@@ -12,3 +12,5 @@
   `src/config/FishRosters.ts`).
 - `sprat` (Sequoia's glimmer sprat, openspec underwater-life): drawn by the
   same `fish_icon` in `scripts/gen-item-icons.py`.
+- `pearl_mullet`, `kelp_eel`, `abyss_grouper` (Thalassa, openspec
+  space-exploration): drawn by the same `fish_icon` in `scripts/gen-item-icons.py`.

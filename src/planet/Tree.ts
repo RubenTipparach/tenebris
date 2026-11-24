@@ -572,7 +572,7 @@ export type UmbraTreeSpecies = 'glowcap' | 'veilwillow';
 /** Every species a FloraTreeManager can grow (all but Earth's) */
 export type FloraSpecies = SequoiaTreeSpecies | CinderTreeSpecies | VesperTreeSpecies
   | HalcyonTreeSpecies | TessalyTreeSpecies | UmbraTreeSpecies
-  | VerdanceTreeSpecies | MirewoodTreeSpecies;
+  | VerdanceTreeSpecies | MirewoodTreeSpecies | ThalassaTreeSpecies;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const smoothstep01 = (t: number) => Math.min(1, Math.max(0, t));
@@ -1126,6 +1126,79 @@ function buildWeepFern(parts: THREE.BufferGeometry[], rng: SeededRandom, size: n
   }
 }
 
+// ---- Thalassa's island species (space-exploration, ocean-world) ----------
+
+export type ThalassaTreeSpecies = 'saltpalm' | 'brinebush';
+
+/**
+ * Thalassa - salt palm: a short, wind-bent trunk in two kinks, a shock of
+ * long drooping blue-green fronds, and a cluster of coral-pink pods.
+ */
+function buildSaltPalm(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const trunk = new THREE.Color(0x3e3551);
+  const trunkHi = new THREE.Color(0x69608b);
+  const frondLo = new THREE.Color(0x204f63);
+  const frondHi = new THREE.Color(0x84e3b5);
+  const pod = new THREE.Color(0xdd576d);
+  const podHi = new THREE.Color(0xeab798);
+  const H = 3.2 * size * tall;
+  const lean = rng.next() * Math.PI * 2;
+  const dir = new THREE.Vector3(Math.cos(lean), 0, Math.sin(lean));
+  const k1 = dir.clone().multiplyScalar(0.5 * size).add(new THREE.Vector3(0, H * 0.45, 0));
+  const top = dir.clone().multiplyScalar(0.7 * size).add(new THREE.Vector3(0, H, 0));
+  const paint: FacePaint = (c, n) => trunk.clone().lerp(trunkHi, 0.2 + 0.4 * Math.max(0, n.y) + (Math.floor(c.y * 4 / size) % 2) * 0.15);
+  addPart(parts, limb(new THREE.Vector3(), k1, 0.22 * size, 0.17 * size, 6, 2), paint);
+  addPart(parts, limb(k1, top, 0.17 * size, 0.12 * size, 6, 2), paint);
+  const fronds = 7 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < fronds; i++) {
+    const a = (i / fronds) * Math.PI * 2 + rng.next() * 0.3;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+    const L = (1.9 + rng.next() * 0.6) * size;
+    // up a little, then hanging well down: a weeping crown
+    const g = ribbon((t) => top.clone().addScaledVector(out, L * t).add(new THREE.Vector3(0, 0.35 * size * Math.sin(t * Math.PI * 0.5) - 1.1 * L * t * t, 0)),
+      side, UP, (t) => 0.42 * size * Math.sin(Math.PI * Math.min(1, 0.12 + 0.88 * t)), 5);
+    addPart(parts, g, (c, n) => shade(frondLo.clone().lerp(frondHi, 0.15 + 0.7 * smoothstep01(c.clone().sub(top).length() / L)), n.y < -0.2 ? 0.7 : 1), TEX_NEEDLES);
+  }
+  const pods = 3 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < pods; i++) {
+    const a = rng.next() * Math.PI * 2;
+    const g = new THREE.IcosahedronGeometry(0.16 * size, 0);
+    g.translate(top.x + Math.cos(a) * 0.22 * size, top.y - 0.2 * size, top.z + Math.sin(a) * 0.22 * size);
+    addPart(parts, g, (_c, n) => pod.clone().lerp(podHi, 0.5 * Math.max(0, n.y)), TEX_SMOOTH);
+  }
+}
+
+/**
+ * Thalassa - brine bush: a low, wide shrub on many wiry stems, a flat
+ * crown of dark sea-green leaves dotted with sea-pink flowers.
+ */
+function buildBrineBush(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
+  const stem = new THREE.Color(0x2b1f35);
+  const stemHi = new THREE.Color(0x522b2f);
+  const leafLo = new THREE.Color(0x0c2f44);
+  const leafHi = new THREE.Color(0x297537);
+  const flower = new THREE.Color(0xc34988);
+  const flowerHi = new THREE.Color(0xdd576d);
+  const H = 1.3 * size * tall;
+  const stems = 4 + Math.floor(rng.next() * 3);
+  for (let i = 0; i < stems; i++) {
+    const a = rng.next() * Math.PI * 2;
+    const tip = new THREE.Vector3(Math.cos(a) * 0.6 * size, H * (0.8 + rng.next() * 0.3), Math.sin(a) * 0.6 * size);
+    addPart(parts, limb(new THREE.Vector3(Math.cos(a) * 0.1, 0, Math.sin(a) * 0.1), tip, 0.06 * size, 0.04 * size, 4),
+      (c, n) => stem.clone().lerp(stemHi, 0.3 * Math.max(0, n.y) + 0.3 * Math.min(1, c.y / H)));
+  }
+  lumpCrown(parts, rng, new THREE.Vector3(0, H, 0), 1.1 * size, 0.45, 5, leafLo, leafHi);
+  const flowers = 6 + Math.floor(rng.next() * 5);
+  for (let i = 0; i < flowers; i++) {
+    const a = rng.next() * Math.PI * 2;
+    const r = (0.3 + rng.next() * 0.7) * 1.0 * size;
+    const g = new THREE.OctahedronGeometry(0.1 * size, 0);
+    g.translate(Math.cos(a) * r, H + 0.35 * size * (1 - r / (1.1 * size)) + 0.08 * size, Math.sin(a) * r);
+    addPart(parts, g, (_c, n) => flower.clone().lerp(flowerHi, 0.6 * Math.max(0, n.y)), TEX_SMOOTH, 0.15);
+  }
+}
+
 type SpeciesBuilder = (parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number) => void;
 /** One builder per species, for every planet with a FloraTreeManager */
 const FLORA_BUILDERS: Record<FloraSpecies, SpeciesBuilder> = {
@@ -1137,6 +1210,7 @@ const FLORA_BUILDERS: Record<FloraSpecies, SpeciesBuilder> = {
   glowcap: buildGlowcap, veilwillow: buildVeilWillow,
   canopygiant: buildCanopyGiant, mangrove: buildMangrove, fanpalm: buildFanPalm,
   elephantear: buildElephantEar, bottlecypress: buildBottleCypress, weepfern: buildWeepFern,
+  saltpalm: buildSaltPalm, brinebush: buildBrineBush,
 };
 export const FLORA_SPECIES = Object.keys(FLORA_BUILDERS) as FloraSpecies[];
 

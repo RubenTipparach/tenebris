@@ -445,6 +445,21 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.EMPTY_TANK, quantity: 2 },
   },
+  // Survey beacon (space-exploration): a glass lamp on a copper mast, an iron foot
+  //  .G.
+  //  .C.
+  //  III
+  {
+    name: 'Survey Beacon',
+    inputs: [
+      { itemType: ItemType.GLASS, quantity: 1, slot: 1 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 7 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.SURVEY_BEACON, quantity: 2 },
+  },
   // Gas collector: an iron box, copper vents, a cable in the middle
   //  ICI
   //  .K.
@@ -480,6 +495,68 @@ export const CRAFTING_RECIPES: CraftingRecipe[] = [
     ],
     output: { itemType: ItemType.SPACE_SUIT, quantity: 1 },
   },
+  // Thermal suit (space-exploration): the space suit lined with Vesper's aerogel
+  //  .A.
+  //  ASA
+  //  .A.
+  {
+    name: 'Thermal Suit',
+    inputs: [
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 1 },
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 3 },
+      { itemType: ItemType.SPACE_SUIT, quantity: 1, slot: 4 },
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 5 },
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.THERMAL_SUIT, quantity: 1 },
+  },
+  // Hardened suit: the thermal suit with Umbra's radiation lining, a
+  // Halcyon crystal visor and ceramic plates
+  //  .X.
+  //  RTR
+  //  P.P
+  {
+    name: 'Hardened Suit',
+    inputs: [
+      { itemType: ItemType.CRYSTAL, quantity: 1, slot: 1 },
+      { itemType: ItemType.RADIATION_LINING, quantity: 1, slot: 3 },
+      { itemType: ItemType.THERMAL_SUIT, quantity: 1, slot: 4 },
+      { itemType: ItemType.RADIATION_LINING, quantity: 1, slot: 5 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 1, slot: 6 },
+      { itemType: ItemType.CERAMIC_PLATING, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.HARDENED_SUIT, quantity: 1 },
+  },
+  // Suit heater: copper coils on a lithium battery, carried for longer cold stays
+  //  C.C
+  //  .B.
+  //  I.I
+  {
+    name: 'Suit Heater',
+    inputs: [
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 0 },
+      { itemType: ItemType.INGOT_COPPER, quantity: 1, slot: 2 },
+      { itemType: ItemType.BATTERY_LITHIUM, quantity: 1, slot: 4 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 6 },
+      { itemType: ItemType.INGOT_IRON, quantity: 1, slot: 8 },
+    ],
+    output: { itemType: ItemType.SUIT_HEATER, quantity: 1 },
+  },
+  // Suit heater mk2: superconducting coils, aerogel-wrapped
+  //  .A.
+  //  SHS
+  //  .A.
+  {
+    name: 'Suit Heater Mk2',
+    inputs: [
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 1 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 1, slot: 3 },
+      { itemType: ItemType.SUIT_HEATER, quantity: 1, slot: 4 },
+      { itemType: ItemType.SUPERCONDUCTOR, quantity: 1, slot: 5 },
+      { itemType: ItemType.AEROGEL, quantity: 1, slot: 7 },
+    ],
+    output: { itemType: ItemType.SUIT_HEATER_MK2, quantity: 1 },
+  },
   ...TOOL_RECIPES,
 ];
 
@@ -497,7 +574,7 @@ export class CraftingSystem {
   private heldEl: HTMLElement | null = null;
   // The suit slot (equipment): whether a suit is worn, and taking it off
   private suitSlotElement: HTMLElement | null = null;
-  private suit: { worn: () => boolean; takeOff: () => void } | null = null;
+  private suit: { item: () => ItemType | null; takeOff: () => void } | null = null;
   private isOpen: boolean = false;
   private onCloseCallback: (() => void) | null = null;
   private onUpdateHotbarCallback: (() => void) | null = null;
@@ -562,7 +639,7 @@ export class CraftingSystem {
     });
     this.suitSlotElement = document.getElementById('suit-slot');
     this.suitSlotElement?.addEventListener('click', () => {
-      if (!this.suit?.worn()) return;
+      if (!this.suit || this.suit.item() === null) return;
       this.suit.takeOff();
       this.updateInventorySlots();
     });
@@ -1148,7 +1225,7 @@ export class CraftingSystem {
   }
 
   /** The suit slot reads and takes off the worn suit (src/player/AirSystem.ts). */
-  public setSuitSlot(suit: { worn: () => boolean; takeOff: () => void }): void {
+  public setSuitSlot(suit: { item: () => ItemType | null; takeOff: () => void }): void {
     this.suit = suit;
     this.updateInventorySlots();
   }
@@ -1158,9 +1235,9 @@ export class CraftingSystem {
 
     // The suit slot: the suit's icon while it is worn
     if (this.suitSlotElement) {
-      const worn = this.suit?.worn() ?? false;
-      this.updateSlotElement(this.suitSlotElement, { itemType: worn ? ItemType.SPACE_SUIT : ItemType.NONE, quantity: worn ? 1 : 0 });
-      this.suitSlotElement.title = worn ? 'Suit - click to take it off' : 'Suit - right click a space suit in hand to put it on';
+      const worn = this.suit?.item() ?? null;
+      this.updateSlotElement(this.suitSlotElement, { itemType: worn ?? ItemType.NONE, quantity: worn !== null ? 1 : 0 });
+      this.suitSlotElement.title = worn !== null ? `${ITEM_DATA[worn]?.name ?? 'Suit'} - click to take it off` : 'Suit - right click a suit in hand to put it on';
     }
 
     // Update storage slots
@@ -1589,6 +1666,19 @@ export class CraftingSystem {
 
   private craftSelectedRecipe(): void {
     if (!this.selectedRecipe || !this.canCraft(this.selectedRecipe)) return;
+
+    // Room for what it makes, once the ingredients are spent - else nothing
+    // is spent (addItem would drop the result). A tool whose toolbox slot is
+    // free equips there and needs no inventory room.
+    const made = this.selectedRecipe.output;
+    const tool = toolOf(made.itemType);
+    const toolboxFree = !!tool && this.inventory.getToolbox()[this.inventory.toolboxIndex(tool.kind)]?.itemType === ItemType.NONE;
+    const give = [...(toolboxFree ? [] : [made]), ...(this.selectedRecipe.returns ? [this.selectedRecipe.returns] : [])];
+    const take = PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS ? [] : this.selectedRecipe.inputs;
+    if (!this.inventory.fitsAfter(take, give)) {
+      showToast(`No room in the inventory for the ${ITEM_DATA[made.itemType].name}`, { duration: TOOLBOX.TOAST_MS });
+      return;
+    }
 
     // Remove input items (unless bypass mode is enabled)
     if (!PlayerConfig.DEBUG_BYPASS_CRAFTING_INGREDIENTS) {

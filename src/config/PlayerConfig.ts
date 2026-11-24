@@ -109,6 +109,13 @@ export const PlayerConfig = {
   LOD_CHUNK_TARGET_TILES: 1280,        // Target tiles per LOD chunk; planets over 2x this at 32 chunks get a finer layout (Sequoia: 162)
   TERRAIN_MIN_RENDER_DISTANCE: 16,    // Min tiles to render when on ground
   TERRAIN_MAX_RENDER_DISTANCE: 24,    // Max tiles when at high altitude
+  // The intermediate LOD tier between the detailed terrain and the chunked
+  // (HIGH) one: off - it read as near-flat colour between two textured
+  // looks, so a climb went textured, flat, textured, colour
+  LOD_INTERMEDIATE_TIER: false,
+  // The far (colour) planet fades in over the terrain across this share of
+  // its altitude below where it takes over (no hard cut)
+  LOD_FADE_BAND: 0.35,
   TERRAIN_INTERMEDIATE_BLOCK_STEP: 4, // Sample every Nth block for height in intermediate LOD
   TERRAIN_INTERMEDIATE_WALL_THRESHOLD: 2, // Min height diff for walls in intermediate LOD
   TERRAIN_BUFFER_ZONE: 12,             // Tiles player can move before triggering rebuild

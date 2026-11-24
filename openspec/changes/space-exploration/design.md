@@ -135,11 +135,11 @@ Real propulsion concepts, scaled to game stats. They are new entries in `ROCKET_
 | 2 | Vacuum (exists) | 26 kN | 200 | 150 | - | Moon titanium |
 | 2 | **Solar-electric ion thruster** | 0.6 kN | 2000 | 60 | draws charge while firing | Moon |
 | 3 | Nuclear thermal (exists) | 30 kN | 500 | 300 | - | uranium |
-| 3 | **Gas-core nuclear** ("nuclear lightbulb") | 60 kN | 1200 | 500 | fuel rods to build | Ember |
+| 3 | **Gas-core nuclear** ("nuclear lightbulb") | 100 kN | 1200 | 500 | fuel rods to build | Ember |
 | 4 | Nuclear-electric ion drive (exists) | 1.5 kN | 3000 | 120 | reactor core | |
 | 4 | **Fission-fragment drive** (magnetic fission) | 4 kN | 9000 | 300 | reactor core, magnets | Lodestone |
 | 4 | **Nuclear pulse drive** ("Orion", fission bombs) | 400 kN | 2500 | 1500 | pulse units in cargo | Brand |
-| 5 | **D-He3 fusion drive** | 25 kN | 12000 | 600 | helium-3 in cargo | Aurelia |
+| 5 | **D-He3 fusion drive** | 60 kN | 12000 | 600 | helium-3 in cargo | Aurelia |
 | 6 | **Magnetic fusion torch** | 120 kN | 30000 | 900 | helium-3 and deuterium in cargo | Brontes, plus the coil from the Sun |
 
 **Charge and consumables:**
@@ -152,8 +152,8 @@ Real propulsion concepts, scaled to game stats. They are new entries in `ROCKET_
 
 `STAGE_SEPARATOR` is a part (type `SEPARATOR`) in the existing stack list.
 - **Stages:** a pure `stagesOf(parts)` splits the bottom-to-top list at separators. `computeRocketStats` runs per stage and sums the results.
-- **Fuel:** the active stage's tanks feed its engines. Fuel moves from one number to `stageFuel: number[]`. An old save's single `fuel` loads as a one-stage array, so old saves are unchanged.
-- **Dropping a stage:** `ROCKET_INPUTS.STAGE` (B) detaches the active stage's part meshes into a debris group. The debris inherits the rocket's velocity and falls under gravity until it hits the ground or times out, and is then disposed. It is never saved.
+- **Fuel:** the active stage's tanks feed its engines. The saved fuel stays one total: only the active (lowest) stage burns and refuelling fills from the bottom, so the total filled into the stages bottom first (`fillStages`) is always the exact per-stage state. Old saves are unchanged.
+- **Dropping a stage:** `ROCKET_INPUTS.STAGE` (N; B is Respawn) detaches the active stage's part meshes into a debris group. The debris inherits the rocket's velocity and falls under gravity until it hits the ground or times out, and is then disposed. It is never saved.
 - **Saves and sync:** the pad and parked-rocket records keep only attached parts. Multiplayer already rebuilds a remote ship when its part list changes (`RocketSync` restack).
 
 Alternative considered: separate physics bodies for dropped stages that can be recovered. That was rejected as too much for its value; the spec makes dropped stages gone for good.
@@ -189,8 +189,8 @@ Each body config gains `environment: { temperature, radiation, atmosphereDensity
 | Scorching | Ember, Brand, Pyrra, Ashfall |
 | Hot | Cinder, Vesper, Sable, Lodestone |
 | Temperate | Earth, Moon, Sequoia, Metropole, Thalassa, Verdance, Mirewood, Scoria |
-| Cold | Umbra, Nyx, Rime, Kessel, Nerith, Halcyon, Ingot, and the rock asteroids |
-| Frozen | Tessaly, Glint, Calyx, Glacia, Obol, and the ice asteroids |
+| Cold | Umbra, Nyx, Rime, Kessel, Nerith, Halcyon, Ingot, Tessaly, and the rock asteroids |
+| Frozen | Glint, Calyx, Glacia, Obol, and the ice asteroids |
 
 High radiation is on the gas giants' moons and close to the Sun.
 
@@ -198,7 +198,7 @@ High radiation is on the gas giants' moons and close to the Sun.
 
 **Heat and braking:**
 - `reentryStep` and the parachute braking take the body's `atmosphereDensity` as a factor. Heat gain and chute drag both scale with it, and the safe speed scales inversely.
-- Draft densities: Earth 1, Sequoia 1.2, Metropole 1, Verdance and Mirewood 1.5, Thalassa 2.5, gas giants 8.
+- Draft densities: Earth 1, Sequoia 1.2, Metropole 1, Verdance and Mirewood 1.5, Thalassa 2.5, gas giants 4 (tuned from 8 so a shielded skim of a few seconds survives while an unshielded one burns at once).
 
 **Heat shield:**
 - Equipment with a heat capacity. While it has capacity it absorbs a share of the heat gained (`REENTRY.shieldShare`) and wears down by what it absorbs.

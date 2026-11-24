@@ -52,7 +52,7 @@ for (const p of all) {
 ok(FAUNA_SPECIES_IDS.filter(id => FAUNA_SPECIES[id].fish).every(id => FAUNA_SPECIES[id].motion === 'swim'), 'derived fish all swim');
 
 // ---- every sea world has its fish plus at least one other creature
-for (const p of ['earth', 'sequoia', 'verdance', 'mirewood']) {
+for (const p of ['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa']) {
   const roster = faunaRoster(p).filter(id => isWaterLife(FAUNA_SPECIES[id]));
   ok(roster.some(id => FAUNA_SPECIES[id].fish) && roster.some(id => !FAUNA_SPECIES[id].fish), `${p}: fish and another sea creature`);
 }
@@ -64,14 +64,14 @@ ok(faunaRoster('sequoia').includes('lanternSquid') && FAUNA_SPECIES.lanternSquid
   'Sequoia: a glowing lantern squid and a seabed shell crawler');
 
 // ---- the jungle moons: >= 3 fish each, items with icons on disk, catchable
-for (const p of ['verdance', 'mirewood']) {
+for (const p of ['verdance', 'mirewood', 'thalassa']) {
   const fish = FISH_ROSTERS[p] ?? [];
   ok(fish.length >= 3, `${p} has ${fish.length} fish`);
   for (const f of fish) {
     const d = ITEM_DATA[f.item];
     const icon = d && new URL(`../public${d.texture}`, import.meta.url);
     ok(!!d && d.stackSize === 16 && d.mineTime === 0.3 && !!icon && existsSync(icon), `${f.name}: an item (stack 16) with an icon on disk`);
-    ok(f.item >= 180 && f.item <= 199, `${f.name}: item id ${f.item} in the free 180-199 block`);
+    ok((f.item >= 180 && f.item <= 199) || (f.item >= 251 && f.item <= 253), `${f.name}: item id ${f.item} in a fish block (180-199, Thalassa's 251-253)`);
     const slots = emptyCookerSlots();
     slots[0] = { itemType: f.item, quantity: 1 };
     ok(FISH_ITEMS.has(f.item) && findCookingRecipe('campfire', slots)?.recipe.output === ItemType.COOKED_FISH,
@@ -114,10 +114,10 @@ ok(entered, 'clearsSeabed: a clamped swimmer always clears its own column');
 ok(swimRadius(60, 50, 51, 0.8, 0.8) === 50.5, 'a column too shallow for the margins: the middle of the water');
 ok(!clearsSeabed(50.1, 50, 58, 0.5), 'a swimmer below a rising seabed must rise first');
 ok(columnRadius(10, 20, 0.25) === 12.5, 'column fraction 0.25 is a quarter of the way up');
-ok(['earth', 'sequoia', 'verdance', 'mirewood'].every(p => waterLife(p).siteChance > 0), 'every sea world has water spawn numbers');
+ok(['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa'].every(p => waterLife(p).siteChance > 0), 'every sea world has water spawn numbers');
 
 // ---- underwater-life: schools of fish (boids round one anchor record)
-for (const p of ['earth', 'sequoia', 'verdance', 'mirewood']) {
+for (const p of ['earth', 'sequoia', 'verdance', 'mirewood', 'thalassa']) {
   const schools = faunaRoster(p).filter(id => FAUNA_SPECIES[id].fish && FAUNA_SPECIES[id].school);
   ok(schools.length >= 1 && schools.every(id => FAUNA_SPECIES[id].herd[1] >= FISH_FAUNA.minSchool),
     `${p}: a schooling fish of its own roster (${schools.join(', ')})`);

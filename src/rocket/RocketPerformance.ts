@@ -10,7 +10,7 @@
 //
 // No three.js here: the report script runs this file under plain node.
 
-import { ItemType, ITEM_DATA, InventorySlot } from '../player/Inventory';
+import { ItemType, ITEM_DATA, InventorySlot, RocketPartType } from '../player/Inventory';
 import { ROCKET_CONFIG, GRAVITY_WELL, RocketPartStats, RocketEquipmentStats } from '../config/RocketConfig';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { POWER_CONFIG } from '../config/PowerConfig';
@@ -29,6 +29,10 @@ export interface RocketStats {
   powerDrawW: number;       // what it draws in flight (the command module)
   solarW: number;           // what its equipped solar arrays charge in full sun
   chutes: number;           // parachutes fitted (each opens once)
+  cooling: number;          // share of heat gained its radiators shed (0..1)
+  rtgW: number;             // charge its RTGs give at all times
+  chuteBrake: number;       // how much harder its chute brakes (1 = a plain chute; a drogue more)
+  drones: number;           // survey drones aboard
   tier: number;             // highest part tier in the stack
   problems: string[];       // why a part can't work (an ion drive with no reactor core)
   mode: EngineMode;         // the engine mode these numbers are for (null = all engines)
@@ -112,6 +116,7 @@ export function computeRocketStats(
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
   let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
+  let keepHeat = 1, rtgW = 0, chuteBrake = 1, drones = 0;
   for (const slot of equipment ?? []) {
     const e = equipmentStats(slot.itemType);
     if (!e || slot.quantity <= 0) continue;
@@ -119,7 +124,14 @@ export function computeRocketStats(
     batteryWh += (e.batteryWh ?? 0) * slot.quantity;
     solarW += (e.solarW ?? 0) * slot.quantity;
     chutes += (e.chutes ?? 0) * slot.quantity;
+    keepHeat *= Math.pow(1 - (e.cooling ?? 0), slot.quantity);
+    rtgW += (e.rtgW ?? 0) * slot.quantity;
+    chuteBrake = Math.max(chuteBrake, e.chuteBrake ?? 1);
+    if (e.drone) drones += slot.quantity;
   }
+  // What each part counts as for `requires` (itself, and what it provides)
+  const present = new Set<ItemType>(itemTypes);
+  for (const t of itemTypes) { const p = partStats(t)?.provides; if (p !== undefined) present.add(p); }
   const problems: string[] = [];
   for (const itemType of itemTypes) {
     const s = partStats(itemType);
@@ -131,7 +143,7 @@ export function computeRocketStats(
     batteryWh += s.batteryWh ?? 0;
     powerDrawW += s.powerDrawW ?? 0;
     tier = Math.max(tier, s.tier);
-    const missing = (s.requires ?? []).filter(r => !itemTypes.includes(r));
+    const missing = (s.requires ?? []).filter(r => !present.has(r));
     if (missing.length) {
       const msg = `${ITEM_DATA[itemType]?.name ?? 'Part'} needs a ${missing.map(r => ITEM_DATA[r]?.name ?? 'part').join(' and a ')}`;
       if (!problems.includes(msg)) problems.push(msg);
@@ -146,7 +158,165 @@ export function computeRocketStats(
   const exhaustVelocity = massFlow > 0 ? thrust / massFlow : 0;
   const fuelFlow = massFlow / ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const deltaV = dryMass > 0 ? exhaustVelocity * Math.log(wetMass / dryMass) : 0;
-  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, tier, problems, mode: firing };
+  return { dryMass, fuelCapacity, wetMass, thrust, fuelFlow, exhaustVelocity, deltaV, cargoSlots, equipmentSlots, batteryWh, powerDrawW, solarW, chutes, cooling: 1 - keepHeat, rtgW, chuteBrake, drones, tier, problems, mode: firing };
+}
+
+// ---- Staging (openspec space-exploration, rocket-staging) ----
+
+/**
+ * What the firing engines of a stage need besides tank fuel (rocket-tiers):
+ * the charge they draw (W) and the cargo items they use (per second), both
+ * at full throttle, in the engine mode.
+ */
+export function engineNeeds(itemTypes: readonly ItemType[], mode: EngineMode = null): { drawW: number; consumes: Map<ItemType, number> } {
+  const firing = validEngineMode(itemTypes, mode);
+  let drawW = 0;
+  const consumes = new Map<ItemType, number>();
+  for (const t of itemTypes) {
+    const s = partStats(t);
+    if (!s?.thrust || (firing != null && t !== firing)) continue;
+    drawW += s.firingDrawW ?? 0;
+    for (const c of s.consumes ?? []) consumes.set(c.itemType, (consumes.get(c.itemType) ?? 0) + c.perS);
+  }
+  return { drawW, consumes };
+}
+
+/** Is this part a stage separator? */
+export function isSeparator(itemType: ItemType): boolean {
+  return ITEM_DATA[itemType]?.rocketPart?.partType === RocketPartType.SEPARATOR;
+}
+
+/**
+ * A stack (bottom to top) split into stages at its separators, bottom stage
+ * first. A separator belongs to the stage below it - it drops with that
+ * stage. No separator: one stage, the whole stack.
+ */
+export function stagesOf<T>(parts: readonly T[], typeOf: (p: T) => ItemType): T[][] {
+  const stages: T[][] = [[]];
+  for (const p of parts) {
+    stages[stages.length - 1].push(p);
+    if (isSeparator(typeOf(p))) stages.push([]);
+  }
+  if (stages.length > 1 && stages[stages.length - 1].length === 0) stages.pop();
+  return stages;
+}
+
+export interface StageStats {
+  fuelCapacity: number;     // this stage's tanks
+  thrust: number;           // its engines (in the engine mode)
+  fuelFlow: number;
+  exhaustVelocity: number;
+  deltaV: number;           // with full tanks, the stages above it as payload
+}
+
+/**
+ * Each stage's numbers and the whole rocket's delta-v (their sum). Every
+ * stage burns its own tanks carrying everything above it; the cargo and
+ * equipment ride the top stage. A one-stage stack gives computeRocketStats's
+ * delta-v exactly.
+ */
+export function stagedStats(
+  itemTypes: readonly ItemType[],
+  extraDryMass = 0,
+  mode: EngineMode = null,
+  equipment: readonly InventorySlot[] | null = null,
+): { stages: StageStats[]; deltaV: number } {
+  const groups = stagesOf(itemTypes, t => t);
+  const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
+  const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  // the payload's fixed mass (cargo, equipment) sits on top
+  const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
+  const stages: StageStats[] = [];
+  let total = 0;
+  for (let k = 0; k < groups.length; k++) {
+    let wet = extras;
+    for (let j = k; j < groups.length; j++) wet += parts[j].dryMass + parts[j].fuelCapacity * kg;
+    const dry = wet - parts[k].fuelCapacity * kg;
+    const dv = dry > 0 && parts[k].exhaustVelocity > 0 ? parts[k].exhaustVelocity * Math.log(wet / dry) : 0;
+    stages.push({ fuelCapacity: parts[k].fuelCapacity, thrust: parts[k].thrust, fuelFlow: parts[k].fuelFlow, exhaustVelocity: parts[k].exhaustVelocity, deltaV: dv });
+    total += dv;
+  }
+  return { stages, deltaV: total };
+}
+
+/**
+ * Delta-v left with `fuelUnits` aboard (filled into the stages bottom first,
+ * fillStages): each stage burns its own fuel carrying everything above it.
+ * One stage: deltaVWith's number. The pad readout and the flight HUD both
+ * use this.
+ */
+export function stagedDeltaVWith(
+  itemTypes: readonly ItemType[],
+  extraDryMass: number,
+  mode: EngineMode,
+  equipment: readonly InventorySlot[] | null,
+  fuelUnits: number,
+): number {
+  const groups = stagesOf(itemTypes, t => t);
+  const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  const fuels = fillStages(fuelUnits, parts.map(p => p.fuelCapacity));
+  const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
+  const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
+  let dv = 0;
+  for (let k = 0; k < groups.length; k++) {
+    let wet = extras;
+    for (let j = k; j < groups.length; j++) wet += parts[j].dryMass + fuels[j] * kg;
+    const dry = wet - fuels[k] * kg;
+    if (dry > 0 && parts[k].exhaustVelocity > 0) dv += parts[k].exhaustVelocity * Math.log(wet / dry);
+  }
+  return dv;
+}
+
+/**
+ * Share a fuel total out over stages, the bottom (active) stage first, each
+ * up to its capacity. Only the active stage burns and refuelling fills from
+ * the bottom, so the total alone always gives the exact per-stage state.
+ */
+export function fillStages(total: number, capacities: readonly number[]): number[] {
+  let left = Math.max(0, total);
+  return capacities.map(cap => {
+    const f = Math.min(cap, left);
+    left -= f;
+    return f;
+  });
+}
+
+/**
+ * Why a stack (bottom to top) can't fly, or [] if it can: an engine, a fuel
+ * tank and a command module aboard, an engine at the bottom, every part's
+ * needs met, each engine's own requirements, and with stages, an engine in
+ * every stage. The one set of rules the launch pad, docking and refits all
+ * use (rocket-refit).
+ */
+export function stackProblems(itemTypes: readonly ItemType[]): string[] {
+  if (itemTypes.length === 0) return ['No rocket parts installed'];
+  const errors: string[] = [];
+  const typeOf = (t: ItemType) => ITEM_DATA[t]?.rocketPart?.partType;
+  const engines = itemTypes.filter(t => typeOf(t) === RocketPartType.ENGINE);
+  const tanks = itemTypes.filter(t => typeOf(t) === RocketPartType.FUEL_TANK);
+  const capsules = itemTypes.filter(t => typeOf(t) === RocketPartType.CAPSULE);
+  if (engines.length === 0) errors.push('Missing: Engine required');
+  if (tanks.length === 0) errors.push('Missing: Fuel Tank required');
+  if (capsules.length === 0) errors.push('Missing: Command Module required');
+  if (engines.length > 0 && typeOf(itemTypes[0]) !== RocketPartType.ENGINE) errors.push('Engine must be at the bottom of the stack');
+  // Parts that need another part aboard (an ion drive with no reactor core):
+  // the same reasons the stats model gives, so the flight and this agree
+  errors.push(...computeRocketStats(itemTypes).problems);
+  for (const engine of engines) {
+    const reqs = ITEM_DATA[engine]?.rocketPart?.engineRequirements;
+    if (!reqs) continue;
+    if (tanks.length < reqs.minFuelTanks) errors.push(`${ITEM_DATA[engine].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
+    if (reqs.requiresCommandModule && capsules.length === 0) errors.push(`${ITEM_DATA[engine].name} requires a Command Module`);
+  }
+  // Staged: every stage needs an engine of its own, or dropping the stage
+  // below leaves a rocket that cannot fly
+  const stages = stagesOf(itemTypes, t => t);
+  if (stages.length > 1) {
+    stages.forEach((stage, i) => {
+      if (!stage.some(t => typeOf(t) === RocketPartType.ENGINE)) errors.push(`Stage ${i + 1} has no engine`);
+    });
+  }
+  return [...new Set(errors)];
 }
 
 // ---- Power, re-entry heat and the parachute (openspec wool-air-and-reentry) ----
@@ -154,6 +324,18 @@ export function computeRocketStats(
 /** Charge after drawing `drawW` for `dt` seconds (never below 0) */
 export function drainCharge(chargeWh: number, drawW: number, dt: number): number {
   return Math.max(0, chargeWh - (drawW * dt) / 3600);
+}
+
+/**
+ * One step of an electric engine's charge draw (rocket-tiers: the ion
+ * thruster): the charge left, and whether the engines may fire. An engine
+ * that draws charge can't fire on an empty battery; one that draws none
+ * always can.
+ */
+export function feedCharge(chargeWh: number, drawW: number, throttle: number, dt: number): { chargeWh: number; firing: boolean } {
+  if (drawW <= 0 || throttle <= 0) return { chargeWh, firing: true };
+  if (chargeWh <= 0) return { chargeWh: 0, firing: false };
+  return { chargeWh: drainCharge(chargeWh, drawW * throttle, dt), firing: true };
 }
 
 /** Seconds of flight a charge gives at `drawW` (Infinity with no draw) */
@@ -210,19 +392,76 @@ export interface ReentryState {
   leftAtmosphere: boolean;   // been outside every atmosphere since launch
 }
 
+/** What else a re-entry step weighs (space-exploration): all optional, Earth-like by default */
+export interface ReentryOptions {
+  /** The air's density (BODY_ENVIRONMENTS, 1 = Earth's): heat gain scales with it, the safe speed inversely */
+  density?: number;
+  /** Heat gained this step from elsewhere (the Sun up close), heat units */
+  extraGain?: number;
+  /** The share of the heat gained that a fitted heat shield takes (0 = none fitted) */
+  shieldShare?: number;
+  /** The share of the heat gained its radiators shed first (RocketStats.cooling) */
+  cooling?: number;
+}
+
 /**
  * One step of re-entry heat: a flight that has left every atmosphere and is
- * back inside one heats while faster than safeSpeed, and cools otherwise.
- * Returns the new state and whether it is re-entering.
+ * back inside one heats while faster than the safe speed there (safeSpeed /
+ * density), by heatPerMs x density per m/s over it; any `extraGain` adds to
+ * that, and a heat shield takes `shieldShare` of the total (`absorbed`).
+ * With nothing gained it cools. Returns the new state, whether it is
+ * re-entering, and what the shield absorbed.
  */
-export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: number, dt: number): ReentryState & { reentering: boolean } {
+export function reentryStep(state: ReentryState, inAtmosphere: boolean, speed: number, dt: number, opts: ReentryOptions = {}): ReentryState & { reentering: boolean; absorbed: number } {
   const cfg = ROCKET_CONFIG.REENTRY;
+  const density = opts.density ?? 1;
   const leftAtmosphere = state.leftAtmosphere || !inAtmosphere;
   const reentering = leftAtmosphere && inAtmosphere;
-  const heat = reentering && speed > cfg.safeSpeed
-    ? Math.min(cfg.maxHeat, state.heat + (speed - cfg.safeSpeed) * cfg.heatPerMs * dt)
+  const safe = cfg.safeSpeed / Math.max(density, Number.EPSILON);
+  const gain = ((reentering && speed > safe ? (speed - safe) * cfg.heatPerMs * density * dt : 0) + (opts.extraGain ?? 0)) * (1 - (opts.cooling ?? 0));
+  const absorbed = gain * (opts.shieldShare ?? 0);
+  const net = gain - absorbed;
+  const heat = net > 0
+    ? Math.min(cfg.maxHeat, state.heat + net)
     : Math.max(0, state.heat - cfg.coolPerS * dt);
-  return { heat, leftAtmosphere, reentering };
+  return { heat, leftAtmosphere, reentering, absorbed };
+}
+
+/**
+ * The Sun's heat on a rocket at `distance` from its centre this step:
+ * nothing outside SUN_PASS.closePassRadii x `sunRadius`, rising to heatPerS
+ * at its surface.
+ */
+export function solarHeat(distance: number, sunRadius: number, dt: number): number {
+  const cfg = ROCKET_CONFIG.SUN_PASS;
+  const outer = sunRadius * cfg.closePassRadii;
+  if (distance >= outer) return 0;
+  const near = 1 - Math.max(0, distance - sunRadius) / (outer - sunRadius);
+  return cfg.heatPerS * near * dt;
+}
+
+/** Heat shields fitted in an equipment row (each soaks heatShield units before it wears through) */
+export function shieldsFitted(equipment: readonly InventorySlot[] | null | undefined): number {
+  let n = 0;
+  for (const s of equipment ?? []) if (equipmentStats(s.itemType)?.heatShield) n += s.quantity;
+  return n;
+}
+
+/** Wear one heat shield through: it leaves the equipment. False if none was fitted. */
+export function useShield(equipment: InventorySlot[] | null | undefined): boolean {
+  if (!equipment) return false;
+  const shield = equipment.find(s => (equipmentStats(s.itemType)?.heatShield ?? 0) > 0 && s.quantity > 0);
+  if (!shield) return false;
+  return slotStore(equipment).removeItem(shield.itemType, 1) === 1;
+}
+
+/** One heat shield's capacity (heat units it soaks before wearing through) */
+export function shieldCapacity(equipment: readonly InventorySlot[] | null | undefined): number {
+  for (const s of equipment ?? []) {
+    const cap = equipmentStats(s.itemType)?.heatShield;
+    if (cap && s.quantity > 0) return cap;
+  }
+  return 0;
 }
 
 /** Health heat takes off in `dt` (0 at or under damageFrom, damagePerS at maxHeat) */
@@ -259,16 +498,23 @@ export function openChuteFrom(equipment: InventorySlot[] | null | undefined, inA
  * bleeds at dragRate and the chute also holds this step's gravity, so it
  * settles on terminalVelocity exactly; under it, it falls freely.
  */
-export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number): number {
+export function chuteDescentSpeed(fallSpeed: number, g: number, dt: number, density = 1, brake = 1): number {
   const cfg = ROCKET_CONFIG.PARACHUTE;
-  const t = cfg.terminalVelocity;
+  // Thick air brakes harder and lands slower; thin air the opposite; a
+  // drogue (brake > 1) brakes harder in any air
+  const t = chuteLandingSpeed(density, brake);
   if (fallSpeed <= t) return fallSpeed;
-  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * dt) - g * dt);
+  return Math.max(t, t + (fallSpeed - t) * Math.exp(-cfg.dragRate * density * brake * dt) - g * dt);
+}
+
+/** The speed a chute lands at in air of this density (terminalVelocity in Earth's), a drogue's brake included */
+export function chuteLandingSpeed(density = 1, brake = 1): number {
+  return ROCKET_CONFIG.PARACHUTE.terminalVelocity / Math.max(density * brake, Number.EPSILON);
 }
 
 /** Sideways speed kept per step under an open chute */
-export function chuteSideFactor(dt: number): number {
-  return Math.exp(-ROCKET_CONFIG.PARACHUTE.dragRate * dt);
+export function chuteSideFactor(dt: number, density = 1): number {
+  return Math.exp(-ROCKET_CONFIG.PARACHUTE.dragRate * density * dt);
 }
 
 /** Delta-v left with `fuelUnits` in the tanks */
@@ -527,6 +773,15 @@ export function compactCargo(cargo: InventorySlot[], slots: number): boolean {
   return true;
 }
 
+/** Make a slot row exactly `n` long, items packed to the front (false if they don't fit) */
+export function fitSlots(slots: InventorySlot[], n: number): boolean {
+  const items = slots.filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).map(s => ({ ...s }));
+  if (items.length > n) return false;
+  slots.length = 0;
+  for (let i = 0; i < n; i++) slots.push(items[i] ?? { itemType: ItemType.NONE, quantity: 0 });
+  return true;
+}
+
 /** Item types of a stack, for the helpers above */
 export function stackItemTypes(parts: readonly { itemType: ItemType }[]): ItemType[] {
   return parts.map(p => p.itemType).filter(t => !!ITEM_DATA[t]?.rocketPart);
@@ -633,4 +888,21 @@ export function drawFuel(wanted: number, stores: ItemStore[]): FuelDraw {
     }
   }
   return { supplied: Math.min(wanted, supplied), used: [...used].map(([itemType, count]) => ({ itemType, count })) };
+}
+
+/**
+ * The body a survey drone launched from `pos` surveys (space-exploration
+ * upgrade): the nearest airless, solid body within DRONE_RANGE_RADII of its
+ * radius - or null.
+ */
+export function droneTarget<B extends { id: string; center: { x: number; y: number; z: number }; radius: number; hasAtmosphere?: boolean; gasGiant?: boolean }>(
+  pos: { x: number; y: number; z: number }, bodies: readonly B[],
+): B | null {
+  let best: B | null = null, bestD = Infinity;
+  for (const b of bodies) {
+    if (b.hasAtmosphere || b.gasGiant) continue;
+    const d = Math.hypot(pos.x - b.center.x, pos.y - b.center.y, pos.z - b.center.z);
+    if (d <= b.radius * ROCKET_CONFIG.DRONE_RANGE_RADII && d < bestD) { best = b; bestD = d; }
+  }
+  return best;
 }

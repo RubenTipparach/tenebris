@@ -18,7 +18,8 @@ export type EarthSeaFlora = 'coral' | 'kelp' | 'seagrass' | 'beadletanemone';
 export type SequoiaSeaFlora = 'glowanemone' | 'seafan' | 'ribbonweed' | 'lumengrass';
 export type VerdanceSeaFlora = 'reedbed' | 'lilypad' | 'streamerweed' | 'jadeanemone';
 export type MirewoodSeaFlora = 'swampweed' | 'bladderwort' | 'bogtress' | 'mireanemone';
-export type SeaFloraSpecies = EarthSeaFlora | SequoiaSeaFlora | VerdanceSeaFlora | MirewoodSeaFlora;
+export type ThalassaSeaFlora = 'giantkelp' | 'surfgrass' | 'pearlanemone' | 'bonecoral';
+export type SeaFloraSpecies = EarthSeaFlora | SequoiaSeaFlora | VerdanceSeaFlora | MirewoodSeaFlora | ThalassaSeaFlora;
 
 /** The procedural mesh a species is built from (src/mockups/SeaFlora.ts) */
 export type SeaFloraShape = 'branchcoral' | 'kelp' | 'blades' | 'anemone' | 'fan' | 'reeds' | 'lilypad' | 'weed' | 'bladderwort'
@@ -199,6 +200,41 @@ export const SEA_FLORA_SPECIES: Record<SeaFloraSpecies, SeaFloraLook> = {
     ],
     height: [0.2, 0.4], width: [0.35, 0.6], sway: 0.05, swaySpeed: 0.55, wave: 1.2,
     flutter: { amp: 0.1, speed: 1.3 }, cluster: 0.35,
+  },
+  // Thalassa (space-exploration, ocean-world) - giant kelp: violet-and-teal
+  // forests rising from the deep floor nearly to the surface
+  giantkelp: {
+    shape: 'kelp', role: 'tallwavy',
+    ramps: [
+      ['#191954', '#204f63', '#53998b', '#c1f1d8'],
+      ['#230c44', '#4f1d83', '#204f63', '#84e3b5'],
+    ],
+    height: [2, 24], reach: [0.6, 0.94], width: [0.9, 1.4], sway: 0.09, swaySpeed: 0.4, wave: 3.4,
+  },
+  // Thalassa - surf grass: bright green blades in the island shallows
+  surfgrass: {
+    shape: 'blades', role: 'shortwavy',
+    ramps: [['#204f63', '#53998b', '#84e3b5', '#d2f8ff']],
+    height: [0.3, 0.7], width: [0.8, 1.2], sway: 0.25, swaySpeed: 0.9, wave: 1.7,
+  },
+  // Thalassa - pearl anemones: white and pale-pink clumps with pearl tips
+  pearlanemone: {
+    shape: 'anemone', role: 'anemone',
+    ramps: [
+      ['#92a3b2', '#bfcad7', '#fffefe', '#dd576d'],
+      ['#c34988', '#dd576d', '#eab798', '#fffefe'],
+    ],
+    height: [0.2, 0.45], width: [0.35, 0.65], sway: 0.05, swaySpeed: 0.6, wave: 1.2,
+    flutter: { amp: 0.08, speed: 1.4 }, cluster: 0.35,
+  },
+  // Thalassa - bone coral: bleached white-and-bone branching coral on the reef shelves
+  bonecoral: {
+    shape: 'branchcoral', role: 'other',
+    ramps: [
+      ['#a09f91', '#cfaa81', '#eab798', '#fffefe'],
+      ['#5d778d', '#92a3b2', '#bfcad7', '#fffefe'],
+    ],
+    height: [0.4, 0.9], width: [0.6, 1.1], sway: 0.01, swaySpeed: 0.5,
   },
 };
 
