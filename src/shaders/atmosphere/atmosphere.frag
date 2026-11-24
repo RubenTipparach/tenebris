@@ -43,6 +43,17 @@ uniform float duskStrength;       // how much of the tint it takes
 uniform vec3 horizonGlow;         // the orange glow along the horizon at dusk
 uniform float horizonPower;       // how tightly the glow hugs the horizon
 
+// Seen from space (LightingConfig SPACE_HAZE): the gas giants' haze
+uniform float spaceFadeFrom;
+uniform float spaceFadeTo;
+uniform float spaceScaleHeight;
+uniform float spaceDensity;
+uniform float spaceStrength;
+uniform vec3 spaceColour;
+uniform vec3 spaceTerminatorTint;
+uniform int spaceSamples;
+#define MAX_SPACE_SAMPLES 24
+
 varying vec3 vWorldPosition;
 varying vec3 vNormal;
 
@@ -124,7 +135,58 @@ vec3 horizonRay(vec3 rel, vec3 dir, float radius) {
   return normalize(along * level - up * dip);
 }
 
+// The haze along the view ray through the shell from the ground up to its
+// top, thinning with height (the gas giants' hazeSegment): rgb its colour,
+// a how much it covers what lies behind
+vec4 spaceHaze(vec3 ro, vec3 rd, vec3 sunDir) {
+  vec2 shell = raySphereIntersect(ro, rd, planetCenter, atmosphereRadius);
+  if (shell.y < 0.0) return vec4(0.0);
+  float t0 = max(shell.x, 0.0), t1 = shell.y;
+  vec2 ground = raySphereIntersect(ro, rd, planetCenter, shadowRadius);
+  if (ground.x > 0.0) t1 = min(t1, ground.x);
+  if (t1 <= t0) return vec4(0.0);
+  float thick = max(atmosphereRadius - shadowRadius, 1.0);
+  float step = (t1 - t0) / float(spaceSamples);
+  float depth = 0.0, light = 0.0, warm = 0.0;
+  for (int i = 0; i < MAX_SPACE_SAMPLES; i++) {
+    if (i >= spaceSamples) break;
+    vec3 p = ro + rd * (t0 + step * (float(i) + 0.5));
+    vec3 up = normalize(p - planetCenter);
+    float h = clamp((length(p - planetCenter) - shadowRadius) / thick, 0.0, 1.0);
+    float dens = exp(-h / spaceScaleHeight) * step / thick;
+    float ndl = dot(up, sunDir);
+    depth += dens;
+    light += dens * smoothstep(-0.25, 0.35, ndl);
+    warm += dens * (1.0 - smoothstep(0.0, 0.5, ndl)) * smoothstep(-0.3, 0.0, ndl);
+  }
+  if (depth <= 0.0) return vec4(0.0);
+  float cover = 1.0 - exp(-depth * spaceDensity);
+  vec3 col = mix(spaceColour, spaceColour * spaceTerminatorTint, clamp(warm / depth * 2.0, 0.0, 1.0)) * atmosphereTint;
+  return vec4(col, cover * (light / depth) * spaceStrength);
+}
+
+float gSpace = 0.0;
+vec4 gSpaceHaze = vec4(0.0);
+
 void main() {
+  // From space the air is the gas giants' haze; climbing out of the sky
+  // fades from the scattering below to it
+  {
+    vec3 rd = normalize(vWorldPosition - viewerPosition);
+    float shellH = max(atmosphereRadius - shadowRadius, 1.0);
+    float alt = (length(viewerPosition - planetCenter) - shadowRadius) / shellH;
+    float space = smoothstep(spaceFadeFrom, spaceFadeTo, alt);
+    if (space > 0.999) {
+      vec4 h = spaceHaze(viewerPosition, rd, normalize(sunDirection));
+      gl_FragColor = vec4(h.rgb, clamp(h.a, 0.0, 0.95));
+      return;
+    }
+    if (space > 0.0) {
+      // (below: the scattering, then the blend)
+      gSpace = space;
+      gSpaceHaze = spaceHaze(viewerPosition, rd, normalize(sunDirection));
+    }
+  }
   vec3 rayOrigin = viewerPosition;
   vec3 rayDir = normalize(vWorldPosition - viewerPosition);
   vec3 sunDir = normalize(sunDirection);
@@ -140,13 +202,13 @@ void main() {
   }
 
   vec2 atmosHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, atmosphereRadius);
-  if (atmosHit.y < 0.0) { gl_FragColor = vec4(0.0); return; }
+  if (atmosHit.y < 0.0) { gl_FragColor = vec4(gSpaceHaze.rgb, clamp(gSpaceHaze.a, 0.0, 0.95)) * gSpace; return; }
   float rayStart = max(0.0, atmosHit.x);
   float rayEnd = atmosHit.y;
   // From outside, the column stops at the ground (or the density base)
   vec2 planetHit = raySphereIntersect(rayOrigin, rayDir, planetCenter, inside ? planetRadius : shadowRadius);
   if (planetHit.x > 0.0) rayEnd = min(rayEnd, planetHit.x);
-  if (rayStart >= rayEnd) { gl_FragColor = vec4(0.0); return; }
+  if (rayStart >= rayEnd) { gl_FragColor = vec4(gSpaceHaze.rgb, clamp(gSpaceHaze.a, 0.0, 0.95)) * gSpace; return; }
 
   // One twilight for sky and ground (PBD dusk-sky)
   vec3 up = rel / max(viewerR, 1e-3);
@@ -198,5 +260,5 @@ void main() {
 
   // Alpha based on scattering intensity
   float alpha = clamp(length(color) * 1.5, 0.0, 0.95);
-  gl_FragColor = vec4(color, alpha);
+  gl_FragColor = mix(vec4(color, alpha), vec4(gSpaceHaze.rgb, clamp(gSpaceHaze.a, 0.0, 0.95)), gSpace);
 }

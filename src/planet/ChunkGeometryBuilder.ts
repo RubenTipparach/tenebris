@@ -152,6 +152,22 @@ function calculateTorchLight(x: number, y: number, z: number, torches: TorchData
 }
 
 // Merge geometry into target
+/**
+ * A block's seed, three values in (0, 1], from its hex and depth: the same on
+ * every client and every rebuild (an integer hash, no state)
+ */
+export function hexSeedOf(tileIndex: number, depth: number): [number, number, number] {
+  const h = (n: number): number => {
+    let x = (n ^ 0x9e3779b9) >>> 0;
+    x = Math.imul(x ^ (x >>> 16), 0x85ebca6b) >>> 0;
+    x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35) >>> 0;
+    x = (x ^ (x >>> 16)) >>> 0;
+    return (x % 1000 + 1) / 1001;
+  };
+  const k = tileIndex * 131 + depth;
+  return [h(k * 3), h(k * 3 + 1), h(k * 3 + 2)];
+}
+
 function mergeGeometry(
   target: GeometryData,
   positions: number[],
@@ -161,7 +177,8 @@ function mergeGeometry(
   _sunDirection: Vec3,
   skyLightLevel: number | number[],  // one level, or one per vertex
   torches: TorchData[] = [],
-  blockLevel: number | number[] = 0
+  blockLevel: number | number[] = 0,
+  hexSeed: [number, number, number] = [1, 1, 1]
 ): void {
   const vertexCount = positions.length / 3;
   const baseIndex = target.vertexOffset;
@@ -171,7 +188,9 @@ function mergeGeometry(
   target.uvs.push(...uvs);
 
   for (let i = 0; i < vertexCount; i++) {
-    target.colors.push(1, 1, 1);
+    // The vertex colour carries the block's per-hex seed (terrain.frag:
+    // each hex its own tilt and tone)
+    target.colors.push(hexSeed[0], hexSeed[1], hexSeed[2]);
     target.skyLight.push(typeof skyLightLevel === 'number' ? skyLightLevel : skyLightLevel[i]);
     (target.blockLight ??= []).push(typeof blockLevel === 'number' ? blockLevel : blockLevel[i]);
 
@@ -379,6 +398,9 @@ function buildColumnGeometry(
     // Which material each face of this block uses (shared table)
     const faces = blockFaces(blockType);
 
+    // Each block's own seed: its hex's tilt and tone (terrain.frag)
+    const seed = hexSeedOf(column.tileIndex, depth);
+
     // Voxel sky light (shared/voxelLight): each face is lit by the cell it faces
     const topLight = skyAt(field, column.tileIndex, depth + 1);
     const bottomLight = skyAt(field, column.tileIndex, depth - 1);
@@ -389,7 +411,7 @@ function buildColumnGeometry(
     if (hasTopExposed) {
       const topGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, true, false, false, config.uvScale);
       if (topGeom) {
-        mergeGeometry(bufferFor(chunkData, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches, topBlock);
+        mergeGeometry(bufferFor(chunkData, faces.top), topGeom.positions, topGeom.normals, topGeom.uvs, topGeom.indices, config.sunDirection, topLight, torches, topBlock, seed);
       }
     }
 
@@ -397,7 +419,7 @@ function buildColumnGeometry(
     if (hasBottomExposed) {
       const bottomGeom = createFaceGeometry(column.tile, innerRadius, outerRadius, false, true, false, config.uvScale);
       if (bottomGeom) {
-        mergeGeometry(bufferFor(chunkData, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomLight, torches, bottomBlock);
+        mergeGeometry(bufferFor(chunkData, faces.bottom), bottomGeom.positions, bottomGeom.normals, bottomGeom.uvs, bottomGeom.indices, config.sunDirection, bottomLight, torches, bottomBlock, seed);
 
       }
     }
@@ -408,7 +430,7 @@ function buildColumnGeometry(
       if (sidesGeom) {
         const shown = keepSides(sidesGeom, sideShow);
         const shownEdges = edges.filter((_, i) => sideShow[i]);
-        mergeGeometry(bufferFor(chunkData, faces.side), shown.positions, shown.normals, shown.uvs, shown.indices, config.sunDirection, sideLights(field, shownEdges, depth), torches, sideBlock(blockField, shownEdges, depth));
+        mergeGeometry(bufferFor(chunkData, faces.side), shown.positions, shown.normals, shown.uvs, shown.indices, config.sunDirection, sideLights(field, shownEdges, depth), torches, sideBlock(blockField, shownEdges, depth), seed);
 
       }
     }
