@@ -23,6 +23,7 @@ export interface PlacedCopperPipe {
   connections: PipeConnectionTarget[];
   // Visual connector meshes to adjacent pipes
   connectorMeshes: THREE.Mesh[];
+  connectorSig?: string;  // what its connectors join, last rebuild (rebuildConnectorsForPipe)
 }
 
 // Network represents a connected set of pipes linking machines
@@ -312,7 +313,29 @@ export class CopperPipeManager {
   }
 
   // Rebuild just the connector meshes for a single pipe
+  // The connectors a rebuild would draw, as a signature: where each one ends
+  // (null = none). rebuildAllConnections runs every second; when nothing it
+  // connects to has changed, the existing connector meshes stay - remaking
+  // them churned ~40 geometries + materials a second in a wired-up world.
+  private connectorSigFor(pipe: PlacedCopperPipe): { sig: string; count: number } {
+    const ends = pipe.connections.map(conn => {
+      if (conn.type === 'pipe') {
+        const n = this.pipes.get(conn.pipeId);
+        return n && pipe.id < n.id ? n.position : null;
+      }
+      const m = conn.type === 'hydro-generator' ? this.getHydroGeneratorAtTile?.(conn.tileIndex) : this.getSteamEngineAtTile?.(conn.tileIndex);
+      return (m as { position?: THREE.Vector3 } | undefined)?.position ?? null;
+    });
+    return {
+      sig: ends.map(p => (p ? `${p.x.toFixed(3)},${p.y.toFixed(3)},${p.z.toFixed(3)}` : '-')).join('|'),
+      count: ends.filter(Boolean).length,
+    };
+  }
+
   private rebuildConnectorsForPipe(pipe: PlacedCopperPipe): void {
+    const { sig, count } = this.connectorSigFor(pipe);
+    if (pipe.connectorSig === sig && pipe.connectorMeshes.length === count) return;
+    pipe.connectorSig = sig;
     // Clear existing connectors
     for (const connector of pipe.connectorMeshes) {
       this.scene.remove(connector);
