@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
+import type { PlacedLaunchPad } from './planet/LaunchPad';
 import { PlanetPlayer } from './player/PlanetPlayer';
 import { PlanetBlockInteraction } from './player/PlanetBlockInteraction';
 import { PlanetTreeManager, FloraTreeManager, FloraSpecies, EarthTreeSpecies, standSpecies } from './planet/Tree';
@@ -412,15 +413,16 @@ class PlanetGame {
       const removedTiles = new Set(removedTreesData.map(t => t.tileIndex));
 
       this.treeManager.setChunkLookup((tileIndex) => this.earth.getTileChunkIndex(tileIndex));
+      // In Earth's configured frame (see scatterFloraOnce)
       this.treeManager.scatterTrees(
-        this.earth.center,
+        this.earth.configuredCenter,
         this.earth.radius,
         PlayerConfig.TREE_COUNT,
         (direction) => this.earth.getSurfaceHeightInDirection(direction),
         (direction) => this.earth.isUnderwaterInDirection(direction), // Skip underwater locations
         PlayerConfig.TERRAIN_SEED, // Use terrain seed for deterministic placement
         (direction) => this.earth.getTileIndexInDirection(direction), // For visibility tracking
-        (direction) => this.earth.getTileCenterInDirection(direction), // For centering trees on tiles
+        (direction) => this.earth.getTileCenterInDirection(direction)?.sub(this.earth.center).add(this.earth.configuredCenter) ?? null, // For centering trees on tiles
         removedTiles, // Skip tiles where trees were previously removed
         this.biomeTreeSpecies(this.earth)
       );
@@ -584,8 +586,11 @@ class PlanetGame {
       );
 
       // Crash (or manual abandon): respawn on the planet nearest the rocket
-      this.rocketFlightManager.setOnRespawnCallback((rocketPosition) => {
-        this.respawnOnNearestPlanet(rocketPosition);
+      // After a crash: back beside the pad the flight took off from (on its
+      // planet wherever that planet is in its orbit now), else the nearest planet
+      this.rocketFlightManager.setOnRespawnCallback((rocketPosition, pad) => {
+        if (pad) this.respawnAtPad(pad);
+        else this.respawnOnNearestPlanet(rocketPosition);
       });
 
       // Set up board rocket callback for boarding landed rockets
@@ -1229,8 +1234,13 @@ class PlanetGame {
     manager.setChunkLookup((tileIndex) => planet.getTileChunkIndex(tileIndex));
     // As many per area as Earth's TREE_COUNT, times the planet's density
     const count = Math.round(PlayerConfig.TREE_COUNT * (body.floraDensity ?? 1) * (planet.radius / 100) ** 2);
+    // Placed in the planet's configured frame, like every object under its
+    // attach root (src/world/PlanetFrames.ts): the root carries it round the
+    // orbit. Scattering round the LIVE centre of a planet that had already
+    // moved offset the whole forest by that distance twice.
+    const frame = planet.configuredCenter;
     manager.scatterTrees(
-      planet.center,
+      frame,
       planet.radius,
       count,
       (direction) => planet.getSurfaceHeightInDirection(direction),
@@ -1238,7 +1248,7 @@ class PlanetGame {
       // Sequoia keeps the seed it always had (same forests in old saves)
       PlayerConfig.TERRAIN_SEED + (id === 'sequoia' ? 100 : 100 + (body.terrain.seed ?? 0)),
       (direction) => planet.getTileIndexInDirection(direction),
-      (direction) => planet.getTileCenterInDirection(direction),
+      (direction) => planet.getTileCenterInDirection(direction)?.sub(planet.center).add(frame) ?? null,
       removed,
       (tileIndex, roll) => {
         // One species per biome, never a mix: the one its ground grows
@@ -1488,7 +1498,7 @@ class PlanetGame {
    * Prepare a planet for teleportation by ensuring terrain is generated and ready.
    * Shows a loading overlay with progress bar during preparation.
    */
-  private async preparePlanetForTeleport(planet: Planet, planetName: string): Promise<void> {
+  private async preparePlanetForTeleport(planet: Planet, planetName: string, landing?: THREE.Vector3): Promise<void> {
     const overlay = document.getElementById('planet-prep-overlay');
     const titleEl = document.getElementById('planet-prep-title');
     const statusEl = document.getElementById('planet-prep-status');
@@ -1517,7 +1527,7 @@ class PlanetGame {
     // Step 2: Build the detailed terrain mesh around the landing spot (50-100%)
     if (statusEl) statusEl.textContent = 'Building terrain mesh...';
     const bodyConfig = getBodyConfig(planetName);
-    const spawnPos = planet.getSpawnPositionAtLatLon(
+    const spawnPos = landing ?? planet.getSpawnPositionAtLatLon(
       bodyConfig?.spawn?.latitude ?? 0,
       bodyConfig?.spawn?.longitude ?? 0,
       1
@@ -1771,7 +1781,36 @@ class PlanetGame {
     this.teleportToPlanet(nearest);
   }
 
-  private async teleportToPlanet(planetName: string): Promise<void> {
+  /**
+   * Respawn beside a launch pad: on the pad's planet (made the reference
+   * body, so it sits at its configured position, the frame the pad was
+   * placed in), ROCKET_CONFIG.RESPAWN_PAD_OFFSET_M from its middle on the
+   * side away from the tower, on the ground there.
+   */
+  private respawnAtPad(pad: PlacedLaunchPad): void {
+    let planetId: string | null = null;
+    let best = Infinity;
+    for (const [id, planet] of this.planets) {
+      const d = planet.configuredCenter.distanceTo(pad.planetCenter);
+      if (d < best) { best = d; planetId = id; }
+    }
+    if (!planetId) { this.respawnOnNearestPlanet(); return; }
+    this.player.setEnabled(true);
+    this.teleportToPlanet(planetId, (planet) => {
+      // The pad in the planet's live frame (equal once it is the reference body)
+      const toLive = planet.center.clone().sub(planet.configuredCenter);
+      const middle = pad.position.clone().add(toLive);
+      const up = middle.clone().sub(planet.center).normalize();
+      const away = middle.clone().sub(pad.towerTileCenter.clone().add(toLive));
+      away.addScaledVector(up, -away.dot(up));
+      if (away.lengthSq() < 1e-6) away.set(1, 0, 0).addScaledVector(up, -up.x);
+      const spot = middle.addScaledVector(away.normalize(), ROCKET_CONFIG.RESPAWN_PAD_OFFSET_M);
+      const dir = spot.sub(planet.center).normalize();
+      return planet.center.clone().addScaledVector(dir, planet.getSurfaceHeightInDirection(dir) + 1);
+    });
+  }
+
+  private async teleportToPlanet(planetName: string, placeOn?: (planet: Planet) => THREE.Vector3): Promise<void> {
     const planet = this.planets.get(planetName);
     if (!planet) {
       console.warn(`Unknown planet: ${planetName}`);
@@ -1798,7 +1837,8 @@ class PlanetGame {
         other.setAutoDetailHeld(true);
         other.releaseDetailedTerrain();
       }
-      await this.preparePlanetForTeleport(planet, planetName);
+      // A chosen spot (beside a launch pad) gets its ground built, not the planet's spawn
+      await this.preparePlanetForTeleport(planet, planetName, placeOn?.(planet));
     } catch (e) {
       this.player.setEnabled(wasEnabled);
       throw e;
@@ -1813,7 +1853,9 @@ class PlanetGame {
     // Position player on the surface using actual terrain height
     // Use spawn config if available, otherwise default positioning
     const bodyConfig = getBodyConfig(planetName);
-    if (bodyConfig?.spawn) {
+    if (placeOn) {
+      playerPos = placeOn(planet);
+    } else if (bodyConfig?.spawn) {
       playerPos = planet.getSpawnPositionAtLatLon(
         bodyConfig.spawn.latitude,
         bodyConfig.spawn.longitude,

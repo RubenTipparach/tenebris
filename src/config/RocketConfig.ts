@@ -53,6 +53,16 @@ export interface RocketEquipmentStats {
 }
 
 export const ROCKET_CONFIG = {
+  // === RESPAWN ===
+  // After a crash, respawn beside the pad the flight took off from: this far
+  // (m) from its middle, on the side away from the tower
+  RESPAWN_PAD_OFFSET_M: 6,
+
+  // === SELF DESTRUCT ===
+  // Hold ROCKET_INPUTS.SELF_DESTRUCT this long (s) to blow the rocket up; letting
+  // go before then cancels. Only once launched (on the pad, just climb out)
+  SELF_DESTRUCT_HOLD_S: 2,
+
   // === EXIT IN SPACE ===
   // Out of every gravity well a pilot may climb out (an EVA): the ship parks
   // where it floats, and the player comes out this far off its side (m), clear
@@ -333,4 +343,5 @@ export const ROCKET_INPUTS = {
   EJECT_CAPSULE: 'KeyJ',          // J - emergency eject (hold)
   RESPAWN: 'KeyB',                // B - abandon the rocket and respawn on the nearest planet
   PARACHUTE: 'KeyP',              // P - open the parachute (Shift+P stays the screenshot key)
+  SELF_DESTRUCT: 'KeyK',          // K - hold to self-destruct (X is throttle up)
 };
