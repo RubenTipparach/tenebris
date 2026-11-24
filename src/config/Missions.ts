@@ -362,7 +362,7 @@ export const MISSIONS: Mission[] = [
 
   // ---- getting about
   {
-    id: 'map', branch: 'about', icon: I.GRASS, parent: 'furnace', title: 'Read the map', help: 'Press E, open Map, right-click a place 200 m away and walk there.',
+    id: 'map', branch: 'about', icon: I.GRASS, parent: 'furnace', title: 'Read the map', help: 'Press M to open the map, right-click a place 200 m away and walk there.',
     objectives: [{ kind: 'reached', count: 1, label: 'Waypoint' }],
     unlocks: [],
   },
