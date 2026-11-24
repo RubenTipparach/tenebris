@@ -19,7 +19,14 @@
   const planet = () => g().player.getCurrentPlanet();
   const player = () => g().player;
   const im = () => g().inputManager;
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // Every wait notes where it was called from (Chrome keeps the await chain),
+  // and unwinds a loop the hang watchdog has replaced
+  let loopGen = 0;
+  function waitPoint(gen) {
+    if (gen !== undefined && gen !== loopGen) throw new Error('loop replaced');
+    st.where = (new Error().stack || '').split('\n').slice(3, 9).map(l => l.trim().replace(/^at /, '').replace(/ \(.*$/, '')).join(' < ');
+  }
+  const sleep = (ms) => { waitPoint(st.curGen); return new Promise(r => setTimeout(r, ms)); };
 
   let I = null;          // ItemType
   let B = null;          // HexBlockType
@@ -121,7 +128,8 @@
     }
     return false;
   }
-  const nextFrame = () => new Promise(r => requestAnimationFrame(() => r()));
+  // rAF, but never longer than a second (a throttled tab must not hang the bot)
+  const nextFrame = () => { waitPoint(st.curGen); return new Promise(r => { const t = setTimeout(r, 1000); requestAnimationFrame(() => { clearTimeout(t); r(); }); }); };
 
   async function calibrate() {
     // Which way does +mouseY move the pitch? Measure it once.
@@ -1269,7 +1277,10 @@
   }
 
   async function loop() {
-    while (st.running) {
+    const gen = ++loopGen;
+    st.curGen = gen;
+    while (st.running && gen === loopGen) {
+      st.iterAt = Date.now();
       try {
         closeMenus();
         const id = pickMission();
@@ -1306,6 +1317,16 @@
       await calibrate();
       say(`${role} bot starting at tile ${myTile()}`);
       loop();
+      // Hang watchdog: a loop pass that runs past HANG_MS is abandoned and a
+      // fresh loop starts (the old one unwinds at its next wait)
+      const HANG_MS = 12 * 60 * 1000;
+      setInterval(() => {
+        if (!st.running || Date.now() - (st.iterAt || Date.now()) < HANG_MS) return;
+        say(`hung for 12 min at: ${st.where || '?'} - restarting the loop`);
+        releaseAll();
+        st.iterAt = Date.now();
+        loop();
+      }, 30000);
     },
     stop() { st.running = false; releaseAll(); },
     status() {
@@ -1315,7 +1336,7 @@
       return {
         role: st.role, task: st.task, goal: st.goal, done: s.done, now: t.now()?.id ?? null,
         pos: player().position.toArray().map(v => +v.toFixed(1)), tile: myTile(), depth: feetDepth(),
-        items: hot, errors: st.errors, log: st.log.slice(-12),
+        items: hot, errors: st.errors, log: st.log.slice(-12), where: st.where,
         mem: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, geo: g().engine.renderer.info.memory.geometries, tex: g().engine.renderer.info.memory.textures },
       };
     },
