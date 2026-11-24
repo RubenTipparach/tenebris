@@ -69,6 +69,8 @@ import { AudioManager } from '../engine/AudioManager';
 import { ActionFrame, LocalAction, ShotAction } from '../net/AvatarPose';
 import { AUDIO_SETTINGS } from '../config/AudioConfig';
 import { setTorchLights } from '../planet/TorchLightUniforms';
+import type { SubmarineWorld } from '../vehicles/SubmarineManager';
+import type { SavedSubmarine } from '../vehicles/Submarine';
 
 // Map HexBlockType to ItemType (what you get when mining)
 function blockToItem(blockType: HexBlockType): ItemType {
@@ -287,6 +289,7 @@ const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['computer', () => gameStorage.getComputers()],
   ['printer3D', () => gameStorage.getPrinters3D()],
   ['launchPad', () => gameStorage.getLaunchPads()],
+  ['submarine', () => gameStorage.getSubmarines()],
 ];
 
 export class PlanetBlockInteraction {
@@ -763,7 +766,11 @@ export class PlanetBlockInteraction {
       this.saveInventory();
       this.saveAllStorageStates();
       // A rocket's cargo hold saves with its launch pad
-      if (this.storageUI.getStorageType() === 'cargo') this.saveLaunchPadStates();
+      if (this.storageUI.getStorageType() === 'cargo') {
+        this.saveLaunchPadStates();
+        // a submarine's hold saves with its record
+        this.submarines?.holdChanged(this.storageUI.getCurrentStorage()?.slots);
+      }
       if (this.storageUI.getStorageType() === 'cooker') {
         const station = this.cookerManager.getPlaced().find(c => c === this.storageUI.getCurrentStorage());
         if (station) this.saveCooker(station);
@@ -4260,6 +4267,14 @@ export class PlanetBlockInteraction {
   }
 
   /** The air system: using a space suit in hand puts it on. */
+  // Submarines (space-exploration, submarines): placed objects that move,
+  // run by the SubmarineManager; their records come through here like every
+  // other kind (restoreSavedObject / applySavedState / removeWorldObject)
+  private submarines: SubmarineWorld | null = null;
+  public setSubmarines(world: SubmarineWorld): void {
+    this.submarines = world;
+  }
+
   public setAirSystem(air: AirSystem): void {
     this.airSystem = air;
   }
@@ -4917,6 +4932,7 @@ export class PlanetBlockInteraction {
       case 'copperPipe': return atDepth(this.copperPipeManager.getPlacedPipes());
       case 'cable': return atDepth(this.cableNodeManager.getPlacedCables());
       case 'launchPad': return this.launchPadManager.getLaunchPads().find(p => p.centerTileIndex === tile && this.padPlanetId(p) === planetId);
+      case 'submarine': return this.submarines?.find(key);
     }
     return undefined;
   }
@@ -4946,6 +4962,7 @@ export class PlanetBlockInteraction {
       case 'copperPipe': this.copperPipeManager.removePipe(o as PlacedCopperPipe); break;
       case 'cable': this.cableNodeManager.removeCable(o as PlacedCable); break;
       case 'launchPad': this.launchPadManager.removeLaunchPad(o as PlacedLaunchPad); break;
+      case 'submarine': this.submarines?.removeFromWorld(key); break;
     }
     return o.position.clone();
   }
@@ -5050,6 +5067,7 @@ export class PlanetBlockInteraction {
         if (st.outputInventory) st.outputInventory.forEach((sl, i) => { if (pr.outputInventory[i]) pr.outputInventory[i] = sl; });
         return true;
       }
+      case 'submarine': return this.submarines?.applyRecord(o, saved as SavedSubmarine) ?? false;
       case 'launchPad': {
         const pad = o as PlacedLaunchPad, r = saved as SavedLaunchPad;
         // the tower, the pad blocks or the rocket stack changed: rebuild it
@@ -5084,6 +5102,10 @@ export class PlanetBlockInteraction {
     if (!planet) return Promise.resolve();
     let pending: Promise<unknown> | void = undefined;
     switch (kind) {
+      case 'submarine': {
+        this.submarines?.restore(saved as SavedSubmarine & { planetId: string }, planet.configuredCenter);
+        break;
+      }
       case 'machine': {
         const rec = saved as SavedMachine & { planetId: string };
         this.machineManager.add(machineFromRecord(rec), planet.configuredCenter);

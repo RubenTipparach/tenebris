@@ -910,6 +910,17 @@ export class RocketController {
     return this.isInSpace();
   }
 
+  /**
+   * The gas giant whose cloud tops the rocket is below right now (flying,
+   * not crashed), or null - where a diver can be let out (space-exploration,
+   * submarines)
+   */
+  public getGasGiantDip(): PlanetGravitySource | null {
+    const g = this.closestPlanet;
+    if (!g?.gasGiant || this.stateMachine.getState() === RocketState.CRASHED) return null;
+    return this.position.distanceTo(g.center) < g.radius ? g : null;
+  }
+
   /** In flight with no planet's gravity on the rocket */
   public isInSpace(): boolean {
     return this.stateMachine.getState() === RocketState.IN_FLIGHT && !this.isInGravityWell;
@@ -2150,8 +2161,10 @@ export class RocketController {
 
     // Resume as it was left: LANDED on a surface, or IN_FLIGHT (at rest)
     // when it was parked in space, out of every gravity well
+    // (a ship left in a gas giant's air - its diver out, space-exploration -
+    // has no ground under it: it resumes flying)
     this.updateClosestPlanet();
-    this.stateMachine.forceState(this.isInGravityWell ? RocketState.LANDED : RocketState.IN_FLIGHT);
+    this.stateMachine.forceState(this.isInGravityWell && !this.closestPlanet?.gasGiant ? RocketState.LANDED : RocketState.IN_FLIGHT);
 
     // Store boarded position for respawn
     this.lastBoardedPosition.copy(this.position);

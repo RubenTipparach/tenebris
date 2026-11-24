@@ -588,6 +588,61 @@ def survey_beacon_face():
     return px
 
 
+def submarine(hull, light, dark, window, deep=False):
+    """A submarine (space-exploration, submarines), side on, nose right: a
+    rounded hull lit from the top left, a conning tower, portholes and a
+    screw at the stern; the deep hull wears ribs"""
+    px, c = _canvas()
+    b, l, d, w = c[hull], c[light], c[dark], c[window]
+    out = c["black"]
+    for y in range(6, 13):
+        for x in range(1, 15):
+            if ((x - 7.5) / 6.8) ** 2 + ((y - 9.2) / 3.4) ** 2 > 1:
+                continue
+            px[y][x] = l if y <= 7 else d if y >= 11 else b
+    for y in range(3, 7):                       # the conning tower
+        for x in range(6, 10):
+            px[y][x] = l if x == 6 or y == 3 else d if x == 9 else b
+    px[2][7] = c["lgrey"]                        # periscope
+    px[1][7] = px[1][8] = c["lgrey"]
+    for x in (8, 11):                            # portholes
+        px[9][x] = w
+    px[9][13] = out                              # the nose cap
+    for y in (8, 9, 10):                         # the screw at the stern
+        px[y][0] = c["lgrey"] if y != 9 else out
+    if deep:
+        for x in (4, 7, 10):
+            for y in range(7, 12):
+                if px[y][x][3] and px[y][x] != w:
+                    px[y][x] = d
+    return px
+
+
+def diver(hull, light, dark, window, deep=False):
+    """A gas-giant diver: a pressure sphere with a big round window, fins
+    and a lifting ring on top; the deep diver has a double ring"""
+    px, c = _canvas()
+    b, l, d, w = c[hull], c[light], c[dark], c[window]
+    for y in range(3, 14):
+        for x in range(2, 14):
+            r = ((x - 7.5) / 5.5) ** 2 + ((y - 8.5) / 5.5) ** 2
+            if r > 1:
+                continue
+            px[y][x] = l if (x + y) < 12 else d if (x + y) > 19 else b
+    for y in range(7, 11):                       # the window
+        for x in range(6, 10):
+            px[y][x] = w if (x, y) != (6, 7) else c["white"]
+    for x in range(6, 10):                       # the lifting ring
+        px[1][x] = c["lgrey"]
+    px[2][6] = px[2][9] = c["lgrey"]
+    if deep:
+        for x in range(5, 11):
+            px[0][x] = c["lgrey"]
+    for (x, y) in ((1, 12), (1, 13), (14, 12), (14, 13)):   # fins
+        px[y][x] = d
+    return px
+
+
 def refit_kit(mk2=False):
     """A refit kit (rocket-refit): a tool case with a wrench on its lid, lit
     from the top left; the mk2 in titanium blue with a green status light"""
@@ -1187,6 +1242,11 @@ if __name__ == "__main__":
     write("rocket_parts/survey_drone_face.png", drone)
     write("icons/radiation_lining.png", resource_icon("plate", "green", "lime", "black", "dgrey"))
     write("icons/coolant_loop.png", resource_icon("coil", "blue", "white", "navy", None))
+    # Submarines and divers (space-exploration, submarines): their hull colours
+    write("icons/submarine.png", submarine("yellow", "white", "orange", "blue"))
+    write("icons/deep_submarine.png", submarine("indigo", "lgrey", "navy", "yellow", deep=True))
+    write("icons/gas_giant_diver.png", diver("orange", "yellow", "plum", "blue"))
+    write("icons/deep_diver.png", diver("red", "pink", "navy", "lime", deep=True))
     write("icons/fuel_rod_mk2.png", pips(recolour(read_png(os.path.join(tex, "icons", "fuel_rod.png")), [P8[k] for k in ("black", "navy", "blue", "lime", "white")]), 2))
     # Stage separator (rocket-staging): the tank's shape in hazard yellow,
     # a black-and-yellow stripe band round its middle on the icon
