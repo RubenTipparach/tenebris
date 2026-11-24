@@ -35,6 +35,7 @@
   let ESMELTS = null;    // electric furnace ELECTRIC_SMELTING_RECIPES
   let COOKS = null;      // campfire / kiln / oven recipes, with their station kind
   let BENCH = null;      // electronics workbench recipes
+  let PRINTS = null;     // 3D printer recipes
   let SENS = 0.002;      // PlayerConfig.MOUSE_SENSITIVITY
   let pitchSign = 1;     // measured: which way +mouseY turns the head
 
@@ -57,6 +58,8 @@
     const smeltMod = await import(`${BASE}/config/SmeltingRecipes.ts`);
     SMELTS = smeltMod.SMELTING_RECIPES;
     ESMELTS = smeltMod.ELECTRIC_SMELTING_RECIPES;
+    const printMod = await import(`${BASE}/player/Printer3DUI.ts`);
+    PRINTS = printMod.PRINTER_RECIPES;
     const benchMod = await import(`${BASE}/player/ElectronicsWorkbenchUI.ts`);
     BENCH = benchMod.ELECTRONICS_RECIPES;
     const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
@@ -995,6 +998,73 @@
     },
     // These missions count what THIS player places: build its own, even if
     // someone else's power plant is already running nearby
+    // A launch pad: a pad block on a centre tile and one on each of its six
+    // neighbours, on free, dry, level-ish ground
+    pad: async () => {
+      if (count(I.LAUNCH_PAD_BLOCK) < 7) { await obtain(I.LAUNCH_PAD_BLOCK, 7); return; }
+      const p = P();
+      await toSurface();
+      const lp = bi().launchPadManager;
+      const padTiles = new Set(lp.getLaunchPads().flatMap(pad => [...pad.hexes.keys()]));
+      let site = st.padSite;
+      try { if (site == null) site = JSON.parse(localStorage.getItem('bot_padSite') || 'null'); } catch {}
+      // a pad of ours left unfinished: finish it before starting another
+      let mySites = [];
+      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      if (site == null) {
+        site = mySites.find(c => { const pad = lp.getLaunchPads().find(x => x.hexes.has(c)); return pad && !pad.isComplete; }) ?? null;
+      }
+      if (site === undefined || site === null) {
+        const free = (t) => p.isTileLoaded(t) && isDryTile(t);
+        // well clear of every other pad (touching one would join it, and pads
+        // at different levels can't join)
+        const nearPad = (c) => tilesWithin(c, 3).some(t => padTiles.has(t));
+        site = tilesWithin(myTile(), 8).find(c => {
+          if (!free(c) || nearPad(c)) return false;
+          const g = p.groundDepthOf(c);
+          const nb = neighbors(c);
+          return nb.length === 6 && nb.every(t => free(t) && Math.abs(p.groundDepthOf(t) - g) <= 1);
+        });
+        if (site === undefined) { say('no flat ground for a launch pad here - moving on'); await wander(); return; }
+        st.padSite = site;
+        try { localStorage.setItem('bot_padSite', JSON.stringify(site)); localStorage.setItem('bot_padSites', JSON.stringify([...mySites, site])); } catch {}
+        say(`laying a launch pad round tile ${site}`);
+      }
+      const has = (t) => lp.getLaunchPads().some(pad => pad.hexes.has(t));
+      for (const t of [site, ...neighbors(site)]) {
+        if (has(t)) continue;
+        if (count(I.LAUNCH_PAD_BLOCK) < 1) return;
+        // stand just outside the ring on this tile's side, so the line of
+        // sight to its ground never grazes a pad block already laid
+        let ok = false;
+        for (let tries = 0; tries < 2 && !ok; tries++) {
+          const centre = blockTop(site, p.groundDepthOf(site));
+          const target = blockTop(t, p.groundDepthOf(t));
+          const out = t === site ? target.clone().sub(player().position).negate() : target.clone().sub(centre);
+          const up = upAt(target);
+          out.addScaledVector(up, -out.dot(up)).normalize();
+          const stand = target.clone().addScaledVector(out, t === site ? 4.5 : 2.6 + tries);
+          await walkTo(stand, 0.8, 20000);
+          closeMenus();
+          if (!selectItem(I.LAUNCH_PAD_BLOCK)) return;
+          const before = count(I.LAUNCH_PAD_BLOCK);
+          await lookAtPoint(target, 0.03, 1500);
+          await click(2, 80);
+          await sleep(900);
+          closeMenus();   // a click on a pad opens its panel
+          ok = count(I.LAUNCH_PAD_BLOCK) < before || has(t);
+        }
+        if (ok) { say(`pad block laid on tile ${t}`); continue; }
+        // try that block again on the next pass; give the site up only after a few rounds
+        st.padFails = st.padFails || {};
+        st.padFails[t] = (st.padFails[t] || 0) + 1;
+        if (st.padFails[t] < 4) { say(`pad block on tile ${t} would not go down - trying again`); await wander(); return; }
+        say(`could not lay the pad at tile ${site} - choosing another site`);
+        st.padSite = null;
+        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        return;
+      }
+    },
     hydro: async () => {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return;
       const w = nearestWaterTile(30);
@@ -1374,6 +1444,88 @@
     say(`stored ${moved} stack(s); ${freeSlots()} slots free`);
   }
 
+
+
+  // Oil sand lies deep: find a visible block of it, get next to it, scoop it with the bucket
+  async function scoopOilSand() {
+    const p = P();
+    let target = null, bd = 1e9;
+    const fd = feetDepth();
+    for (const t of tilesWithin(myTile(), 8)) {
+      if (!p.isTileLoaded(t)) continue;
+      for (let d = Math.max(1, fd - 14); d <= fd + 2; d++) {
+        if (p.getBlock(t, d) === B.OIL_SAND && !(st.badDig || []).includes(`${t}:${d}`)) {
+          const c = blockCenter(t, d); const dd = c.distanceTo(player().position);
+          if (dd < bd) { bd = dd; target = { t, d, c }; }
+        }
+      }
+    }
+    if (!target) {
+      say('no oil sand in sight - digging down for some');
+      await digDown(() => tilesWithin(myTile(), 3).some(t => { for (let d = feetDepth() - 3; d <= feetDepth() + 1; d++) if (p.getBlock(t, d) === B.OIL_SAND) return true; return false; }), 20);
+      return false;
+    }
+    // tunnel to it, then scoop from beside it
+    await tunnelToOreBlock(target.t, target.d);
+    selectItem(I.BUCKET);
+    await lookAtPoint(target.c, 0.03, 1500);
+    const h = rayHit();
+    if (h && (h.tileIndex !== target.t || h.depth !== target.d)) { await mineBlock(h.tileIndex, h.depth, 8000); selectItem(I.BUCKET); await lookAtPoint(target.c, 0.03, 1200); }
+    await click(2, 80);
+    await sleep(500);
+    if (count(I.CRUDE_OIL_BUCKET) > 0) { say('filled a bucket with crude oil'); return true; }
+    st.badDig = (st.badDig || []).concat([`${target.t}:${target.d}`]);
+    return false;
+  }
+  // Like tunnelToOre, for one known block
+  async function tunnelToOreBlock(tile, depth) {
+    for (let step = 0; step < 16; step++) {
+      const c = blockCenter(tile, depth);
+      if (c.distanceTo(eye()) < 4) return true;
+      const fd = feetDepth();
+      if (depth < fd - 1) { const mt = myTile(); if (fd - 1 <= 1) return false; if (!(await mineBlock(mt, fd - 1, 12000))) return false; await sleep(400); continue; }
+      const pos = player().position; const up = upAt(pos);
+      const flat = c.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up)).normalize();
+      await lookAtPoint(pos.clone().addScaledVector(flat, 3).addScaledVector(up, 1.0), 0.06, 1200);
+      await clearAhead(flat);
+      key('KeyW', true); await sleep(450); key('KeyW', false); await sleep(150);
+    }
+    return false;
+  }
+
+  // ---- the 3D printer (needs power) -------------------------------------------------
+  // Queue `jobs` prints of recipe `r` at a powered printer and collect them
+  async function printCraft(r, jobs) {
+    const pm = bi().printer3DManager;
+    const pos = player().position;
+    const pr = pm.getAllPrinters().filter(x => x.isPowered)
+      .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0];
+    if (!pr) { say('no powered 3D printer'); st.unknown = (st.unknown || []).concat([r.output]); return false; }
+    st.task = 'at the 3D printer';
+    await approach(pr.position, 2.2);
+    closeMenus(); selectEmptyHand();
+    await aimAtMachine(pr.position.clone().addScaledVector(upAt(pr.position), 0.3)); selectEmptyHand();
+    await click(2, 80);
+    await sleep(600);
+    const ui = bi().printer3DUI;
+    if (!ui.isMenuOpen()) { say('could not open the 3D printer'); closeMenus(); return false; }
+    const before = count(r.output);
+    for (let k = 0; k < jobs; k++) ui.queueRecipe(r);
+    say(`printing ${jobs} x ${r.name}`);
+    // wait for the queue to run (printTime each), collecting as it goes
+    const t0 = performance.now();
+    while (performance.now() - t0 < (r.printTime * jobs + 30) * 1000) {
+      pr.outputInventory.forEach((o, i) => { if (o.itemType !== null && o.quantity > 0) ui.collectFromSlot(i); });
+      if (!pr.currentJob && pr.printQueue.length === 0) break;
+      await sleep(1000);
+    }
+    pr.outputInventory.forEach((o, i) => { if (o.itemType !== null && o.quantity > 0) ui.collectFromSlot(i); });
+    closeMenus();
+    const made = count(r.output) - before;
+    say(made > 0 ? `printed ${made} ${itemName(r.output)}` : `the printer made nothing (${r.name})`);
+    return made > 0;
+  }
+
   // ---- a general planner: get any item the way a player would -------------------
   // Craft it (getting the ingredients first), smelt it from its ore, or dig
   // its block out of the ground. Returns true once `n` are held; false when
@@ -1384,6 +1536,10 @@
     if (depth > 6) return false;
     const name = itemName(item);
     if (item === I.LOG) { await chopTree(); return count(item) >= n; }
+    if (item === I.CRUDE_OIL_BUCKET) {
+      if (!(await obtain(I.BUCKET, 1, depth + 1))) return false;
+      await scoopOilSand(); return count(item) >= n;
+    }
     if (item === I.WATER_BUCKET) {
       if (!(await obtain(I.BUCKET, 1, depth + 1))) return false;
       await fillBucket(); return count(item) >= n;
@@ -1398,6 +1554,18 @@
         if (count(+k) < q) { await obtain(+k, q, depth + 1); if (count(+k) < q) return false; }
       }
       await craft(item, Math.max(1, times));
+      return count(item) >= n;
+    }
+    // printed on the 3D printer
+    const pr = PRINTS ? PRINTS.find(r => r.output === item && tracker().recipeOpen(item)) : null;
+    if (pr) {
+      const jobs = Math.ceil((n - count(item)) / pr.outputQuantity);
+      const need = {};
+      for (const inp of (pr.inputs || [pr.input])) need[inp.itemType] = (need[inp.itemType] || 0) + inp.quantity * jobs;
+      for (const [k, q] of Object.entries(need)) {
+        if (count(+k) < q) { await obtain(+k, q, depth + 1); if (count(+k) < q) return false; }
+      }
+      await printCraft(pr, jobs);
       return count(item) >= n;
     }
     // made at the electronics workbench
@@ -1498,8 +1666,8 @@
 
   // Missions each role plays, in order of preference, after the trunk
   const ROLE_ORDER = {
-    miner: ['logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
-    builder: ['logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
+    miner: ['pad', 'logs', 'planks', 'stone', 'furnace', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals', 'torches', 'chest', 'rod'],
+    builder: ['pad', 'logs', 'planks', 'stone', 'furnace', 'torches', 'chest', 'rod', 'fish', 'fishkinds', 'clay', 'bricks', 'campfire', 'clayblock', 'brickwall', 'cookfish', 'kiln', 'pot', 'oven', 'stew', 'eat', 'cement', 'iron', 'ingots', 'bucket', 'copper', 'lightmetals'],
   };
 
   // A mission with no progress for STALL_MS is set aside for REST_MS
