@@ -1064,6 +1064,8 @@ class PlanetGame {
         this.missions?.addChangeListener(() => this.npcPanel?.refresh());
       }
       this.npcTalk.update(deltaTime, isGameActive, this.npcField, this.engine.camera, this.player.position);
+      // an open NPC panel follows the inventory (it redraws only when what it shows changed)
+      this.npcPanel?.refresh();
       this.submarines?.update(deltaTime, isGameActive && !this.npcTalk.targeting);
 
       // Fishing takes the mouse buttons while the rod is in hand

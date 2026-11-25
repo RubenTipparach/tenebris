@@ -60,7 +60,11 @@ const give = (page, item, n) => page.evaluate(({ item, n }) => {
   const server = spawn(process.execPath, [path.join(ROOT, 'server-js/server.js')], {
     env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir }, stdio: 'ignore',
   });
-  const stop = () => { server.kill(); fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }); };
+  const stop = async () => {
+    // let the server finish writing before its data goes
+    await new Promise(r => { server.once('exit', r); server.kill(); setTimeout(r, 3000); });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+  };
   try {
     await waitFor(() => fetch(`http://127.0.0.1:${PORT}/health`).then(r => r.ok), 15000, 'server');
     const world = await (await fetch(`http://127.0.0.1:${PORT}/worlds`, {
@@ -162,7 +166,7 @@ const give = (page, item, n) => page.evaluate(({ item, n }) => {
     log('ERROR', e.message);
     failed = true;
   } finally {
-    stop();
+    await stop();
   }
   log(failed ? 'FAILED' : 'ALL PASSED');
   process.exit(failed ? 1 : 0);
