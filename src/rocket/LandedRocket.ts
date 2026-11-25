@@ -134,11 +134,13 @@ export class LandedRocketManager {
 
     this.landedRockets.set(id, landedRocket);
 
-    // Make sure pivot is visible and in scene
+    // Always route it to the body it landed on: a flown rocket's pivot still
+    // hangs under the root of the body it was boarded on, so a rocket flown
+    // Moon -> Earth stayed in the Moon's frame and was drawn (and clicked)
+    // wherever the Moon had moved to - not on Earth where it stands
     pivot.visible = true;
-    if (!pivot.parent) {
-      this.scene.add(pivot);
-    }
+    pivot.parent?.remove(pivot);
+    this.scene.add(pivot);
 
     console.log(`Created landed rocket ${id} at position`, position);
     this.listener?.created(landedRocket);

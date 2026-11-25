@@ -444,6 +444,23 @@ export class RocketFlightManager {
     this.onBoardRocketCallback = callback;
   }
 
+  // What the player carries on boarding (openspec pad-stash): into the pad's
+  // stash, or a parked rocket's cargo hold; returns why boarding is refused
+  // (nothing moved), or null. Unset (headless tests): boarding moves nothing
+  private boardingStow: ((into: InventorySlot[] | null, where: 'stash' | 'cargo') => string | null) | null = null;
+
+  /** The one place both boarding paths hand the player's items over (openspec pad-stash) */
+  public setBoardingStow(stow: (into: InventorySlot[] | null, where: 'stash' | 'cargo') => string | null): void {
+    this.boardingStow = stow;
+  }
+
+  /** Hand the carried items over before boarding; false (and a toast) when refused */
+  private stowForBoarding(into: InventorySlot[] | null, where: 'stash' | 'cargo'): boolean {
+    const refused = this.boardingStow?.(into, where) ?? null;
+    if (refused) showToast(refused, { duration: 4000 });
+    return !refused;
+  }
+
   /**
    * Abandon the rocket and respawn the player - after a crash (UI button) or
    * on demand (ROCKET_INPUTS.RESPAWN) when stranded. The callback gets the
@@ -489,6 +506,9 @@ export class RocketFlightManager {
       console.error('No rocket parts to control');
       return false;
     }
+
+    // Only the cargo hold flies: what the player carries stays in the pad's stash
+    if (!this.stowForBoarding(launchPad.stash, 'stash')) return false;
 
     // Create rocket controller
     this.rocketController = new RocketController(this.scene);
@@ -670,6 +690,10 @@ export class RocketFlightManager {
       console.warn('Already in flight mode');
       return false;
     }
+
+    // Away from a pad what the player carries goes into the cargo hold (all
+    // of it, or the board is refused)
+    if (!this.stowForBoarding(landedRocket.cargo, 'cargo')) return false;
 
     // Remove rocket from landed rockets (it becomes active again)
     this.landedRocketManager.removeLandedRocket(landedRocket.id);

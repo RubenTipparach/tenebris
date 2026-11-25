@@ -4,6 +4,7 @@ import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { showToast } from '../utils/toast';
+import { stashUsed } from '../rocket/CarryRules';
 import { computeRocketStats, cargoMass, deltaVWith, stagedStats, stagedDeltaVWith, stackProblems, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
 
 // Rocket validation result
@@ -16,7 +17,7 @@ export interface RocketValidationResult {
  * LaunchPadUI - UI for managing launch pad segments and rockets
  *
  * Layout:
- * - Two vertical columns of 8 slots each
+ * - Two vertical columns of ROCKET_CONFIG.MAX_STACK_PARTS slots each
  * - Left column: Rocket blocks (must match segment height)
  * - Right column: Launch pad segments (tower height) - bottom slot is permanent base
  * - "Board Rocket" button when rocket is fully assembled
@@ -53,7 +54,8 @@ export class LaunchPadUI {
   private statusElement: HTMLElement | null = null;
   private validationMessageElement: HTMLElement | null = null;
 
-  private readonly MAX_HEIGHT = 8;
+  // Tower height = most parts a stack holds (one number, ROCKET_CONFIG)
+  private readonly MAX_HEIGHT = ROCKET_CONFIG.MAX_STACK_PARTS;
 
   // The rocket's numbers, refuelling and its cargo hold
   private refuelBtn: HTMLButtonElement | null = null;
@@ -69,6 +71,21 @@ export class LaunchPadUI {
 
   public setOnOpenCargoCallback(callback: (pad: PlacedLaunchPad) => void): void {
     this.onOpenCargoCallback = callback;
+  }
+
+  // The pad's stash (openspec pad-stash): what boarders left here
+  private stashBtn: HTMLButtonElement | null = null;
+  private takeStashBtn: HTMLButtonElement | null = null;
+  private onOpenStashCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  private onTakeStashCallback: ((pad: PlacedLaunchPad) => number) | null = null;
+
+  public setOnOpenStashCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onOpenStashCallback = callback;
+  }
+
+  /** Take all: everything that fits back into the hotbar + bag; returns how many moved */
+  public setOnTakeStashCallback(callback: (pad: PlacedLaunchPad) => number): void {
+    this.onTakeStashCallback = callback;
   }
 
   // Told when equipment is fitted or taken out (the pad and the inventory save)
@@ -203,6 +220,11 @@ export class LaunchPadUI {
       </div>
 
       <div class="launchpad-controls">
+        <button class="launchpad-btn small" id="launchpad-stash-btn" title="What was left here on boarding - only the cargo hold flies">Stash</button>
+        <button class="launchpad-btn small" id="launchpad-take-stash-btn" title="Take everything that fits from the stash">Take all</button>
+      </div>
+
+      <div class="launchpad-controls">
         <button class="launchpad-btn" id="launchpad-board-btn" disabled>Board Rocket</button>
       </div>
 
@@ -237,6 +259,8 @@ export class LaunchPadUI {
     this.boardRocketBtn = document.getElementById('launchpad-board-btn') as HTMLButtonElement;
     this.refuelBtn = document.getElementById('launchpad-refuel-btn') as HTMLButtonElement;
     this.cargoBtn = document.getElementById('launchpad-cargo-btn') as HTMLButtonElement;
+    this.stashBtn = document.getElementById('launchpad-stash-btn') as HTMLButtonElement;
+    this.takeStashBtn = document.getElementById('launchpad-take-stash-btn') as HTMLButtonElement;
     this.statsElement = document.getElementById('launchpad-stats');
     this.equipRow = document.getElementById('launchpad-equip-row');
     this.equipSummary = document.getElementById('launchpad-equip-summary');
@@ -458,6 +482,18 @@ export class LaunchPadUI {
     this.cargoBtn?.addEventListener('click', () => {
       if (!this.currentLaunchPad || !this.onOpenCargoCallback) return;
       this.onOpenCargoCallback(this.currentLaunchPad);
+    });
+    this.stashBtn?.addEventListener('click', () => {
+      if (!this.currentLaunchPad || !this.onOpenStashCallback) return;
+      this.onOpenStashCallback(this.currentLaunchPad);
+    });
+    this.takeStashBtn?.addEventListener('click', () => {
+      if (!this.currentLaunchPad || !this.onTakeStashCallback) return;
+      const left = stashUsed(this.currentLaunchPad.stash);
+      const moved = this.onTakeStashCallback(this.currentLaunchPad);
+      if (moved === 0 && left > 0) showToast('No room in your inventory', { duration: 2000 });
+      this.updateUI();
+      this.notifyChanges();
     });
   }
 
@@ -1306,6 +1342,10 @@ export class LaunchPadUI {
     const hasRocket = types.length > 0;
     if (this.refuelBtn) this.refuelBtn.disabled = !hasRocket || stats.fuelCapacity <= 0;
     if (this.cargoBtn) this.cargoBtn.disabled = stats.cargoSlots <= 0;
+    // The stash is the pad's own, rocket or not
+    const stashed = stashUsed(pad.stash);
+    if (this.stashBtn) this.stashBtn.textContent = stashed > 0 ? `Stash (${stashed})` : 'Stash';
+    if (this.takeStashBtn) this.takeStashBtn.disabled = stashed === 0;
     if (!hasRocket) {
       this.statsElement.innerHTML = '';
       return;

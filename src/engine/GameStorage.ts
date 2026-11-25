@@ -180,6 +180,7 @@ export interface SavedLaunchPad {
   fuel?: number;                    // fuel units in the rocket's tanks (absent = full)
   cargo?: { itemType: number; quantity: number }[];  // the rocket's cargo hold
   equipment?: { itemType: number; quantity: number }[];  // its equipment slots (absent = empty)
+  stash?: { itemType: number; quantity: number; uses?: number }[];  // what boarders left on the pad (absent = empty; openspec pad-stash)
   engineMode?: number | null;       // which engines fire (design 6b); absent/null = all
 }
 
