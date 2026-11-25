@@ -60,7 +60,7 @@ const give = (page, item, n) => page.evaluate(({ item, n }) => {
   const server = spawn(process.execPath, [path.join(ROOT, 'server-js/server.js')], {
     env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir }, stdio: 'ignore',
   });
-  const stop = () => { server.kill(); fs.rmSync(dataDir, { recursive: true, force: true }); };
+  const stop = () => { server.kill(); fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }); };
   try {
     await waitFor(() => fetch(`http://127.0.0.1:${PORT}/health`).then(r => r.ok), 15000, 'server');
     const world = await (await fetch(`http://127.0.0.1:${PORT}/worlds`, {
@@ -132,8 +132,11 @@ const give = (page, item, n) => page.evaluate(({ item, n }) => {
       await openOn(A, id);
       for (let k = 0; k < o.stock - 1; k++) {
         await give(A, o.take.item, o.take.n);
+        const btn = await A.evaluate(() => [...document.querySelectorAll('#npc-menu .npc-trade')].map(b => b.textContent + (b.disabled ? ' (off)' : '')));
         await press(A, '#npc-menu .npc-offer .npc-trade');
         await sleep(1500);
+        const st = await Promise.all([A, B].map(p => p.evaluate((i) => window.__tenebris.npcClient.trader(i)?.offers[0].stock, trader.i)));
+        log('A traded', k + 1, 'buttons', JSON.stringify(btn), 'stock A/B', JSON.stringify(st));
       }
       await waitFor(() => B.evaluate((i) => window.__tenebris.npcClient.trader(i).offers[0].stock, trader.i).then(s => s === 1), 30000, 'B sees one unit left');
       await give(A, o.take.item, o.take.n);
