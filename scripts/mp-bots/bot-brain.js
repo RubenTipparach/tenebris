@@ -54,6 +54,7 @@
     AROUND_M: 6,            // a detour this far to the side when a walk fails
     MACHINE_SIDESTEPS: 3,   // moves to see a machine past something in the way
     MACHINE_OPEN_TRIES: 3,  // failed opens before a machine is given up for another
+    KEEP_BLOCKS: 16,        // building blocks kept when leaving dug-up rock behind (to climb out of a pit)
     ORE_SCAN_TILES: 16,     // how far round it looks up ore in the world data...
     ORE_SCAN_DEPTH: 24,     // ...and how deep, before digging toward one
   };
@@ -1329,7 +1330,12 @@
   async function dumpJunk(rocket, maxMs) {
     const keep = alwaysKeep();
     const t0 = performance.now();
-    const junk = () => inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined);
+    // one stack of building blocks stays: it is how the bot climbs out of a
+    // pit (pillarUpTo) - without it, it died in its own hole on the Moon
+    const placeable = inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined);
+    const pillarType = placeable.sort((a, b) => b.quantity - a.quantity)[0]?.itemType;
+    const junk = () => inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined
+      && !(x.itemType === pillarType && count(pillarType) <= GENTLE.KEEP_BLOCKS));
     if (!junk().length) return;
     st.task = 'leaving the dug-up rock behind';
     let placed = 0;
