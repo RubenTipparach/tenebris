@@ -7,9 +7,11 @@
 //   - a flowing cell's top is sloped: each corner sits at the level of the
 //     cells sharing it (full where any is a source or has water on it, at the
 //     floor where two or more are air, else the mean of the flowing levels);
-//   - sides are drawn only over air (a solid, or another wet cell, has none);
+//   - sides are drawn over air (a solid, or another wet cell, has none);
 //   - a cell with water on it has no top and full-height sides, so a fall
-//     reads as one column;
+//     reads as one column; beside water that is not full it draws the strip
+//     from that water's sheet up to its top (sideFloor), so a fall meets the
+//     pool it lands in with no slit;
 //   - sources (the ocean, a placed bucket) are flat at the sheet height, as
 //     they always were.
 // And the smoothing between two ticks (PBD's Pour tab): each vertex carries
@@ -174,6 +176,27 @@ export function capAxis(up: V): number {
   return a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
 }
 
+/**
+ * Where a wet cell's side toward one neighbour starts (radius), or null for
+ * no side. nb / nbAbove: the neighbour's cell and the one on it; wetAbove:
+ * water is on this cell (a fall, or the pool cell a fall lands in), so the
+ * cell is full to its top; sheet: the radius of a full level (a surface
+ * offset under the top).
+ *   - over air: the whole side, from the floor;
+ *   - a full (wet-above) cell beside water that is NOT full: the neighbour's
+ *     surface meets this cell's edge at the sheet (its shared corners are full,
+ *     cornerLevel), a surface offset under this cell's top, where the water on
+ *     this cell starts - so the strip from the sheet to the top is drawn, or a
+ *     fall shows a slit at its foot and wherever it passes lower water;
+ *   - else none: solid, clear, unknown, or water as full as this cell (two
+ *     faces there would z-fight).
+ */
+export function sideFloor(nb: number, nbAbove: number, wetAbove: boolean, floor: number, sheet: number): number | null {
+  if (nb === CELL_AIR) return floor;
+  if (wetAbove && isWetCode(nb) && !isWetCode(nbAbove)) return sheet;
+  return null;
+}
+
 class ColumnShape {
   readonly n: number;
   readonly dirs: V[];
@@ -239,14 +262,16 @@ class ColumnShape {
       out.push({ id: 'top', v, alt: v.map(p => scale(norm(p), top)), n: nn, uv, f: [fl[0], fl[1], fl[2], capCode] });
     }
 
-    // The sides: only over air
+    // The sides: over air, floor to surface; and the seam strip (sideFloor)
     for (let s = 0; s < n; s++) {
       const nb = this.col.edges[s];
-      if (nb < 0 || view(nb, depth) !== CELL_AIR) continue;
+      if (nb < 0) continue;
+      const bottom = sideFloor(view(nb, depth), view(nb, depth + 1), wetAbove, floor, this.levelR(depth, 1));
+      if (bottom === null) continue;
       const z = (s + 1) % n;
       const ta = wetAbove ? top : this.levelR(depth, lv[s]);
       const tz = wetAbove ? top : this.levelR(depth, lv[z]);
-      const A0 = scale(dirs[s], floor), Z0 = scale(dirs[z], floor), Z1 = scale(dirs[z], tz), A1 = scale(dirs[s], ta);
+      const A0 = scale(dirs[s], bottom), Z0 = scale(dirs[z], bottom), Z1 = scale(dirs[z], tz), A1 = scale(dirs[s], ta);
       const sn = norm(cross(sub(Z0, A0), sub(A1, A0)));
       const along = norm(sub(Z0, A0));
       out.push({

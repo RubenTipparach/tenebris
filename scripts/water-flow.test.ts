@@ -4,7 +4,7 @@
 //
 // Run: npx tsx scripts/water-flow.test.ts
 import { Liquid, LiquidWorld, FLOW_BIT, FALLING_BIT, LEVEL_MASK, CELL_SOURCE, CELL_AIR } from '../src/water/Liquid';
-import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, WaterTarget, TWEEN_EASE, TWEEN_SWEEP, TWEEN_GONE, FACE_CAP, FACE_FALL, FACE_STILL } from '../src/water/LiquidMesh';
+import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, sideFloor, WaterTarget, TWEEN_EASE, TWEEN_SWEEP, TWEEN_GONE, FACE_CAP, FACE_FALL, FACE_STILL } from '../src/water/LiquidMesh';
 import { flowTile } from '../src/water/FlowTile';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
@@ -320,4 +320,61 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   }
   ok(same, '11. water.png ranked by luminance gives PBD\'s TEX_IDX tones (flipped so v runs up)');
   ok(tile.mean.every(c => c > 0 && c < 1), '11. the tile has a mean colour to fade to');
+}
+
+// ---- 12. a waterfall meets the water under and beside it with no slit (sideFloor) ----
+{
+  const newOut = (): WaterTarget => ({ positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 });
+  const W = { CELL_AIR, CELL_SOURCE };
+  const FL = FLOW_BIT | 3;
+  // the rule
+  ok(sideFloor(W.CELL_AIR, W.CELL_AIR, false, 0, 0.9) === 0 && sideFloor(W.CELL_AIR, W.CELL_AIR, true, 0, 0.9) === 0, '12. over air: the whole side, from the floor');
+  ok(sideFloor(FL, W.CELL_AIR, true, 0, 0.9) === 0.9 && sideFloor(W.CELL_SOURCE, W.CELL_AIR, true, 0, 0.9) === 0.9, '12. a full cell beside lower water: the strip from the sheet');
+  ok(sideFloor(FL, W.CELL_AIR, false, 0, 0.9) === null && sideFloor(W.CELL_SOURCE, W.CELL_AIR, false, 0, 0.9) === null, '12. water beside water at its own level: no face (no z-fight)');
+  ok(sideFloor(W.CELL_SOURCE, W.CELL_SOURCE, true, 0, 0.9) === null && sideFloor(FL, FL, true, 0, 0.9) === null, '12. two full cells side by side: no face');
+
+  // a fall into a sea, cells set by hand: sources on depth 1, a source at depth 4 over
+  // (0,0) pouring down through depths 2..3 (falling, flowing) into the sea
+  const P = patch(4, 6, () => 1);
+  for (const [q, r] of P.qr) P.blocks[P.id(q, r)][1] = HexBlockType.WATER;
+  P.blocks[P.id(0, 0)][4] = HexBlockType.WATER;
+  const falling = (t: number, d: number) => (t === P.id(0, 0) && (d === 2 || d === 3) ? FLOW_BIT | FALLING_BIT | 7 : 0);
+  const read = cellReader(t => P.blocks[t], falling);
+  const dims = { radius: P.R + 2, maxDepth: 6, blockHeight: 1, waterSurfaceOffset: 0.1 };
+  // topR(d) = R + 2 - (5 - d)
+  const top1 = P.R - 2, sheet1 = top1 - 0.1;
+  const out = newOut();
+  meshLiquidColumn(P.column(P.id(0, 0)), 6, read, null, 0, dims, () => out);
+  const radius = (i: number) => Math.hypot(out.positions[3 * i], out.positions[3 * i + 1], out.positions[3 * i + 2]);
+  const kinds = out.liquidFlow ?? [];
+  const sideTris: number[][] = [];
+  for (let i = 0; i < out.positions.length / 3; i += 3) if (kinds[4 * i + 3] % 3 !== FACE_CAP) sideTris.push([radius(i), radius(i + 1), radius(i + 2)]);
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+  const strips = sideTris.filter(t => t.every(r => near(r, sheet1) || near(r, top1)));
+  ok(strips.length === 12, `12. the sea cell under the fall draws a strip on all six sides, sheet to top (${strips.length / 2} quads)`);
+  const fallFoot = sideTris.filter(t => t.some(r => near(r, top1)) && t.every(r => r >= top1 - 1e-6));
+  ok(fallFoot.length === 12, `12. and the fall's sides start at that same top, so they join (${fallFoot.length / 2} quads)`);
+  // the sea round it: flat at the sheet, no faces between its cells
+  const outN = newOut();
+  meshLiquidColumn(P.column(P.id(2, 0)), 6, read, null, 0, dims, () => outN);
+  const rn = Array.from({ length: outN.positions.length / 3 }, (_, i) => Math.hypot(outN.positions[3 * i], outN.positions[3 * i + 1], outN.positions[3 * i + 2]));
+  ok(rn.length === 18 && rn.every(r => r <= sheet1 + 1e-6), '12. the open sea is one flat cap at the sheet, no sides between its cells');
+
+  // a fall down a cliff landing on ground: its foot cell beside the spreading water
+  const D = patch(6, 10, (q, r) => (q + r / 2 <= -1 ? 6 : 2));
+  D.place(-3, 0, 6, HexBlockType.WATER);
+  D.settle();
+  const readD = cellReader(tt => D.blocks[tt], (tt, d) => D.liquid.flowAt(tt, d));
+  const foot = D.id(0, 0);
+  const col = D.column(foot);
+  const lower = col.edges.filter(nb => nb >= 0 && (readD(nb, 2) & FLOW_BIT) && !(readD(nb, 3) & FLOW_BIT) && readD(nb, 3) !== CELL_SOURCE).length;
+  const outD = newOut();
+  meshLiquidColumn(col, 10, readD, null, 0, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
+  const top2 = D.R + 2 - 7, sheet2 = top2 - 0.1;
+  let footStrips = 0;
+  for (let i = 0; i < outD.positions.length / 3; i += 3) {
+    const rs = [0, 1, 2].map(k => Math.hypot(outD.positions[3 * (i + k)], outD.positions[3 * (i + k) + 1], outD.positions[3 * (i + k) + 2]));
+    if (rs.every(r => Math.abs(r - sheet2) < 1e-6 || Math.abs(r - top2) < 1e-6) && rs.some(r => Math.abs(r - sheet2) < 1e-6)) footStrips++;
+  }
+  ok(lower > 0 && footStrips === 2 * lower, `12. a cliff fall's foot draws the strip toward each lower neighbour (${footStrips / 2} of ${lower})`);
 }
