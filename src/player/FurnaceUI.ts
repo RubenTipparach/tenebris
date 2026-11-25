@@ -624,7 +624,7 @@ export class FurnaceUI {
       if (taken <= 0) return false;
       this.inventory.removeItem(itemType, taken);
       furnace.fuelAmount += taken * fuel.smelts;
-      this.inventory.addItem(fuel.returns, taken);
+      this.inventory.give(fuel.returns, taken);
       return true;
     }
     // Anything else stacks in the fuel slot unburnt (one kind at a time, one

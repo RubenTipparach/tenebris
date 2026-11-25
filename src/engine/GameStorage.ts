@@ -1,6 +1,7 @@
 import { getLandableBodies } from '../config/SolarSystemConfig';
 import { netSync } from '../net/NetSync';
 import type { SavedMachine } from '../power/MachineLogic';
+import type { SavedSubmarine } from '../vehicles/Submarine';
 import { localGameTime } from '../world/Orbits';
 
 // Types for saved game data
@@ -223,6 +224,7 @@ export interface PlanetSaveData {
   removedTrees: SavedRemovedTree[];
   launchPads: SavedLaunchPad[];
   machines?: SavedMachine[];        // the industry machines and batteries
+  submarines?: SavedSubmarine[];    // parked submarines (space-exploration, submarines)
 }
 
 // Legacy combined format (for migration)
@@ -283,7 +285,7 @@ const missionsKey = (): string => `tenebris_${worldPrefix}missions`;
 function publish(kind: string, planetId: string, key: string | number, data: object | null): void {
   netSync.record(kind, planetId, key, data);
 }
-type RecordItem = { tileIndex: number; depth?: number; centerTileIndex?: number; position?: { x: number; y: number; z: number } };
+type RecordItem = { tileIndex: number; depth?: number; centerTileIndex?: number; position?: { x: number; y: number; z: number }; key?: string };
 // Each published kind: the planet save array it lives in and its record key
 // (matching the keys the saveX / removeX methods publish under)
 const tileKey = (o: RecordItem) => String(o.tileIndex);
@@ -304,6 +306,8 @@ const RECORD_KINDS: Record<string, { field: keyof PlanetRecordLists; key: (o: Re
   cable: { field: 'cables', key: depthKey },
   launchPad: { field: 'launchPads', key: (o) => String(o.centerTileIndex) },
   machine: { field: 'machines', key: tileKey },
+  // a submarine moves: keyed by its own id, not a tile
+  submarine: { field: 'submarines', key: (o) => o.key! },
 };
 type PlanetRecordLists = Omit<PlanetSaveData, 'version' | 'timestamp' | 'tileChanges' | 'removedTrees'>;
 /** A torch's record key: its position (several torches can share a tile). */
@@ -336,6 +340,7 @@ export class GameStorage {
     removedTrees: SavedRemovedTree[];
     launchPads: SavedLaunchPad[];
     machines: SavedMachine[];
+    submarines: SavedSubmarine[];
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
@@ -344,7 +349,7 @@ export class GameStorage {
   constructor() {
     // Initialize planet data for every planet
     for (const planetId of PLANET_IDS) {
-      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], cookers: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [], machines: [] });
+      this.planetData.set(planetId, { tileChanges: new Map(), torches: [], furnaces: [], electricFurnaces: [], electronicsWorkbenches: [], computers: [], printers3D: [], storageChests: [], cookers: [], garbagePiles: [], steamEngines: [], hydroGenerators: [], copperPipes: [], cables: [], removedTrees: [], launchPads: [], machines: [], submarines: [] });
     }
   }
 
@@ -647,6 +652,34 @@ export class GameStorage {
     const all: Array<SavedMachine & { planetId: string }> = [];
     for (const [planetId, planet] of this.planetData) {
       for (const m of planet.machines) all.push({ ...m, planetId });
+    }
+    return all;
+  }
+
+  // Submarines (space-exploration, submarines): one record per craft, keyed
+  // by its own id - written when placed, parked, piloted (its pose every few
+  // seconds) and when its hold changes
+  public saveSubmarine(planetId: string, data: SavedSubmarine): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.submarines = planet.submarines.filter(s => s.key !== data.key);
+    planet.submarines.push(data);
+    this.persistPlanetToStorage(planetId);
+    publish('submarine', planetId, data.key, data);
+  }
+
+  public removeSubmarine(planetId: string, key: string): void {
+    const planet = this.planetData.get(planetId);
+    if (!planet) return;
+    planet.submarines = planet.submarines.filter(s => s.key !== key);
+    this.persistPlanetToStorage(planetId);
+    publish('submarine', planetId, key, null);
+  }
+
+  public getSubmarines(): Array<SavedSubmarine & { planetId: string }> {
+    const all: Array<SavedSubmarine & { planetId: string }> = [];
+    for (const [planetId, planet] of this.planetData) {
+      for (const s of planet.submarines) all.push({ ...s, planetId });
     }
     return all;
   }
@@ -1038,6 +1071,7 @@ export class GameStorage {
       planet.removedTrees = data.removedTrees || [];
       planet.launchPads = data.launchPads || [];
       planet.machines = data.machines || [];
+      planet.submarines = data.submarines || [];
     } catch (error) {
       console.error(`Failed to load ${planetId} data:`, error);
     }
@@ -1176,6 +1210,7 @@ export class GameStorage {
       planet.removedTrees = [];
       planet.launchPads = [];
       planet.machines = [];
+      planet.submarines = [];
     }
 
     // Clear all storage keys
@@ -1335,7 +1370,8 @@ export class GameStorage {
         cables: planet.cables,
         removedTrees: planet.removedTrees,
         launchPads: planet.launchPads,
-        machines: planet.machines
+        machines: planet.machines,
+        submarines: planet.submarines
       };
 
       const key = planetStorageKey(planetId);

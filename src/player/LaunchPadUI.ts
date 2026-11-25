@@ -439,7 +439,7 @@ export class LaunchPadUI {
         } else {
           if (this.onRemoveSegmentCallback && this.onRemoveSegmentCallback(this.currentLaunchPad)) {
             // Return segment to inventory
-            this.inventory.addItem(ItemType.LAUNCH_PAD_SEGMENT, 1);
+            this.inventory.give(ItemType.LAUNCH_PAD_SEGMENT, 1);
             this.updateUI();
             this.notifyChanges();
           }

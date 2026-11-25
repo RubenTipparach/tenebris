@@ -213,6 +213,10 @@ export class RocketController {
   // Inside the Sun's close-pass distance / below a gas giant's cloud tops (that giant's id)
   private inSunPass = false;
   private giantDip: string | null = null;
+  // The ground clamp held the rocket up this physics step (a touchdown):
+  // the clamp parks it at exactly the grounded distance, which rounding can
+  // read back a hair above it, so landing asks this rather than the altitude
+  private groundContact = false;
   // How long the self-destruct key has been held (s); 0 when let go
   private selfDestructHeldS = 0;
 
@@ -912,6 +916,17 @@ export class RocketController {
     return this.isInSpace();
   }
 
+  /**
+   * The gas giant whose cloud tops the rocket is below right now (flying,
+   * not crashed), or null - where a diver can be let out (space-exploration,
+   * submarines)
+   */
+  public getGasGiantDip(): PlanetGravitySource | null {
+    const g = this.closestPlanet;
+    if (!g?.gasGiant || this.stateMachine.getState() === RocketState.CRASHED) return null;
+    return this.position.distanceTo(g.center) < g.radius ? g : null;
+  }
+
   /** In flight with no planet's gravity on the rocket */
   public isInSpace(): boolean {
     return this.stateMachine.getState() === RocketState.IN_FLIGHT && !this.isInGravityWell;
@@ -1083,6 +1098,7 @@ export class RocketController {
    */
   private updatePhysics(deltaTime: number): void {
     const mass = this.getCurrentMass();
+    this.groundContact = false;
 
     // === GRAVITY ===
     const gravity = this.getGravityInfo();
@@ -1186,6 +1202,7 @@ export class RocketController {
       if (distFromCenter < minDistance) {
         // Rocket is below or at surface - push it back up
         this.position.copy(this.closestPlanet.center).addScaledVector(surfaceNormal, minDistance);
+        this.groundContact = true;
 
         // Kill velocity component going into the surface
         const verticalVelocity = this.velocity.dot(surfaceNormal);
@@ -1260,7 +1277,7 @@ export class RocketController {
         const landingAlt = this.getAltitude();
         const impactVel = -this.getVerticalVelocity();  // Positive when falling
 
-        if (landingAlt <= ROCKET_CONFIG.THRESHOLDS.groundedCheckDistance) {
+        if (this.groundContact || landingAlt <= ROCKET_CONFIG.THRESHOLDS.groundedCheckDistance) {
           this.handleLanding(impactVel);
         }
 
@@ -2156,8 +2173,10 @@ export class RocketController {
 
     // Resume as it was left: LANDED on a surface, or IN_FLIGHT (at rest)
     // when it was parked in space, out of every gravity well
+    // (a ship left in a gas giant's air - its diver out, space-exploration -
+    // has no ground under it: it resumes flying)
     this.updateClosestPlanet();
-    this.stateMachine.forceState(this.isInGravityWell ? RocketState.LANDED : RocketState.IN_FLIGHT);
+    this.stateMachine.forceState(this.isInGravityWell && !this.closestPlanet?.gasGiant ? RocketState.LANDED : RocketState.IN_FLIGHT);
 
     // Store boarded position for respawn
     this.lastBoardedPosition.copy(this.position);

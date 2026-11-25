@@ -25,6 +25,9 @@ Writes, under public/textures/:
   texture)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
   gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
+  technology/sack.png: the overflow sack a full inventory drops (Sweaft-64)
+  technology/campfire.png: the campfire model's atlas - bark, log end,
+  hearth stone, flame (Sweaft-64)
   tools: icons/tools/<tier>_<kind>.png - pickaxe, axe and shovel in the
   rock, copper, iron, steel and titanium tiers
 Deterministic - rerun to regenerate.
@@ -585,6 +588,61 @@ def survey_beacon_face():
     return px
 
 
+def submarine(hull, light, dark, window, deep=False):
+    """A submarine (space-exploration, submarines), side on, nose right: a
+    rounded hull lit from the top left, a conning tower, portholes and a
+    screw at the stern; the deep hull wears ribs"""
+    px, c = _canvas()
+    b, l, d, w = c[hull], c[light], c[dark], c[window]
+    out = c["black"]
+    for y in range(6, 13):
+        for x in range(1, 15):
+            if ((x - 7.5) / 6.8) ** 2 + ((y - 9.2) / 3.4) ** 2 > 1:
+                continue
+            px[y][x] = l if y <= 7 else d if y >= 11 else b
+    for y in range(3, 7):                       # the conning tower
+        for x in range(6, 10):
+            px[y][x] = l if x == 6 or y == 3 else d if x == 9 else b
+    px[2][7] = c["lgrey"]                        # periscope
+    px[1][7] = px[1][8] = c["lgrey"]
+    for x in (8, 11):                            # portholes
+        px[9][x] = w
+    px[9][13] = out                              # the nose cap
+    for y in (8, 9, 10):                         # the screw at the stern
+        px[y][0] = c["lgrey"] if y != 9 else out
+    if deep:
+        for x in (4, 7, 10):
+            for y in range(7, 12):
+                if px[y][x][3] and px[y][x] != w:
+                    px[y][x] = d
+    return px
+
+
+def diver(hull, light, dark, window, deep=False):
+    """A gas-giant diver: a pressure sphere with a big round window, fins
+    and a lifting ring on top; the deep diver has a double ring"""
+    px, c = _canvas()
+    b, l, d, w = c[hull], c[light], c[dark], c[window]
+    for y in range(3, 14):
+        for x in range(2, 14):
+            r = ((x - 7.5) / 5.5) ** 2 + ((y - 8.5) / 5.5) ** 2
+            if r > 1:
+                continue
+            px[y][x] = l if (x + y) < 12 else d if (x + y) > 19 else b
+    for y in range(7, 11):                       # the window
+        for x in range(6, 10):
+            px[y][x] = w if (x, y) != (6, 7) else c["white"]
+    for x in range(6, 10):                       # the lifting ring
+        px[1][x] = c["lgrey"]
+    px[2][6] = px[2][9] = c["lgrey"]
+    if deep:
+        for x in range(5, 11):
+            px[0][x] = c["lgrey"]
+    for (x, y) in ((1, 12), (1, 13), (14, 12), (14, 13)):   # fins
+        px[y][x] = d
+    return px
+
+
 def refit_kit(mk2=False):
     """A refit kit (rocket-refit): a tool case with a wrench on its lid, lit
     from the top left; the mk2 in titanium blue with a green status light"""
@@ -885,6 +943,146 @@ def tool_icon(kind, tier):
     return px
 
 
+# ---- Props drawn the Pale Blue Dot way (the block-textures skill) ---------
+# Sweaft-64 only (checked), short ramps lit from the top left, no AA. The
+# palette and the check come from the biome generator - one copy of each.
+def _biome_gen():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gen_biome", os.path.join(ROOT, "scripts", "gen-biome-textures.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_BG = _biome_gen()
+
+
+def _sw(*hexes):
+    """A ramp of Sweaft-64 tones (dark to light) as RGBA."""
+    return [_BG.rgb(h) + (255,) for h in hexes]
+
+
+def _checked(px):
+    _BG.check_rgba([[None if p[3] == 0 else p[:3] for p in row] for row in px])
+    return px
+
+
+def sack():
+    """The overflow sack, 16x16, wrapped round its lathe: u goes round the
+    sack (tiles left-right), v is height (row 0 = the top). Rows 0-1 the
+    gathered neck, 2-3 the rope tie, 4-14 a basket-weave burlap, 15 the
+    bottom seam. Each 2x2 weave cell is one thread: a flat one lit on its
+    top row, an upright one lit on its left column and shaded on its right."""
+    dark, base, light, hi = _sw("#41322c", "#725244", "#ab8465", "#cfaa81")
+    rope = _sw("#2e0d06", "#522b2f", "#7d4636", "#a8633e")
+    px = [[base] * 16 for _ in range(16)]
+    for y in range(16):
+        for x in range(16):
+            if y <= 1:
+                # gathered folds, 4 px apart: lit left, shaded right
+                px[y][x] = (light, base, base, dark)[x % 4]
+            elif y <= 3:
+                # twisted rope: a lit strand running down-right
+                k = (x + (3 - y)) % 4
+                px[y][x] = (rope[3], rope[2], rope[1], rope[0])[k] if y == 2 else (rope[2], rope[1], rope[0], rope[1])[k]
+            elif y == 15:
+                px[y][x] = dark
+            else:
+                cx, cy = x % 2, y % 2
+                flat = ((x // 2) + (y // 2)) % 2 == 0
+                if flat:
+                    px[y][x] = light if cy == 0 else base
+                else:
+                    px[y][x] = light if cx == 0 else dark
+    # the folds of the neck carry on a little into the body: creases
+    for x in range(3, 16, 4):
+        px[4][x] = dark
+    # a few bright fibres (single pixels, sparingly)
+    for x, y in ((2, 6), (9, 9), (13, 12), (5, 13)):
+        px[y][x] = hi
+    return _checked(px)
+
+
+def campfire_atlas():
+    """The campfire model's atlas, 32x32 in four 16x16 cells:
+    (0,0) bark down a log's length, (1,0) a log's cut end, (0,1) a hearth
+    stone, (1,1) the flame (alpha-cut, drawn unlit so it glows)."""
+    clear = (0, 0, 0, 0)
+    px = [[clear] * 32 for _ in range(32)]
+    bark = _sw("#2e0d06", "#41322c", "#522b2f", "#7d4636")
+    # bark: horizontal ridges 3 px tall (lit top, shaded bottom), cracks
+    for y in range(16):
+        for x in range(16):
+            px[y][x] = (bark[3], bark[2], bark[1])[y % 3]
+    for x, y0 in ((3, 0), (10, 4), (6, 9), (13, 12)):
+        for d in range(3):
+            px[(y0 + d) % 16][x] = bark[0]
+    # cut end: rings round the pith, bark rim, lit top-left
+    ring = _sw("#725244", "#ab8465", "#cfaa81", "#eab798")
+    for y in range(16):
+        for x in range(16):
+            dx, dy = x - 7.5, y - 7.5
+            r = (dx * dx + dy * dy) ** 0.5
+            if r > 7.2 or x in (0, 15) or y in (0, 15):
+                c = bark[2] if (x + y) < 15 else bark[0]
+            elif r > 6:
+                c = bark[3] if (x + y) < 15 else bark[1]
+            else:
+                c = ring[2] if int(r) % 3 else ring[1]
+                if int(r) % 3 and dx + dy < -4:
+                    c = ring[3]
+                if r < 1.5:
+                    c = ring[0]
+            px[y][16 + x] = c
+    # hearth stone: one cobble lit top-left - pale rim top-left, dark rim
+    # bottom-right, a few lit 2x2 blotches and dark 2x1 pits (seeded)
+    import random
+    rng = random.Random(7)
+    st = _sw("#1f3b52", "#3e586e", "#5d778d", "#92a3b2")
+    for y in range(16):
+        for x in range(16):
+            c = st[2]
+            if x == 0 or y == 0:
+                c = st[3]
+            elif x == 15 or y == 15:
+                c = st[0]
+            elif x == 14 or y == 14:
+                c = st[1]
+            px[16 + y][x] = c
+    for _ in range(4):
+        x, y = rng.randrange(2, 11), rng.randrange(2, 11)
+        for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+            px[16 + y + dy][x + dx] = st[3]
+        px[16 + y + 1][x + 2] = st[1]          # its shadow, bottom-right
+    for _ in range(5):
+        x, y = rng.randrange(2, 12), rng.randrange(3, 13)
+        px[16 + y][x] = px[16 + y][x + 1] = st[1]
+    # flame, drawn by hand: R rim, O body, o bright, y heart, e embers
+    flame = [
+        "................",
+        ".......R........",
+        "......RR....R...",
+        "......ROR...R...",
+        ".....ROOR..RR...",
+        "..R..ROoOR.ROR..",
+        "..RR.ROooOROOR..",
+        ".ROR.ROoyoOOoR..",
+        ".ROORRooyyoOoOR.",
+        ".ROoOOoyyyyoooR.",
+        "RROooOoyyyyooOR.",
+        "ROOoooyyyyyyoOOR",
+        "ROoooyyyyyyyooOR",
+        ".ROoooyyyyyoooR.",
+        "..RROOoooooORR..",
+        "..eReeReeReeRe..",
+    ]
+    fl = dict(zip("eROoy", _sw("#a61e1f", "#d4462b", "#fe6420", "#fb902f", "#faaf5c")))
+    for y, row in enumerate(flame):
+        for x, ch in enumerate(row):
+            if ch != ".":
+                px[16 + y][16 + x] = fl[ch]
+    return _checked(px)
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -946,6 +1144,9 @@ if __name__ == "__main__":
         face = recolour(read_png(os.path.join(techd, src + "_face.png")), ramp)
         write(f"technology/{name}_face.png", trefoil(face) if nuclear else face)
     write("technology/campfire_face.png", campfire())
+    write("technology/campfire.png", campfire_atlas())
+    # Overflow sack: what a full inventory drops on the ground
+    write("technology/sack.png", sack())
     # Batteries: one tier mark per tier (I, II, III)
     write("technology/battery_lead_acid_face.png", battery("dgrey", "red", [(8, 7), (9, 7), (10, 7)]))
     write("technology/battery_lithium_face.png", battery("lgrey", "blue", [(8, 6), (9, 6), (10, 6), (8, 8), (9, 8), (10, 8)]))
@@ -1041,6 +1242,11 @@ if __name__ == "__main__":
     write("rocket_parts/survey_drone_face.png", drone)
     write("icons/radiation_lining.png", resource_icon("plate", "green", "lime", "black", "dgrey"))
     write("icons/coolant_loop.png", resource_icon("coil", "blue", "white", "navy", None))
+    # Submarines and divers (space-exploration, submarines): their hull colours
+    write("icons/submarine.png", submarine("yellow", "white", "orange", "blue"))
+    write("icons/deep_submarine.png", submarine("indigo", "lgrey", "navy", "yellow", deep=True))
+    write("icons/gas_giant_diver.png", diver("orange", "yellow", "plum", "blue"))
+    write("icons/deep_diver.png", diver("red", "pink", "navy", "lime", deep=True))
     write("icons/fuel_rod_mk2.png", pips(recolour(read_png(os.path.join(tex, "icons", "fuel_rod.png")), [P8[k] for k in ("black", "navy", "blue", "lime", "white")]), 2))
     # Stage separator (rocket-staging): the tank's shape in hazard yellow,
     # a black-and-yellow stripe band round its middle on the icon

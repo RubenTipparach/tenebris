@@ -58,16 +58,16 @@
 
 ## 8. Submarine and gas-giant diver
 
-- [ ] 8.1 Add the submarine vehicle (place, board with F, pilot with a quaternion attitude, buoyancy, ballast, park), saved and synced as a placed-object record; verify tests for park/board/persist and a headless dive in Earth's sea.
-- [ ] 8.2 Add hull crush depths and HUD depth/rating/health; verify a test that damage starts below the rating and the craft is lost at zero health.
-- [ ] 8.3 Add depth-band resource collection for oceans and gas giants; verify tests for deuterium (Thalassa) and helium-3 (Aurelia band).
-- [ ] 8.4 Add the gas-giant diver: released from a skimming rocket's cargo, descends in the gas giant's fluid sphere, docks back; verify a headless dive into Aurelia returning helium-3 to the cargo. Ask the owner to try the submarine and diver in game.
+- [x] 8.1 Add the submarine vehicle (place, board with F, pilot with a quaternion attitude, buoyancy, ballast, park), saved and synced as a placed-object record; verify tests for park/board/persist and a headless dive in Earth's sea.
+- [x] 8.2 Add hull crush depths and HUD depth/rating/health; verify a test that damage starts below the rating and the craft is lost at zero health.
+- [x] 8.3 Add depth-band resource collection for oceans and gas giants; verify tests for deuterium (Thalassa) and helium-3 (Aurelia band).
+- [x] 8.4 Add the gas-giant diver: released from a skimming rocket's cargo, descends in the gas giant's fluid sphere, docks back; verify a headless dive into Aurelia returning helium-3 to the cargo. Ask the owner to try the submarine and diver in game.
 
 ## 9. Rewards wiring and integration
 
-- [ ] 9.1 Replace the placeholder unlocks with the rewards in design §2, and turn on the test that every visit mission unlocks a recipe it owns; verify the test and that every new item is unlocked by exactly one mission.
-- [ ] 9.2 Add the cross-route test: with only sunward done the torch stays locked and its card names the outward reward; verify it passes.
-- [ ] 9.3 Headless integration run: a debug save that teleports a rocket along both routes, completing each visit mission in order; verify the mission count reaches all bodies with no errors, and summarise the run in the PR.
+- [x] 9.1 Replace the placeholder unlocks with the rewards in design §2, and turn on the test that every visit mission unlocks a recipe it owns; verify the test and that every new item is unlocked by exactly one mission. (Phase 8 already wired the submarine and diver rewards: Metropole Prime the submarine, Nerith the deep hull, Thalassa the diver, Verdance the deep diver.) Every body's reward was already wired by phases 2-8 and matches design §2; the code adds a body's refined resource next to its headline item where the table says "made into" (Metropole Prime superconductor; the table already lists Lodestone magnets and Vesper aerogel) and puts the hardened suit on Halcyon, where its second cross-route ingredient (crystal) is reached. `missions.test.ts` now holds that all 38 visits unlock at least one recipe, each a real recipe output with an icon on disk, owned by that visit alone.
+- [x] 9.2 Add the cross-route test: with only sunward done the torch stays locked and its card names the outward reward; verify it passes. (`missions.test.ts`: the card reads "Unlocked by: Skim Brontes", its locked parts wait on Aurelia, Tessaly and Halcyon; with only the outward route done the Sun's coil stays locked.)
+- [x] 9.3 Headless integration run: a debug save that teleports a rocket along both routes, completing each visit mission in order; verify the mission count reaches all bodies with no errors, and summarise the run in the PR. (`scripts/mp-e2e/exploration-run.cjs`: 38 of 38 visited in tree order, kept over reloads, no page errors. Landings, chute landings, drone surveys, the skims and the Sun pass run on the rocket's real physics step; travel is a teleport, and the beacon on the five worlds with air is sent to the tracker's event path. It found rockets hovering in LANDING when rounding read the clamped altitude a hair high; fixed, with a test in `rocket-environments.test.ts`.)
 
 ## Workflow follow-up
 

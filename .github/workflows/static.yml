@@ -141,6 +141,11 @@ jobs:
           # moving items in one chest end with the right totals, a stale
           # write is refused, chat is relayed / capped / rate-limited
           node --test test/shared-objects.test.mjs
+          # NPCs (openspec friendship-npcs): occupancy per planet, a
+          # population created on the first visit and advanced only while
+          # occupied (capped catch-up), server writes to that planet only, a
+          # delivery on a pre-tick version refused, restart and reset
+          node --test test/npc.test.mjs
 
       # The admin portal's game data (server-js/game-data.json) is generated
       # from the game's config; this fails when it drifts (regenerate with
@@ -154,6 +159,17 @@ jobs:
       # one simulator per planet, chat line parsing / formatting
       - name: Shared objects + chat - conflict rule, refresh, simulator, chat lines
         run: npx --yes tsx scripts/shared-objects.test.ts
+
+      # NPCs (openspec friendship-npcs): the rosters against the real solar
+      # system, the shared rules (population, villages, traders, world-time
+      # catch-up), and server-js/npc-core.js - generated from src/shared/npc;
+      # this fails when it drifts (regenerate with npx tsx scripts/gen-npc-core.ts)
+      - name: NPCs - rosters, shared rules, server bundle drift
+        run: |
+          set -e
+          npx --yes tsx scripts/npc-config.test.ts
+          npx --yes tsx scripts/npc-rules.test.ts
+          npx --yes tsx scripts/npc-core.test.ts
 
       # Only the cargo hold flies (openspec pad-stash): boarding at a pad
       # stashes the carried items (gear exempt by config), a parked rocket's

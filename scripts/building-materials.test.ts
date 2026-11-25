@@ -70,7 +70,7 @@ const sglass = recipe(ItemType.STEEL_GLASS);
 ok(!!sglass && count(sglass, ItemType.STEEL_INGOT) === 1 && count(sglass, ItemType.GLASS) === 2 && sglass.inputs.length === 3 && sglass.output.quantity === 2 && slotsOk(sglass),
   'STEEL_INGOT + 2 GLASS -> 2 STEEL_GLASS');
 const craftSrc = readFileSync(join(ROOT, 'src/player/CraftingSystem.ts'), 'utf8');
-ok(/const returned = this\.selectedRecipe\.returns;\s*if \(returned\) this\.inventory\.addItem\(returned\.itemType, returned\.quantity\);/.test(craftSrc), 'crafting hands a recipe\'s returns back');
+ok(/const returned = this\.selectedRecipe\.returns;\s*if \(returned\) this\.inventory\.give\(returned\.itemType, returned\.quantity\);/.test(craftSrc), 'crafting hands a recipe\'s returns back');
 
 const cement = KILN_RECIPES.find(r => r.output === ItemType.CEMENT);
 ok(!!cement && cement.inputs.some(i => i.itemType === ItemType.CLAY) && cement.inputs.some(i => i.itemType === ItemType.STONE) && cement.outputQuantity === 1,

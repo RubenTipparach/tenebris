@@ -24,6 +24,7 @@ import { initScreenshotHandler } from './utils/screenshot';
 import { RocketFlightManager, RocketController, RocketState, ROCKET_CONFIG } from './rocket';
 import { drawFuel, slotStore, stackItemTypes } from './rocket/RocketPerformance';
 import { RocketSync } from './rocket/RocketSync';
+import { SubmarineManager } from './vehicles/SubmarineManager';
 import { ItemType, ITEM_DATA, toolOf } from './player/Inventory';
 import { toolIndexFor } from './player/Tools';
 import { FishingSystem } from './player/Fishing';
@@ -117,6 +118,8 @@ class PlanetGame {
   public chat: ChatUI | null = null;
   private navigation: Navigation | null = null;
   private rocketSync: RocketSync | null = null;
+  // Submarines and gas-giant divers (space-exploration, submarines)
+  private submarines: SubmarineManager | null = null;
 
   // Mockups (Debug tab)
   private solarSystemMockup: SolarSystemMockup | null = null;
@@ -596,7 +599,7 @@ class PlanetGame {
         this.rocketFlightManager.setRefitSupport(this.blockInteraction.getLaunchPadManager(), {
           count: (t) => inv().getItemCount(t),
           take: (t, n) => { const got = inv().removeItem(t, n); this.blockInteraction.onInventoryChanged(); return got; },
-          give: (t, n) => { const left = inv().addItem(t, n); this.blockInteraction.onInventoryChanged(); return left; },
+          give: (t, n) => { const left = inv().give(t, n); this.blockInteraction.onInventoryChanged(); return left; },
         });
       }
       // Only the cargo hold flies (openspec pad-stash): boarding stows what
@@ -636,6 +639,21 @@ class PlanetGame {
         const hotbar = document.getElementById('hotbar');
         if (hotbar) hotbar.style.display = 'none';
       });
+
+      // Submarines and divers: placed from the hotbar, boarded with Interact,
+      // parked as placed-object records; a diver leaves a skimming rocket
+      this.submarines = new SubmarineManager({
+        scene: this.engine.scene,
+        camera: this.engine.camera,
+        planets: () => this.planets,
+        player: this.player,
+        inventory: () => this.blockInteraction.getInventory(),
+        inventoryChanged: () => this.blockInteraction.onInventoryChanged(),
+        flight: this.rocketFlightManager,
+        openHold: (slots, title) => this.blockInteraction.openRocketCargo(slots, title),
+        respawn: (from) => this.respawnOnNearestPlanet(from),
+      });
+      this.blockInteraction.setSubmarines(this.submarines);
 
       loadingManager.completeStep('player-setup');
 
@@ -965,6 +983,12 @@ class PlanetGame {
       profiler.begin('Rocket Flight');
       this.rocketFlightManager?.update(deltaTime);
       profiler.end('Rocket Flight');
+      // (keys pressed in flight are the rocket's, never a submarine's)
+      this.submarines?.update(deltaTime, false);
+    } else if (this.submarines?.isPiloting()) {
+      // Piloting a submarine or diver: it takes the keys and the camera
+      this.submarines.update(deltaTime, true);
+      this.engine.setUnderwater(this.submarines.cameraInFluid());
     } else {
       // Normal player mode
       // Update player
@@ -983,7 +1007,13 @@ class PlanetGame {
       if (isGameActive && input.rightClick && this.rocketFlightManager) {
         handledRocketInteraction = this.checkLandedRocketInteraction(!this.rightClickHeld);
       }
+      // A submarine: place one from the hand, or open a parked one's hold
+      if (isGameActive && input.rightClick && !handledRocketInteraction && this.submarines) {
+        handledRocketInteraction = this.submarines.handleRightClick(!this.rightClickHeld);
+      }
       this.rightClickHeld = input.rightClick;
+      // Interact (F) boards a parked submarine in view
+      this.submarines?.update(deltaTime, isGameActive);
 
       // Fishing takes the mouse buttons while the rod is in hand
       // The rod in hand: a rod in the selected hotbar slot, or the toolbox rod taken out (0)
@@ -2052,7 +2082,7 @@ class PlanetGame {
         this.blockInteraction.placeStarterRocket(this.earth, this.player.position);
         // The rocket carries fuel for the way back in its hold; a bucket
         // lets the player top up from any water
-        this.blockInteraction.getInventory().addItem(ItemType.BUCKET, ROCKET_CONFIG.STARTER_KIT.buckets);
+        this.blockInteraction.getInventory().give(ItemType.BUCKET, ROCKET_CONFIG.STARTER_KIT.buckets);
         this.blockInteraction.onInventoryChanged();
       }
       return;

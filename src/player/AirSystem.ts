@@ -123,8 +123,8 @@ export class AirSystem {
     });
     if (fx.tanksEmptied > 0) {
       this.inventory.removeItem(ItemType.OXYGEN_TANK, fx.tanksEmptied);
-      const left = this.inventory.addItem(ItemType.EMPTY_TANK, fx.tanksEmptied);
-      if (left > 0) showToast('No room for the empty tank', { duration: 2000 });
+      // No room: the empty tank drops in a sack (Inventory.give)
+      this.inventory.give(ItemType.EMPTY_TANK, fx.tanksEmptied);
       const more = this.inventory.getItemCount(ItemType.OXYGEN_TANK);
       showToast(more > 0 ? `Tank empty - ${more} left` : 'Last tank empty', { duration: 2500 });
       this.onInventoryChanged();

@@ -140,3 +140,27 @@ test('a close pass of the Sun with shields survives and counts; touching it burn
   d.updateReentry(DT, true);
   assert.equal(d.stateMachine.getState(), RocketState.CRASHED);
 });
+
+// The ground clamp parks a touching-down rocket at exactly the grounded
+// distance; read back, rounding can put it a hair above, and a landing that
+// only compared the altitude hovered in LANDING forever (found by the
+// space-exploration integration run on Rime). A touchdown is the clamp.
+test('a gentle touchdown lands wherever the body sits (no hover from rounding)', () => {
+  const stuck: string[] = [];
+  for (const [cx, cy, cz] of [[900, 450, 100], [-2200, 300, 1700], [5000, -300, 1900], [0, 0, 0]]) {
+    for (const [dx, dy, dz] of [[0.3, 1, 0.2], [1, 0.1, -0.4], [-0.6, -0.5, 0.7]]) {
+      const body = { id: 'rock', name: 'Rock', center: new THREE.Vector3(cx, cy, cz), radius: 30, gravityStrength: 0.3, hasAtmosphere: false, atmosphereDensity: 0 };
+      const c = flyer() as Internals & { orientation: THREE.Quaternion; checkStateTransitions: () => void };
+      c.planets = [body];
+      const up = new THREE.Vector3(dx, dy, dz).normalize();
+      c.orientation.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
+      c.position.copy(body.center).addScaledVector(up, body.radius + 1.5);
+      c.velocity.copy(up).multiplyScalar(-0.5);
+      for (let i = 0; i < 600 && c.stateMachine.getState() !== RocketState.LANDED; i++) {
+        c.updateClosestPlanet(); c.updatePhysics(DT); c.checkStateTransitions();
+      }
+      if (c.stateMachine.getState() !== RocketState.LANDED) stuck.push(`${cx},${cy},${cz} dir ${dx},${dy},${dz}: ${c.stateMachine.getState()}`);
+    }
+  }
+  assert.deepEqual(stuck, []);
+});

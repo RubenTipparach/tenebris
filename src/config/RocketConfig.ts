@@ -497,6 +497,7 @@ export const ROCKET_INPUTS = {
   SELF_DESTRUCT: 'KeyK',          // K - hold to self-destruct (X is throttle up)
   STAGE: 'KeyN',                  // N - drop the spent stage (next stage)
   DRONE: 'KeyL',                  // L - launch a survey drone at the body below
+  DIVER: 'KeyU',                  // U - let a gas-giant diver out of the cargo hold (below a giant's cloud tops)
 };
 
 /**

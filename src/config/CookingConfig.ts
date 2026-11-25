@@ -24,7 +24,8 @@ export const COOKERS: Record<CookerKind, {
   item: ItemType;                // the placeable item
   title: string;                 // the panel's title
   atlas?: string;                // 48x32 face atlas (front, side, top, bottom), like the furnace
-  face: string;                  // its single face texture (the campfire is drawn from this alone)
+  face: string;                  // its item icon (and the box's face when it has no atlas or model)
+  model?: string;                // a built model's atlas instead of a box (the campfire: CAMPFIRE_MODEL)
   width: number;                 // m
   height: number;                // m
   recipes: CookingRecipe[];      // tried with the most ingredients first
@@ -33,6 +34,7 @@ export const COOKERS: Record<CookerKind, {
     item: ItemType.CAMPFIRE,
     title: 'Campfire',
     face: '/textures/technology/campfire_face.png',
+    model: '/textures/technology/campfire.png',
     width: 0.8,
     height: 0.4,
     recipes: [
@@ -64,6 +66,27 @@ export const COOKERS: Record<CookerKind, {
       { inputs: ['fish'], output: ItemType.COOKED_FISH, timeS: 4 },
     ],
   },
+};
+
+/**
+ * The campfire's model (src/planet/Cookers.ts buildCampfire): a ring of
+ * hearth stones, logs leaned into a teepee, and two crossed flame cards
+ * drawn unlit (they glow) that flicker. Metres; the model stands on the
+ * ground at the bottom of the station's height.
+ */
+export const CAMPFIRE_MODEL = {
+  LOGS: 4,
+  LOG_THICK: 0.09,               // square log section
+  LOG_BASE_R: 0.26,              // where a log's foot rests, from the centre
+  LOG_PEAK_H: 0.36,              // where the logs meet over the centre
+  STONES: 9,
+  STONE_R: 0.34,                 // the hearth ring's radius
+  STONE_SIZE: [0.14, 0.09, 0.12] as [number, number, number],
+  FLAME_W: 0.46,
+  FLAME_H: 0.56,
+  FLAME_BASE: 0.02,              // the flame cards' foot above the ground
+  FLICKER_HZ: 6,
+  FLICKER_AMP: 0.12,             // flame height wobble, as a fraction
 };
 
 /** Which station a placeable item is, if any. */

@@ -791,6 +791,22 @@
   "253": {
    "name": "Abyss Grouper",
    "icon": "/textures/fish/abyss_grouper.png"
+  },
+  "254": {
+   "name": "Submarine",
+   "icon": "/textures/icons/submarine.png"
+  },
+  "255": {
+   "name": "Deep-Hull Submarine",
+   "icon": "/textures/icons/deep_submarine.png"
+  },
+  "256": {
+   "name": "Gas-Giant Diver",
+   "icon": "/textures/icons/gas_giant_diver.png"
+  },
+  "257": {
+   "name": "Deep Diver",
+   "icon": "/textures/icons/deep_diver.png"
   }
  },
  "slots": {

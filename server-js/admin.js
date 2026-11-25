@@ -12,6 +12,13 @@
 //   POST /admin/api/worlds/<id>/notice       { text } a message to everyone in it
 //   POST /admin/api/worlds/<id>/clear-kind   { kind } remove every object of a kind
 //   POST /admin/api/players/<id>/kick        { reason }
+//   POST /admin/api/npc-clock                { addMs } TEST ONLY (server run with
+//                                            NPC_TEST_CLOCK=1, else 404): move the
+//                                            NPC clock forward and tick at once
+//
+// The status's worlds each carry `npc` (openspec friendship-npcs): who is on
+// which planet, every visited inhabited planet's villages (people, food
+// store, building, open requests) and the travelling traders.
 //
 // Every API call needs `Authorization: Bearer <ADMIN_TOKEN>`. ADMIN_TOKEN is a
 // Fly secret (`fly secrets set ADMIN_TOKEN=... -a tenebris`); without it the
@@ -92,6 +99,10 @@ export async function handleAdmin(req, res, url, admin) {
   if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
   const body = await readBody(req);
 
+  if (parts[0] === 'npc-clock' && parts.length === 1) {
+    const ok = admin.skewNpcClock(Number(body.addMs));
+    return json(res, ok ? 200 : 404, ok ? { ok } : { error: 'Not found' });
+  }
   if (parts[0] === 'players' && parts.length === 3 && parts[2] === 'kick') {
     const ok = admin.kickPlayer(Number(parts[1]), body.reason);
     console.log(`[admin] kick player ${parts[1]}: ${ok}`);

@@ -243,6 +243,12 @@ export enum ItemType {
   FISH_MULLET = 251,
   FISH_KELPEEL = 252,
   FISH_GROUPER = 253,
+  // Submarines and gas-giant divers (space-exploration, submarines): the
+  // hull is the item (DivingConfig SUBMARINE.HULLS)
+  SUBMARINE = 254,
+  DEEP_SUBMARINE = 255,
+  GAS_GIANT_DIVER = 256,
+  DEEP_DIVER = 257,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -502,6 +508,10 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.FISH_MULLET]: { name: 'Pearl Mullet', stackSize: 16, texture: '/textures/fish/pearl_mullet.png', mineTime: 0.3 },
   [ItemType.FISH_KELPEEL]: { name: 'Kelp Eel', stackSize: 16, texture: '/textures/fish/kelp_eel.png', mineTime: 0.3 },
   [ItemType.FISH_GROUPER]: { name: 'Abyss Grouper', stackSize: 16, texture: '/textures/fish/abyss_grouper.png', mineTime: 0.3 },
+  [ItemType.SUBMARINE]: { name: 'Submarine', stackSize: 1, texture: '/textures/icons/submarine.png', mineTime: 1.0 },
+  [ItemType.DEEP_SUBMARINE]: { name: 'Deep-Hull Submarine', stackSize: 1, texture: '/textures/icons/deep_submarine.png', mineTime: 1.0 },
+  [ItemType.GAS_GIANT_DIVER]: { name: 'Gas-Giant Diver', stackSize: 1, texture: '/textures/icons/gas_giant_diver.png', mineTime: 1.0 },
+  [ItemType.DEEP_DIVER]: { name: 'Deep Diver', stackSize: 1, texture: '/textures/icons/deep_diver.png', mineTime: 1.0 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)
@@ -933,6 +943,35 @@ function assign(slot: InventorySlot, from: InventorySlot): void {
 }
 
 /**
+ * Stack `quantity` of an item into `slots`: part-filled stacks of it first,
+ * then empty slots (a new stack is fresh: no tool wear carried over).
+ * Returns what didn't fit. The one stacking rule - the inventory and the
+ * overflow sack both use it.
+ */
+export function addToSlots(slots: InventorySlot[], itemType: ItemType, quantity: number): number {
+  if (itemType === ItemType.NONE) return quantity;
+  const stack = ITEM_DATA[itemType].stackSize;
+  let remaining = quantity;
+  for (const slot of slots) {
+    if (remaining <= 0) break;
+    if (slot.itemType === itemType && slot.quantity < stack) {
+      const n = Math.min(remaining, stack - slot.quantity);
+      slot.quantity += n;
+      remaining -= n;
+    }
+  }
+  for (const slot of slots) {
+    if (remaining <= 0) break;
+    if (slot.itemType === ItemType.NONE) {
+      const n = Math.min(remaining, stack);
+      assign(slot, { itemType, quantity: n });
+      remaining -= n;
+    }
+  }
+  return remaining;
+}
+
+/**
  * Put a stack back into `all` (hotbar + bag + toolbox), starting at
  * `origin`: there if it fits, then onto the same item, then empty hotbar /
  * bag slots. Returns how many found no room.
@@ -972,6 +1011,9 @@ export class Inventory {
   private held: { stack: InventorySlot; origin: number } | null = null;
   // The toolbox rod is out (in hand) - toggled by TOOLBOX.ROD_KEY
   private rodOut = false;
+  // Where give() puts what doesn't fit: the game drops it in a sack at the
+  // player's feet (PlanetBlockInteraction); none set (tests) = it is lost
+  private overflowSink: ((items: { itemType: ItemType; quantity: number }[]) => void) | null = null;
 
   constructor() {
     this.slots = [];
@@ -995,34 +1037,27 @@ export class Inventory {
     return [...this.slots, ...this.toolbox];
   }
 
-  // Add item to inventory, returns amount that couldn't be added
+  // Add item to the hotbar + bag, returns amount that couldn't be added
   public addItem(itemType: ItemType, quantity: number): number {
-    if (itemType === ItemType.NONE) return quantity;
+    return addToSlots(this.slots, itemType, quantity);
+  }
 
-    const itemData = ITEM_DATA[itemType];
-    let remaining = quantity;
+  /** Where give() / giveTool() send what doesn't fit (the overflow sack). */
+  public setOverflowSink(sink: ((items: { itemType: ItemType; quantity: number }[]) => void) | null): void {
+    this.overflowSink = sink;
+  }
 
-    // First, try to stack with existing items
-    for (let i = 0; i < this.totalSlots && remaining > 0; i++) {
-      const slot = this.slots[i];
-      if (slot.itemType === itemType && slot.quantity < itemData.stackSize) {
-        const canAdd = Math.min(remaining, itemData.stackSize - slot.quantity);
-        slot.quantity += canAdd;
-        remaining -= canAdd;
-      }
-    }
-
-    // Then, try to fill empty slots (a new tool is fresh: no wear carried over)
-    for (let i = 0; i < this.totalSlots && remaining > 0; i++) {
-      const slot = this.slots[i];
-      if (slot.itemType === ItemType.NONE) {
-        const canAdd = Math.min(remaining, itemData.stackSize);
-        assign(slot, { itemType, quantity: canAdd });
-        remaining -= canAdd;
-      }
-    }
-
-    return remaining;
+  /**
+   * Hand items to the player for good: into the hotbar / bag, and whatever
+   * doesn't fit drops in a sack at their feet (never lost). Use addItem
+   * instead only when the caller keeps the remainder itself (a chest stack
+   * that stays in the chest). Returns how many overflowed into the sack.
+   */
+  public give(itemType: ItemType, quantity: number): number {
+    if (itemType === ItemType.NONE || quantity <= 0) return 0;
+    const left = this.addItem(itemType, quantity);
+    if (left > 0) this.overflowSink?.([{ itemType, quantity: left }]);
+    return left;
   }
 
   /** Would addItem take all `quantity` (same rule: existing stacks, then empty slots)? */
@@ -1041,7 +1076,8 @@ export class Inventory {
   /**
    * A tool just made: into the toolbox if it has no tool of that kind
    * ('toolbox'), else into the hotbar / bag ('inventory'), or 'full'.
-   * A non-tool goes through addItem ('inventory' / 'full').
+   * A non-tool goes through addItem ('inventory' / 'full'). 'full' means
+   * it overflowed into the sack (give).
    */
   public giveTool(itemType: ItemType): 'toolbox' | 'inventory' | 'full' {
     const tool = toolOf(itemType);
@@ -1052,7 +1088,7 @@ export class Inventory {
         return 'toolbox';
       }
     }
-    return this.addItem(itemType, 1) === 0 ? 'inventory' : 'full';
+    return this.give(itemType, 1) === 0 ? 'inventory' : 'full';
   }
 
   // Set a specific slot's contents directly (fresh: no tool wear)
@@ -1084,40 +1120,6 @@ export class Inventory {
     }
 
     return removed;
-  }
-
-  /**
-   * Would `give` fit in the hotbar + bag once `take` is removed? A craft asks
-   * this before it spends anything: addItem drops whatever doesn't fit, so a
-   * craft into a full inventory used to eat the ingredients and the result.
-   */
-  public fitsAfter(take: { itemType: ItemType; quantity: number }[], give: { itemType: ItemType; quantity: number }[]): boolean {
-    const sim = this.slots.slice(0, this.totalSlots).map(s => ({ itemType: s.itemType, quantity: s.quantity }));
-    for (const t of take) {
-      let left = t.quantity;
-      for (let i = sim.length - 1; i >= 0 && left > 0; i--) {
-        if (sim[i].itemType !== t.itemType) continue;
-        const n = Math.min(left, sim[i].quantity);
-        sim[i].quantity -= n;
-        left -= n;
-        if (sim[i].quantity === 0) sim[i].itemType = ItemType.NONE;
-      }
-    }
-    for (const g of give) {
-      if (g.itemType === ItemType.NONE) continue;
-      const stack = ITEM_DATA[g.itemType].stackSize;
-      let left = g.quantity;
-      for (const s of sim) {
-        if (left <= 0) break;
-        if (s.itemType === g.itemType && s.quantity < stack) { const n = Math.min(left, stack - s.quantity); s.quantity += n; left -= n; }
-      }
-      for (const s of sim) {
-        if (left <= 0) break;
-        if (s.itemType === ItemType.NONE) { const n = Math.min(left, stack); s.itemType = g.itemType; s.quantity = n; left -= n; }
-      }
-      if (left > 0) return false;
-    }
-    return true;
   }
 
   // Check if inventory (hotbar + bag) has at least this many of an item
@@ -1219,7 +1221,7 @@ export class Inventory {
     for (const [k, n] of Object.entries(gained)) {
       const type = Number(k) as ItemType;
       if (n > 0) missing += n - this.removeItem(type, n);
-      else if (n < 0) overflow += this.addItem(type, -n);
+      else if (n < 0) overflow += this.give(type, -n);
     }
     return { missing, overflow };
   }
@@ -1330,7 +1332,10 @@ export class Inventory {
     if (!this.held) return 0;
     const { stack, origin } = this.held;
     this.held = null;
-    return stow(this.everySlot(), stack, origin);
+    const lost = stow(this.everySlot(), stack, origin);
+    // No room to put it back: it drops in the sack, never lost
+    if (lost > 0) this.overflowSink?.([{ itemType: stack.itemType, quantity: lost }]);
+    return lost;
   }
 
   // Export inventory state for saving: hotbar + bag, then the toolbox; a

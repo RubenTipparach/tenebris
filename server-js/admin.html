@@ -74,6 +74,12 @@
     background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 8.333% 16.667%; }
   .marker { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; }
   .marker i { display: block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #000; box-shadow: 0 0 0 1px #fff; }
+  /* people (NPCs) */
+  .village { border-top: 1px solid var(--line); padding-top: 10px; display: grid; gap: 8px; }
+  .village:first-of-type { border-top: none; padding-top: 0; }
+  .req { display: inline-grid; grid-template-columns: 38px auto; gap: 2px 8px; align-items: center; margin: 0 14px 6px 0; font-size: 12px; }
+  .reqs { display: flex; flex-wrap: wrap; }
+  .awake { color: var(--green); }
   .marker span { position: absolute; left: 14px; top: -3px; white-space: nowrap; font-size: 12px; text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 3px #000; }
 </style>
 </head>
@@ -94,6 +100,7 @@
     <button data-tab="players">Players</button>
     <button data-tab="system">Solar system</button>
     <button data-tab="planet">Planet map</button>
+    <button data-tab="people">People</button>
     <button data-tab="worlds">Worlds</button>
   </nav>
   <section id="tab-players" class="tab"><div id="players"></div></section>
@@ -114,6 +121,15 @@
       <div id="map-players"></div>
     </div>
   </section>
+  <section id="tab-people" class="tab">
+    <div class="card">
+      <div class="row"><h2 class="grow">People</h2><label class="meta">world <select id="npc-world"></select></label></div>
+      <div class="meta">Each inhabited world's villages once a player has visited it (openspec friendship-npcs). A planet's time runs only while someone is on it ("awake"); a returning player catches it up at once, capped.</div>
+      <div id="npc-occ"></div>
+    </div>
+    <div id="npc-planets" style="display:grid;gap:14px"></div>
+    <div class="card"><h2>Traders</h2><div id="npc-traders"></div></div>
+  </section>
   <section id="tab-worlds" class="tab"><div id="worlds"></div></section>
 </main>
 <script>
@@ -133,7 +149,7 @@ let game = null;          // items, missions, bodies (server-js/game-data.json)
 let last = null;          // the latest status
 let tab = 'players';
 try { tab = localStorage.getItem(TAB_KEY) || tab; } catch {}
-const view = { sysWorld: '', mapWorld: 'main', mapPlanet: 'earth' };
+const view = { sysWorld: '', mapWorld: 'main', mapPlanet: 'earth', npcWorld: 'main' };
 
 const say = (t) => { $('#msg').textContent = t; };
 function el(tag, attrs = {}, ...kids) {
@@ -470,6 +486,66 @@ async function renderPlanet(s) {
 $('#map-world').addEventListener('change', (e) => { view.mapWorld = e.target.value; renderTab(); });
 $('#map-planet').addEventListener('change', (e) => { view.mapPlanet = e.target.value; renderTab(); });
 
+// ---- People tab (NPCs) ------------------------------------------------------
+
+const clockText = (s) => s < 3600 ? `${Math.round(s / 60)}m` : s < 86400 ? `${(s / 3600).toFixed(1)}h` : `${(s / 86400).toFixed(1)}d`;
+
+// One request: its item as a slot (the art piece by name: it has no item
+// icon yet), how many are still needed, and what it gives
+function requestCell(q, art) {
+  const left = q.need - q.got;
+  const cell = q.item !== undefined ? slotCell([0, q.item, left]) : el('div', { class: 'slot', title: art[q.art] ?? q.art }, el('div', { class: 't' }, art[q.art] ?? q.art));
+  const name = q.item !== undefined ? (game?.items[q.item]?.name ?? `item ${q.item}`) : (art[q.art] ?? q.art);
+  return el('div', { class: 'req' }, cell, el('div', {}, el('b', {}, q.fam), ` ${name}: ${left} of ${q.need} still needed`, el('div', { class: 'meta' }, `+${q.fr} friendship`)));
+}
+
+function renderPeople(s) {
+  const sel = $('#npc-world');
+  worldOptions(sel, false);
+  if (!s.worlds.some(w => w.id === view.npcWorld)) view.npcWorld = s.worlds[0]?.id ?? 'main';
+  sel.value = view.npcWorld;
+  const w = s.worlds.find(x => x.id === view.npcWorld);
+  const n = w?.npc;
+  if (!n) { $('#npc-planets').replaceChildren(); $('#npc-traders').replaceChildren(); $('#npc-occ').replaceChildren(); return; }
+  const occ = Object.entries(n.occupancy);
+  $('#npc-occ').replaceChildren(occ.length
+    ? el('div', { class: 'chips' }, ...occ.map(([b, k]) => el('span', { class: 'chip', style: 'padding-right:10px' }, `${bodyName(b)} ${k}`)))
+    : el('div', { class: 'empty' }, 'Nobody is on a planet'));
+  $('#npc-planets').replaceChildren(...(n.planets.length ? n.planets.map(p => el('section', { class: 'card' },
+    el('div', { class: 'row' }, el('h2', { class: 'grow' }, `${bodyName(p.body)} - the ${p.species}`),
+      el('span', { class: p.awake ? 'awake' : 'meta' }, p.awake ? `awake (${p.occupants} here)` : 'asleep'),
+      el('span', { class: 'meta' }, `clock ${clockText(p.T)}`)),
+    ...p.villages.map(v => {
+      const st = v.state;
+      const kids = [
+        el('div', { class: 'row' }, el('b', { class: 'grow' }, v.name),
+          el('span', { class: 'meta' }, v.residents.map(r => r.role === 'elder' ? `${r.name} (elder)` : r.name).join(', '))),
+      ];
+      if (st) {
+        const full = Math.max(st.food, st.low * 3);
+        kids.push(
+          el('div', { class: 'obj' },
+            el('div', {}, `Food store (low mark ${st.low})`, el('div', { class: 'bar' }, el('b', { style: `width:${(st.food / full) * 100}%;background:${st.food <= st.low ? 'var(--red)' : 'var(--cyan)'}` }))),
+            el('div', { class: 'c' }, `${st.food} meals`)),
+          el('div', { class: 'meta' }, st.building ? `Building the ${st.building}: stage ${st.stage} of ${st.stages}` : 'Every building is up',
+            `${st.built ? ` - ${st.built} built` : ''}${st.art.length ? ` - on display: ${st.art.map(a => n.art[a] ?? a).join(', ')}` : ''}`),
+          el('div', { class: 'reqs' }, ...st.requests.map(q => requestCell(q, n.art))),
+          st.reopensIn.length ? el('div', { class: 'meta' }, `next request in ${st.reopensIn.map(clockText).join(', ')}`) : '');
+      }
+      return el('div', { class: 'village' }, ...kids);
+    }))) : [el('div', { class: 'card empty' }, 'No inhabited world has been visited in this world yet')]));
+  $('#npc-traders').replaceChildren(n.traders.length
+    ? el('table', {}, el('tr', {}, el('th', {}, 'trader'), el('th', {}, 'on'), el('th', {}, 'moves on in'), el('th', {}, 'offers (gives / asks, stock)')),
+        ...n.traders.map(t => el('tr', {},
+          el('td', { class: 'online' }, t.name),
+          el('td', {}, bodyName(t.at)),
+          el('td', {}, clockText(t.leavesIn)),
+          el('td', {}, el('div', { class: 'reqs' }, ...t.offers.map(o => el('div', { class: 'req', style: 'grid-template-columns:38px 38px auto' },
+            slotCell([0, o.give.item, o.give.n]), slotCell([0, o.take.item, o.take.n]), el('span', { class: 'meta' }, `${o.stock}/${o.max}`))))))))
+    : el('div', { class: 'empty' }, 'No traders yet (they set out on the first visit to an inhabited world)'));
+}
+$('#npc-world').addEventListener('change', (e) => { view.npcWorld = e.target.value; renderTab(); });
+
 // ---- Worlds tab (the operator controls) -------------------------------------
 
 function renderWorlds(s) {
@@ -533,6 +609,7 @@ function renderTab() {
   if (tab === 'players') renderPlayers(last);
   else if (tab === 'system') renderSystem(last);
   else if (tab === 'planet') renderPlanet(last).catch(e => say(e.message));
+  else if (tab === 'people') renderPeople(last);
   else renderWorlds(last);
 }
 
@@ -549,7 +626,7 @@ async function refresh() {
 function begin() {
   $('#login').hidden = true;
   $('#tabs').hidden = false;
-  showTab(['players', 'system', 'planet', 'worlds'].includes(tab) ? tab : 'players');
+  showTab(['players', 'system', 'planet', 'people', 'worlds'].includes(tab) ? tab : 'players');
   refresh();
   if (timer) clearInterval(timer);
   timer = setInterval(refresh, REFRESH_MS);
