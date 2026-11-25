@@ -765,16 +765,18 @@
   }
 
   // ---- water ---------------------------------------------------------------
-  function nearestWaterTile(radius = 14) {
+  // `shore`: only water with dry ground beside it (a hydro generator's cable goes there)
+  function nearestWaterTile(radius = 14, shore = false) {
     const p = P();
     const pos = player().position;
     let best = null, bd = 1e9;
     for (const t of tilesWithin(myTile(), radius)) {
-      if (!p.isTileLoaded(t) || (st.badWater || []).includes(t)) continue;
+      if (!p.isTileLoaded(t) || (st.badWater || []).includes(t) || badMachine(t)) continue;
       const top = p.topBlockOf(t);
       if (top !== B.WATER) continue;
       // a pond, not a puddle in a hole: water on two sides at least
       if (neighbors(t).filter(n => p.topBlockOf(n) === B.WATER).length < 2) continue;
+      if (shore && !neighbors(t).some(isDryTile)) continue;
       const tt = p.getTileByIndex(t);
       const d = tt.center.clone().add(p.center).distanceTo(pos);
       if (d < bd) { bd = d; best = t; }
@@ -2181,8 +2183,8 @@
       .sort((a, c) => a.position.distanceTo(player().position) - c.position.distanceTo(player().position))[0];
     if (!hydro || hydro.position.distanceTo(player().position) > 120) {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return null;
-      const w = nearestWaterTile(30);
-      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return null; }
+      const w = nearestWaterTile(30, true);
+      if (w === null) { say('no pond shore for a hydro generator - exploring'); await wander(); return null; }
       // aim at the pond floor: the hydro generator stands on it, under the water
       if (!(await placeOnTile(I.HYDRO_GENERATOR, w, p.groundDepthOf(w)))) { st.badWater = (st.badWater || []).concat([w]); return null; }
       hydro = b.hydroGeneratorManager.getHydroGeneratorAtTile(w);
