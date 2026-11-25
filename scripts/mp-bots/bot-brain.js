@@ -1189,7 +1189,9 @@
     const lp = bi().launchPadManager;
     let mySites = [];
     try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
-    const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0 && !padUnderwater(p));
+    // a rocket standing on the pad that may fly (its stack passes the rules)
+    const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
+    const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0 && !padUnderwater(p) && !away.has(p) && STACK_OK(p.rocketParts.map(q => q.itemType)));
     const pos = player().position;
     const d = (p) => padCentre(p).distanceTo(pos);
     const mine = pads.filter(p => [...p.hexes.keys()].some(t => mySites.includes(t)));
@@ -1467,6 +1469,13 @@
       // lands beside its pad, not on it), else a rocket standing on a pad
       const craft = homeCraft();
       if (!craft) {
+        // none fit to fly. A trip for a resource can't wait for the better
+        // rocket that resource builds: put a basic one on an empty pad
+        if (st.expedition && padHere() && padHere().rocketParts.length === 0) {
+          say('no rocket to fly - building a basic one for the trip');
+          const r = await upgradeRocket([I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE]);
+          if (r !== false) return;
+        }
         // none fit to fly (the pad rebuild runs from the loop): rest this trip, don't spin
         say('no rocket to fly - building one first');
         st.rest = st.rest || {}; st.rest[m ? m.id : target] = Date.now() + 5 * 60 * 1000;
@@ -1597,11 +1606,11 @@
     const p = P();
     return [...pad.placedTiles].some(t => p.getBlock(t, p.groundDepthOf(t) + 1) === B.WATER || p.getBlock(t, p.groundDepthOf(t) + 2) === B.WATER);
   }
-  async function upgradeRocket() {
+  async function upgradeRocket(only = null) {
     const pad = padHere();
     if (!pad) { say('no pad of mine with its rocket on it to upgrade'); return false; }
     let target = null;
-    for (const st2 of UPGRADE_STACKS()) if (await liftTWR(st2) >= MIN_LIFT_TWR) { target = st2; break; }
+    for (const st2 of (only ? [only] : UPGRADE_STACKS())) if (await liftTWR(st2) >= MIN_LIFT_TWR) { target = st2; break; }
     if (!target) { say('no upgrade stack lifts off here'); return false; }
     const have = pad.rocketParts.map(p => p.itemType);
     let keep = 0;
