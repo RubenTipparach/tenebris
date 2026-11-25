@@ -53,6 +53,7 @@
     WALK_SIDESTEPS: 4,      // side-steps when stuck walking, then give up
     AROUND_M: 6,            // a detour this far to the side when a walk fails
     MACHINE_SIDESTEPS: 3,   // moves to see a machine past something in the way
+    MACHINE_OPEN_TRIES: 3,  // failed opens before a machine is given up for another
     ORE_SCAN_TILES: 16,     // how far round it looks up ore in the world data...
     ORE_SCAN_DEPTH: 24,     // ...and how deep, before digging toward one
   };
@@ -2139,10 +2140,21 @@
   function poweredEFurnace() {
     const pos = player().position;
     return bi().electricFurnaceManager.getPlacedElectricFurnaces()
-      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120)
+      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120 && !badMachine(f.tileIndex))
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
   }
 
+  // Machines the bot could not open (walled in): passed over for another
+  function badMachine(tile) {
+    if (!st.badMachines) { try { st.badMachines = JSON.parse(localStorage.getItem('bot_badMachines') || '[]'); } catch { st.badMachines = []; } }
+    return st.badMachines.includes(tile);
+  }
+  function markBadMachine(tile) {
+    badMachine(tile);
+    st.badMachines.push(tile);
+    try { localStorage.setItem('bot_badMachines', JSON.stringify(st.badMachines)); } catch {}
+    say(`giving up on the machine at tile ${tile} - setting up another`);
+  }
   // Build (or finish) a small power plant by a pond; returns a powered electric furnace or null
   async function buildPowerPlant() {
     const done = poweredEFurnace();
@@ -2172,9 +2184,9 @@
       if (!(await placeOnTile(I.CABLE, ct))) return null;
     }
     // 3. the electric furnace beside the cable
-    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(Boolean);
+    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(f => f && !badMachine(f.tileIndex));
     if (!ef) {
-      const et = neighbors(ct).find(t => t !== ht && isDryTile(t));
+      const et = neighbors(ct).find(t => t !== ht && isDryTile(t) && !stationAt(t));
       if (et === undefined) { say('no room for the electric furnace'); return null; }
       if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return null;
       if (!(await placeOnTile(I.ELECTRIC_FURNACE, et))) return null;
@@ -2203,7 +2215,15 @@
     await click(2, 80);
     await sleep(500);
     const ui = bi().electricFurnaceUI;
-    if (!ui.isMenuOpen()) { say('could not open the electric furnace'); closeMenus(); return false; }
+    if (!ui.isMenuOpen()) {
+      // walled in or out of sight: after a few tries, use (or build) another one
+      st.openFails = st.openFails || {};
+      const k = ef.tileIndex, n = (st.openFails[k] || 0) + 1;
+      st.openFails[k] = n;
+      say(`could not open the electric furnace (${n}x)`);
+      if (n >= GENTLE.MACHINE_OPEN_TRIES) markBadMachine(k);
+      closeMenus(); return false;
+    }
     const slotOf = (it) => inv().getAllSlots().findIndex(x => x.itemType === it && x.quantity > 0);
     if (r.with) { const a = slotOf(r.with.itemType); if (a >= 0) ui.handleDropFromInventory(a, 'electric-furnace-additive'); }
     const s0 = slotOf(r.input); if (s0 >= 0) ui.handleDropFromInventory(s0, 'electric-furnace-input');
@@ -2227,7 +2247,7 @@
     const pos = player().position;
     // a powered one: an unpowered bench can't make anything
     return bi().electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()
-      .filter(w => bi().nodePowered(w.tileIndex))
+      .filter(w => bi().nodePowered(w.tileIndex) && !badMachine(w.tileIndex))
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
   }
   // Craft `times` of recipe `idx` at a powered workbench
@@ -2251,7 +2271,15 @@
     await click(2, 80);
     await sleep(600);
     const ui = bi().electronicsWorkbenchUI;
-    if (!ui.isMenuOpen()) { say('could not open the workbench'); closeMenus(); st.badPlace = (st.badPlace || []).concat([wb.tileIndex]); return false; }
+    if (!ui.isMenuOpen()) {
+      st.openFails = st.openFails || {};
+      const n = (st.openFails[wb.tileIndex] || 0) + 1;
+      st.openFails[wb.tileIndex] = n;
+      say(`could not open the workbench (${n}x)`);
+      st.badPlace = (st.badPlace || []).concat([wb.tileIndex]);
+      if (n >= GENTLE.MACHINE_OPEN_TRIES) markBadMachine(wb.tileIndex);
+      closeMenus(); return false;
+    }
     if (!ui.isPowered) { say('the workbench has no power'); closeMenus(); return false; }
     ui.selectedRecipeIndex = idx;
     try { ui.updateUI(); } catch {}
