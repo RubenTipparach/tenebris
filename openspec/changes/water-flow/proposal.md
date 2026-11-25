@@ -18,7 +18,7 @@ water cell is a full block with a flat top.
 Pale Blue Dot settled this with Luanti's liquid transform on the hex grid
 (levels 0..7, a falling bit, sources, renewal) and Luanti's liquid mesh
 (sloped tops from corner levels, sides only over air, falls as columns),
-eased between ticks so water never pops.
+remeshing only the water of a chunk when it changes.
 
 ## What Changes
 
@@ -35,11 +35,10 @@ eased between ticks so water never pops.
   sloped tops from corner levels, sides only over air, falling cells as
   columns, sources flat at the sheet as before. The old water-wall builders
   (three copies) are deleted.
-- **Smoothing between ticks** (PBD S1-S4) in the existing water vertex
-  shader: levels ease, a new cell sweeps in from its source side, a fall
-  grows down, a dried cell shrinks away. The flat-shaded look (colours,
-  shading) is unchanged; the fragment shader only measures fog distance
-  correctly (below).
+- **Water-only remesh**: a water change rebuilds only that chunk's water
+  mesh (the between-tick smoothing was dropped for it). The flat-shaded
+  look (colours, shading) is unchanged; the fragment shader only measures
+  fog distance correctly (below).
 - **Under water is decided by the drawn surface**: `Planet.isInWater` (fog,
   swimming) uses the sheet height of a source and the sloped height of a
   flowing cell, not the whole block.

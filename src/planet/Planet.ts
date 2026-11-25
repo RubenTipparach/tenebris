@@ -20,7 +20,7 @@ import {
 } from './ChunkGeometryBuilder';
 import { CityConfig, sampleCity, cityColumn, cityFloors, cityLodColor, cityMeanFloors } from '../shared/cityGen';
 import { PackedBlocks, PackedTileData, packTiles, packBlocks, packedTileTransferables, packColumnSet, packedColumnSetTransferables } from '../workers/packedTiles';
-import { Liquid, LiquidWorld, CELL_SOURCE, isFlowCode, isFallingCode } from '../water/Liquid';
+import { Liquid, LiquidWorld, CELL_SOURCE, isFlowCode, isFallingCode, isWetCode } from '../water/Liquid';
 import { cellReader, meshLiquidColumn, cornerLevels, LiquidColumn } from '../water/LiquidMesh';
 import { edgeNeighbors } from '../shared/voxelLight';
 import { WaterConfig } from '../config/WaterConfig';
@@ -74,7 +74,6 @@ interface GeometryData {
   torchLight: number[]; // Torch light level (0-1.5) baked per vertex
   indices: number[];
   vertexOffset: number;
-  liquidPrev?: number[]; // water only: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
   liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
@@ -4935,7 +4934,7 @@ export class Planet {
     }
 
     // Its water (src/water/LiquidMesh.ts), the one water mesher
-    this.meshColumnLiquid(column, () => (geometryData['water'] ??= createEmptyGeometryData()), true);
+    this.meshColumnLiquid(column, () => (geometryData['water'] ??= createEmptyGeometryData()));
   }
 
 
@@ -4955,23 +4954,78 @@ export class Planet {
     };
   }
 
-  /** Tick the water (every frame; it ticks every WaterConfig.TICK_SECONDS) and drive the smoothing clock. */
+  /**
+   * Tick the water (every frame; it ticks every WaterConfig.TICK_SECONDS)
+   * and remesh the water of each chunk it changed. Terrain is meshed the
+   * same whether a cell is air or water (faces and sky light both see water
+   * as open), so a water change rebuilds only that chunk's water mesh, never
+   * its terrain; block edits still take the full chunk rebuild.
+   */
   public updateLiquid(deltaTime: number): void {
     if (this.columns.size === 0) return;
+    this.updateWaterUniforms();
     this.liquid.update(deltaTime, WaterConfig.TICK_SECONDS, WaterConfig.MAX_TICKS_PER_FRAME);
+    if (this.liquidChangedTiles.size === 0) return;
+    const chunks = new Set<number>();
+    const mark = (tile: number) => {
+      if (!this.cachedNearbyTiles.has(tile)) return;
+      const chunk = this.tileToChunk.get(tile);
+      if (chunk === undefined) return;
+      // a chunk with its own meshes remeshes its water alone; before the
+      // switch to chunk meshes (the flat batch), the full rebuild path
+      if (this.chunkDetailMeshes.has(chunk)) chunks.add(chunk);
+      else this.queueDirtyColumnRebuild(tile, true);
+    };
     for (const tile of this.liquidChangedTiles) {
       const column = this.columns.get(tile);
       if (!column) continue;
-      column.isDirty = true;
-      this.queueDirtyColumnRebuild(tile, true);
-      for (const n of column.tile.neighbors) this.queueDirtyColumnRebuild(n, true);
+      mark(tile);
+      for (const n of column.tile.neighbors) mark(n);
     }
     this.liquidChangedTiles.clear();
-    const mat = this.meshBuilder.getWaterShaderMaterial();
-    if (mat?.uniforms.liquidT) {
-      mat.uniforms.liquidT.value = this.liquid.tickFraction(WaterConfig.TICK_SECONDS);
-      mat.uniforms.liquidTick.value = this.liquid.tickStamp;
+    for (const chunk of chunks) this.rebuildChunkWater(chunk);
+  }
+
+  /** One chunk's water mesh, rebuilt as the water stands now (its terrain meshes are left alone). */
+  private rebuildChunkWater(chunkIndex: number): void {
+    const group = this.chunkDetailMeshes.get(chunkIndex);
+    const tiles = this.chunkToTiles.get(chunkIndex);
+    if (!group || !tiles) return;
+    profiler.begin('Planet.rebuildChunkWater');
+    const data = createEmptyGeometryData();
+    for (const tile of tiles) {
+      // the tiles rebuildChunkImmediate meshes
+      if (!this.cachedNearbyTiles.has(tile)) continue;
+      const column = this.columns.get(tile);
+      if (column) this.meshColumnLiquid(column, () => data);
     }
+    const old = this.chunkDetailWaterMeshes.get(chunkIndex);
+    const geom = data.positions.length > 0 ? createBufferGeometryFromData(data) : null;
+    if (!geom) {
+      if (old) {
+        if (this.waterMeshCallback) this.waterMeshCallback(old, false);
+        group.remove(old);
+        old.geometry.dispose();
+        this.chunkDetailWaterMeshes.delete(chunkIndex);
+      }
+    } else {
+      if (old) {
+        old.geometry.dispose();
+        old.geometry = geom;
+      } else {
+        const mesh = new THREE.Mesh(geom, this.terrainMaterialConfig('water').getMaterial());
+        const order = MATERIAL_RENDER_ORDER['water'];
+        if (order !== undefined) mesh.renderOrder = order;
+        group.add(mesh);
+        this.chunkDetailWaterMeshes.set(chunkIndex, mesh);
+        if (this.waterMeshCallback) this.waterMeshCallback(mesh, true);
+      }
+    }
+    profiler.end('Planet.rebuildChunkWater');
+  }
+
+  private updateWaterUniforms(): void {
+    const mat = this.meshBuilder.getWaterShaderMaterial();
     // The water tile's scale: WATER_UV_TILING repeats across one hex cell,
     // as the water texture was tiled before the flow texture (owner: "use
     // same tiling scale we had before")
@@ -5008,10 +5062,14 @@ export class Planet {
     return cellReader(t => this.columns.get(t)?.blocks, (t, d) => this.liquid.flowAt(t, d));
   }
 
-  /** One column's water into a water buffer (the fallback mesher; the chunk meshers call meshLiquidColumn directly). */
-  private meshColumnLiquid(column: PlanetColumn, target: () => GeometryData, smooth: boolean): void {
-    meshLiquidColumn(this.liquidColumn(column), column.blocks.length, this.liquidReader(),
-      smooth ? (t, d) => this.liquid.prevAt(t, d) : null, this.liquid.tickStamp,
+  /** One column's water into a water buffer (the fallback mesher and the water-only chunk rebuild; the chunk meshers call meshLiquidColumn directly). */
+  private meshColumnLiquid(column: PlanetColumn, target: () => GeometryData): void {
+    const read = this.liquidReader();
+    const t = column.tile.index;
+    let wet = false;
+    for (let d = 0; d < column.blocks.length && !wet; d++) wet = isWetCode(read(t, d));
+    if (!wet) return;   // a dry column: skip its outline (most of a chunk)
+    meshLiquidColumn(this.liquidColumn(column), column.blocks.length, read,
       { radius: this.radius, maxDepth: this.MAX_DEPTH, blockHeight: this.BLOCK_HEIGHT, waterSurfaceOffset: PlayerConfig.WATER_SURFACE_OFFSET },
       target);
   }
@@ -5281,10 +5339,6 @@ export class Planet {
     // Only add vertex colors if they exist (only populated when vertex lighting is enabled)
     if (data.colors.length > 0) {
       geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
-    }
-    // Water: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
-    if (data.liquidPrev && data.liquidPrev.length > 0) {
-      geometry.setAttribute('liquidPrev', new THREE.Float32BufferAttribute(data.liquidPrev, 4));
     }
     if (data.liquidFlow && data.liquidFlow.length > 0) {
       geometry.setAttribute('liquidFlow', new THREE.Float32BufferAttribute(data.liquidFlow, 4));

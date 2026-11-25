@@ -4,8 +4,9 @@
 //
 // Run: npx tsx scripts/water-flow.test.ts
 import { Liquid, LiquidWorld, FLOW_BIT, FALLING_BIT, LEVEL_MASK, CELL_SOURCE, CELL_AIR } from '../src/water/Liquid';
-import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, sideFloor, WaterTarget, TWEEN_EASE, TWEEN_SWEEP, TWEEN_GONE, FACE_CAP, FACE_FALL, FACE_STILL } from '../src/water/LiquidMesh';
+import { cellReader, cornerLevel, cornerLevels, meshLiquidColumn, sideFloor, WaterTarget, FACE_CAP, FACE_FALL, FACE_STILL } from '../src/water/LiquidMesh';
 import { flowTile } from '../src/water/FlowTile';
+import { buildChunkGeometryImmediate } from '../src/planet/ChunkGeometryBuilder';
 import { readFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 import { edgeNeighbors } from '../src/shared/voxelLight';
@@ -169,7 +170,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   const out: WaterTarget = { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
   const dims = { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 };
   const edgeT = P.id(8, 0);
-  meshLiquidColumn(P.column(edgeT), 4, read, null, 0, dims, () => out);
+  meshLiquidColumn(P.column(edgeT), 4, read, dims, () => out);
   const radii = [];
   for (let i = 0; i < out.positions.length; i += 3) radii.push(Math.hypot(out.positions[i], out.positions[i + 1], out.positions[i + 2]));
   const floor = P.R - 1;   // depth 1: top = radius - (maxDepth-1-1) = R, floor one block under
@@ -177,33 +178,8 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   const sidesOverAir = P.column(edgeT).edges.filter(n => n >= 0 && read(n, 1) === CELL_AIR).length;
   ok(out.positions.length / 3 === 18 + 6 * sidesOverAir, `7. top + one side per air neighbour (${sidesOverAir})`);
   const out2: WaterTarget = { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
-  meshLiquidColumn(P.column(P.id(2, 0)), 4, read, null, 0, dims, () => out2);
+  meshLiquidColumn(P.column(P.id(2, 0)), 4, read, dims, () => out2);
   ok(out2.positions.length / 3 === 18, '7. a cell surrounded by water has no sides');
-}
-
-// ---- 8. smoothing: the last tick's cells give each vertex where it was ----
-{
-  const P = patch(6, 4, () => 1);
-  P.place(0, 0, 1, HexBlockType.WATER);
-  P.liquid.tick();                       // ring 1 appears
-  const read = cellReader(t => P.blocks[t], (t, d) => P.liquid.flowAt(t, d));
-  const dims = { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 };
-  const modes = (t: number) => {
-    const out: WaterTarget = { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
-    meshLiquidColumn(P.column(t), 4, read, (tt, d) => P.liquid.prevAt(tt, d), P.liquid.tickStamp, dims, () => out);
-    const m = new Set<number>();
-    for (let i = 3; i < (out.liquidPrev ?? []).length; i += 4) m.add(out.liquidPrev![i] % 4);
-    return m;
-  };
-  ok(modes(P.id(1, 0)).has(TWEEN_SWEEP), '8. S2: a newly wet cell sweeps in');
-  ok(modes(P.id(0, 0)).has(TWEEN_EASE), '8. S1: a cell wet both ticks eases');
-  P.place(0, 0, 1, HexBlockType.AIR);
-  P.liquid.tick();
-  ok(modes(P.id(1, 0)).has(TWEEN_EASE) || modes(P.id(1, 0)).has(TWEEN_GONE), '8. the drained source\'s ring keeps easing / drains');
-  P.liquid.tick(); P.liquid.tick();
-  let gone = false;
-  for (const [q, r] of P.qr) if (modes(P.id(q, r)).has(TWEEN_GONE)) gone = true;
-  ok(gone, '8. S4: a dried cell is drawn one more tick, shrinking away');
 }
 
 // ---- 9. faces wind outward (the depth pre-pass draws water's far side by winding) ----
@@ -213,7 +189,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   const read = cellReader(t => P.blocks[t], (t, d) => P.liquid.flowAt(t, d));
   const out: WaterTarget = { positions: [], normals: [], uvs: [], colors: [], skyLight: [], torchLight: [], indices: [], vertexOffset: 0 };
   const col = P.column(P.id(0, 0));
-  meshLiquidColumn(col, 4, read, null, 0, { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => out);
+  meshLiquidColumn(col, 4, read, { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => out);
   const c = [col.center.x, col.center.y, col.center.z];
   const cl = Math.hypot(c[0], c[1], c[2]);
   let outward = 0, tris = 0;
@@ -248,7 +224,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   P.settle();
   const read = cellReader(t => P.blocks[t], (t, d) => P.liquid.flowAt(t, d));
   const dims = { radius: P.R + 2, maxDepth: 4, blockHeight: 1, waterSurfaceOffset: 0.1 };
-  const mesh = (t: number) => { const out = newOut(); meshLiquidColumn(P.column(t), 4, read, null, 0, dims, () => out); return out; };
+  const mesh = (t: number) => { const out = newOut(); meshLiquidColumn(P.column(t), 4, read, dims, () => out); return out; };
 
   const src = mesh(P.id(0, 0));
   ok((src.liquidFlow ?? []).length === src.positions.length / 3 * 4, '10. every vertex carries liquidFlow');
@@ -275,7 +251,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   D.settle();
   const readD = cellReader(tt => D.blocks[tt], (tt, d) => D.liquid.flowAt(tt, d));
   const outD = newOut();
-  meshLiquidColumn(D.column(D.id(0, 0)), 10, readD, null, 0, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
+  meshLiquidColumn(D.column(D.id(0, 0)), 10, readD, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
   const fall = faces(outD).filter(v => v.kind === FACE_FALL);
   ok(fall.length > 0, `10. the fall's sides are marked falling (${fall.length / 6} faces)`);
   ok(fall.every(v => Math.abs(Math.hypot(v.f[0], v.f[1], v.f[2]) - 1) < 1e-6), '10. a side carries its unit along-face direction');
@@ -284,18 +260,9 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   const L = patch(4, 4, () => 1);
   L.place(0, 0, 2, HexBlockType.WATER);
   const outL = newOut();
-  meshLiquidColumn(L.column(L.id(0, 0)), 4, cellReader(tt => L.blocks[tt], (tt, d) => L.liquid.flowAt(tt, d)), null, 0, dims, () => outL);
+  meshLiquidColumn(L.column(L.id(0, 0)), 4, cellReader(tt => L.blocks[tt], (tt, d) => L.liquid.flowAt(tt, d)), dims, () => outL);
   const kinds = new Set(faces(outL).map(v => v.kind));
   ok(kinds.has(FACE_STILL) && !kinds.has(FACE_FALL), '10. a source\'s sides are still walls');
-
-  // the smoothing still gets the same data: a rebuild mid-flow carries liquidFlow on every vertex
-  const S = patch(6, 4, () => 1);
-  S.place(0, 0, 1, HexBlockType.WATER);
-  S.liquid.tick();
-  const readS = cellReader(tt => S.blocks[tt], (tt, d) => S.liquid.flowAt(tt, d));
-  const outS = newOut();
-  meshLiquidColumn(S.column(S.id(1, 0)), 4, readS, (tt, d) => S.liquid.prevAt(tt, d), S.liquid.tickStamp, dims, () => outS);
-  ok((outS.liquidFlow ?? []).length === (outS.liquidPrev ?? []).length && outS.liquidFlow!.length > 0, '10. smoothed rebuilds carry liquidFlow too');
 }
 
 // ---- 11. the flow tile is water.png, its tones PBD's TEX_IDX ----
@@ -344,7 +311,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   // topR(d) = R + 2 - (5 - d)
   const top1 = P.R - 2, sheet1 = top1 - 0.1;
   const out = newOut();
-  meshLiquidColumn(P.column(P.id(0, 0)), 6, read, null, 0, dims, () => out);
+  meshLiquidColumn(P.column(P.id(0, 0)), 6, read, dims, () => out);
   const radius = (i: number) => Math.hypot(out.positions[3 * i], out.positions[3 * i + 1], out.positions[3 * i + 2]);
   const kinds = out.liquidFlow ?? [];
   const sideTris: number[][] = [];
@@ -356,7 +323,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   ok(fallFoot.length === 12, `12. and the fall's sides start at that same top, so they join (${fallFoot.length / 2} quads)`);
   // the sea round it: flat at the sheet, no faces between its cells
   const outN = newOut();
-  meshLiquidColumn(P.column(P.id(2, 0)), 6, read, null, 0, dims, () => outN);
+  meshLiquidColumn(P.column(P.id(2, 0)), 6, read, dims, () => outN);
   const rn = Array.from({ length: outN.positions.length / 3 }, (_, i) => Math.hypot(outN.positions[3 * i], outN.positions[3 * i + 1], outN.positions[3 * i + 2]));
   ok(rn.length === 18 && rn.every(r => r <= sheet1 + 1e-6), '12. the open sea is one flat cap at the sheet, no sides between its cells');
 
@@ -369,7 +336,7 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
   const col = D.column(foot);
   const lower = col.edges.filter(nb => nb >= 0 && (readD(nb, 2) & FLOW_BIT) && !(readD(nb, 3) & FLOW_BIT) && readD(nb, 3) !== CELL_SOURCE).length;
   const outD = newOut();
-  meshLiquidColumn(col, 10, readD, null, 0, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
+  meshLiquidColumn(col, 10, readD, { radius: D.R + 2, maxDepth: 10, blockHeight: 1, waterSurfaceOffset: 0.1 }, () => outD);
   const top2 = D.R + 2 - 7, sheet2 = top2 - 0.1;
   let footStrips = 0;
   for (let i = 0; i < outD.positions.length / 3; i += 3) {
@@ -377,4 +344,30 @@ const flowOf = (b: number) => (b & FLOW_BIT) ? b & LEVEL_MASK : -1;
     if (rs.every(r => Math.abs(r - sheet2) < 1e-6 || Math.abs(r - top2) < 1e-6) && rs.some(r => Math.abs(r - sheet2) < 1e-6)) footStrips++;
   }
   ok(lower > 0 && footStrips === 2 * lower, `12. a cliff fall's foot draws the strip toward each lower neighbour (${footStrips / 2} of ${lower})`);
+}
+
+// ---- 13. water never changes the terrain mesh, so a water change remeshes only the water ----
+// (Planet.updateLiquid -> rebuildChunkWater leaves a chunk's terrain alone)
+{
+  const P = patch(5, 10, (q, r) => (q + r / 2 <= -1 ? 6 : 2));
+  const cols = P.qr.map((_, t) => {
+    const c = P.column(t);
+    return { tileIndex: t, tile: { index: t, vertices: c.vertices, center: c.center, neighbors: P.nbs[t] }, blocks: P.blocks[t] };
+  });
+  const config = (liquid: Liquid) => ({
+    radius: P.R + 2, blockHeight: 1, seaLevel: 3, maxDepth: 10, deepThreshold: 1, waterSurfaceOffset: 0.1,
+    sunDirection: { x: 0, y: 0, z: 1 }, uvScale: 1, liquid,
+  });
+  const meshOf = (liquid: Liquid) => {
+    const out = buildChunkGeometryImmediate(cols, new Map(), config(liquid));
+    const keys = Object.keys(out).filter(k => !k.startsWith('water')).sort();
+    const terrain = JSON.stringify(keys.map(k => [k, out[k]?.positions, out[k]?.skyLight, out[k]?.blockLight]));
+    return { terrain, water: out['waterData']?.positions.length ?? 0 };
+  };
+  const dry = meshOf(P.liquid);
+  P.place(-3, 0, 6, HexBlockType.WATER);
+  P.settle();
+  const wet = meshOf(P.liquid);
+  ok(dry.water === 0 && wet.water > 0, `13. the fall is meshed as water (${wet.water / 3} vertices)`);
+  ok(dry.terrain === wet.terrain, '13. and the terrain buffers (faces, sky light, block light) are identical with or without it');
 }

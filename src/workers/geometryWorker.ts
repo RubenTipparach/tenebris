@@ -36,7 +36,6 @@ interface GeometryData {
   torchLight: number[];  // Baked torch light level per vertex
   indices: number[];
   vertexOffset: number;
-  liquidPrev?: number[];  // water only (src/water/LiquidMesh.ts)
   liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
@@ -489,14 +488,13 @@ function buildColumnGeometry(
   }
 }
 
-// The water of each column (src/water/LiquidMesh.ts), at rest: the worker
-// draws this tick's water, the main-thread rebuilds near the player smooth it
+// The water of each column (src/water/LiquidMesh.ts), as it stands this tick
 function waterOf(columns: ColumnData[], neighborDataMap: Map<number, NeighborData>, config: WorkerConfig) {
   const own = new Map(columns.map(c => [c.tileIndex, c.blocks]));
   const read = cellReader(t => own.get(t) ?? neighborDataMap.get(t)?.blocks, flowLookup(config.flowCells));
   return (column: ColumnData, edges: number[], target: () => GeometryData) => meshLiquidColumn(
     { tileIndex: column.tileIndex, vertices: column.tile.vertices, center: column.tile.center, edges },
-    column.blocks.length, read, null, 0, config, target);
+    column.blocks.length, read, config, target);
 }
 
 // Worker message handler

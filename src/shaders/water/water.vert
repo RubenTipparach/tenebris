@@ -4,13 +4,6 @@ uniform float waveAmplitude;
 uniform float waveFrequency;
 uniform vec3 planetCenter;
 uniform vec3 sunDirection;
-// Water flow smoothing between liquid ticks (src/water/LiquidMesh.ts):
-// liquidPrev.xyz is where the vertex was at the last tick, liquidPrev.w its
-// mode (0 at rest, 1 level ease, 2 sweep in, 3 shrink away then hide) plus
-// 4 x the tick it was built for. liquidT runs 0..1 over the current tick.
-attribute vec4 liquidPrev;
-uniform float liquidT;
-uniform float liquidTick;
 // The flow texture (PBD water-look.js; src/water/LiquidMesh.ts liquidFlow):
 // liquidFlow.xyz a cap's flow (length = speed) or a side's along-edge
 // direction, liquidFlow.w the face code (0 cap, 1 flowing side, 2 still side,
@@ -37,19 +30,8 @@ varying float vSunHeight;     // the sky light table's axis (openspec sky-lighti
 void main() {
   vUv = uv;
 
-  // Where the water is between two liquid ticks
-  vec3 pos = position;
-  bool liquidGone = false;
-  float liquidMode = mod(liquidPrev.w, 4.0);
-  if (liquidMode > 0.5) {
-    bool thisTick = abs(floor(liquidPrev.w * 0.25) - liquidTick) < 0.5;
-    float t = !thisTick ? 1.0 : (liquidMode < 1.5 ? smoothstep(0.0, 1.0, liquidT) : liquidT);
-    pos = mix(liquidPrev.xyz, position, t);
-    liquidGone = liquidMode > 2.5 && t > 0.999;
-  }
-
   // Get world position
-  vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+  vec4 worldPos = modelMatrix * vec4(position, 1.0);
   vWorldPosition = worldPos.xyz;
 
   // Calculate radial direction from planet center (for spherical water)
@@ -128,6 +110,4 @@ void main() {
 
   // Final position
   gl_Position = projectionMatrix * viewMatrix * vec4(displacedPos, 1.0);
-  // a dried cell's last tick has played: gone (clipped)
-  if (liquidGone) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 }
