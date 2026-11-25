@@ -1629,17 +1629,14 @@
       if (!ui) return false;
     }
     // take off the parts above what stays (the top one each click)
+    // through the pad editor's own stack operations (what dragging parts does)
     while (pad.rocketParts.length > keep) {
-      const n = pad.rocketParts.length;
-      ui.handleEngineSlotClick();
-      await sleep(300);
-      if (pad.rocketParts.length === n) { say('the pad would not give up its top part (cargo in the hold?)'); closeMenus(); return false; }
+      if (!(await ui.applyStackOp({ kind: 'remove', index: pad.rocketParts.length - 1 }))) { say('the pad would not give up its top part'); closeMenus(); return false; }
+      await sleep(200);
     }
     for (const t of target.slice(keep)) {
-      if (count(t) < 1 || !(await ui.onAddRocketPartCallback(pad, t))) { say(`the pad would not take the ${itemName(t)}`); closeMenus(); return false; }
-      inv().removeItem(t, 1);
-      try { ui.updateUI(); ui.notifyChanges(); } catch {}
-      await sleep(300);
+      if (count(t) < 1 || !(await ui.applyStackOp({ kind: 'addTop', itemType: t }))) { say(`the pad would not take the ${itemName(t)}`); closeMenus(); return false; }
+      await sleep(200);
     }
     closeMenus();
     say(`upgraded the rocket: ${target.map(itemName).join(' / ')} (liftoff TWR ${(await liftTWR(target)).toFixed(2)})`);
@@ -1916,11 +1913,8 @@
       }
       for (const it of parts) {
         if (pad.rocketParts.some(r => r.itemType === it) || count(it) < 1) continue;
-        if (await ui.onAddRocketPartCallback(pad, it)) {
-          inv().removeItem(it, 1);
-          try { ui.updateUI(); ui.notifyChanges(); } catch {}
-          say(`added ${itemName(it)} to the rocket`);
-        } else say(`the pad would not take the ${itemName(it)}`);
+        if (await ui.applyStackOp({ kind: 'addTop', itemType: it })) say(`added ${itemName(it)} to the rocket`);
+        else say(`the pad would not take the ${itemName(it)}`);
         await sleep(400);
       }
       closeMenus();
