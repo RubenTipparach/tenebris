@@ -40,6 +40,9 @@ export class RocketFlightManager {
   // The pad the active rocket belongs to: it keeps the rocket's fuel and
   // cargo record, saved through onRocketChangedCallback
   private activePad: PlacedLaunchPad | null = null;
+  // The pad this flight took off from (where a crash respawns the pilot), kept
+  // after the pad has let the rocket go
+  private originPad: PlacedLaunchPad | null = null;
   private onRocketChangedCallback: ((pad: PlacedLaunchPad | null) => void) | null = null;
   private onOpenCargoCallback: ((slots: InventorySlot[], title?: string, accepts?: (t: ItemType) => boolean) => void) | null = null;
 
@@ -196,6 +199,32 @@ export class RocketFlightManager {
    * came from keeps only the stages still attached, so a relaunch from it
    * uses what is left. Saved at once (recordActiveRocket).
    */
+  /** On (or just above) a body's ground: where refuelling works */
+  private onGround(at: THREE.Vector3): boolean {
+    for (const b of this.planets) {
+      if (b.gasGiant) continue;
+      const dir = at.clone().sub(b.center);
+      const ground = b.getSurfaceHeight ? b.getSurfaceHeight(dir.clone().normalize()) : b.radius;
+      if (dir.length() - ground <= ROCKET_CONFIG.REFUEL_MAX_ALTITUDE_M) return true;
+    }
+    return false;
+  }
+
+  private releasePad(pad: PlacedLaunchPad): void {
+    // the flying rocket keeps the parts and its own hold arrays; the pad gets fresh, empty ones
+    pad.rocketParts = [];
+    pad.rocketMeshes = [];
+    pad.rocketBlocks = 0;
+    pad.hasRocketEngine = false;
+    pad.rocketEngineMesh = null;
+    pad.cargo = [];
+    pad.equipment = [];
+    pad.fuel = ROCKET_CONFIG.NEW_PAD_FUEL;
+    pad.engineMode = null;
+    this.activePad = null;
+    this.onRocketChangedCallback?.(pad);
+  }
+
   private forgetDroppedStage(parts: unknown[]): void {
     if (this.activePad) {
       this.activePad.rocketParts = this.activePad.rocketParts.filter(p => !parts.includes(p));
@@ -388,6 +417,8 @@ export class RocketFlightManager {
    * fuel source as refuelling on board
    */
   public refuelLanded(rocket: LandedRocket): void {
+    // only standing on a body - never a ship parked in space
+    if (!this.onGround(rocket.position)) { showToast('Refuel on the ground - not in space', { duration: 2500 }); return; }
     const stats = computeRocketStats(stackItemTypes(rocket.parts), 0, null, rocket.equipment);
     const have = (rocket.fuelPercent / 100) * stats.fuelCapacity;
     const wanted = stats.fuelCapacity - have;
@@ -470,7 +501,7 @@ export class RocketFlightManager {
     if (!this.rocketController) return;
 
     const respawnPosition = this.rocketController.getPosition().clone();
-    const pad = this.activePad;
+    const pad = this.activePad ?? this.originPad;
     // The pad keeps what the flight burnt (it relaunches with what is left)
     this.recordActiveRocket();
 
@@ -530,6 +561,7 @@ export class RocketFlightManager {
       launchPad.equipment
     );
     this.activePad = launchPad;
+    this.originPad = launchPad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
     this.rocketController.onStageDropped = (parts) => this.forgetDroppedStage(parts);
 
@@ -717,6 +749,7 @@ export class RocketFlightManager {
       landedRocket.equipment
     );
     this.activePad = landedRocket.pad;
+    this.originPad = landedRocket.pad;
     this.rocketController.onChanged = () => this.recordActiveRocket();
     this.rocketController.onStageDropped = (parts) => this.forgetDroppedStage(parts);
 
@@ -797,11 +830,15 @@ export class RocketFlightManager {
     // Update rocket controller
     this.rocketController.update(deltaTime, this.inputState);
 
-    // Taking off burns the pad's fuel: keep its record in step with the
-    // tanks, so a relaunch from the pad never starts on fuel already burnt
-    if (this.activePad) {
-      const burnt = (this.activePad.fuel ?? Infinity) - this.rocketController.getFuelUnits();
-      if (burnt >= ROCKET_CONFIG.PAD_FUEL_RECORD_STEP) this.recordActiveRocket();
+    // Lifted off: the rocket has left its pad for good. The pad keeps
+    // nothing of it - no parts, no fuel, an empty hold (its tower and stash
+    // stay) - so the next rocket built there starts empty, and a reload
+    // can't bring this one back on the pad as well as wherever it lands
+    if (this.activePad && this.rocketController.getHasLaunched()) {
+      // only the parts this rocket carries (a parked rocket's old pad may hold a new rocket by now)
+      const mine = this.rocketController.getParts();
+      if (this.activePad.rocketParts.every(p => mine.includes(p))) this.releasePad(this.activePad);
+      else this.activePad = null;
     }
 
     // Update explosion particles if crashed

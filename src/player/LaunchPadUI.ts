@@ -1,11 +1,30 @@
 import { ROCKET_CONFIG } from '../config/RocketConfig';
-import { PlacedLaunchPad, PlacedRocketPart } from '../planet/LaunchPad';
+import { PlacedLaunchPad } from '../planet/LaunchPad';
 import { MenuManager } from './MenuManager';
 import { Inventory, ItemType, ITEM_DATA } from './Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { showToast } from '../utils/toast';
 import { stashUsed } from '../rocket/CarryRules';
-import { computeRocketStats, cargoMass, deltaVWith, stagedStats, stagedDeltaVWith, stackProblems, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
+import { RefitOp, dropOp, padEditProblem, partAtSlot, partStartSlots, stackAfter, stackUnits } from '../rocket/Refit';
+import { partTooltipLines, stageOfPart, stagesOf, computeRocketStats, cargoMass, deltaVWith, stagedStats, stagedDeltaVWith, stackProblems, surfaceTWR, engineModes, engineModeLabel, validEngineMode, fitEquipment, isEquipment, equipmentLabel, equipmentSummary } from '../rocket/RocketPerformance';
+
+// Drag data of a part picked up off the stack: the prefix and its index
+const ROCKET_DRAG_PREFIX = 'rocket:';
+
+/** A slot's hover tooltip (the shared .item-tooltip look), or none */
+function setSlotTooltip(slot: HTMLElement, text: string | null): void {
+  let tip = slot.querySelector('.item-tooltip') as HTMLElement | null;
+  if (!text) {
+    tip?.remove();
+    return;
+  }
+  if (!tip) {
+    tip = document.createElement('span');
+    tip.className = 'item-tooltip';
+    slot.appendChild(tip);
+  }
+  tip.textContent = text;
+}
 
 // Rocket validation result
 export interface RocketValidationResult {
@@ -35,12 +54,9 @@ export class LaunchPadUI {
   private onUpdateInventoryCallback: (() => void) | null = null;
   private onAddSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
   private onRemoveSegmentCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
-  // Legacy callbacks for rocket engine (still used for backwards compatibility)
-  private onAddRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
-  private onRemoveRocketEngineCallback: ((pad: PlacedLaunchPad) => boolean) | null = null;
-  // New generic rocket part callbacks
-  private onAddRocketPartCallback: ((pad: PlacedLaunchPad, itemType: ItemType) => Promise<boolean>) | null = null;
-  private onRemoveRocketPartCallback: ((pad: PlacedLaunchPad) => PlacedRocketPart | null) | null = null;
+  // Make the pad's stack this (bottom to top): every add, remove and move
+  // goes through it. Resolves with why it can't, or null when done
+  private onSetRocketStackCallback: ((pad: PlacedLaunchPad, types: ItemType[]) => Promise<string | null>) | null = null;
   // Board rocket callback
   private onBoardRocketCallback: ((pad: PlacedLaunchPad) => void) | null = null;
   // Close all menus callback (for boarding rocket - needs to close inventory too)
@@ -88,12 +104,13 @@ export class LaunchPadUI {
     this.onTakeStashCallback = callback;
   }
 
-  // Told when equipment is fitted or taken out (the pad and the inventory save)
-  private onEquipmentChangedCallback: ((pad: PlacedLaunchPad) => void) | null = null;
+  // Told when equipment is fitted or taken out, or a part moves between the
+  // stack and the inventory: the pad record and the inventory save
+  private onHoldChangedCallback: ((pad: PlacedLaunchPad) => void) | null = null;
   private equipRow: HTMLElement | null = null;
   private equipSummary: HTMLElement | null = null;
-  public setOnEquipmentChangedCallback(callback: (pad: PlacedLaunchPad) => void): void {
-    this.onEquipmentChangedCallback = callback;
+  public setOnHoldChangedCallback(callback: (pad: PlacedLaunchPad) => void): void {
+    this.onHoldChangedCallback = callback;
   }
 
   /** Gravity strength (1 = Earth) of the body a pad stands on, for its TWR */
@@ -126,20 +143,8 @@ export class LaunchPadUI {
     this.onRemoveSegmentCallback = callback;
   }
 
-  public setOnAddRocketEngineCallback(callback: (pad: PlacedLaunchPad) => boolean): void {
-    this.onAddRocketEngineCallback = callback;
-  }
-
-  public setOnRemoveRocketEngineCallback(callback: (pad: PlacedLaunchPad) => boolean): void {
-    this.onRemoveRocketEngineCallback = callback;
-  }
-
-  public setOnAddRocketPartCallback(callback: (pad: PlacedLaunchPad, itemType: ItemType) => Promise<boolean>): void {
-    this.onAddRocketPartCallback = callback;
-  }
-
-  public setOnRemoveRocketPartCallback(callback: (pad: PlacedLaunchPad) => PlacedRocketPart | null): void {
-    this.onRemoveRocketPartCallback = callback;
+  public setOnSetRocketStackCallback(callback: (pad: PlacedLaunchPad, types: ItemType[]) => Promise<string | null>): void {
+    this.onSetRocketStackCallback = callback;
   }
 
   public setOnBoardRocketCallback(callback: (pad: PlacedLaunchPad) => void): void {
@@ -229,7 +234,8 @@ export class LaunchPadUI {
       </div>
 
       <div class="launchpad-hint">
-        <p>Drag rocket parts from inventory to rocket slots</p>
+        <p>Drag rocket parts from inventory to rocket slots - onto a part to put it in under that one</p>
+        <p>Drag a part up or down the stack to move it, or off the stack to take it out</p>
         <p>Drag a parachute, solar array or battery pack to Equipment; click to take it out</p>
         <p>Press E or ESC to close</p>
       </div>
@@ -363,110 +369,29 @@ export class LaunchPadUI {
   }
 
   private handleEngineDragOver(e: DragEvent): void {
-    if (!this.currentLaunchPad || !this.inventory) return;
-
-    // Need at least 1 segment to place parts
-    if (this.currentLaunchPad.segmentCount < 1) return;
-
-    // Get drag data to check if it's a rocket part
-    const dragData = e.dataTransfer?.getData('text/plain');
-    if (!dragData) {
-      // During dragover, we can't always access drag data due to browser security
-      // So we'll be permissive and allow the dragover, checking properly on drop
-      e.preventDefault();
-      if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = 'move';
-      }
-      const target = e.currentTarget as HTMLElement;
-      target.classList.add('drag-over');
-      return;
-    }
-
-    const sourceSlotIndex = parseInt(dragData, 10);
-    if (isNaN(sourceSlotIndex)) return;
-
-    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
-    if (!sourceSlot || sourceSlot.quantity <= 0) return;
-
-    // Check if the item is a rocket part
-    const itemData = ITEM_DATA[sourceSlot.itemType];
-    if (!itemData.rocketPart) return;
-
+    if (!this.currentLaunchPad || this.currentLaunchPad.segmentCount < 1) return;
+    // The drag data can't be read during dragover: checked on the drop
     e.preventDefault();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
-    }
-    const target = e.currentTarget as HTMLElement;
-    target.classList.add('drag-over');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    (e.currentTarget as HTMLElement).classList.add('drag-over');
   }
 
-  private async handleEngineDrop(e: DragEvent): Promise<void> {
+  /** A part dropped on the Parts slot goes on top of the stack */
+  private handleEngineDrop(e: DragEvent): void {
     e.preventDefault();
-    const target = e.currentTarget as HTMLElement;
-    target.classList.remove('drag-over');
-
-    if (!this.currentLaunchPad || !this.inventory) return;
-
-    // Need at least 1 segment to place parts
-    if (this.currentLaunchPad.segmentCount < 1) return;
-
-    // Get drag data - it should be an inventory slot index
-    const dragData = e.dataTransfer?.getData('text/plain');
-    if (!dragData) return;
-
-    // Parse the slot index from drag data (inventory slots are just numbers)
-    const sourceSlotIndex = parseInt(dragData, 10);
-    if (isNaN(sourceSlotIndex)) return;
-
-    // Check if the source slot has a rocket part
-    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
-    if (!sourceSlot || sourceSlot.quantity <= 0) return;
-
-    const itemData = ITEM_DATA[sourceSlot.itemType];
-    if (!itemData.rocketPart) {
-      console.log('Item is not a rocket part:', sourceSlot.itemType);
-      return;
-    }
-
-    // Try to add the part using the new callback
-    if (this.onAddRocketPartCallback) {
-      const success = await this.onAddRocketPartCallback(this.currentLaunchPad, sourceSlot.itemType);
-      if (success) {
-        this.inventory.removeItem(sourceSlot.itemType, 1);
-        this.updateUI();
-        this.notifyChanges();
-      }
-    } else if (sourceSlot.itemType === ItemType.ROCKET_ENGINE && this.onAddRocketEngineCallback) {
-      // Legacy fallback for rocket engine
-      if (this.onAddRocketEngineCallback(this.currentLaunchPad)) {
-        this.inventory.removeItem(ItemType.ROCKET_ENGINE, 1);
-        this.updateUI();
-        this.notifyChanges();
-      }
-    }
+    (e.currentTarget as HTMLElement).classList.remove('drag-over');
+    const pad = this.currentLaunchPad;
+    if (!pad) return;
+    const itemType = this.draggedInventoryPart(e);
+    if (itemType === null) return;
+    void this.applyStackOp({ kind: 'insert', index: pad.rocketParts.length, itemType });
   }
 
+  /** Clicking the Parts slot takes the top part off */
   private handleEngineSlotClick(): void {
-    if (!this.currentLaunchPad || !this.inventory) return;
-
-    // If there are rocket parts, clicking removes the top one
-    if (this.currentLaunchPad.rocketParts.length > 0) {
-      if (this.onRemoveRocketPartCallback) {
-        const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
-        if (removedPart) {
-          this.inventory.give(removedPart.itemType, 1);
-          this.updateUI();
-          this.notifyChanges();
-        }
-      } else if (this.currentLaunchPad.hasRocketEngine && this.onRemoveRocketEngineCallback) {
-        // Legacy fallback
-        if (this.onRemoveRocketEngineCallback(this.currentLaunchPad)) {
-          this.inventory.give(ItemType.ROCKET_ENGINE, 1);
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    }
+    const pad = this.currentLaunchPad;
+    if (!pad || pad.rocketParts.length === 0) return;
+    void this.applyStackOp({ kind: 'remove', index: pad.rocketParts.length - 1 });
   }
 
   private setupButtonInteractions(): void {
@@ -508,8 +433,10 @@ export class LaunchPadUI {
         // Cannot remove slot 0 - it's the tower base
         if (slotIndex === 0) return;
 
-        // Can only remove if no rocket at this height
-        if (this.currentLaunchPad.rocketBlocks <= slotIndex) {
+        // Can only remove if the rocket's stack doesn't reach this height
+        if (stackUnits(this.stackTypes()) > slotIndex) {
+          showToast('The rocket stands this high - take a part off first', { duration: 2500 });
+        } else {
           if (this.onRemoveSegmentCallback && this.onRemoveSegmentCallback(this.currentLaunchPad)) {
             // Return segment to inventory
             this.inventory.give(ItemType.LAUNCH_PAD_SEGMENT, 1);
@@ -534,208 +461,122 @@ export class LaunchPadUI {
   }
 
   private handleRocketSlotClick(_slotIndex: number): void {
-    // Clicking on rocket slots no longer removes parts
-    // Use drag-out to remove parts instead
-    // This handler is kept for potential future click functionality
+    // Parts are taken out by dragging them off the stack (or clicking the
+    // Parts slot for the top one); a click does nothing
   }
 
-  // Track if we're currently dragging a rocket part out
-  private draggingRocketPart: boolean = false;
+  // The stack part being dragged (its index), and whether it was dropped on
+  // the stack (a move) rather than off it (taken out)
+  private draggingPartIndex: number | null = null;
+  private droppedInStack = false;
+  // A stack edit is under way (its models load): the next waits for it
+  private stackBusy = false;
 
-  /**
-   * Handle starting a drag from a rocket slot (drag-out)
-   * Only the top part can be dragged out
-   */
+  private stackTypes(): ItemType[] {
+    return this.currentLaunchPad ? this.currentLaunchPad.rocketParts.map(p => p.itemType) : [];
+  }
+
+  /** Any part of the stack can be picked up: dropped on the stack it moves, off it it comes out */
   private handleRocketSlotDragStart(e: DragEvent, slotIndex: number): void {
-    if (!this.currentLaunchPad || !this.inventory) {
+    const index = partAtSlot(this.stackTypes(), slotIndex);
+    if (!this.currentLaunchPad || index < 0 || this.stackBusy) {
       e.preventDefault();
       return;
     }
-
-    const rocketParts = this.currentLaunchPad.rocketParts;
-    if (rocketParts.length === 0) {
-      e.preventDefault();
-      return;
-    }
-
-    // Check if this slot belongs to the top part
-    const topPart = rocketParts[rocketParts.length - 1];
-    const topPartData = ITEM_DATA[topPart.itemType].rocketPart;
-    const topPartHeightUnits = topPartData?.heightUnits ?? 1;
-    const topPartStartSlot = this.getNextAvailableHeightSlot() - topPartHeightUnits;
-
-    // Only allow dragging from slots that belong to the top part
-    if (slotIndex < topPartStartSlot || slotIndex >= topPartStartSlot + topPartHeightUnits) {
-      e.preventDefault();
-      return;
-    }
-
-    // Set drag data - use a special format to indicate it's from the rocket
     if (e.dataTransfer) {
-      e.dataTransfer.setData('text/plain', `rocket:${slotIndex}`);
+      e.dataTransfer.setData('text/plain', `${ROCKET_DRAG_PREFIX}${index}`);
       e.dataTransfer.effectAllowed = 'move';
     }
-
-    this.draggingRocketPart = true;
-    console.log(`Started dragging rocket part from slot ${slotIndex}`);
+    this.draggingPartIndex = index;
+    this.droppedInStack = false;
   }
 
-  /**
-   * Handle end of drag from a rocket slot
-   * If dropped outside valid target, remove the part and add to inventory
-   */
-  private handleRocketSlotDragEnd(e: DragEvent, _slotIndex: number): void {
-    if (!this.draggingRocketPart || !this.currentLaunchPad || !this.inventory) {
-      this.draggingRocketPart = false;
-      return;
-    }
-
-    // Check if the drop was successful (dropEffect will be 'none' if dropped outside valid target)
-    // For drag-out to inventory, we remove the part here
-    if (e.dataTransfer?.dropEffect === 'none' || e.dataTransfer?.dropEffect === 'move') {
-      // The part was dragged out - remove it and add to inventory
-      if (this.onRemoveRocketPartCallback) {
-        const removedPart = this.onRemoveRocketPartCallback(this.currentLaunchPad);
-        if (removedPart) {
-          this.inventory.give(removedPart.itemType, 1);
-          console.log(`Removed rocket part via drag: ${ITEM_DATA[removedPart.itemType].name}`);
-          this.updateUI();
-          this.notifyChanges();
-        }
-      }
-    }
-
-    this.draggingRocketPart = false;
+  /** A stack part dragged off the stack (anywhere but a rocket slot) comes out into the inventory */
+  private handleRocketSlotDragEnd(_e: DragEvent, _slotIndex: number): void {
+    const index = this.draggingPartIndex;
+    this.draggingPartIndex = null;
+    if (index === null || this.droppedInStack) return;
+    void this.applyStackOp({ kind: 'remove', index });
   }
 
-  /**
-   * Calculate the next available height slot based on existing parts' heightUnits
-   */
-  private getNextAvailableHeightSlot(): number {
-    if (!this.currentLaunchPad) return 0;
-
-    let nextSlot = 0;
-    for (const part of this.currentLaunchPad.rocketParts) {
-      const partData = ITEM_DATA[part.itemType].rocketPart;
-      if (partData) {
-        nextSlot += partData.heightUnits;
-      }
-    }
-    return nextSlot;
+  /** The rocket part an inventory drag carries (null: not an inventory slot, or not a part) */
+  private draggedInventoryPart(e: DragEvent): ItemType | null {
+    const from = parseInt(e.dataTransfer?.getData('text/plain') ?? '', 10);
+    const slot = isNaN(from) ? null : this.inventory?.getSlot(from);
+    if (!slot || slot.quantity <= 0 || !ITEM_DATA[slot.itemType]?.rocketPart) return null;
+    return slot.itemType;
   }
 
   private handleRocketSlotDragOver(e: DragEvent, slotIndex: number): void {
-    if (!this.currentLaunchPad || !this.inventory) return;
-
-    // Need at least 1 segment to place parts
-    if (this.currentLaunchPad.segmentCount < 1) {
-      console.log('DragOver rejected: no segments');
-      return;
-    }
-
-    // Calculate the next available slot based on heightUnits of existing parts
-    const nextSlotIndex = this.getNextAvailableHeightSlot();
-
-    // Can only place at the next available slot index
-    if (slotIndex !== nextSlotIndex) {
-      console.log(`DragOver rejected: slotIndex ${slotIndex} !== nextSlotIndex ${nextSlotIndex}`);
-      return;
-    }
-
-    // Can't place above tower height
-    if (slotIndex >= this.currentLaunchPad.segmentCount) {
-      console.log(`DragOver rejected: slotIndex ${slotIndex} >= segmentCount ${this.currentLaunchPad.segmentCount}`);
-      return;
-    }
-
-    console.log(`DragOver accepted: slot ${slotIndex}, nextSlot ${nextSlotIndex}, segments ${this.currentLaunchPad.segmentCount}`);
+    const pad = this.currentLaunchPad;
+    // Any slot inside the tower: on a part (insert under it / move there) or above the stack (on top)
+    if (!pad || pad.segmentCount < 1 || slotIndex >= pad.segmentCount) return;
     e.preventDefault();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'move';
-    }
-    const target = e.currentTarget as HTMLElement;
-    target.classList.add('drag-over');
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    (e.currentTarget as HTMLElement).classList.add('drag-over');
   }
 
-  private async handleRocketSlotDrop(e: DragEvent, slotIndex: number): Promise<void> {
+  private handleRocketSlotDrop(e: DragEvent, slotIndex: number): void {
     e.preventDefault();
-    const target = e.currentTarget as HTMLElement;
-    target.classList.remove('drag-over');
-
-    console.log(`Drop on slot ${slotIndex}`);
-
-    if (!this.currentLaunchPad || !this.inventory) {
-      console.log('Drop rejected: no launch pad or inventory');
+    (e.currentTarget as HTMLElement).classList.remove('drag-over');
+    const pad = this.currentLaunchPad;
+    if (!pad || pad.segmentCount < 1) return;
+    const data = e.dataTransfer?.getData('text/plain') ?? '';
+    const types = this.stackTypes();
+    if (data.startsWith(ROCKET_DRAG_PREFIX)) {
+      // A part of the stack: it moves (set before any await - dragend follows the drop)
+      this.droppedInStack = true;
+      const from = parseInt(data.slice(ROCKET_DRAG_PREFIX.length), 10);
+      if (isNaN(from)) return;
+      void this.applyStackOp(dropOp(types, slotIndex, { from }));
       return;
     }
-
-    // Need at least 1 segment to place parts
-    if (this.currentLaunchPad.segmentCount < 1) {
-      console.log('Drop rejected: no segments');
+    const itemType = this.draggedInventoryPart(e);
+    if (itemType === null) {
+      if (data) showToast('Only rocket parts go in the rocket column', { duration: 2000 });
       return;
     }
+    void this.applyStackOp(dropOp(types, slotIndex, { itemType }));
+  }
 
-    // Calculate the next available slot based on heightUnits of existing parts
-    const nextSlotIndex = this.getNextAvailableHeightSlot();
-
-    if (slotIndex !== nextSlotIndex) {
-      console.log(`Drop rejected: slot mismatch ${slotIndex} !== ${nextSlotIndex}`);
-      return;
+  /**
+   * One edit of the stack (openspec rocket-refit's stack ops, the same a
+   * refit uses): a part put on comes out of the inventory, one taken off goes
+   * back into it, a move only restacks. Refused, with a toast, when the stack
+   * would not fit the tower, the cargo / equipment would not fit, or the
+   * inventory has no room for a part taken off.
+   */
+  public async applyStackOp(op: RefitOp): Promise<boolean> {
+    const pad = this.currentLaunchPad;
+    if (!pad || !this.inventory || !this.onSetRocketStackCallback || this.stackBusy) return false;
+    const types = this.stackTypes();
+    const problem = padEditProblem(types, op, pad.segmentCount);
+    if (problem) {
+      showToast(problem, { duration: 2500 });
+      return false;
     }
-    if (slotIndex >= this.currentLaunchPad.segmentCount) {
-      console.log(`Drop rejected: above tower height`);
-      return;
+    const putOn = op.kind === 'insert' || op.kind === 'addTop' || op.kind === 'swap' ? op.itemType : null;
+    const takenOff = op.kind === 'remove' || op.kind === 'swap' ? types[op.index] : null;
+    if (putOn !== null && !this.inventory.hasItem(putOn, 1)) return false;
+    if (takenOff !== null && putOn === null && !this.inventory.canAddItem(takenOff, 1)) {
+      showToast('No room in your inventory for that part', { duration: 2500 });
+      return false;
     }
-
-    // Get drag data - it should be an inventory slot index
-    const dragData = e.dataTransfer?.getData('text/plain');
-    console.log('Drag data:', dragData);
-    if (!dragData) {
-      console.log('Drop rejected: no drag data');
-      return;
-    }
-
-    // Parse the slot index from drag data
-    const sourceSlotIndex = parseInt(dragData, 10);
-    if (isNaN(sourceSlotIndex)) {
-      console.log('Drop rejected: invalid slot index');
-      return;
-    }
-
-    // Check if the source slot has a rocket part
-    const sourceSlot = this.inventory.getSlot(sourceSlotIndex);
-    if (!sourceSlot || sourceSlot.quantity <= 0) {
-      console.log('Drop rejected: no item in source slot');
-      return;
-    }
-
-    console.log('Source item:', sourceSlot.itemType, ITEM_DATA[sourceSlot.itemType]?.name);
-
-    const itemData = ITEM_DATA[sourceSlot.itemType];
-    if (!itemData.rocketPart) {
-      console.log('Item is not a rocket part:', sourceSlot.itemType);
-      return;
-    }
-
-    // Check if the part would fit within the tower height
-    const partHeightUnits = itemData.rocketPart.heightUnits;
-    if (nextSlotIndex + partHeightUnits > this.currentLaunchPad.segmentCount) {
-      console.log(`Part does not fit - need ${nextSlotIndex + partHeightUnits} segments, have ${this.currentLaunchPad.segmentCount}`);
-      return;
-    }
-
-    console.log('Attempting to add rocket part...');
-    // Try to add the part using the callback
-    if (this.onAddRocketPartCallback) {
-      const success = await this.onAddRocketPartCallback(this.currentLaunchPad, sourceSlot.itemType);
-      console.log('Add rocket part result:', success);
-      if (success) {
-        this.inventory.removeItem(sourceSlot.itemType, 1);
-        this.updateUI();
-        this.notifyChanges();
+    this.stackBusy = true;
+    try {
+      const why = await this.onSetRocketStackCallback(pad, stackAfter(types, op));
+      if (why) {
+        showToast(why, { duration: 3000 });
+        return false;
       }
-    } else {
-      console.log('No onAddRocketPartCallback set!');
+      if (putOn !== null) this.inventory.removeItem(putOn, 1);
+      if (takenOff !== null) this.inventory.addItem(takenOff, 1);
+      this.onHoldChangedCallback?.(pad);
+      return true;
+    } finally {
+      this.stackBusy = false;
+      if (this.currentLaunchPad === pad) this.updateUI();
+      this.notifyChanges();
     }
   }
 
@@ -946,6 +787,23 @@ export class LaunchPadUI {
         opacity: 0.3;
         cursor: not-allowed;
       }
+
+      /* A part of the stack can be picked up; a two-unit part's upper slot
+         joins the one below it */
+      .launchpad-slot.rocket-slot.filled { cursor: grab; }
+      .launchpad-slot.rocket-slot.continuation { border-bottom-style: dashed; }
+
+      /* The shared .item-tooltip (index.html) beside a stack slot: to its
+         right, so the column doesn't cover it */
+      .launchpad-slot .item-tooltip {
+        left: 100%;
+        bottom: auto;
+        top: 0;
+        transform: none;
+        margin: 0 0 0 8px;
+        z-index: 400;
+      }
+      .launchpad-slot:hover .item-tooltip { opacity: 1; }
 
       .launchpad-slot img {
         width: 32px;
@@ -1327,7 +1185,7 @@ export class LaunchPadUI {
   }
 
   private afterEquipmentChange(pad: PlacedLaunchPad): void {
-    this.onEquipmentChangedCallback?.(pad);
+    this.onHoldChangedCallback?.(pad);
     this.updateUI();
     this.notifyChanges();
   }
@@ -1445,77 +1303,49 @@ export class LaunchPadUI {
       }
     }
 
-    // Update rocket slots based on rocketParts array
-    // Parts can span multiple slots based on their heightUnits
+    // Rocket slots: one per height unit, a part's icon in its bottom slot.
+    // Every part can be dragged (to move it, or off the stack to take it
+    // out); a part dropped on a part goes in under it, above the stack on top
     const rocketParts = this.currentLaunchPad.rocketParts;
-
-    // Build a map of which slots are occupied by which parts
-    // Also track which slot is the "start" slot for each part (where we show the image)
-    const slotToPartMap: Map<number, typeof rocketParts[0]> = new Map();
-    const partStartSlots: Set<number> = new Set();
-    let currentSlot = 0;
-    for (const part of rocketParts) {
-      const partData = ITEM_DATA[part.itemType].rocketPart;
-      const heightUnits = partData?.heightUnits ?? 1;
-      // Mark the start slot (where the image should appear)
-      partStartSlots.add(currentSlot);
-      // Mark all slots this part occupies
-      for (let h = 0; h < heightUnits; h++) {
-        slotToPartMap.set(currentSlot + h, part);
-      }
-      currentSlot += heightUnits;
-    }
-
-    // Next available slot is after all occupied slots
-    const nextAvailableSlot = this.getNextAvailableHeightSlot();
+    const types = rocketParts.map(p => p.itemType);
+    const starts = partStartSlots(types);
+    const top = stackUnits(types);
+    const stages = stagesOf(types, t => t).length;
 
     for (let i = 0; i < this.MAX_HEIGHT; i++) {
       const slot = this.rocketSlots[i];
       if (!slot) continue;
-
       const img = slot.querySelector('img') as HTMLImageElement;
-
-      // Check if there's a rocket part occupying this slot
-      const partAtSlot = slotToPartMap.get(i);
-
-      // Check if this slot is part of the top part (can be dragged out)
-      const topPart = rocketParts.length > 0 ? rocketParts[rocketParts.length - 1] : null;
-      let isTopPartSlot = false;
-      if (topPart) {
-        const topPartData = ITEM_DATA[topPart.itemType].rocketPart;
-        const topPartHeightUnits = topPartData?.heightUnits ?? 1;
-        const topPartStartSlot = nextAvailableSlot - topPartHeightUnits;
-        isTopPartSlot = i >= topPartStartSlot && i < nextAvailableSlot;
-      }
-
-      if (partAtSlot) {
-        // Filled rocket slot with a part
+      const index = partAtSlot(types, i);
+      slot.classList.toggle('continuation', index >= 0 && starts[index] !== i);
+      if (index >= 0) {
+        const t = types[index];
         slot.classList.add('filled');
         slot.classList.remove('disabled');
-        // Make the slot draggable only if it's part of the top part
-        slot.draggable = isTopPartSlot;
+        slot.draggable = true;
         if (img) {
-          // Only show image in the start slot of the part, not in continuation slots
-          if (partStartSlots.has(i)) {
-            const partItemData = ITEM_DATA[partAtSlot.itemType];
-            img.src = getAssetPath(partItemData.texture);
+          // The icon in the part's bottom slot; the slots above it show it continues
+          if (starts[index] === i) {
+            img.src = getAssetPath(ITEM_DATA[t].texture);
             img.style.display = 'block';
           } else {
-            // Continuation slot - show as filled but no image
             img.style.display = 'none';
           }
         }
-      } else if (i < segmentCount && i === nextAvailableSlot) {
-        // Available rocket slot (within segment height, next slot to fill)
+        const stageLine = stages > 1 ? [`Stage ${stageOfPart(types, index)} of ${stages}`] : [];
+        setSlotTooltip(slot, [ITEM_DATA[t].name, ...partTooltipLines(t), ...stageLine, 'Drag to move it, or off the stack to take it out'].join('\n'));
+      } else if (i < segmentCount && i === top) {
+        // The next slot up: a part dropped here goes on top
         slot.classList.remove('filled', 'disabled');
         slot.draggable = false;
         if (img) img.style.display = 'none';
+        setSlotTooltip(slot, 'Drop a rocket part here to put it on top,\nor on a part to put it in under that one');
       } else {
-        // Unavailable (above segment height or not the next slot)
         slot.classList.remove('filled');
         slot.classList.add('disabled');
         slot.draggable = false;
         if (img) img.style.display = 'none';
+        setSlotTooltip(slot, i >= segmentCount ? 'Add a tower segment to build this high' : null);
       }
     }
 
@@ -1539,6 +1369,7 @@ export class LaunchPadUI {
         if (label) {
           label.textContent = `Parts: ${rocketParts.length}`;
         }
+        setSlotTooltip(this.engineSlot, `Top: ${partItemData.name}\nClick to take it off; drop a part here to put it on top`);
       } else if (segmentCount > 0) {
         // Can place parts (has at least 1 segment)
         this.engineSlot.classList.remove('filled', 'disabled');

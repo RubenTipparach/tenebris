@@ -183,6 +183,19 @@ jobs:
       - name: Rocket reach - tier 1 to the Moon, each tier its next hop
         run: npx --yes tsx scripts/rocket-reach.test.ts
 
+      # The stack editor (launch pad and refits): remove / insert / move a
+      # part anywhere, the pad restacks its meshes and keeps cargo + fuel,
+      # every part model fills exactly its slots (stacked hulls meet flush -
+      # no overlap to z-fight), part tooltips and the staging key label
+      - name: Rocket stack editor - insert / remove / move, flush stacking, tooltips
+        run: npx --yes tsx scripts/rocket-stack-edit.test.ts
+
+      # Water flow and shape (openspec water-flow): the liquid rule on hex
+      # fixtures, the corner-height mesher, and a waterfall meeting the
+      # water under / beside it with no slit (sideFloor)
+      - name: Water flow - spread, drain, corner heights, waterfall seams
+        run: npx --yes tsx scripts/water-flow.test.ts
+
   # The experimental `webgpu-build` job (Stage 0 of the C tree's
   # compute-shader track, tenebris-c/plan-webgpu-compute.md) is REMOVED.
   # It built tenebris-c with -DTENEBRIS_WEBGPU=ON and had been failing at

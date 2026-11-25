@@ -714,7 +714,10 @@ class PlanetGame {
       this.setupAir();
 
       // Setup auto-save for player position (every 5 seconds)
-      gameStorage.setPlayerSaveCallback(() => this.player.exportForSave());
+      // In a rocket the walker's pose is the cockpit's (it moves with the
+      // ship): keep the last pose on foot, so a reload or a crash never
+      // puts the player back where a flight was - out in space
+      gameStorage.setPlayerSaveCallback(() => this.rocketFlightManager?.isInFlight() ? null : this.player.exportForSave());
       gameStorage.startAutoSave(5);
 
       this.isReady = true;

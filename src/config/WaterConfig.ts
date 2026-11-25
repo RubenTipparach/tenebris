@@ -22,8 +22,6 @@ export const WaterConfig = {
   CORNER_DRY_LEVEL: 0.02,
   /** A corner with no flowing, source or air cell (all solid round it) sits here (fraction of a block). */
   CORNER_ENCLOSED_LEVEL: 0.5,
-  /** A newly wet cell starts as a sheet this thick (fraction of its height) on the side its water came from. */
-  ARRIVE_SHEET: 0.25,
 
   // ---- the flow texture (PBD water-look.js; LiquidMesh liquidFlow + water.vert / water.frag) ----
   // A cap's flow vector: none below FLOW_MIN_SLOPE (m/m); else FLOW_MIN_SPEED + FLOW_SLOPE_K x slope, at most FLOW_MAX_SPEED.

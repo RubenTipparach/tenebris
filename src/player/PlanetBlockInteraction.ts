@@ -293,6 +293,29 @@ const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['submarine', () => gameStorage.getSubmarines()],
 ];
 
+/** A pad's top radius at air depth `level`: the ground top (block level - 1), lifted PAD_TOP_LIFT */
+function padTopRadius(planet: Planet, level: number): number {
+  const bh = planet.getBlockHeight();
+  return planet.depthToRadius(level) - bh + bh * ROCKET_CONFIG.PAD_TOP_LIFT;
+}
+
+/**
+ * A saved pad top, settled into the ground: older pads sat on it as a slab
+ * (top = ground top + PAD_THICKNESS); move those down to the ground top.
+ */
+export function settledPadTop(planet: Planet, savedTop: number): number {
+  const bh = planet.getBlockHeight();
+  let best = savedTop, bestErr = Infinity;
+  for (let d = 1; d < planet.getMaxDepth(); d++) {
+    const ground = planet.depthToRadius(d) - bh;
+    for (const lift of [ROCKET_CONFIG.PAD_TOP_LIFT, ROCKET_CONFIG.PAD_THICKNESS]) {
+      const err = Math.abs(ground + bh * lift - savedTop);
+      if (err < bestErr) { bestErr = err; best = ground + bh * ROCKET_CONFIG.PAD_TOP_LIFT; }
+    }
+  }
+  return best;
+}
+
 export class PlanetBlockInteraction {
   private planets: Planet[];
   private player: PlanetPlayer;
@@ -642,44 +665,19 @@ export class PlanetBlockInteraction {
       }
       return result;
     });
-    this.launchPadUI.setOnAddRocketEngineCallback((pad) => {
-      const result = this.launchPadManager.addRocketEngine(pad);
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    this.launchPadUI.setOnRemoveRocketEngineCallback((pad) => {
-      const result = this.launchPadManager.removeRocketEngine(pad);
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    // New generic rocket part callbacks
-    this.launchPadUI.setOnAddRocketPartCallback(async (pad, itemType) => {
+    // The stack editor: every add, remove and move of a part (anywhere in
+    // the stack) restacks the pad's rocket through one call; the UI then
+    // moves the part to / from the inventory and the hold-changed callback
+    // below saves and syncs the pad record and the inventory
+    this.launchPadUI.setOnSetRocketStackCallback(async (pad, types) => {
       if (!pad.isComplete) {
-        showToast(`A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`, { duration: 3500 });
-        return false;
+        return `A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`;
       }
       const hadRocket = hasFlyableRocket(pad);
-      const result = await this.launchPadManager.addRocketPart(pad, itemType);
-      if (result && !hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    this.launchPadUI.setOnRemoveRocketPartCallback((pad) => {
-      if (this.launchPadManager.topPartHoldsCargo(pad)) {
-        showToast('Empty the cargo / equipment first - that part holds it', { duration: 3000 });
-        return null;
-      }
-      const removedPart = this.launchPadManager.removeRocketPart(pad);
-      if (removedPart) {
-        this.saveLaunchPadStates();
-      }
-      return removedPart;
+      const why = await this.launchPadManager.setRocketStack(pad, types);
+      if (why) return why;
+      if (!hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
+      return null;
     });
     // The pad's rocket: refuel from the cargo hold + inventory (the same fuel
     // source as on board), open its cargo hold, its TWR on this body
@@ -710,7 +708,7 @@ export class PlanetBlockInteraction {
     });
     this.launchPadUI.setOnTakeStashCallback((pad) => this.takeStash(pad));
     // Equipment fitted or taken out: the pad and the inventory save now
-    this.launchPadUI.setOnEquipmentChangedCallback(() => {
+    this.launchPadUI.setOnHoldChangedCallback(() => {
       this.saveLaunchPadStates();
       this.saveInventory();
     });
@@ -4002,7 +4000,7 @@ export class PlanetBlockInteraction {
     }
 
     const blockHeight = planet.getBlockHeight();
-    const padHeight = blockHeight * 0.25;  // the pad is 1/4 of a block tall
+    const padHeight = blockHeight * ROCKET_CONFIG.PAD_THICKNESS;
     const pad = touching[0];
     // The pad's level: the air depth its blocks sit in
     let level = depth;
@@ -4010,7 +4008,8 @@ export class PlanetBlockInteraction {
       level = this.padLevel(planet, pad);
       if (Math.abs(level - depth) > ROCKET_CONFIG.PAD_MAX_STEP) return 'Pad blocks have to be level with the rest of the pad';
     }
-    const outerRadius = planet.depthToRadius(level) - blockHeight + padHeight;
+    // set into the ground: its top is the ground's top (level - 1), not a slab on it
+    const outerRadius = padTopRadius(planet, level);
     const hex = this.padHex(planet, tileIndex, level, outerRadius - padHeight, true);
     if (!hex) return 'Nothing to build on';
     if (pad) {
@@ -4048,14 +4047,15 @@ export class PlanetBlockInteraction {
         }
       }
     }
-    let groundRadius = planet.depthToRadius(0);
-    for (let d = planet.getMaxDepth() - 1; d >= 0; d--) {
-      if (planet.getBlock(n, d) !== HexBlockType.AIR) {
-        groundRadius = planet.depthToRadius(d);
-        break;
+    // Lower ground under the hex is filled up to the pad's level, so the pad
+    // never hovers and there is ground to walk on under it (saved like any edit)
+    if (clearAbove && airDepth > 0) {
+      for (let d = airDepth - 1; d >= 0 && planet.getBlock(n, d) === HexBlockType.AIR; d--) {
+        planet.setBlock(n, d, HexBlockType.STONE);
+        gameStorage.saveTileChange(planetId, n, d, HexBlockType.STONE);
       }
     }
-    return { index: n, neighbors: [...tile.neighbors], center: tile.center, vertices: tile.vertices, innerRadius: Math.min(groundRadius, padInner) };
+    return { index: n, neighbors: [...tile.neighbors], center: tile.center, vertices: tile.vertices, innerRadius: padInner };
   }
 
   private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
@@ -4079,8 +4079,9 @@ export class PlanetBlockInteraction {
   // The air depth a pad's blocks sit in (its top is a quarter block above
   // the ground block below that)
   private padLevel(planet: Planet, pad: PlacedLaunchPad): number {
+    // the air depth whose ground top the pad's top is set at (padTopRadius)
     const blockHeight = planet.getBlockHeight();
-    const groundTop = pad.outerRadius - blockHeight * 0.25 + blockHeight;
+    const groundTop = pad.outerRadius - blockHeight * ROCKET_CONFIG.PAD_TOP_LIFT + blockHeight;
     let best = 0;
     for (let d = 1; d < planet.getMaxDepth(); d++) {
       if (Math.abs(planet.depthToRadius(d) - groundTop) < Math.abs(planet.depthToRadius(best) - groundTop)) best = d;
@@ -5343,8 +5344,10 @@ export class PlanetBlockInteraction {
         const savedPosition = new THREE.Vector3(savedPad.position.x, savedPad.position.y, savedPad.position.z);
         // Every pad block sits at the saved top (a pad is level)
         const blockHeight = planet.getBlockHeight();
-        const outerRadius = savedPosition.distanceTo(planet.configuredCenter);
-        const innerRadius = outerRadius - blockHeight * 0.25;
+        // pads saved as a slab on the ground (their top a quarter block up)
+        // are set into it like new ones
+        const outerRadius = settledPadTop(planet, savedPosition.distanceTo(planet.configuredCenter));
+        const innerRadius = outerRadius - blockHeight * ROCKET_CONFIG.PAD_THICKNESS;
         // Pads from older saves were placed whole: the middle and its ring
         const tileIndices = savedPad.tiles ?? [savedPad.centerTileIndex, ...savedPad.surroundingTileIndices];
         // the ground was levelled when the pad was placed; rebuild the hexes
