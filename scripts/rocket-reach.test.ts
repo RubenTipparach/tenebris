@@ -42,6 +42,7 @@ check('the command module rides the top stage', stackProblems([I.ROCKET_ENGINE, 
 
 const earth = body('earth'), moon = body('moon');
 const H = PILOT_FACTOR;  // a hand-flown trip (measured in the game; scripts/rocket-reach.ts)
+const WINDOW_MOON = 32;  // moments of the Earth - Moon window sampled
 const lifts = tier1.filter(st => liftOffTWR(st, 1) > 1);
 const ranged = lifts.map(st => ({ st, r: rangeM(st, earth, moon, H) })).sort((a, b) => b.r - a.r);
 const best = ranged[0].st;
@@ -50,13 +51,22 @@ const fuelOf = (st: ItemType[]) => computeRocketStats(st).fuelCapacity;
 // What a hand-flown trip uses of the tank: the careful pilot's fuel times the pilot factor
 const handShare = (st: ItemType[], r: { fuelUsed: number }) => (H * r.fuelUsed) / fuelOf(st);
 
-// ---- tier 1 reaches the Moon, with a margin, and needs a refuel there to get home
-// The most of its tank a hand-flown Earth -> Moon may use (the rest is the margin)
-const MAX_MOON_SHARE = 0.85;
+// ---- tier 1 reaches the Moon with about 15% left, and needs a refuel there to get home
+// What a hand-flown Earth -> Moon should leave in the tank, at the median
+// moment of the Earth - Moon window (the Moon circles Earth at a fixed
+// distance today, so every moment gives the same; the median keeps the
+// check honest if the orbit ever changes)
+const MOON_LEFT_MIN = 0.10, MOON_LEFT_MAX = 0.20;
+// The least thrust-to-weight the basic rocket lifts off Earth with
+const MIN_EARTH_TWR = 1.5;
+const moonTrips = windowMoments('earth', 'moon', WINDOW_MOON).map(t => fly(basic, body('earth', t), body('moon', t)));
+const leftShares = moonTrips.map(r => (r.landed ? 1 - handShare(basic, r) : -1)).sort((a, b) => a - b);
+const medianLeft = leftShares[Math.floor(leftShares.length / 2)];
 const there = fly(basic, earth, moon);
 check('the basic Earth rocket lands on the Moon hand-flown', fly(basic, earth, moon, H).landed);
-check(`  on at most ${pct(MAX_MOON_SHARE)} of its tank`, handShare(basic, there) <= MAX_MOON_SHARE, `~${pct(handShare(basic, there))}`);
-check('  and lifts off Earth (TWR > 1)', liftOffTWR(basic, 1) > 1, liftOffTWR(basic, 1).toFixed(2));
+check(`  with ${pct(MOON_LEFT_MIN)}-${pct(MOON_LEFT_MAX)} of its tank left at the median of the window`, medianLeft >= MOON_LEFT_MIN && medianLeft <= MOON_LEFT_MAX,
+  `~${pct(medianLeft)} left (worst ${pct(leftShares[0])}, best ${pct(leftShares[leftShares.length - 1])})`);
+check(`  and lifts off Earth (TWR >= ${MIN_EARTH_TWR})`, liftOffTWR(basic, 1) >= MIN_EARTH_TWR, liftOffTWR(basic, 1).toFixed(2));
 const home = fly(basic, moon, earth);
 check('refuelled on the Moon it flies home hand-flown', fly(basic, moon, earth, H).landed, `~${pct(handShare(basic, home))}`);
 check('but not there and back on one tank', handShare(basic, there) + handShare(basic, home) > 1);
@@ -127,6 +137,16 @@ const isp = (t: ItemType) => partStats(t)!.specificImpulse!;
 const LADDER = [I.ROCKET_ENGINE, I.VACUUM_ENGINE, I.NUCLEAR_THERMAL_ENGINE, I.GAS_CORE_ENGINE, I.FISSION_FRAGMENT_DRIVE, I.FUSION_DRIVE, I.FUSION_TORCH];
 check('Isp rises up the ladder', LADDER.every((t, i) => i === 0 || isp(t) > isp(LADDER[i - 1])), LADDER.map(isp).join(' < '));
 check('the vacuum engine is a space engine (TWR < 1 on Earth)', liftOffTWR([I.VACUUM_ENGINE, L, CM], 1) < 1);
+// Tier 2 is Moon-built and Moon-launched: no stack lifted by a vacuum engine
+// leaves Earth (full tanks), and the basic tier-2 rocket lifts off the Moon comfortably.
+// An Earth Rocket Engine booster under a vacuum stage is the intended way off Earth (above).
+const MIN_MOON_TWR = 1.3;
+const vacuumLifted = [I.MEDIUM_FUEL_TANK, I.FUEL_TANK, L].flatMap(t => stacksOf(I.VACUUM_ENGINE, t, 3));
+const vacuumBest = vacuumLifted.map(st => ({ st, twr: liftOffTWR(st, 1) })).sort((a, b) => b.twr - a.twr)[0];
+check('no valid stack lifted by a vacuum engine has Earth TWR >= 1', vacuumLifted.length > 0 && vacuumBest.twr < 1,
+  `best ${vacuumBest.twr.toFixed(2)}, ${stackLabel(vacuumBest.st)}, ${vacuumLifted.length} stacks`);
+check(`Vacuum Engine / Large Tank / Command Module lifts off the Moon at TWR >= ${MIN_MOON_TWR}`, liftOffTWR([I.VACUUM_ENGINE, L, CM], body('moon').gravity) >= MIN_MOON_TWR,
+  liftOffTWR([I.VACUUM_ENGINE, L, CM], body('moon').gravity).toFixed(2));
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log('\nall passed');

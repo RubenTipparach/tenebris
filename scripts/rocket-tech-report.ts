@@ -169,10 +169,12 @@ if (!only || process.env.REACH) {
   const basic = [ItemType.ROCKET_ENGINE, ItemType.MEDIUM_FUEL_TANK, ItemType.COMMAND_MODULE];
   const best = tier1.map(st => ({ st, r: rangeM(st, earth, moon, H) })).sort((x, y) => y.r - x.r)[0].st;
   console.log(`\nTier 1 reach: ${tier1.length} Earth-built stacks lift off Earth (staged ones are refused: the Rocket Engine only fires as the bottom stage)`);
-  console.log(`  Earth -> Moon is ${gapM(earth, moon).toFixed(0)} m ground to ground; hand-flown = ${H}x the careful pilot's fuel`);
+  const centre = (t: number) => { const a = body('earth', t), b = body('moon', t); return Math.hypot(b.center.x - a.center.x, b.center.y - a.center.y, b.center.z - a.center.z); };
+  const centres = windowMoments('earth', 'moon', SAMPLES).map(centre);
+  console.log(`  Earth -> Moon is ${gapM(earth, moon).toFixed(0)} m ground to ground (${Math.min(...centres).toFixed(0)}-${Math.max(...centres).toFixed(0)} m centre to centre over the Moon's orbit); hand-flown = ${H}x the careful pilot's fuel`);
   for (const [name, st] of [['basic', basic], ['best', best]] as const) {
     const cap = computeRocketStats(st).fuelCapacity;
-    const share = (r: { landed: boolean; fuelUsed: number }) => r.landed ? `${(100 * r.fuelUsed / cap).toFixed(0)}% careful, ~${(100 * H * r.fuelUsed / cap).toFixed(0)}% hand-flown` : 'FAILS';
+    const share = (r: { landed: boolean; fuelUsed: number }) => r.landed ? `${(100 * r.fuelUsed / cap).toFixed(0)}% careful, ~${(100 * H * r.fuelUsed / cap).toFixed(0)}% hand-flown (~${Math.max(0, 100 - 100 * H * r.fuelUsed / cap).toFixed(0)}% left)` : 'FAILS';
     console.log(`  ${name}: ${stackLabel(st)} - delta-v ${stagedStats(st).deltaV.toFixed(0)} m/s, TWR Earth ${liftOffTWR(st, 1).toFixed(2)}, ` +
       `range ${rangeM(st, earth, moon).toFixed(0)} m careful / ${rangeM(st, earth, moon, H).toFixed(0)} m hand-flown, ` +
       `Earth -> Moon ${share(fly(st, earth, moon))}, Moon -> Earth (refuelled) ${share(fly(st, moon, earth))}`);

@@ -92,14 +92,30 @@ export function liftOffTWR(stack: readonly ItemType[], gravity: number): number 
 }
 
 /**
- * What a real pilot spends against simulateTransfer's careful one, measured
- * in the game: a damping-aware autopilot on the live server flew the old
- * tier-1 rocket (Rocket Engine + Medium Tank + Command Module, Isp 90)
- * Earth pad -> Moon on 63 of its 100 fuel units, where the careful pilot
- * needs 24 (Moon -> Earth: 44 against 22). A hand-flown trip is modelled as
- * the careful pilot with 1 / PILOT_FACTOR of the fuel.
+ * What a real pilot spends against simulateTransfer's careful one. A
+ * hand-flown trip is modelled as the careful pilot with 1 / PILOT_FACTOR of
+ * the fuel. Derived from the damping-aware bot autopilot on the live server
+ * (scripts/mp-bots/bot-brain.js flyTo, which now logs each flight):
+ *   - the old tier-1 rocket (Medium Tank 50 kg dry, no frame mass, Isp 90,
+ *     730 m/s) flew Earth -> Moon on 63, 56, 62 and 59 of its 100 units,
+ *     where the careful pilot needs 24.3: 2.59 / 2.30 / 2.55 / 2.43x, mean 2.47.
+ *   - one later flight landed with 58% left (42 used). The bot flies the
+ *     Vacuum Engine + Medium Tank stack whenever it lifts off, so that was
+ *     most likely not the basic rocket: for that stack the careful pilot
+ *     needs 23.7 units (1.77x). For the basic rocket of that tuning (32.7
+ *     careful) it would be 1.28x, below what a 2D replay of the bot's own
+ *     guidance (instant turning, so a lower bound) spends at any Moon
+ *     elevation - so it is not counted as a basic-rocket flight.
+ *   - the Earth - Moon gap does not change: the Moon circles Earth at a
+ *     fixed 400 m centre to centre (src/world/Orbits.ts). What varies from
+ *     flight to flight is where the Moon stands in the pad's sky (the bot
+ *     launches from 12 deg above the horizon, WINDOW_MIN_DOT, up to
+ *     overhead): the replay spends ~20% more at 12 deg than overhead, and
+ *     its ratio to the careful pilot falls a little as the rocket gets
+ *     heavier for its thrust (0.94x from the old basic rocket to this one).
+ * So 2.47 x 0.94 ~ 2.3 for the basic rocket at a typical launch.
  */
-export const PILOT_FACTOR = 2.6;
+export const PILOT_FACTOR = 2.3;
 
 /** The fuel a stack flies with: full tanks, shared by the pilot factor (1 = the careful pilot) */
 function fuelFor(stack: readonly ItemType[], pilot: number): number {
