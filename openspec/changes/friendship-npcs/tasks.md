@@ -17,8 +17,8 @@
 
 ## 3. Client: state, rendering and motion
 
-- [ ] 3.1 Register `village`, `trader` and `npcClock` as record kinds in `GameStorage` and route them through the existing restore and remote-apply paths. Single player: create, catch up and tick the player's planet with the same module. Verify with a test that a single-player save reloaded after a day applies the same capped catch-up the server would.
-- [ ] 3.2 Add NPC models: a procedural mesh per species, drawn instanced, and baked idle / walk / talk clips (`public/animations/npc_<species>.anim.json`) from a generator under `scripts/`. Verify with a headless screenshot of each world's species standing in a row, and the roster disjointness test.
+- [x] 3.1 Register `village`, `trader` and `npcClock` as record kinds in `GameStorage` and route them through the existing restore and remote-apply paths. Single player: create, catch up and tick the player's planet with the same module. Verify with a test that a single-player save reloaded after a day applies the same capped catch-up the server would.
+- [x] 3.2 Add NPC models: a procedural mesh per species, drawn instanced, and baked idle / walk / talk clips (`public/animations/npc_<species>.anim.json`) from a generator under `scripts/`. Verify with a headless screenshot of each world's species standing in a row, and the roster disjointness test.
 - [ ] 3.3 Place homes with `placePopulation` and the planet's own ground test (spawn as the anchor), settling any `grounded: false` spot. Simulate motion on the planet's host (wander near home, ground and water checks) with live snapshots on channel `npc` and host handoff, as fauna does. Verify with the two-client harness (`scripts/mp-e2e/`): both clients see the same NPC positions, and the second takes over when the host leaves with no NPC popping.
 - [ ] 3.4 Show village structures per stage from the village record, rebuilt on load. Verify with a headless shot of a village before and after a build request completes, and after a reload.
 

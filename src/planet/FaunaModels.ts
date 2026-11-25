@@ -43,7 +43,8 @@ interface AddOpts {
   glow?: number;
 }
 
-class ModelBuilder {
+/** Builds one merged, part-tagged model (shared with the NPCs: src/npc/NpcModels.ts). */
+export class ModelBuilder {
   readonly parts: FaunaPart[] = [];
   private pos: number[] = [];
   private col: number[] = [];

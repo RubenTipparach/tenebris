@@ -9,6 +9,7 @@ export * from './population';
 export * from './village';
 export * from './traders';
 export * from './planet';
+export * from './session';
 export { catchUpSeconds, worldTimeSubsystems } from '../worldTime';
 export type { WorldTimeSubsystem } from '../worldTime';
 export { NPC_CONFIG, INHABITED_WORLDS, inhabitedWorld, isInhabited } from '../../config/NpcConfig';

@@ -1310,6 +1310,26 @@ export class GameStorage {
     }
   }
 
+  // This world's NPC records (openspec friendship-npcs, task 3.1): villages,
+  // traders and planet clocks, written the moment they change (single player
+  // runs them here; online it caches what the server sent)
+  public getNpcRecords(): unknown {
+    try {
+      const raw = localStorage.getItem(`tenebris_${worldPrefix}npc`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  public saveNpcRecords(records: unknown): void {
+    try {
+      localStorage.setItem(`tenebris_${worldPrefix}npc`, JSON.stringify(records));
+    } catch {
+      // storage blocked: kept for this session only
+    }
+  }
+
   public saveWaypoints(list: unknown): void {
     try {
       localStorage.setItem(`tenebris_${worldPrefix}waypoints`, JSON.stringify(list));

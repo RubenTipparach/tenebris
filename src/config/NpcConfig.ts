@@ -37,7 +37,12 @@ export interface NpcLook {
   skin: string;
   trim: string;           // markings / clothing
   eyes: string;
+  // The species' signature - what makes its silhouette its own (no two
+  // worlds share one; src/npc/NpcModels.ts draws it)
+  feature: NpcFeature;
 }
+
+export type NpcFeature = 'visor' | 'branches' | 'horns' | 'hood' | 'crystals' | 'fur' | 'cap' | 'wings' | 'stilts' | 'fins' | 'pack';
 
 export interface NpcSpecies {
   id: string;             // unique across every world (and the traders)
@@ -92,7 +97,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'metropolitan', name: 'Metropolitan',
       syllables: { first: ['Kor', 'Dex', 'Vas', 'Tal', 'Sen', 'Ira', 'Bel'], middle: ['o', 'an', 'i'], last: ['ix', 'el', 'en', 'ock', 'ar'] },
-      look: { heightM: 1.7, widthM: 0.45, headScale: 0.9, arms: 1, skin: '#92a3b2', trim: '#3e3551', eyes: '#74effe' },
+      look: { heightM: 1.7, widthM: 0.45, headScale: 0.9, arms: 1, skin: '#92a3b2', trim: '#3e3551', eyes: '#74effe', feature: 'visor' },
     },
     art: { id: 'art_ferrum', name: 'Circuit Mosaic' },
     goods: [ItemType.SALVAGE],
@@ -104,7 +109,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'barkling', name: 'Barkling',
       syllables: { first: ['Oru', 'Thal', 'Wen', 'Bri', 'Mos', 'Ash'], middle: ['a', 'wy', 'el'], last: ['n', 'th', 'ra', 'wick'] },
-      look: { heightM: 2.1, widthM: 0.5, headScale: 0.8, arms: 1, skin: '#725244', trim: '#297537', eyes: '#fb902f' },
+      look: { heightM: 2.1, widthM: 0.5, headScale: 0.8, arms: 1, skin: '#725244', trim: '#297537', eyes: '#fb902f', feature: 'branches' },
     },
     art: { id: 'art_sequoia', name: 'Amber Totem' },
     goods: [ItemType.RESIN, ItemType.FISH_SPRAT],
@@ -116,7 +121,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'emberkin', name: 'Emberkin',
       syllables: { first: ['Kra', 'Vul', 'Pyr', 'Sco', 'Ign'], middle: ['o', 'ar'], last: ['k', 'ax', 'is', 'um'] },
-      look: { heightM: 1.3, widthM: 0.6, headScale: 1.1, arms: 1, skin: '#8d4526', trim: '#fa3a64', eyes: '#faaf5c' },
+      look: { heightM: 1.3, widthM: 0.6, headScale: 1.1, arms: 1, skin: '#8d4526', trim: '#fa3a64', eyes: '#faaf5c', feature: 'horns' },
     },
     art: { id: 'art_cinder', name: 'Obsidian Mask' },
     goods: [ItemType.ORE_URANIUM],
@@ -128,7 +133,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'dunewalker', name: 'Dunewalker',
       syllables: { first: ['Sa', 'Mir', 'Ves', 'Hal', 'Zu'], middle: ['ri', 'a', 'ul'], last: ['n', 'sh', 'ra', 'el'] },
-      look: { heightM: 2.4, widthM: 0.35, headScale: 0.7, arms: 1, skin: '#ab8465', trim: '#5d778d', eyes: '#1f3b52' },
+      look: { heightM: 2.4, widthM: 0.35, headScale: 0.7, arms: 1, skin: '#ab8465', trim: '#5d778d', eyes: '#1f3b52', feature: 'hood' },
     },
     art: { id: 'art_vesper', name: 'Glass Lantern' },
     goods: [ItemType.SILICA],
@@ -140,7 +145,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'facetling', name: 'Facetling',
       syllables: { first: ['Qui', 'Lux', 'Cry', 'Pri', 'Sel'], middle: ['a', 'o'], last: ['ss', 'ne', 'ra', 'zz'] },
-      look: { heightM: 1.1, widthM: 0.5, headScale: 1.3, arms: 2, skin: '#69608b', trim: '#1096c3', eyes: '#fffefe' },
+      look: { heightM: 1.1, widthM: 0.5, headScale: 1.3, arms: 2, skin: '#69608b', trim: '#1096c3', eyes: '#fffefe', feature: 'crystals' },
     },
     art: { id: 'art_halcyon', name: 'Prism Idol' },
     goods: [ItemType.CRYSTAL],
@@ -152,7 +157,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'frostfolk', name: 'Frostfolk',
       syllables: { first: ['Ny', 'Bor', 'Skel', 'Ril', 'Hje'], middle: ['a', 'i', 'ul'], last: ['d', 'm', 'ka', 'vi'] },
-      look: { heightM: 1.6, widthM: 0.7, headScale: 1.0, arms: 1, skin: '#bfcad7', trim: '#1096c3', eyes: '#1f3b52' },
+      look: { heightM: 1.6, widthM: 0.7, headScale: 1.0, arms: 1, skin: '#bfcad7', trim: '#1096c3', eyes: '#1f3b52', feature: 'fur' },
     },
     art: { id: 'art_tessaly', name: 'Frost Chime' },
     goods: [ItemType.CRYO_COOLANT],
@@ -164,7 +169,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'sporeling', name: 'Sporeling',
       syllables: { first: ['Mu', 'Pho', 'Gla', 'Umb', 'Spo'], middle: ['o', 'ri', 'e'], last: ['l', 'ra', 'x', 'mo'] },
-      look: { heightM: 1.0, widthM: 0.55, headScale: 1.6, arms: 1, skin: '#7d4636', trim: '#559642', eyes: '#eab798' },
+      look: { heightM: 1.0, widthM: 0.55, headScale: 1.6, arms: 1, skin: '#7d4636', trim: '#559642', eyes: '#eab798', feature: 'cap' },
     },
     art: { id: 'art_umbra', name: 'Glowcap Lamp' },
     goods: [ItemType.RADIOTROPHIC_FUNGUS],
@@ -176,7 +181,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'leafwing', name: 'Leafwing',
       syllables: { first: ['Fen', 'Lio', 'Ver', 'Pal', 'Cy'], middle: ['a', 'iri', 'o'], last: ['n', 'th', 'ma', 'lis'] },
-      look: { heightM: 1.4, widthM: 0.4, headScale: 0.9, arms: 2, skin: '#297537', trim: '#faaf5c', eyes: '#eab798' },
+      look: { heightM: 1.4, widthM: 0.4, headScale: 0.9, arms: 2, skin: '#297537', trim: '#faaf5c', eyes: '#eab798', feature: 'wings' },
     },
     art: { id: 'art_verdance', name: 'Woven Fan' },
     goods: [ItemType.FISH_TETRA, ItemType.FISH_CATFISH],
@@ -188,7 +193,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'bogstrider', name: 'Bogstrider',
       syllables: { first: ['Gub', 'Mar', 'Pea', 'Tod', 'Wil'], middle: ['o', 'u', 'ab'], last: ['g', 'sh', 'bo', 'rel'] },
-      look: { heightM: 1.8, widthM: 0.45, headScale: 0.8, arms: 1, skin: '#725244', trim: '#69608b', eyes: '#559642' },
+      look: { heightM: 1.8, widthM: 0.45, headScale: 0.8, arms: 1, skin: '#725244', trim: '#69608b', eyes: '#559642', feature: 'stilts' },
     },
     art: { id: 'art_mirewood', name: 'Peat Carving' },
     goods: [ItemType.FISH_PEATEEL, ItemType.FISH_GOURAMI],
@@ -200,7 +205,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
     species: {
       id: 'tidefolk', name: 'Tidefolk',
       syllables: { first: ['Mar', 'Cor', 'Nai', 'Thal', 'Sha'], middle: ['i', 'e', 'ul'], last: ['s', 'na', 'ul', 'ro'] },
-      look: { heightM: 1.5, widthM: 0.5, headScale: 1.0, arms: 1, skin: '#1096c3', trim: '#fffefe', eyes: '#1f3b52' },
+      look: { heightM: 1.5, widthM: 0.5, headScale: 1.0, arms: 1, skin: '#1096c3', trim: '#fffefe', eyes: '#1f3b52', feature: 'fins' },
     },
     art: { id: 'art_thalassa', name: 'Pearl Crown' },
     goods: [ItemType.FISH_MULLET, ItemType.FISH_KELPEEL],
@@ -304,7 +309,7 @@ export const NPC_CONFIG = {
     SPECIES: {
       id: 'wayfarer', name: 'Wayfarer',
       syllables: { first: [], middle: [], last: [] },
-      look: { heightM: 1.9, widthM: 0.5, headScale: 0.9, arms: 1, skin: '#a8633e', trim: '#fb902f', eyes: '#fffefe' },
+      look: { heightM: 1.9, widthM: 0.5, headScale: 0.9, arms: 1, skin: '#a8633e', trim: '#fb902f', eyes: '#fffefe', feature: 'pack' },
     } as NpcSpecies,
     STAY_S: 1800,              // seconds of the host world's time before moving on
     RESTOCK_S: 600,            // offers refill this often during a stay
@@ -319,6 +324,9 @@ export const NPC_CONFIG = {
 
   // ---- talking (task 4.1)
   TALK_RANGE_M: 3,
+
+  // ---- drawing (task 3.2): instances per species' mesh (a world's whole population fits)
+  MAX_DRAWN_PER_SPECIES: 64,
 } as const;
 
 /** The world entry for a body, or undefined when nobody lives there. */
@@ -338,12 +346,16 @@ export function assertNpcRostersDisjoint(worlds: readonly InhabitedWorld[] = INH
   const species = new Map<string, string>([[NPC_CONFIG.TRADERS.SPECIES.id, 'the traders']]);
   const art = new Map<string, string>();
   const goods = new Map<ItemType, string>();
+  const features = new Map<string, string>([[NPC_CONFIG.TRADERS.SPECIES.look.feature, 'the traders']]);
   for (const w of worlds) {
     if (bodies.has(w.body)) throw new Error(`[NPC] ${w.body} is listed twice`);
     bodies.add(w.body);
     const other = species.get(w.species.id);
     if (other) throw new Error(`[NPC] species ${w.species.id} lives on both ${other} and ${w.body}`);
     species.set(w.species.id, w.body);
+    const fOther = features.get(w.species.look.feature);
+    if (fOther) throw new Error(`[NPC] ${w.body} and ${fOther} share the look feature ${w.species.look.feature}`);
+    features.set(w.species.look.feature, w.body);
     const artOther = art.get(w.art.id);
     if (artOther) throw new Error(`[NPC] art piece ${w.art.id} belongs to both ${artOther} and ${w.body}`);
     art.set(w.art.id, w.body);

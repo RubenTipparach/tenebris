@@ -2,6 +2,7 @@ import { ChatUI } from './net/ChatUI';
 import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
+import { NpcClient } from './npc/NpcClient';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
@@ -86,6 +87,8 @@ const PLAYERS_TAB_REFRESH_MS = 1000;
 
 class PlanetGame {
   private engine: GameEngine;
+  // NPC records and single-player NPC time (friendship-npcs, src/npc/NpcClient.ts)
+  public readonly npcClient = new NpcClient();
   private inputManager: InputManager;
   private planets: Map<string, Planet> = new Map();
   private earth: Planet; // Quick reference to starting planet
@@ -155,6 +158,9 @@ class PlanetGame {
 
     // Disable browser context menu on right-click
     container.addEventListener('contextmenu', (e) => e.preventDefault());
+    // A closing tab puts the player's planet to sleep now (single player), so
+    // the next load catches up from this moment (friendship-npcs)
+    window.addEventListener('pagehide', () => this.npcClient.shutdown());
 
     // Initialize core systems
     this.engine = new GameEngine(container);
@@ -863,6 +869,11 @@ class PlanetGame {
 
   private update(deltaTime: number): void {
     if (!this.isReady) return;
+
+    // NPCs (friendship-npcs): single player wakes / ticks / sleeps the
+    // player's planet; online the server does and this only follows
+    this.npcClient.setPlanet(this.presencePlanet());
+    this.npcClient.update();
 
     // Live orbits: advance the clock, keep the player's body fixed, move
     // the rest of the system round it
@@ -1787,7 +1798,7 @@ class PlanetGame {
     this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
       const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
       const p = flying ? flying.getPosition() : this.player.position;
-      const planet = this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
+      const planet = this.presencePlanet();
       const o = this.player.exportForSave().orientation;
       // The walker's camera looks along orientation +Z (PlanetPlayer
       // updateCamera: -localForward), but an avatar's frame looks down -Z
@@ -1815,6 +1826,17 @@ class PlanetGame {
   }
 
   /** The id of the planet whose surface is nearest `p` */
+  /**
+   * The planet this player is on, as the world sees it: their pose's planet
+   * online (the server's NPC presence counts from it), and the planet whose
+   * NPCs single player wakes (src/npc/NpcClient.ts) - one rule for both.
+   */
+  private presencePlanet(): string {
+    const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+    const p = flying ? flying.getPosition() : this.player.position;
+    return this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
+  }
+
   private nearestPlanetId(p: THREE.Vector3): string {
     let planet = 'earth';
     let best = Infinity;
