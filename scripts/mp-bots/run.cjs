@@ -9,7 +9,9 @@
 //   CLIENT_URL  the client (default http://127.0.0.1:5179/tenebris/js/)
 //   WORLD       server world id (default 'main', the live world players join with ?mp)
 //   SERVER      ws url of the server (default: the client's own default, wss://tenebris.fly.dev/)
-//   BOTS        name:role pairs (default "Claude-Miner:miner,Claude-Builder:builder")
+//   BOTS        name:role[:profile] (default "Kestrel:miner:Claude-Miner,Rivet:builder:Claude-Builder");
+//               profile = the browser profile folder (save, missions, inventory) - a
+//               renamed bot keeps its old one, so a new name loses nothing
 //   MINUTES     how long to play (default 60; 0 = until stopped)
 //   HEADED=1    show the browser windows
 //   PROFILE_DIR where each bot's browser profile lives, so its save slot,
@@ -28,8 +30,8 @@ const WORLD = process.env.WORLD || 'main';
 const SERVER = process.env.SERVER || '';
 const MINUTES = Number(process.env.MINUTES ?? 60);
 const PROFILE_DIR = process.env.PROFILE_DIR || path.join(os.homedir(), '.tenebris-bots');
-const BOTS = (process.env.BOTS || 'Claude-Miner:miner,Claude-Builder:builder')
-  .split(',').map(s => { const [name, role] = s.split(':'); return { name, role: role || 'miner' }; });
+const BOTS = (process.env.BOTS || 'Kestrel:miner:Claude-Miner,Rivet:builder:Claude-Builder')
+  .split(',').map(s => { const [name, role, profile] = s.split(':'); return { name, role: role || 'miner', profile: profile || name }; });
 const HELPERS = fs.readFileSync(path.join(__dirname, '../mp-e2e/page-helpers.js'), 'utf8');
 const BRAIN = fs.readFileSync(path.join(__dirname, 'bot-brain.js'), 'utf8');
 fs.mkdirSync(OUT, { recursive: true });
@@ -47,7 +49,7 @@ async function waitFor(fn, ms, what) {
 }
 
 async function launchBot(bot) {
-  const dir = path.join(PROFILE_DIR, bot.name);
+  const dir = path.join(PROFILE_DIR, bot.profile);
   fs.mkdirSync(dir, { recursive: true });
   const ctx = await chromium.launchPersistentContext(dir, {
     channel: 'chrome',
