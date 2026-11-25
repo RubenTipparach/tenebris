@@ -201,6 +201,44 @@ export function stagesOf<T>(parts: readonly T[], typeOf: (p: T) => ItemType): T[
   return stages;
 }
 
+/** Which stage (1 = the bottom, the first to fire) the part at `index` of a stack is in */
+export function stageOfPart(types: readonly ItemType[], index: number): number {
+  let stage = 1;
+  for (let i = 0; i < index && i < types.length; i++) if (isSeparator(types[i])) stage++;
+  return stage;
+}
+
+const PART_KIND_LABEL: Record<RocketPartType, string> = {
+  [RocketPartType.ENGINE]: 'Engine',
+  [RocketPartType.FUEL_TANK]: 'Fuel tank',
+  [RocketPartType.CAPSULE]: 'Command module',
+  [RocketPartType.CARGO]: 'Cargo bay',
+  [RocketPartType.SEPARATOR]: 'Stage separator',
+};
+
+/**
+ * A rocket part's key numbers, one line each (ASCII), for its hover
+ * tooltip: kind and tier, mass, thrust and Isp (engines), fuel (tanks),
+ * cargo / equipment slots, charge, and how many stack slots it takes.
+ * Empty for an item that is not a rocket part.
+ */
+export function partTooltipLines(itemType: ItemType): string[] {
+  const part = ITEM_DATA[itemType]?.rocketPart;
+  const s = partStats(itemType);
+  if (!part || !s) return [];
+  const lines = [`${PART_KIND_LABEL[part.partType] ?? 'Part'} - tier ${s.tier}`, `Mass ${s.dryMass} kg`];
+  if (s.thrust) lines.push(`Thrust ${(s.thrust / 1000).toFixed(1)} kN, Isp ${s.specificImpulse ?? 0} s`);
+  if (s.boosterOnly) lines.push('Booster - bottom stage only');
+  if (s.requires?.length) lines.push(`Needs ${s.requires.map(t => ITEM_DATA[t]?.name ?? '?').join(', ')} in the stack`);
+  if (s.fuelCapacity) lines.push(`Fuel ${s.fuelCapacity} units (${Math.round(s.fuelCapacity * ROCKET_CONFIG.FUEL_KG_PER_UNIT)} kg)`);
+  if (s.cargoSlots) lines.push(`Cargo ${s.cargoSlots} slots`);
+  if (s.equipmentSlots) lines.push(`Equipment ${s.equipmentSlots} slots`);
+  if (s.batteryWh) lines.push(`Battery ${(s.batteryWh / 1000).toFixed(1)} kWh`);
+  if (part.partType === RocketPartType.SEPARATOR) lines.push('Splits the stack - drops with the stage below');
+  lines.push(`Takes ${part.heightUnits} stack slot${part.heightUnits === 1 ? '' : 's'}`);
+  return lines;
+}
+
 export interface StageStats {
   fuelCapacity: number;     // this stage's tanks
   thrust: number;           // its engines (in the engine mode)

@@ -1025,6 +1025,19 @@ export class Inventory {
     return remaining;
   }
 
+  /** Would addItem take all `quantity` (same rule: existing stacks, then empty slots)? */
+  public canAddItem(itemType: ItemType, quantity: number): boolean {
+    if (itemType === ItemType.NONE) return false;
+    const stack = ITEM_DATA[itemType].stackSize;
+    let room = 0;
+    for (let i = 0; i < this.totalSlots && room < quantity; i++) {
+      const slot = this.slots[i];
+      if (slot.itemType === itemType) room += Math.max(0, stack - slot.quantity);
+      else if (slot.itemType === ItemType.NONE) room += stack;
+    }
+    return room >= quantity;
+  }
+
   /**
    * A tool just made: into the toolbox if it has no tool of that kind
    * ('toolbox'), else into the hotbar / bag ('inventory'), or 'full'.

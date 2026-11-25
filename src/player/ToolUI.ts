@@ -1,4 +1,5 @@
 import { Inventory, InventorySlot, ItemType, ITEM_DATA, toolCondition, usesLeft, toolMaxUses } from './Inventory';
+import { partTooltipLines } from '../rocket/RocketPerformance';
 import { TOOLBOX } from '../config/ToolConfig';
 import { getAssetPath } from '../utils/assetPath';
 
@@ -34,7 +35,9 @@ export function renderDurability(slotEl: HTMLElement, slot: InventorySlot): void
 export function slotTooltip(slot: InventorySlot): string {
   const name = ITEM_DATA[slot.itemType].name;
   const left = usesLeft(slot);
-  return left === null ? name : `${name} - ${left}/${toolMaxUses(slot.itemType)} uses`;
+  if (left !== null) return `${name} - ${left}/${toolMaxUses(slot.itemType)} uses`;
+  // A rocket part shows its key numbers under its name (one per line)
+  return [name, ...partTooltipLines(slot.itemType)].join('\n');
 }
 
 /** The HUD toolbox: four small slots beside the hotbar; a click on the rod takes it out. */

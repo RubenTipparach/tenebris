@@ -660,44 +660,19 @@ export class PlanetBlockInteraction {
       }
       return result;
     });
-    this.launchPadUI.setOnAddRocketEngineCallback((pad) => {
-      const result = this.launchPadManager.addRocketEngine(pad);
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    this.launchPadUI.setOnRemoveRocketEngineCallback((pad) => {
-      const result = this.launchPadManager.removeRocketEngine(pad);
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    // New generic rocket part callbacks
-    this.launchPadUI.setOnAddRocketPartCallback(async (pad, itemType) => {
+    // The stack editor: every add, remove and move of a part (anywhere in
+    // the stack) restacks the pad's rocket through one call; the UI then
+    // moves the part to / from the inventory and the hold-changed callback
+    // below saves and syncs the pad record and the inventory
+    this.launchPadUI.setOnSetRocketStackCallback(async (pad, types) => {
       if (!pad.isComplete) {
-        showToast(`A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`, { duration: 3500 });
-        return false;
+        return `A rocket needs a complete launch pad: ${ROCKET_CONFIG.PAD_BLOCKS_PER_TOWER} blocks, a middle hex with a full ring around it`;
       }
       const hadRocket = hasFlyableRocket(pad);
-      const result = await this.launchPadManager.addRocketPart(pad, itemType);
-      if (result && !hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
-      if (result) {
-        this.saveLaunchPadStates();
-      }
-      return result;
-    });
-    this.launchPadUI.setOnRemoveRocketPartCallback((pad) => {
-      if (this.launchPadManager.topPartHoldsCargo(pad)) {
-        showToast('Empty the cargo / equipment first - that part holds it', { duration: 3000 });
-        return null;
-      }
-      const removedPart = this.launchPadManager.removeRocketPart(pad);
-      if (removedPart) {
-        this.saveLaunchPadStates();
-      }
-      return removedPart;
+      const why = await this.launchPadManager.setRocketStack(pad, types);
+      if (why) return why;
+      if (!hadRocket && hasFlyableRocket(pad)) emitGameEvent('assembled');
+      return null;
     });
     // The pad's rocket: refuel from the cargo hold + inventory (the same fuel
     // source as on board), open its cargo hold, its TWR on this body
@@ -728,7 +703,7 @@ export class PlanetBlockInteraction {
     });
     this.launchPadUI.setOnTakeStashCallback((pad) => this.takeStash(pad));
     // Equipment fitted or taken out: the pad and the inventory save now
-    this.launchPadUI.setOnEquipmentChangedCallback(() => {
+    this.launchPadUI.setOnHoldChangedCallback(() => {
       this.saveLaunchPadStates();
       this.saveInventory();
     });
