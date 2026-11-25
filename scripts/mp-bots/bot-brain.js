@@ -47,6 +47,15 @@
     role: null, running: false, task: 'idle', goal: '', log: [], stuck: 0,
     home: null, furnaceTile: null, started: Date.now(), errors: 0,
   };
+  // Bots play on a shared world: they don't dig to get somewhere, only for
+  // what they gather (ore, stone, clay) and out of their own pits
+  const GENTLE = {
+    WALK_SIDESTEPS: 4,      // side-steps when stuck walking, then give up
+    AROUND_M: 6,            // a detour this far to the side when a walk fails
+    MACHINE_SIDESTEPS: 3,   // moves to see a machine past something in the way
+    ORE_SCAN_TILES: 16,     // how far round it looks up ore in the world data...
+    ORE_SCAN_DEPTH: 24,     // ...and how deep, before digging toward one
+  };
   const say = (msg) => {
     const line = `${new Date().toISOString().slice(11, 19)} ${msg}`;
     st.log.push(line);
@@ -259,16 +268,14 @@
             stalls++;
             if (stalls <= 3) { await tap('Space', 250); }
             else {
-              // a wall: dig through it at head and foot height; if that
-              // didn't free it last time (a machine, not a block), step aside
+              // a wall: step aside and hop (bots don't dig through the world
+              // to get somewhere - it's other players' world too); give up
+              // after a few tries
               key('KeyW', false);
               digs++;
-              if (digs % 2 === 0) {
-                const side = Math.random() < 0.5 ? 'KeyA' : 'KeyD';
-                key(side, true); key('Space', true); await sleep(900); key('Space', false); await sleep(300); key(side, false);
-              } else {
-                await clearAhead(flat);
-              }
+              if (digs > GENTLE.WALK_SIDESTEPS) return false;
+              const side = digs % 2 ? 'KeyA' : 'KeyD';
+              key(side, true); key('Space', true); await sleep(900); key('Space', false); await sleep(300); key(side, false);
               stalls = 1;
             }
           } else stalls = 0;
@@ -397,21 +404,20 @@
       if (b === B.WATER) return false;
       await mineBlock(tile, d, 15000);
       await sleep(400); // fall into the hole
-      await mineNearbyOres(2);
     }
     return pred();
   }
 
   // Ore blocks within `radius` tiles that touch air (visible from a tunnel)
   const ORES = () => [B.ORE_COAL, B.ORE_IRON, B.ORE_COPPER, B.ORE_GOLD, B.ORE_ALUMINUM, B.ORE_LITHIUM, B.ORE_COBALT];
-  function oreAround(radius, wanted) {
+  function oreAround(radius, wanted, below = 6) {
     const p = P();
     const pos = player().position;
     const fd = feetDepth();
     const out = [];
     for (const t of tilesWithin(myTile(), radius)) {
       if (!p.isTileLoaded(t)) continue;
-      for (let d = Math.max(1, fd - 6); d <= fd + 4; d++) {
+      for (let d = Math.max(1, fd - below); d <= fd + 4; d++) {
         const b = p.getBlock(t, d);
         if (wanted.includes(b) && !(st.badDig || []).includes(`${t}:${d}`)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
       }
@@ -420,8 +426,9 @@
   }
 
   // Mine any ore the bot can reach from where it stands
-  async function mineNearbyOres(radius = 2) {
-    const want = ORES();
+  async function mineNearbyOres(radius = 2, wanted = null) {
+    // only ore it is after (it used to take every ore by its tunnel)
+    const want = wanted || [];
     for (const o of oreAround(radius, want)) {
       if (o.dist > 5) continue;
       await mineBlock(o.tile, o.depth, 15000);
@@ -626,8 +633,13 @@
   async function approach(target, arrive = 2.2) {
     await toSurface();
     if (!(await walkTo(target, arrive, 40000))) {
-      say('cannot walk there - digging toward it');
-      await tunnelTo(target, arrive);
+      // a detour round the side, then give up (no tunnelling through the world)
+      const pos = player().position, up = upAt(pos);
+      const flat = target.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up));
+      const side = new (T().Vector3)().crossVectors(up, flat).normalize().multiplyScalar(GENTLE.AROUND_M * (Math.random() < 0.5 ? 1 : -1));
+      say('cannot walk there - trying a way round');
+      await walkTo(pos.clone().add(side).addScaledVector(flat, 0.5), 1.6, 15000);
+      if (!(await walkTo(target, arrive, 25000))) { say('could not get there - leaving it'); return false; }
     }
     const pos = player().position;
     const up = upAt(pos);
@@ -660,8 +672,12 @@
       if (!h || h.point.distanceTo(eye()) >= far - 0.35) return;
       const b = P().getBlock(h.tileIndex, h.depth);
       if (b === B.AIR || b === B.WATER || h.depth <= 0) return;
-      say(`a block is in the way of the machine - mining it`);
-      await mineBlock(h.tileIndex, h.depth, 8000);
+      if (k >= GENTLE.MACHINE_SIDESTEPS) return;
+      // something in the way: step round it for a clear look (never mine it)
+      const pos = player().position, up = upAt(pos);
+      const to = target.clone().sub(pos); to.addScaledVector(up, -to.dot(up));
+      const side = new (T().Vector3)().crossVectors(up, to).normalize().multiplyScalar(k % 2 ? -2 : 2);
+      await walkTo(pos.clone().add(side), 0.8, 4000);
     }
   }
 
@@ -2020,6 +2036,8 @@
     await smelt(I.CLAY, need);
   }
   async function digForStone(n) {
+    // stone showing at the surface first; a pit only if there is none
+    if (await findAndDig([B.STONE], () => count(I.STONE) >= n) && count(I.STONE) >= n) return;
     const surface = surfaceDepth();
     await digDown(() => count(I.STONE) >= n);
     await pillarUpTo(surface - 1);
@@ -2035,14 +2053,17 @@
     const seaLevel = P().getSeaLevelDepth ? P().getSeaLevelDepth() : surface - 10;
     for (let round = 0; round < 8 && !done(); round++) {
       if (oreAround(6, wanted).length === 0) {
-        // deeper, a few blocks at a time
-        const target = feetDepth() - 4;
-        await digDown(() => feetDepth() <= target || oreAround(6, wanted).length > 0, 6);
-        if (feetDepth() <= 3) break;
+        // no digging on spec: the bot reads where ore is (the loaded world),
+        // walks over the nearest it knows of and only then digs down to it
+        const known = oreAround(GENTLE.ORE_SCAN_TILES, wanted, GENTLE.ORE_SCAN_DEPTH);
+        if (!known.length) break;
+        const o = known[0];
+        if (hdist(player().position, blockCenter(o.tile, o.depth)) > 3) { await approach(blockTop(o.tile, P().groundDepthOf(o.tile)), 1.5); continue; }
+        if (!(await tunnelToOreBlock(o.tile, o.depth))) st.badDig = (st.badDig || []).concat([`${o.tile}:${o.depth}`]);
         continue;
       }
       await tunnelToOre(wanted, 6);
-      await mineNearbyOres(2);
+      await mineNearbyOres(2, wanted);
     }
     if (feetDepth() < surface - 1) await pillarUpTo(surface - 1, 60);
     void seaLevel;
