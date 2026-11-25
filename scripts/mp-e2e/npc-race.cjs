@@ -111,14 +111,18 @@ const give = (page, item, n) => page.evaluate(({ item, n }) => {
     check('exactly one player gave the last item, the other has theirs back', ia + ib === 1, { a: ia, b: ib });
     await B.screenshot({ path: path.join(OUT, 'npc-race-delivery-B.png') });
 
-    // ---- the barter race ----
-    const trader = await A.evaluate(() => {
-      const G = window.__tenebris;
-      for (let i = 0; i < 3; i++) { const t = G.npcClient.trader(i); if (t && t.at === 'sequoia') return { i, t }; }
-      return null;
-    });
+    // ---- the barter race: on whichever world trader 0 is visiting ----
+    let trader = await A.evaluate(() => ({ i: 0, t: window.__tenebris.npcClient.trader(0) }));
+    if (trader.t && trader.t.at !== BODY) {
+      log('trader 0 is on', trader.t.at, '- both go there');
+      for (const p of [A, B]) await p.evaluate((b) => window.__tenebris.teleportToPlanet(b), trader.t.at);
+      for (const p of [A, B]) await waitFor(() => p.evaluate((b) => window.__tenebris.player.getCurrentPlanet()?.getName() === b && (window.__tenebris.npcField?.npcs.length ?? 0) > 0, trader.t.at), 300000, 'on the trader\'s world');
+      // the server wakes that world: the trader record as it is now
+      trader = await A.evaluate(() => ({ i: 0, t: window.__tenebris.npcClient.trader(0) }));
+    }
+    if (!trader.t) trader = null;
     if (!trader) {
-      log('SKIP barter race: no trader on', BODY, 'in this world');
+      check('a trader exists in this world', false);
     } else {
       const o = trader.t.offers[0];
       const id = `trader:${trader.i}`;
