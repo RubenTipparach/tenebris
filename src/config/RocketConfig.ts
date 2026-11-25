@@ -141,12 +141,19 @@ export const ROCKET_CONFIG = {
   // A block joins a pad when it touches it, at most this many blocks above
   // or below the pad's level (the ground is levelled / filled under it)
   PAD_MAX_STEP: 1,
-  // A pad block is set into the top of the ground (it doesn't sit on it): the
-  // slab's top is the ground's top, lifted this share of a block so the two
-  // faces don't fight. The player walks on the ground, so on the pad too.
-  PAD_TOP_LIFT: 0.02,
-  // The slab's thickness, as a share of a block (drawn into the ground block)
-  PAD_THICKNESS: 0.25,
+  // A pad block is a slab sitting ON the ground: its top is this share of a
+  // block above the ground's top (never buried in the dirt). The player
+  // stands on it (Planet.floorTopRadius) and steps up onto it - it must stay
+  // within PlayerConfig.AUTO_STEP_HEIGHT.
+  PAD_TOP_LIFT: 0.25,
+  // The slab's thickness, as a share of a block: PAD_TOP_LIFT above the
+  // ground plus a sliver down into it, so its underside never fights the
+  // ground's top face and no gap shows at its foot
+  PAD_THICKNESS: 0.27,
+  // The tops older saves' pads had, as a share of a block over the ground:
+  // a slab on it (0.25) and, for a while, set flush into it (0.02). A saved
+  // pad at either is settled onto the ground at PAD_TOP_LIFT on load.
+  PAD_SAVED_TOP_LIFTS: [0.02, 0.25] as readonly number[],
   // "Start with a rocket": a full rocket, this much Rocket Fuel in its cargo
   // hold (a full refuel for the trip home) and empty buckets for the player
   STARTER_KIT: {

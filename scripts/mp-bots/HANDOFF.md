@@ -30,7 +30,7 @@ Nothing here is deployed. The live game (heavyphoton.com, itch.io, tenebris.fly.
   - The pose autosave skips flights, which fixed respawning in space.
   - In-game check: `scripts/mp-bots/checks/crash-respawn.js`.
 - **Landed rockets** are re-parented to the body they land on. A Moon->Earth rocket was being drawn near the Moon.
-- **Launch pads are set into the ground,** flush with it. You walk on them instead of sinking in. There is no skirt, and lower ground underneath is filled with stone. Older pads settle on load (`settledPadTop`).
+- **Launch pads sit on the ground** as a slab a quarter block high (`PAD_TOP_LIFT`). You stand on the slab (`Planet.floorTopRadius`) and step onto it without a jump. There is no skirt, and lower ground underneath is filled with stone. Older pads (flush in the ground, or a slab) settle on load (`settledPadTop`).
 
 ### Pad stash
 - Boarding at a pad stashes everything carried except gear (`src/config/CarryConfig.ts`: tools, suits, oxygen tanks, suit heaters). Only the cargo hold flies.

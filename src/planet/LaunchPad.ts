@@ -8,6 +8,7 @@ import { ROCKET_CONFIG } from '../config/RocketConfig';
 import { cargoSlotsFor, equipmentSlotsFor, fitSlots, computeRocketStats, validEngineMode } from '../rocket/RocketPerformance';
 import { RocketPart } from './RocketPart';
 import { emptyStash, stashUsed } from '../rocket/CarryRules';
+import type { ObjectFloorHost } from './ObjectFloors';
 import techVert from '../shaders/tech/tech.vert';
 import techFrag from '../shaders/tech/tech.frag';
 import launchPadVert from '../shaders/launchPad/launchPad.vert';
@@ -32,14 +33,67 @@ export interface PlacedRocketPart {
 //  P R P     R = rocket (the middle), P = pad blocks; the tower (T) goes on
 //   T P      any pad hex but R
 
-// One pad hex: built from the pad's top down to innerRadius (the ground
-// there, so the pad never hovers over a dip).
+// One pad hex: built from the pad's top down to innerRadius (into the ground
+// top under it). `floors` is its planet: the hex registers its top there so
+// the walker stands on it (ObjectFloors.ts).
 export interface PlatformTile {
   index: number;
   neighbors: number[];
   center: THREE.Vector3;
   vertices: THREE.Vector3[];
   innerRadius: number;
+  floors?: ObjectFloorHost;
+}
+
+/** What a pad's height maths needs from its planet */
+export interface PadGround {
+  getBlockHeight(): number;
+  getMaxDepth(): number;
+  depthToRadius(depth: number): number;
+}
+
+/** A pad's top at air depth `level`: on the ground block below (level - 1), PAD_TOP_LIFT of a block up */
+export function padTopRadius(g: PadGround, level: number): number {
+  const bh = g.getBlockHeight();
+  return g.depthToRadius(level) - bh + bh * ROCKET_CONFIG.PAD_TOP_LIFT;
+}
+
+/** The air depth a pad with this top sits in (padTopRadius's inverse) */
+export function padLevelOf(g: PadGround, top: number): number {
+  let best = 0, bestErr = Infinity;
+  for (let d = 1; d < g.getMaxDepth(); d++) {
+    const err = Math.abs(padTopRadius(g, d) - top);
+    if (err < bestErr) { bestErr = err; best = d; }
+  }
+  return best;
+}
+
+/**
+ * A saved pad top, settled onto the ground at PAD_TOP_LIFT: older saves had
+ * it at another lift over the ground (PAD_SAVED_TOP_LIFTS - flush in it, or
+ * a slab on it); the nearest ground under any of those is its ground.
+ */
+export function settledPadTop(g: PadGround, savedTop: number): number {
+  const bh = g.getBlockHeight();
+  let best = savedTop, bestErr = Infinity;
+  for (let d = 1; d < g.getMaxDepth(); d++) {
+    const ground = g.depthToRadius(d) - bh;
+    for (const lift of [ROCKET_CONFIG.PAD_TOP_LIFT, ...ROCKET_CONFIG.PAD_SAVED_TOP_LIFTS]) {
+      const err = Math.abs(ground + bh * lift - savedTop);
+      if (err < bestErr) { bestErr = err; best = ground + bh * ROCKET_CONFIG.PAD_TOP_LIFT; }
+    }
+  }
+  return best;
+}
+
+/**
+ * Never buried: a pad's top, raised over the highest ground top under its
+ * footprint (`groundTops`, one per hex that has ground above the pad's own)
+ */
+export function unburiedPadTop(top: number, groundTops: readonly number[], blockHeight: number): number {
+  let out = top;
+  for (const g of groundTops) out = Math.max(out, g + blockHeight * ROCKET_CONFIG.PAD_TOP_LIFT);
+  return out;
 }
 
 // Launch Pad placement data
@@ -693,13 +747,16 @@ export class LaunchPadManager {
   /** Lay one more block on a pad. Returns false if that hex is already pad. */
   public addHex(pad: PlacedLaunchPad, tile: PlatformTile): boolean {
     if (pad.hexes.has(tile.index) || !this.baseMaterial) return false;
-    // a slab set into the ground's top: no skirt down to lower ground (the ground under it is filled)
+    // a slab on the ground's top, its foot a sliver into it: no skirt down to
+    // lower ground (the ground under it is filled)
     const inner = pad.outerRadius - ROCKET_CONFIG.PAD_THICKNESS * this.blockHeightOf(pad);
     const mesh = new THREE.Mesh(this.createHexGeometryFromTile(tile, inner, pad.outerRadius, pad.planetCenter), this.baseMaterial);
     mesh.userData.padTileIndex = tile.index;
     pad.mesh.add(mesh);
     pad.hexes.set(tile.index, { tile, mesh });
     pad.placedTiles.add(tile.index);
+    // the walker stands on its top (Planet.floorTopRadius)
+    tile.floors?.setObjectTop(tile.index, pad.outerRadius);
     this.updateLayout(pad);
     return true;
   }
@@ -738,6 +795,7 @@ export class LaunchPadManager {
     if (!hex) return false;
     pad.mesh.remove(hex.mesh);
     hex.mesh.geometry.dispose();
+    hex.tile.floors?.setObjectTop(tileIndex, null);
     pad.hexes.delete(tileIndex);
     pad.placedTiles.delete(tileIndex);
     if (pad.hexes.size === 0) {
@@ -1314,6 +1372,9 @@ export class LaunchPadManager {
     if (meshIndex !== -1) {
       this.launchPadMeshes.splice(meshIndex, 1);
     }
+
+    // Its tops are no longer floors
+    for (const [i, hex] of launchPad.hexes) hex.tile.floors?.setObjectTop(i, null);
 
     // Clean up meshes
     this.scene.remove(launchPad.mesh);

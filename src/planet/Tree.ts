@@ -4,6 +4,7 @@ import { skyLightUniforms } from './SkyLightTexture';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { getAssetPath } from '../utils/assetPath';
+import { TREE_LIGHT } from '../config/LightingConfig';
 
 // Simple seeded random number generator (LCG algorithm)
 class SeededRandom {
@@ -1406,14 +1407,13 @@ export class TreeBuilder {
   }
 }
 
-// Mockup toggle (Debug tab): improved tree shading - baked darkening toward
-// the base of each tree and a per-tree tint, plus wrap lighting, sky/ground
-// ambient and a rim light in the shader.
+// Mockup toggle (Debug tab): improved tree shading - a per-tree tint baked
+// on top of the static light (bakeTreeLight), so a forest is not one colour.
 let improvedTreeShading = false;
 const treeBatchers = new Set<TreeBatcher>();
 export function setImprovedTreeShading(on: boolean): void {
   improvedTreeShading = on;
-  for (const b of treeBatchers) b.setImproved(on);
+  for (const b of treeBatchers) b.setImproved();
 }
 
 // Batched tree rendering, one merged mesh per LOD chunk. Each chunk's mesh is
@@ -1435,12 +1435,10 @@ class TreeBatcher {
     this.scene = scene;
     this.material = material;
     treeBatchers.add(this);
-    this.material.uniforms.improved.value = improvedTreeShading ? 1 : 0;
   }
 
   // Switch shading; the baked colours need every chunk rebuilt
-  public setImproved(on: boolean): void {
-    this.material.uniforms.improved.value = on ? 1 : 0;
+  public setImproved(): void {
     for (const chunk of this.treesByChunk.keys()) this.dirty.add(chunk);
     this.lastChunks = null;
     this.showingAll = null;
@@ -1514,7 +1512,13 @@ class TreeBatcher {
           treeGeoms.push(geom);
         }
       });
-      if (improvedTreeShading) bakeTreeShading(tree, treeGeoms);
+      // The static part of its light, baked once (TREE_LIGHT): the shader
+      // only adds the time of day
+      tree.updateWorldMatrix(true, false);
+      const base = new THREE.Vector3().setFromMatrixPosition(tree.matrixWorld);
+      const up = new THREE.Vector3(0, 1, 0).transformDirection(tree.matrixWorld);
+      bakeTreeLight(treeGeoms, base, up);
+      if (improvedTreeShading) bakeTreeTint(base, treeGeoms);
       geometries.push(...treeGeoms);
     }
     if (geometries.length === 0) return;
@@ -1561,30 +1565,72 @@ class TreeBatcher {
   }
 }
 
-// Improved shading, baked into vertex colours: darker toward the base of the
-// tree (cheap ambient occlusion) and a small per-tree tint so a forest isn't
-// one flat colour.
-function bakeTreeShading(tree: THREE.Group, geoms: THREE.BufferGeometry[]): void {
-  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(tree.quaternion);
-  const base = tree.position;
-  let top = 0;
+/**
+ * Bake the part of a tree's light the sun doesn't change (TREE_LIGHT) into
+ * its geometry, once per chunk build: its vertex colours take the AO (darker
+ * toward the foot) and the sky exposure (faces looking down see less sky), and a
+ * `shadeNormal` attribute carries the smoothed normal the shader's sun term
+ * reads. `geoms` are the tree's meshes already in world space, `base` its
+ * foot and `up` its axis. A tree is static, so none of this is per frame.
+ */
+export function bakeTreeLight(geoms: THREE.BufferGeometry[], base: THREE.Vector3, up: THREE.Vector3): void {
+  const L = TREE_LIGHT;
   const v = new THREE.Vector3();
+  let top = 0;
   for (const g of geoms) {
     const pos = g.getAttribute('position');
     for (let i = 0; i < pos.count; i++) top = Math.max(top, v.fromBufferAttribute(pos, i).sub(base).dot(up));
   }
-  if (top <= 0) return;
+  const height = Math.max(top, 1e-3);
+  const crownTop = height * L.CROWN_ROUND_FROM;
+  const centre = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const out = new THREE.Vector3();
+  const s = new THREE.Vector3();
+  for (const g of geoms) {
+    if (!g.getAttribute('normal')) g.computeVertexNormals();
+    const pos = g.getAttribute('position');
+    const nor = g.getAttribute('normal');
+    const col = g.getAttribute('color');
+    const shade = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      n.fromBufferAttribute(nor, i).normalize();
+      // out from the tree's axis at the vertex's own height (sideways on the
+      // trunk and round the crown), rounding over the top of the crown;
+      // along the face where that is undefined
+      const h = (v.x - base.x) * up.x + (v.y - base.y) * up.y + (v.z - base.z) * up.z;
+      centre.copy(base).addScaledVector(up, Math.min(h, crownTop));
+      out.copy(v).sub(centre);
+      if (out.lengthSq() < 1e-8) out.copy(n); else out.normalize();
+      s.copy(n).lerp(out, L.SMOOTH_NORMAL);
+      if (s.lengthSq() < 1e-8) s.copy(out); else s.normalize();
+      shade[i * 3] = s.x; shade[i * 3 + 1] = s.y; shade[i * 3 + 2] = s.z;
+      if (col) {
+        const t = THREE.MathUtils.clamp(v.sub(base).dot(up) / (height * L.AO_HEIGHT), 0, 1);
+        const ao = L.AO_BASE + (1 - L.AO_BASE) * t * t * (3 - 2 * t);
+        // the face's own normal: a face looking down sees less sky
+        const exposure = L.EXPOSURE_UNDER + (1 - L.EXPOSURE_UNDER) * (0.5 + 0.5 * n.dot(up));
+        const k = ao * exposure;
+        col.setXYZ(i, col.getX(i) * k, col.getY(i) * k, col.getZ(i) * k);
+      }
+    }
+    if (col) col.needsUpdate = true;
+    g.setAttribute('shadeNormal', new THREE.BufferAttribute(shade, 3));
+  }
+}
+
+// Improved shading mockup (Debug tab): a small per-tree tint so a forest
+// isn't one flat colour, on top of the baked light
+function bakeTreeTint(base: THREE.Vector3, geoms: THREE.BufferGeometry[]): void {
   // Stable per-tree tint from its position
   const h = Math.abs(Math.sin(base.x * 12.9898 + base.y * 78.233 + base.z * 37.719) * 43758.5453) % 1;
   const tint = [0.92 + 0.16 * h, 0.95 + 0.1 * ((h * 7) % 1), 0.9 + 0.12 * ((h * 13) % 1)];
   for (const g of geoms) {
-    const pos = g.getAttribute('position');
     const col = g.getAttribute('color');
     if (!col) continue;
-    for (let i = 0; i < pos.count; i++) {
-      const t = v.fromBufferAttribute(pos, i).sub(base).dot(up) / top;
-      const ao = 0.5 + 0.5 * Math.min(1, Math.max(0, t / 0.55));
-      col.setXYZ(i, col.getX(i) * ao * tint[0], col.getY(i) * ao * tint[1], col.getZ(i) * ao * tint[2]);
+    for (let i = 0; i < col.count; i++) {
+      col.setXYZ(i, col.getX(i) * tint[0], col.getY(i) * tint[1], col.getZ(i) * tint[2]);
     }
     col.needsUpdate = true;
   }
@@ -1613,7 +1659,6 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
     uniforms: {
       sunDirection: { value: sunDirection.clone().normalize() },
       planetCenter: { value: new THREE.Vector3() },
-      improved: { value: 0 },
       ambientIntensity: { value: PlayerConfig.AMBIENT_LIGHT_INTENSITY },
       directionalIntensity: { value: PlayerConfig.DIRECTIONAL_LIGHT_INTENSITY },
       treeAtlas: { value: treeAtlas() },
@@ -1629,9 +1674,12 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       varying vec3 vColor;
       varying vec3 vNormal;
       varying vec3 vWorldPosition;
+      attribute vec3 shadeNormal;
+      varying vec3 vShadeNormal;
 
       void main() {
         vColor = color;
+        vShadeNormal = normalize(mat3(modelMatrix) * shadeNormal);
         vTexCell = texCell;
         vGlow = glow;
         vNormal = normalize(mat3(modelMatrix) * normal);
@@ -1646,7 +1694,6 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       varying float vGlow;
       uniform vec3 sunDirection;
       uniform vec3 planetCenter;
-      uniform float improved;
       uniform float ambientIntensity;
       uniform float directionalIntensity;
       #include <tenebris_sky_light>
@@ -1654,6 +1701,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
 
       varying vec3 vColor;
       varying vec3 vNormal;
+      varying vec3 vShadeNormal;
       varying vec3 vWorldPosition;
 
       void main() {
@@ -1662,11 +1710,18 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         // The sky light table (openspec sky-lighting), as the terrain reads it
         vec3 sunLight = skySun(planetSunFacing);
         vec3 fill = skyFill(planetSunFacing) * ambientIntensity;
-        float shadowFactor = clamp(dot(sunLight, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+        // The static light (AO, sky exposure) is baked into vColor
+        // (bakeTreeLight); only the time of day is worked out here. The
+        // ground's own sun term (a block top: the sun's height), blended with
+        // a soft wrap of the baked smooth normal that fades in as the sun
+        // climbs - no hard terminator on the crown, and no side of the tree
+        // lit once the ground beside it is dark (TREE_LIGHT)
+        float groundSun = max(0.0, planetSunFacing);
+        float wrap = clamp((dot(normalize(vShadeNormal), sunDirection) + ${TREE_LIGHT.WRAP.toFixed(3)}) / ${(1 + TREE_LIGHT.WRAP).toFixed(3)}, 0.0, 1.0);
+        float sideSun = wrap * smoothstep(${TREE_LIGHT.SIDE_FADE_FROM.toFixed(3)}, ${TREE_LIGHT.SIDE_FADE_TO.toFixed(3)}, planetSunFacing);
+        vec3 directional = sunLight * directionalIntensity * mix(groundSun, sideSun, ${TREE_LIGHT.NORMAL_WEIGHT.toFixed(3)});
+        // The face normal only picks the atlas projection axis
         vec3 n = normalize(vNormal);
-        if (!gl_FrontFacing) n = -n;
-        float meshDiffuse = max(0.0, dot(n, sunDirection));
-        float directional = meshDiffuse * shadowFactor * directionalIntensity;
         // Pixel detail from the tree atlas, projected along the face's
         // dominant axis (planet-local so it stays precise far from origin),
         // at the terrain's texel size; grey 200 = no change
@@ -1678,16 +1733,6 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         vec3 tinted = vColor * detail;
         // Sun and fill exactly as the terrain's, so trees sit in the same light
         vec3 finalColor = tinted * (fill + directional);
-        if (improved > 0.5) {
-          // Wrap lighting (soft terminator on the canopy), sky/ground
-          // hemisphere ambient, and a rim on the sun side
-          float wrap = max(0.0, (dot(n, sunDirection) + 0.4) / 1.4);
-          float hemi = 0.5 + 0.5 * dot(n, surfaceNormal);
-          vec3 ambient = mix(vec3(0.55, 0.5, 0.45), vec3(0.75, 0.85, 1.0), hemi) * fill * (0.6 + 0.4 * shadowFactor);
-          vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-          float rim = pow(1.0 - max(0.0, dot(n, viewDir)), 3.0) * shadowFactor * 0.35;
-          finalColor = tinted * (ambient + wrap * sunLight * directionalIntensity) + vec3(1.0, 0.92, 0.75) * rim;
-        }
         // Glowing parts (alien species) shine with their own colour, day
         // and night alike; 0 everywhere on ordinary trees
         finalColor += tinted * vGlow;
