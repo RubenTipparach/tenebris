@@ -120,6 +120,43 @@ export const SURFACE_RELIEF = {
 } as const;
 
 /**
+ * Trees and flora (src/planet/Tree.ts, the batched tree shader). A tree
+ * never moves, so everything about its light that the sun doesn't change is
+ * baked into its vertices once, when its chunk's mesh is built:
+ * - AO: darker toward the foot of the tree (the canopy shades it);
+ * - EXPOSURE: how much open sky a face sees - its normal against the
+ *   tree's up - so the underside of a crown is darker than its top;
+ * - a SMOOTH shading normal (the face normal bent toward "out from the
+ *   tree's axis", rounding over the top of the crown), so light rolls
+ *   across the crown instead of jumping from facet to facet.
+ * Only the time-of-day term is live, from the same sky light table the
+ * terrain reads (skySun / skyFill at this spot's sun height): the ground's
+ * own sun term (the sun's height, as on a block's top) blended with a soft
+ * wrap of the smoothed normal. The wrap fades out as the sun nears the
+ * horizon, so at dusk and at night a tree is as dark as the ground beside
+ * it and no side of it glows.
+ */
+export const TREE_LIGHT = {
+  /** Brightness at the foot of the tree (1 = no darkening) */
+  AO_BASE: 0.7,
+  /** Share of the tree's height over which that darkening fades out */
+  AO_HEIGHT: 0.55,
+  /** Brightness of a face looking straight down (open sky above = 1) */
+  EXPOSURE_UNDER: 0.7,
+  /** The smoothed normal points out from the axis at the vertex's height up to this share of the tree's height, and rounds over above it */
+  CROWN_ROUND_FROM: 0.65,
+  /** How far the shading normal bends from the face toward out-from-the-tree's-axis (0 facets, 1 smooth) */
+  SMOOTH_NORMAL: 0.75,
+  /** How much the smoothed normal's facing counts against the ground's own sun term (0 = lit like the ground) */
+  NORMAL_WEIGHT: 0.5,
+  /** Wrap lighting: light reaches this far round the shaded side (0 = hard Lambert) */
+  WRAP: 0.7,
+  /** The facing term fades in over this sun height (sine) range, so dusk is a gradual fade */
+  SIDE_FADE_FROM: -0.02,
+  SIDE_FADE_TO: 0.15,
+} as const;
+
+/**
  * A planet's surface seen from space (planet.frag), shaded the way the gas
  * giants are (SolarSystemMockup): smooth lighting over the hex facets,
  * mottled colour, oceans that glint and brighten toward the limb, limb
