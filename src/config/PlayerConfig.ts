@@ -22,7 +22,10 @@ export const PlayerConfig = {
 
   // Physics
   BASE_GRAVITY: 20,
-  AUTO_STEP_HEIGHT: 0, // Max height difference to auto-step up (0 = must jump over everything)
+  // Max rise (m) the walker steps up onto without a jump. Whole blocks (1 m)
+  // still need a jump; low slabs - a launch pad's top, ROCKET_CONFIG
+  // PAD_TOP_LIFT of a block - are walked onto like a kerb
+  AUTO_STEP_HEIGHT: 0.3,
 
   // Gravity field (as multiplier of planet radius)
   GRAVITY_FULL_RADIUS: 1.4, // 100% gravity within this radius (1.4 = 40% above surface)

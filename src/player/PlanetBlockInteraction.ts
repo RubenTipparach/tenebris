@@ -41,7 +41,7 @@ import { ElectricFurnaceManager, PlacedElectricFurnace } from '../planet/Electri
 import { ElectronicsWorkbenchManager, PlacedElectronicsWorkbench } from '../planet/ElectronicsWorkbench';
 import { ComputerManager, PlacedComputer } from '../planet/Computer';
 import { Printer3DManager, PlacedPrinter3D, PrinterOutputSlot } from '../planet/Printer3D';
-import { LaunchPadManager, PlacedLaunchPad, PlatformTile } from '../planet/LaunchPad';
+import { LaunchPadManager, PlacedLaunchPad, PlatformTile, padTopRadius, padLevelOf, settledPadTop, unburiedPadTop } from '../planet/LaunchPad';
 import { CraftingSystem } from './CraftingSystem';
 import { HydroGeneratorUI } from './HydroGeneratorUI';
 import { SteamEngineUI } from './SteamEngineUI';
@@ -292,29 +292,6 @@ const SAVED_OBJECT_KINDS: [string, () => Array<{ planetId: string }>][] = [
   ['launchPad', () => gameStorage.getLaunchPads()],
   ['submarine', () => gameStorage.getSubmarines()],
 ];
-
-/** A pad's top radius at air depth `level`: the ground top (block level - 1), lifted PAD_TOP_LIFT */
-function padTopRadius(planet: Planet, level: number): number {
-  const bh = planet.getBlockHeight();
-  return planet.depthToRadius(level) - bh + bh * ROCKET_CONFIG.PAD_TOP_LIFT;
-}
-
-/**
- * A saved pad top, settled into the ground: older pads sat on it as a slab
- * (top = ground top + PAD_THICKNESS); move those down to the ground top.
- */
-export function settledPadTop(planet: Planet, savedTop: number): number {
-  const bh = planet.getBlockHeight();
-  let best = savedTop, bestErr = Infinity;
-  for (let d = 1; d < planet.getMaxDepth(); d++) {
-    const ground = planet.depthToRadius(d) - bh;
-    for (const lift of [ROCKET_CONFIG.PAD_TOP_LIFT, ROCKET_CONFIG.PAD_THICKNESS]) {
-      const err = Math.abs(ground + bh * lift - savedTop);
-      if (err < bestErr) { bestErr = err; best = ground + bh * ROCKET_CONFIG.PAD_TOP_LIFT; }
-    }
-  }
-  return best;
-}
 
 export class PlanetBlockInteraction {
   private planets: Planet[];
@@ -4008,7 +3985,7 @@ export class PlanetBlockInteraction {
       level = this.padLevel(planet, pad);
       if (Math.abs(level - depth) > ROCKET_CONFIG.PAD_MAX_STEP) return 'Pad blocks have to be level with the rest of the pad';
     }
-    // set into the ground: its top is the ground's top (level - 1), not a slab on it
+    // a slab on the ground's top (level - 1), never buried in it
     const outerRadius = padTopRadius(planet, level);
     const hex = this.padHex(planet, tileIndex, level, outerRadius - padHeight, true);
     if (!hex) return 'Nothing to build on';
@@ -4055,7 +4032,7 @@ export class PlanetBlockInteraction {
         gameStorage.saveTileChange(planetId, n, d, HexBlockType.STONE);
       }
     }
-    return { index: n, neighbors: [...tile.neighbors], center: tile.center, vertices: tile.vertices, innerRadius: padInner };
+    return { index: n, neighbors: [...tile.neighbors], center: tile.center, vertices: tile.vertices, innerRadius: padInner, floors: planet };
   }
 
   private async placeLaunchPad(planet: Planet, tileIndex: number, depth: number): Promise<void> {
@@ -4076,17 +4053,10 @@ export class PlanetBlockInteraction {
     }
   }
 
-  // The air depth a pad's blocks sit in (its top is a quarter block above
-  // the ground block below that)
+  // The air depth a pad's blocks sit in (its slab is on the ground block
+  // below that, padTopRadius)
   private padLevel(planet: Planet, pad: PlacedLaunchPad): number {
-    // the air depth whose ground top the pad's top is set at (padTopRadius)
-    const blockHeight = planet.getBlockHeight();
-    const groundTop = pad.outerRadius - blockHeight * ROCKET_CONFIG.PAD_TOP_LIFT + blockHeight;
-    let best = 0;
-    for (let d = 1; d < planet.getMaxDepth(); d++) {
-      if (Math.abs(planet.depthToRadius(d) - groundTop) < Math.abs(planet.depthToRadius(best) - groundTop)) best = d;
-    }
-    return best;
+    return padLevelOf(planet, pad.outerRadius);
   }
 
   // The planet a pad is on: the one whose centre it was placed around
@@ -5344,12 +5314,21 @@ export class PlanetBlockInteraction {
         const savedPosition = new THREE.Vector3(savedPad.position.x, savedPad.position.y, savedPad.position.z);
         // Every pad block sits at the saved top (a pad is level)
         const blockHeight = planet.getBlockHeight();
-        // pads saved as a slab on the ground (their top a quarter block up)
-        // are set into it like new ones
-        const outerRadius = settledPadTop(planet, savedPosition.distanceTo(planet.configuredCenter));
-        const innerRadius = outerRadius - blockHeight * ROCKET_CONFIG.PAD_THICKNESS;
         // Pads from older saves were placed whole: the middle and its ring
         const tileIndices = savedPad.tiles ?? [savedPad.centerTileIndex, ...savedPad.surroundingTileIndices];
+        // pads saved set flush into the ground (or at any older lift) sit on
+        // it like new ones, and never under ground built up on the footprint
+        const settled = settledPadTop(planet, savedPosition.distanceTo(planet.configuredCenter));
+        const level = padLevelOf(planet, settled);
+        const raised: number[] = [];
+        for (const i of tileIndices) {
+          for (let d = level + ROCKET_CONFIG.PAD_MAX_STEP - 1; d >= level; d--) {
+            const b = planet.getBlock(i, d);
+            if (b !== HexBlockType.AIR && b !== HexBlockType.WATER) { raised.push(planet.depthToRadius(d)); break; }
+          }
+        }
+        const outerRadius = unburiedPadTop(settled, raised, blockHeight);
+        const innerRadius = outerRadius - blockHeight * ROCKET_CONFIG.PAD_THICKNESS;
         // the ground was levelled when the pad was placed; rebuild the hexes
         // without touching blocks
         const hexes = tileIndices.map(i => this.padHex(planet, i, 0, innerRadius, false)).filter((t): t is PlatformTile => t !== null);

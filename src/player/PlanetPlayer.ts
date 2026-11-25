@@ -112,7 +112,7 @@ function findWalkableFloorAtRadius(planet: Planet, tileIndex: number, targetRadi
 
     if (isAbovePassable && isCurrentSolid) {
       // This is a walkable floor at depth d
-      const floorRadius = planet.depthToRadius(d);
+      const floorRadius = planet.floorTopRadius(tileIndex, d);
       const dist = Math.abs(floorRadius - targetRadius);
       if (dist < bestDist) {
         bestDist = dist;
@@ -370,7 +370,7 @@ export class PlanetPlayer {
       const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
       if (isAbovePassable && isCurrentSolid) {
-        const floorRadius = this.currentPlanet.depthToRadius(d);
+        const floorRadius = this.currentPlanet.floorTopRadius(currentTile.index, d);
         const heightDiff = Math.abs(floorRadius - playerRadius);
         // Find the floor closest to player's current height (but below or at player level)
         if (floorRadius <= playerRadius + 0.5 && heightDiff < bestHeightDiff) {
@@ -381,7 +381,7 @@ export class PlanetPlayer {
     }
 
     if (currentGroundDepth < 0) return;
-    const currentFloorRadius = this.currentPlanet.depthToRadius(currentGroundDepth);
+    const currentFloorRadius = this.currentPlanet.floorTopRadius(currentTile.index, currentGroundDepth);
 
     // Check neighbor tiles for higher floors that might trap the player
     const neighborIndices = currentTile.neighbors;
@@ -411,7 +411,7 @@ export class PlanetPlayer {
         const isAbovePassable = blockAbove === HexBlockType.AIR || blockAbove === HexBlockType.WATER;
         const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
         if (isAbovePassable && isCurrentSolid) {
-          const floorRadius = this.currentPlanet.depthToRadius(d);
+          const floorRadius = this.currentPlanet.floorTopRadius(neighborIndex, d);
           const heightDiff = Math.abs(floorRadius - playerRadius);
           // Find the floor closest to player's current height (but below or at player level)
           if (floorRadius <= playerRadius + 0.5 && heightDiff < neighborBestHeightDiff) {
@@ -423,7 +423,7 @@ export class PlanetPlayer {
 
       if (neighborFloorDepth < 0) continue;
 
-      const neighborFloorRadius = this.currentPlanet.depthToRadius(neighborFloorDepth);
+      const neighborFloorRadius = this.currentPlanet.floorTopRadius(neighborIndex, neighborFloorDepth);
 
       // Check if neighbor floor is significantly higher (would block player)
       const heightDiff = neighborFloorRadius - currentFloorRadius;
@@ -1625,7 +1625,7 @@ export class PlanetPlayer {
       if (isAbovePassable && isCurrentSolid) {
         // This is a walkable floor at depth d
         foundAnyFloor = true;
-        const destRadius = this.currentPlanet.depthToRadius(d);
+        const destRadius = this.currentPlanet.floorTopRadius(newTile.index, d);
         const radiusDiff = destRadius - currentRadius;
 
         // Can step down any amount (gravity handles falling)
@@ -1681,7 +1681,7 @@ export class PlanetPlayer {
         playerBottomRadius = newPosition.distanceTo(this.currentPlanet.center);
         playerTopRadius = playerBottomRadius + PlayerConfig.PLAYER_HEIGHT;
       } else {
-        const currentGroundRadius = this.currentPlanet.depthToRadius(currentGroundDepth);
+        const currentGroundRadius = this.currentPlanet.floorTopRadius(currentTile!.index, currentGroundDepth);
 
         // Find the WALKABLE ground at destination - the ground level closest to current
         // that we can step to (within AUTO_STEP_HEIGHT up, or any amount down)
@@ -1699,7 +1699,7 @@ export class PlanetPlayer {
 
           if (isAbovePassable && isCurrentSolid) {
             // This is a potential floor at depth d
-            const groundRadius = this.currentPlanet.depthToRadius(d);
+            const groundRadius = this.currentPlanet.floorTopRadius(newTile.index, d);
             const heightDiff = groundRadius - currentGroundRadius;
 
             // Can we step to this level? (within step height up, or any distance down)
@@ -1715,7 +1715,7 @@ export class PlanetPlayer {
 
         if (bestDestGroundDepth >= 0) {
           // Calculate player position at destination ground
-          const destGroundRadius = this.currentPlanet.depthToRadius(bestDestGroundDepth);
+          const destGroundRadius = this.currentPlanet.floorTopRadius(newTile.index, bestDestGroundDepth);
           playerBottomRadius = destGroundRadius;
           playerTopRadius = destGroundRadius + PlayerConfig.PLAYER_HEIGHT;
         } else {
@@ -1781,7 +1781,7 @@ export class PlanetPlayer {
       const currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, standingTileIndex,
         this.position.distanceTo(this.currentPlanet.center));
       if (currentGroundDepth >= 0) {
-        currentGroundRadius = this.currentPlanet.depthToRadius(currentGroundDepth);
+        currentGroundRadius = this.currentPlanet.floorTopRadius(standingTileIndex, currentGroundDepth);
       }
     }
     // Add step height tolerance - blocks within auto-step range are not walls
@@ -1812,7 +1812,7 @@ export class PlanetPlayer {
       // Skip tiles whose floor is at or below the wall threshold (higher of current or dest ground)
       // These aren't walls - they're walkable ground at the same level or lower
       if (tileFloorDepth >= 0) {
-        const tileFloorRadius = this.currentPlanet.depthToRadius(tileFloorDepth);
+        const tileFloorRadius = this.currentPlanet.floorTopRadius(tileIdx, tileFloorDepth);
         if (tileFloorRadius <= wallThresholdRadius) continue;
       }
 
@@ -1883,7 +1883,7 @@ export class PlanetPlayer {
       currentGroundDepth = findWalkableFloorAtRadius(this.currentPlanet, currentTile.index, playerFeetRadius);
     }
     if (currentGroundDepth < 0) return false; // No current ground, allow movement
-    const currentGroundRadius = this.currentPlanet.depthToRadius(currentGroundDepth);
+    const currentGroundRadius = this.currentPlanet.floorTopRadius(currentTile!.index, currentGroundDepth);
 
     // Find the WALKABLE ground at destination - scan for air-to-solid transitions
     let destGroundDepth = -1;
@@ -1897,7 +1897,7 @@ export class PlanetPlayer {
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
 
       if (isAbovePassable && isCurrentSolid) {
-        const groundRadius = this.currentPlanet.depthToRadius(d);
+        const groundRadius = this.currentPlanet.floorTopRadius(newTile.index, d);
         const heightDiff = groundRadius - currentGroundRadius;
 
         // Can we step to this level?
@@ -1913,7 +1913,7 @@ export class PlanetPlayer {
     if (destGroundDepth < 0) return false; // No walkable ground at destination
 
     // Calculate where player's feet and head would be if standing on destination ground
-    const destGroundRadius = this.currentPlanet.depthToRadius(destGroundDepth);
+    const destGroundRadius = this.currentPlanet.floorTopRadius(newTile.index, destGroundDepth);
     const playerFeetAtDest = destGroundRadius;
     const playerHeadAtDest = destGroundRadius + PlayerConfig.PLAYER_HEIGHT;
 
@@ -2048,7 +2048,7 @@ export class PlanetPlayer {
       const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
 
       if (isAbovePassable && isCurrentSolid) {
-        const floorRadius = this.currentPlanet.depthToRadius(d);
+        const floorRadius = this.currentPlanet.floorTopRadius(tile.index, d);
         walkableFloors.push({ depth: d, radius: floorRadius });
       }
     }
@@ -2200,7 +2200,7 @@ export class PlanetPlayer {
 
     // Calculate ground position for current tile
     // Player position is at FEET level (bottom of player)
-    const groundRadius = groundDepth >= 0 ? this.currentPlanet.depthToRadius(groundDepth) : 0;
+    const groundRadius = groundDepth >= 0 ? this.currentPlanet.floorTopRadius(currentTile!.index, groundDepth) : 0;
     const targetRadius = groundRadius;
 
     // Check if currently on ground (solid blocks only)
@@ -2299,7 +2299,7 @@ export class PlanetPlayer {
           const isCurrentSolid = block !== HexBlockType.AIR && block !== HexBlockType.WATER;
 
           if (isAbovePassable && isCurrentSolid) {
-            const floorRadius = this.currentPlanet.depthToRadius(d);
+            const floorRadius = this.currentPlanet.floorTopRadius(newTile.index, d);
             const heightDiff = floorRadius - groundRadius;
 
             // Can we step/fall to this level? (within AUTO_STEP_HEIGHT up, or any amount down)
@@ -2313,7 +2313,7 @@ export class PlanetPlayer {
         }
       }
 
-      const newGroundRadius = newGroundDepth >= 0 ? this.currentPlanet.depthToRadius(newGroundDepth) : 0;
+      const newGroundRadius = newGroundDepth >= 0 ? this.currentPlanet.floorTopRadius(newTile!.index, newGroundDepth) : 0;
       const newTargetRadius = newGroundRadius; // Position is at feet level
 
       // Check if this would be stepping UP (blocked by AUTO_STEP_HEIGHT)

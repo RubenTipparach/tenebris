@@ -25,6 +25,7 @@ import { cellReader, meshLiquidColumn, cornerLevels, LiquidColumn } from '../wat
 import { edgeNeighbors } from '../shared/voxelLight';
 import { WaterConfig } from '../config/WaterConfig';
 import { surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_CRATER, VOLCANO_RIM } from '../shared/terrainShape';
+import { objectFloorTop } from './ObjectFloors';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -352,6 +353,24 @@ export class Planet {
   // Depth system: 0 = bedrock (innermost), MAX_DEPTH-1 = sky (outermost)
   public depthToRadius(depth: number): number {
     return this.radius - (this.MAX_DEPTH - 1 - depth) * this.BLOCK_HEIGHT;
+  }
+
+  // Placed objects the walker stands on, per tile: their top's radius
+  // (src/planet/ObjectFloors.ts - a launch pad's slab)
+  private objectTops = new Map<number, number>();
+
+  /** A placed object's top on this tile (null = none any more) */
+  public setObjectTop(tileIndex: number, top: number | null): void {
+    if (top === null) this.objectTops.delete(tileIndex);
+    else this.objectTops.set(tileIndex, top);
+  }
+
+  /**
+   * The radius a walker stands at on floor block `depth` of a tile: the
+   * block's top, or the top of an object placed on it (a launch pad)
+   */
+  public floorTopRadius(tileIndex: number, depth: number): number {
+    return objectFloorTop(this.depthToRadius(depth), this.BLOCK_HEIGHT, this.objectTops.get(tileIndex));
   }
 
   // Get sea level depth in new system (0 = bedrock)
