@@ -1003,8 +1003,30 @@
   // Fly the boarded rocket to body `id` and land on it. Returns 'landed',
   // 'crashed', 'fuel' (ran dry), 'gone' or 'timeout'.
   // `siteDir`: where on the body to land, as a unit direction from its centre
-  // (bodies don't spin); without one, the nearest ground straight below
+  // (bodies don't spin); without one, the nearest ground straight below.
+  // Each flight ends with a flight log line - the departure body, the target,
+  // the centre-to-centre gap between them at launch and at the end, the fuel
+  // units at both ends and the flight time - what rocket tuning is checked
+  // against (scripts/rocket-reach.ts PILOT_FACTOR).
   async function flyTo(id, siteDir = null, useChute = false) {
+    const r0 = rc();
+    const fromId = r0 && r0.closestPlanet ? r0.closestPlanet.id : null;
+    const gap = () => {
+      const a = fromId && bodyById(fromId), b = bodyById(id);
+      return a && b ? a.center.distanceTo(b.center).toFixed(0) : '?';
+    };
+    const fuel = () => (rc() ? rc().getFuelUnits().toFixed(0) : '?');
+    const gap0 = r0 ? gap() : '?', fuel0 = fuel(), t0 = performance.now();
+    let res = 'gone';
+    try {
+      res = await flyLeg(id, siteDir, useChute);
+      return res;
+    } finally {
+      say(`flight log: ${fromId}->${id} ${res}, gap ${gap0} m at launch, ${rc() ? gap() : '?'} m at the end, ` +
+        `fuel ${fuel0}->${fuel()} units, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+    }
+  }
+  async function flyLeg(id, siteDir, useChute) {
     const V = T().Vector3;
     const t0 = performance.now();
     let last = performance.now(), lastCentre = null;
@@ -1582,7 +1604,7 @@
     // one engine per stage, at its bottom: a Rocket Engine booster under a
     // vacuum stage - when the frame mass lets it lift off (it didn't, 0.97)
     [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
-    // the vacuum engine alone on a medium tank: TWR 1.24 off Earth, ~1100 m/s (twice the basic rocket)
+    // the vacuum engine alone on a medium tank: a Moon-only stack now (TWR 0.96 off Earth full, so the TWR check skips it here)
     [I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
   ];
   // a better rocket than the basic one: a valid stack with a vacuum engine

@@ -157,9 +157,11 @@ export const ROCKET_CONFIG = {
   // === THE TECH TREE: per-part stats ===
   // Tier 1 (Earth): Rocket Engine + Medium Fuel Tank + Command Module - an
   // Earth <-> Moon rocket and no more (space-exploration: the Moon is the
-  // root of the tree). Hand-flown, Earth -> Moon takes about four fifths of
-  // the tank (the careful simulated pilot: under a third); the trip home is a
-  // refuel on the Moon (ice there, or the starter kit's cargo fuel). What
+  // root of the tree). Hand-flown, Earth -> Moon lands with about 15% of the
+  // tank left (the careful simulated pilot uses 37%; a hand-flown trip is
+  // PILOT_FACTOR = 2.3x that, scripts/rocket-reach.ts) - the Rocket Engine's
+  // Isp is what sets it. The trip home is a refuel on the Moon (ice there,
+  // or the starter kit's cargo fuel). What
   // keeps every Earth-built stack near the Moon:
   //   - a heavy steel tank (200 kg dry for 450 kg of fuel): the rocket
   //     equation flattens out, so more tanks or engines add little (the best
@@ -172,15 +174,17 @@ export const ROCKET_CONFIG = {
   // scripts/rocket-reach.test.ts holds tier 1 to the Moon and each later
   // tier to its route's next hop; scripts/rocket-tech-report.ts prints it all.
   // Tier 2 (Moon titanium): the Vacuum Engine - efficient but weak, it can't
-  // lift off Earth (TWR < 1) but flies fine off the Moon and in space - and
-  // the Large Fuel Tank. Together they reach the other planets.
+  // lift off Earth (no stack it lifts, full, gets past TWR 0.96 there) but
+  // flies fine off the Moon (with a Large Tank: TWR 1.34) and in space - and
+  // the Large Fuel Tank. Together they reach the other planets. The way off
+  // Earth for a vacuum stage is a Rocket Engine booster under it.
   // Tier 3 (openspec industry-and-nuclear): the Nuclear Thermal Engine.
   // Tier 4: the Ion Drive, which needs a Reactor Core in the stack.
   // The derived numbers (delta-v, TWR, Earth->Moon cost) are printed by
   // scripts/rocket-tech-report.ts.
   PARTS: {
-    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 90, boosterOnly: true },
-    [ItemType.VACUUM_ENGINE]: { tier: 2, dryMass: 150, thrust: 26000, specificImpulse: 200 },
+    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 78, boosterOnly: true },
+    [ItemType.VACUUM_ENGINE]: { tier: 2, dryMass: 150, thrust: 20000, specificImpulse: 200 },
     [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },
     [ItemType.FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },  // legacy tank (the Medium tank's numbers)
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
