@@ -35,7 +35,7 @@ export const FALLING_BIT = 0x08;
 export const LEVEL_MASK = 0x07;
 
 /**
- * A cell as the mesher and the smoothing read it: UNKNOWN (column not loaded),
+ * A cell as the mesher reads it: UNKNOWN (column not loaded),
  * AIR, SOLID, CLEAR (a see-through solid: glass, ice), SOURCE, or a flowing
  * cell's byte (>= FLOW_BIT).
  */
@@ -76,12 +76,9 @@ export interface LiquidWorld {
   cellChanged(tile: number, depth: number): void;
 }
 
-/** What the mesher reads: the flowing levels, and where this tick changed a cell, what it was before. */
+/** What the mesher reads: the flowing levels. */
 export interface LiquidView {
   flowAt(tile: number, depth: number): number;
-  prevAt(tile: number, depth: number): number | undefined;
-  /** The tick the current state is (mod 256), stamped on smoothed vertices. */
-  readonly tickStamp: number;
 }
 
 // A cell's key: depth fits in 12 bits (columns are far shorter), the tile index above it
@@ -109,14 +106,11 @@ export class Liquid implements LiquidView {
   private queue: number[] = [];
   private head = 0;
   private readonly waiting = new Set<number>();
-  // what each cell this tick changed was before it (the smoothing's "previous tick")
-  private readonly prev = new Map<number, number>();
   private ticks = 0;
   private accumulator = 0;
 
   constructor(private readonly world: LiquidWorld, private readonly rules: LiquidRules) {}
 
-  get tickStamp(): number { return this.ticks & 255; }
   get tickCount(): number { return this.ticks; }
   get pending(): number { return this.queue.length - this.head; }
 
@@ -124,11 +118,6 @@ export class Liquid implements LiquidView {
   flowAt(tile: number, depth: number): number {
     const col = this.flow.get(tile);
     return col && depth >= 0 && depth < col.length ? col[depth] : 0;
-  }
-
-  /** The cell code before this tick changed it, or undefined if this tick left it alone. */
-  prevAt(tile: number, depth: number): number | undefined {
-    return this.prev.get(keyOf(tile, depth));
   }
 
   /** The cell code (CELL_* or a flow byte) at a cell, as the world has it now. */
@@ -167,15 +156,9 @@ export class Liquid implements LiquidView {
     if (this.accumulator >= tickSeconds) this.accumulator = 0;
   }
 
-  /** How far through the current tick we are, 0..1 (the smoothing's clock). */
-  tickFraction(tickSeconds: number): number {
-    return Math.min(1, Math.max(0, this.accumulator / tickSeconds));
-  }
-
   /** One tick: the queue as it stands, at most once (transformLiquids' rate limit). */
   tick(): number {
     this.ticks++;
-    this.prev.clear();
     const n = Math.min(this.pending, this.rules.maxCellsPerTick);
     let changed = 0;
     for (let c = 0; c < n; c++) {
@@ -196,7 +179,6 @@ export class Liquid implements LiquidView {
     this.queue = [];
     this.head = 0;
     this.waiting.clear();
-    this.prev.clear();
     this.accumulator = 0;
   }
 
@@ -293,8 +275,6 @@ export class Liquid implements LiquidView {
     const newByte = newK === FLOW ? FLOW_BIT | (flowingDown ? FALLING_BIT : 0) | (newL & LEVEL_MASK) : 0;
     if (newK === k0 && (k0 !== FLOW || b0 === newByte)) return false;
 
-    const key = keyOf(tile, depth);
-    if (!this.prev.has(key)) this.prev.set(key, this.codeAt(tile, depth));
     if (newK === SRC) {
       this.setFlow(tile, depth, 0);
       this.world.setSource(tile, depth);

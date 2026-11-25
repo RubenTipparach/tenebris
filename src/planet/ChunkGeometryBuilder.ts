@@ -27,7 +27,6 @@ export interface GeometryData {
   torchLight: number[];
   indices: number[];
   vertexOffset: number;
-  liquidPrev?: number[];  // water only: where each vertex was last liquid tick (src/water/LiquidMesh.ts)
   liquidFlow?: number[];  // water only: the flow texture's direction + face code (src/water/LiquidMesh.ts)
 }
 
@@ -92,7 +91,7 @@ export interface BuildConfig {
   sunDirection: Vec3;
   uvScale: number;
   torches?: TorchData[];
-  liquid?: LiquidView;  // flowing water and last tick's cells (main thread: Planet's Liquid)
+  liquid?: LiquidView;  // flowing water (main thread: Planet's Liquid)
 }
 
 export interface TorchData {
@@ -459,8 +458,7 @@ export function buildChunkGeometryImmediate(
     // Its water (src/water/LiquidMesh.ts)
     meshLiquidColumn(
       { tileIndex: column.tileIndex, vertices: column.tile.vertices, center: column.tile.center, edges },
-      column.blocks.length, read, liquid ? (t, d) => liquid.prevAt(t, d) : null, liquid?.tickStamp ?? 0,
-      config, () => bufferFor(chunkData, 'water'));
+      column.blocks.length, read, config, () => bufferFor(chunkData, 'water'));
   }
 
   return chunkData;
@@ -494,9 +492,6 @@ export function createBufferGeometryFromData(data: GeometryData): THREE.BufferGe
     geometry.setAttribute('color', new THREE.Float32BufferAttribute(data.colors, 3));
   }
 
-  if (data.liquidPrev && data.liquidPrev.length > 0) {
-    geometry.setAttribute('liquidPrev', new THREE.Float32BufferAttribute(data.liquidPrev, 4));
-  }
 
   if (data.liquidFlow && data.liquidFlow.length > 0) {
 

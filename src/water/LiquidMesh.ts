@@ -7,20 +7,16 @@
 //   - a flowing cell's top is sloped: each corner sits at the level of the
 //     cells sharing it (full where any is a source or has water on it, at the
 //     floor where two or more are air, else the mean of the flowing levels);
-//   - sides are drawn only over air (a solid, or another wet cell, has none);
+//   - sides are drawn over air (a solid, or another wet cell, has none);
 //   - a cell with water on it has no top and full-height sides, so a fall
-//     reads as one column;
+//     reads as one column; beside water that is not full it draws the strip
+//     from that water's sheet up to its top (sideFloor), so a fall meets the
+//     pool it lands in with no slit;
 //   - sources (the ocean, a placed bucket) are flat at the sheet height, as
 //     they always were.
-// And the smoothing between two ticks (PBD's Pour tab): each vertex carries
-// where it was last tick (liquidPrev.xyz) and how to get here (liquidPrev.w),
-// and water.vert eases it on the tick clock:
-//   S1 the same cell both ticks: its levels ease (smoothstep);
-//   S2 a newly wet cell starts as a thin sheet on the side its water came
-//      from and its front sweeps across (no fade in place);
-//   S3 a newly wet cell under water grows down from the water above;
-//   S4 a dried cell is drawn one more tick, shrinking toward where it drained,
-//      then hidden.
+// The mesh is the water as it stands this tick, nothing in between: a
+// chunk's water is remeshed on its own (Planet.rebuildChunkWater) each tick
+// its water changes, so there is no between-tick smoothing to carry.
 // And the flow texture (PBD water-look.js, Tenebris C's water_fs): each vertex
 // carries liquidFlow - xyz a direction, w its face code (FACE_* + 3 x the
 // axis a cap's tile is projected along). A cap's xyz is its flow (the corner
@@ -67,8 +63,6 @@ export interface WaterTarget {
   torchLight: number[];
   indices: number[];
   vertexOffset: number;
-  /** Per vertex: where it was last tick (xyz) and its smoothing mode + 4 x tick stamp (w). */
-  liquidPrev?: number[];
   /** Per vertex: the flow texture's direction (xyz) and face code (w) - see FACE_*. */
   liquidFlow?: number[];
 }
@@ -81,12 +75,6 @@ export interface LiquidColumn {
   edges: number[];
 }
 
-/** How a vertex moves between ticks (liquidPrev.w mod 4; water.vert reads it). */
-export const TWEEN_STATIC = 0;
-export const TWEEN_EASE = 1;
-export const TWEEN_SWEEP = 2;
-export const TWEEN_GONE = 3;
-
 /** A face's kind for the flow texture (liquidFlow.w mod 3; water.vert reads it). */
 export const FACE_CAP = 0;     // a top or a bottom: the tile pans along its flow
 export const FACE_FALL = 1;    // a flowing cell's side: the tile stands, panning down, with froth
@@ -94,14 +82,13 @@ export const FACE_STILL = 2;   // a source's side: the tile stands still
 
 type V = [number, number, number];
 /** f: the face's liquidFlow (direction xyz, face code w), the same on all its vertices. */
-interface Piece { id: string; v: V[]; alt: V[]; n: V[]; uv: number[]; f: [number, number, number, number]; }
+interface Piece { v: V[]; n: V[]; uv: number[]; f: [number, number, number, number]; }
 
 const norm = (a: V): V => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
 const scale = (a: V, s: number): V => [a[0] * s, a[1] * s, a[2] * s];
 const sub = (a: V, b: V): V => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const dot = (a: V, b: V): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: V, b: V): V => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const len = (a: V): number => Math.hypot(a[0], a[1], a[2]);
 
 interface CornerCell { code: number; above: boolean; }
 
@@ -174,6 +161,27 @@ export function capAxis(up: V): number {
   return a[0] >= a[1] && a[0] >= a[2] ? 0 : a[1] >= a[2] ? 1 : 2;
 }
 
+/**
+ * Where a wet cell's side toward one neighbour starts (radius), or null for
+ * no side. nb / nbAbove: the neighbour's cell and the one on it; wetAbove:
+ * water is on this cell (a fall, or the pool cell a fall lands in), so the
+ * cell is full to its top; sheet: the radius of a full level (a surface
+ * offset under the top).
+ *   - over air: the whole side, from the floor;
+ *   - a full (wet-above) cell beside water that is NOT full: the neighbour's
+ *     surface meets this cell's edge at the sheet (its shared corners are full,
+ *     cornerLevel), a surface offset under this cell's top, where the water on
+ *     this cell starts - so the strip from the sheet to the top is drawn, or a
+ *     fall shows a slit at its foot and wherever it passes lower water;
+ *   - else none: solid, clear, unknown, or water as full as this cell (two
+ *     faces there would z-fight).
+ */
+export function sideFloor(nb: number, nbAbove: number, wetAbove: boolean, floor: number, sheet: number): number | null {
+  if (nb === CELL_AIR) return floor;
+  if (wetAbove && isWetCode(nb) && !isWetCode(nbAbove)) return sheet;
+  return null;
+}
+
 class ColumnShape {
   readonly n: number;
   readonly dirs: V[];
@@ -201,7 +209,7 @@ class ColumnShape {
     return f + level * (this.topR(depth) - this.dims.waterSurfaceOffset - f);
   }
 
-  /** The pieces of one wet cell in one tick: 'top', 's<edge>' (a side over air), 'b' (a bottom over air). */
+  /** The pieces of one wet cell: its top, its sides (sideFloor), its bottom over air. */
   pieces(view: CellReader, depth: number): Piece[] {
     const t = this.col.tileIndex, n = this.n, dirs = this.dirs;
     const above = view(t, depth + 1);
@@ -236,23 +244,23 @@ class ColumnShape {
         const offs = dirs.map(d => scale(sub(d, scale(this.cdir, dot(d, this.cdir))), sheet));
         fl = capFlow(this.cdir, offs, lv.map(l => this.levelR(depth, l)));
       }
-      out.push({ id: 'top', v, alt: v.map(p => scale(norm(p), top)), n: nn, uv, f: [fl[0], fl[1], fl[2], capCode] });
+      out.push({ v, n: nn, uv, f: [fl[0], fl[1], fl[2], capCode] });
     }
 
-    // The sides: only over air
+    // The sides: over air, floor to surface; and the seam strip (sideFloor)
     for (let s = 0; s < n; s++) {
       const nb = this.col.edges[s];
-      if (nb < 0 || view(nb, depth) !== CELL_AIR) continue;
+      if (nb < 0) continue;
+      const bottom = sideFloor(view(nb, depth), view(nb, depth + 1), wetAbove, floor, this.levelR(depth, 1));
+      if (bottom === null) continue;
       const z = (s + 1) % n;
       const ta = wetAbove ? top : this.levelR(depth, lv[s]);
       const tz = wetAbove ? top : this.levelR(depth, lv[z]);
-      const A0 = scale(dirs[s], floor), Z0 = scale(dirs[z], floor), Z1 = scale(dirs[z], tz), A1 = scale(dirs[s], ta);
+      const A0 = scale(dirs[s], bottom), Z0 = scale(dirs[z], bottom), Z1 = scale(dirs[z], tz), A1 = scale(dirs[s], ta);
       const sn = norm(cross(sub(Z0, A0), sub(A1, A0)));
       const along = norm(sub(Z0, A0));
       out.push({
-        id: 's' + s,
         v: [A0, Z0, Z1, A0, Z1, A1],
-        alt: [A1, Z1, Z1, A1, Z1, A1],
         n: [sn, sn, sn, sn, sn, sn],
         uv: [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1],
         f: [along[0], along[1], along[2], sideCode],
@@ -269,119 +277,49 @@ class ColumnShape {
         nn.push(bn, bn, bn);
         uv.push(0.5, 0.5, this.uvs[j][0], this.uvs[j][1], this.uvs[i][0], this.uvs[i][1]);
       }
-      out.push({ id: 'b', v, alt: v, n: nn, uv, f: [0, 0, 0, capCode] });
+      out.push({ v, n: nn, uv, f: [0, 0, 0, capCode] });
     }
     return out;
   }
-
-  /** The edge whose water is highest (a source counts above any level), or -1. */
-  bestSide(view: CellReader, depth: number): number {
-    let best = -1, bv = -1;
-    for (let s = 0; s < this.n; s++) {
-      const nb = this.col.edges[s];
-      if (nb < 0) continue;
-      const c = view(nb, depth);
-      const v = c === CELL_SOURCE ? LIQUID_LEVEL_MAX + 1 : isFlowCode(c) ? levelOf(c) : -1;
-      if (v > bv) { bv = v; best = s; }
-    }
-    return best;
-  }
-
-  /**
-   * Where a cell that appears starts, or one that dries ends: squashed to a
-   * thin sheet against an edge, or pressed up to its top / down to its floor.
-   */
-  squasher(depth: number, how: { side: number } | { to: 'top' | 'floor' }): (p: V) => V {
-    const floor = this.floorR(depth);
-    if ('to' in how) {
-      const r = how.to === 'top' ? this.topR(depth) : floor;
-      return p => scale(norm(p), r);
-    }
-    const a = this.dirs[how.side], b = this.dirs[(how.side + 1) % this.n];
-    const mid: V = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
-    const out = norm(sub(mid, scale(this.cdir, dot(mid, this.cdir))));   // tangent, toward that edge
-    const sheet = WaterConfig.ARRIVE_SHEET;
-    return p => {
-      const r = len(p);
-      const d = dot(sub(p, scale(mid, r)), out);    // <= 0 inside the cell
-      const onEdge = sub(p, scale(out, d));
-      return scale(norm(onEdge), floor + (r - floor) * sheet);
-    };
-  }
 }
 
-function emit(out: WaterTarget, piece: Piece, cur: V[], prev: V[], mode: number, stamp: number): void {
+function emit(out: WaterTarget, piece: Piece): void {
   const base = out.vertexOffset;
-  const lp = (out.liquidPrev ??= []);
   const lf = (out.liquidFlow ??= []);
   const f = piece.f;
-  const w = mode === TWEEN_STATIC ? 0 : mode + 4 * stamp;
-  for (let j = 0; j < cur.length; j++) {
-    const p = cur[j], q = prev[j], nn = piece.n[j];
+  for (let j = 0; j < piece.v.length; j++) {
+    const p = piece.v[j], nn = piece.n[j];
     out.positions.push(p[0], p[1], p[2]);
     out.normals.push(nn[0], nn[1], nn[2]);
     out.uvs.push(piece.uv[j * 2], piece.uv[j * 2 + 1]);
     out.colors.push(1, 1, 1);
     out.skyLight.push(1);
     out.torchLight.push(0);
-    lp.push(q[0], q[1], q[2], w);
     lf.push(f[0], f[1], f[2], f[3]);
     out.indices.push(base + j);
   }
-  out.vertexOffset += cur.length;
+  out.vertexOffset += piece.v.length;
 }
 
 /**
- * Mesh every water cell of one column into the water buffer. `prev` is the
- * cell as the last tick left it (undefined: unchanged); null draws this
- * tick's water at rest, with no smoothing (the worker paths). `target` is
- * asked for the water buffer only when the column has water.
+ * Mesh every water cell of one column into the water buffer, as the water
+ * stands now. `target` is asked for the water buffer only when the column
+ * has water.
  */
 export function meshLiquidColumn(
   col: LiquidColumn,
   height: number,
   cur: CellReader,
-  prev: ((tile: number, depth: number) => number | undefined) | null,
-  tickStamp: number,
   dims: LiquidDims,
   target: () => WaterTarget,
 ): void {
   const t = col.tileIndex;
   let shape: ColumnShape | null = null;
   let out: WaterTarget = null!;
-  const P: CellReader | null = prev ? (tt, d) => prev(tt, d) ?? cur(tt, d) : null;
   for (let depth = 0; depth < height; depth++) {
-    const wc = isWetCode(cur(t, depth));
-    const wp = P ? isWetCode(P(t, depth)) : wc;
-    if (!wc && !wp) continue;
+    if (!isWetCode(cur(t, depth))) continue;
     if (!shape) { shape = new ColumnShape(col, dims); out = target(); }
-    if (!P) {
-      for (const c of shape.pieces(cur, depth)) emit(out, c, c.v, c.v, TWEEN_STATIC, tickStamp);
-    } else if (wc && wp) {
-      // S1: the same cell in both ticks; its levels ease
-      const cp = shape.pieces(cur, depth);
-      const byId = new Map(shape.pieces(P, depth).map(p => [p.id, p]));
-      for (const c of cp) {
-        const p = byId.get(c.id);
-        if (p) { emit(out, c, c.v, p.v, TWEEN_EASE, tickStamp); byId.delete(c.id); }
-        else emit(out, c, c.v, c.alt, TWEEN_SWEEP, tickStamp);        // new this tick: grows from its collapsed self
-      }
-      for (const p of byId.values()) emit(out, p, p.alt, p.v, TWEEN_GONE, tickStamp);   // gone this tick: collapses away
-    } else if (wc) {
-      // S2 / S3: newly wet
-      let how: { side: number } | { to: 'top' | 'floor' };
-      if (isWetCode(P(t, depth + 1))) how = { to: 'top' };            // S3: falls in from the water above
-      else { const s = shape.bestSide(P, depth); how = s >= 0 ? { side: s } : { to: 'top' }; }
-      const sq = shape.squasher(depth, how);
-      for (const c of shape.pieces(cur, depth)) emit(out, c, c.v, c.v.map(sq), TWEEN_SWEEP, tickStamp);
-    } else {
-      // S4: dried; drawn one more tick, shrinking back toward where it drained
-      let how: { side: number } | { to: 'top' | 'floor' };
-      if (isWetCode(cur(t, depth - 1))) how = { to: 'floor' };        // a fall's tail drains into the water under it
-      else { const s = shape.bestSide(cur, depth); how = s >= 0 ? { side: s } : { to: 'floor' }; }
-      const sq = shape.squasher(depth, how);
-      for (const p of shape.pieces(P, depth)) emit(out, p, p.v.map(sq), p.v, TWEEN_GONE, tickStamp);
-    }
+    for (const piece of shape.pieces(cur, depth)) emit(out, piece);
   }
 }
 

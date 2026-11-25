@@ -10,7 +10,7 @@
 
 - [x] 2.1 `src/water/LiquidMesh.ts`: corner levels, sloped tops, sides over air, columns under water, bottoms over air. Verify: test 7.
 - [x] 2.2 The three column meshers call it; the three water-wall builders are deleted; flowing bytes go to the worker as triples. Verify: tsc, vite build.
-- [x] 2.3 S1-S4: `liquidPrev` per vertex, `liquidT` / `liquidTick` in `water.vert` (vertex position only). Verify: test 8; headless frames mid-tick.
+- [x] 2.3 ~~S1-S4 smoothing~~ removed: water changes remesh only the chunk's water (`Planet.rebuildChunkWater`), the mesh shows the current tick. Verify: test 13 (water never changes the terrain buffers); the rebuild probe in PR #129.
 
 ## 3. Under water
 

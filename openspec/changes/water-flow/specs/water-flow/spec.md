@@ -76,17 +76,24 @@ existing sheet height. The water material's look SHALL NOT change.
 - **WHEN** every neighbour of a flowing cell holds water
 - **THEN** the cell is drawn with a top and no sides
 
-### Requirement: Water eases between ticks
+### Requirement: Water remeshes alone, as it stands
 
-Near the player, water SHALL be drawn between two ticks rather than popping:
-a cell wet in both eases its levels; a newly wet cell sweeps in from the
-side its water came from, or grows down from the water above; a dried cell
-is drawn one more tick shrinking toward where it drained, then hidden.
+The water mesh SHALL show the water as the current tick left it (no
+between-tick smoothing; owner: "animation not necessary if you are
+submitting drawcalls/recalculate every frame"). A tick that changes water
+SHALL rebuild only the water mesh of each chunk it touched; the chunk's
+terrain meshes SHALL be left alone (the terrain mesher sees water as open,
+so water never changes them). Block edits still rebuild the whole chunk.
 
-#### Scenario: A new cell
+#### Scenario: Water flows near the player
 
-- **WHEN** a tick wets a cell
-- **THEN** its vertices start squashed against the side its water came from and reach their place by the end of the tick
+- **WHEN** a tick changes cells in a chunk with its own meshes
+- **THEN** that chunk's water mesh is rebuilt the same frame and its terrain meshes are untouched
+
+#### Scenario: A fall meets lower water
+
+- **WHEN** a cell with water on it borders water that is not full
+- **THEN** its side is drawn from that water's sheet up to its top, so no slit shows between the fall and the pool
 
 ### Requirement: Under water means below the drawn surface
 
