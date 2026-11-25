@@ -76,3 +76,31 @@ test('letting go cancels, and it never fires on the pad', () => {
   (pad as unknown as SD).updateSelfDestruct(HOLD * 2, { selfDestruct: true });
   assert.equal(pad.getSelfDestructProgress(), 0, 'not launched: no self-destruct');
 });
+
+// ---- refuelling only on a body's ground (owner: exiting and re-entering in space refuelled the ship)
+type Fuelled = { closestPlanet: unknown; position: InstanceType<typeof THREE.Vector3>; setFuelTotal: (n: number) => void; stageCapacities: number[] };
+function tanked(altitude: number | null): Ctl {
+  const c = new RocketController(new THREE.Scene());
+  const f = c as unknown as Fuelled;
+  f.stageCapacities = [100];
+  f.setFuelTotal(10);
+  if (altitude !== null) {
+    f.closestPlanet = { id: 'moon', center: new THREE.Vector3(), radius: 50, gravityStrength: 0.2, name: 'Moon' };
+    f.position = new THREE.Vector3(0, 50 + altitude, 0);
+  }
+  return c;
+}
+
+test('refuelling draws fuel on the ground, and never floating in space', () => {
+  let asked = 0;
+  RocketController.fuelSource = () => { asked++; return 0; };
+  try {
+    tanked(1).refuel();
+    assert.equal(asked, 1, 'on the ground it draws from the fuel source');
+    tanked(200).refuel();
+    tanked(null).refuel();   // near no body at all
+    assert.equal(asked, 1, 'in space it draws nothing');
+  } finally {
+    RocketController.fuelSource = null;
+  }
+});

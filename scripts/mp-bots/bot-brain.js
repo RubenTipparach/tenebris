@@ -32,6 +32,7 @@
 
   let I = null;          // ItemType
   let ITEM_DATA = null;  // per-item data (rocket part heights)
+  let STACK_OK = () => true;  // the pad's stack rules (stackProblems)
   let B = null;          // HexBlockType
   let RECIPES = null;    // CRAFTING_RECIPES
   let SMELTS = null;     // furnace SMELTING_RECIPES
@@ -45,6 +46,17 @@
   const st = {
     role: null, running: false, task: 'idle', goal: '', log: [], stuck: 0,
     home: null, furnaceTile: null, started: Date.now(), errors: 0,
+  };
+  // Bots play on a shared world: they don't dig to get somewhere, only for
+  // what they gather (ore, stone, clay) and out of their own pits
+  const GENTLE = {
+    WALK_SIDESTEPS: 4,      // side-steps when stuck walking, then give up
+    AROUND_M: 6,            // a detour this far to the side when a walk fails
+    MACHINE_SIDESTEPS: 3,   // moves to see a machine past something in the way
+    MACHINE_OPEN_TRIES: 3,  // failed opens before a machine is given up for another
+    KEEP_BLOCKS: 16,        // building blocks kept when leaving dug-up rock behind (to climb out of a pit)
+    ORE_SCAN_TILES: 16,     // how far round it looks up ore in the world data...
+    ORE_SCAN_DEPTH: 24,     // ...and how deep, before digging toward one
   };
   const say = (msg) => {
     const line = `${new Date().toISOString().slice(11, 19)} ${msg}`;
@@ -71,6 +83,8 @@
     const cookMod = await import(`${BASE}/config/CookingConfig.ts`);
     COOKS = Object.entries(cookMod.COOKERS).flatMap(([kind, c]) => c.recipes.map(r => ({ kind, ...r })));
     BODY_RES = (await import(`${BASE}/config/Missions.ts`)).BODY_RESOURCES || {};
+    const perfMod = await import(`${BASE}/rocket/RocketPerformance.ts`);
+    STACK_OK = (parts) => perfMod.stackProblems(parts).length === 0;
     I = inventory.ItemType;
     ITEM_DATA = inventory.ITEM_DATA;
     B = blocks.HexBlockType;
@@ -256,16 +270,14 @@
             stalls++;
             if (stalls <= 3) { await tap('Space', 250); }
             else {
-              // a wall: dig through it at head and foot height; if that
-              // didn't free it last time (a machine, not a block), step aside
+              // a wall: step aside and hop (bots don't dig through the world
+              // to get somewhere - it's other players' world too); give up
+              // after a few tries
               key('KeyW', false);
               digs++;
-              if (digs % 2 === 0) {
-                const side = Math.random() < 0.5 ? 'KeyA' : 'KeyD';
-                key(side, true); key('Space', true); await sleep(900); key('Space', false); await sleep(300); key(side, false);
-              } else {
-                await clearAhead(flat);
-              }
+              if (digs > GENTLE.WALK_SIDESTEPS) return false;
+              const side = digs % 2 ? 'KeyA' : 'KeyD';
+              key(side, true); key('Space', true); await sleep(900); key('Space', false); await sleep(300); key(side, false);
               stalls = 1;
             }
           } else stalls = 0;
@@ -394,21 +406,20 @@
       if (b === B.WATER) return false;
       await mineBlock(tile, d, 15000);
       await sleep(400); // fall into the hole
-      await mineNearbyOres(2);
     }
     return pred();
   }
 
   // Ore blocks within `radius` tiles that touch air (visible from a tunnel)
   const ORES = () => [B.ORE_COAL, B.ORE_IRON, B.ORE_COPPER, B.ORE_GOLD, B.ORE_ALUMINUM, B.ORE_LITHIUM, B.ORE_COBALT];
-  function oreAround(radius, wanted) {
+  function oreAround(radius, wanted, below = 6) {
     const p = P();
     const pos = player().position;
     const fd = feetDepth();
     const out = [];
     for (const t of tilesWithin(myTile(), radius)) {
       if (!p.isTileLoaded(t)) continue;
-      for (let d = Math.max(1, fd - 6); d <= fd + 4; d++) {
+      for (let d = Math.max(1, fd - below); d <= fd + 4; d++) {
         const b = p.getBlock(t, d);
         if (wanted.includes(b) && !(st.badDig || []).includes(`${t}:${d}`)) out.push({ tile: t, depth: d, block: b, dist: blockCenter(t, d).distanceTo(pos) });
       }
@@ -417,8 +428,9 @@
   }
 
   // Mine any ore the bot can reach from where it stands
-  async function mineNearbyOres(radius = 2) {
-    const want = ORES();
+  async function mineNearbyOres(radius = 2, wanted = null) {
+    // only ore it is after (it used to take every ore by its tunnel)
+    const want = wanted || [];
     for (const o of oreAround(radius, want)) {
       if (o.dist > 5) continue;
       await mineBlock(o.tile, o.depth, 15000);
@@ -623,8 +635,13 @@
   async function approach(target, arrive = 2.2) {
     await toSurface();
     if (!(await walkTo(target, arrive, 40000))) {
-      say('cannot walk there - digging toward it');
-      await tunnelTo(target, arrive);
+      // a detour round the side, then give up (no tunnelling through the world)
+      const pos = player().position, up = upAt(pos);
+      const flat = target.clone().sub(pos); flat.addScaledVector(up, -flat.dot(up));
+      const side = new (T().Vector3)().crossVectors(up, flat).normalize().multiplyScalar(GENTLE.AROUND_M * (Math.random() < 0.5 ? 1 : -1));
+      say('cannot walk there - trying a way round');
+      await walkTo(pos.clone().add(side).addScaledVector(flat, 0.5), 1.6, 15000);
+      if (!(await walkTo(target, arrive, 25000))) { say('could not get there - leaving it'); return false; }
     }
     const pos = player().position;
     const up = upAt(pos);
@@ -657,8 +674,12 @@
       if (!h || h.point.distanceTo(eye()) >= far - 0.35) return;
       const b = P().getBlock(h.tileIndex, h.depth);
       if (b === B.AIR || b === B.WATER || h.depth <= 0) return;
-      say(`a block is in the way of the machine - mining it`);
-      await mineBlock(h.tileIndex, h.depth, 8000);
+      if (k >= GENTLE.MACHINE_SIDESTEPS) return;
+      // something in the way: step round it for a clear look (never mine it)
+      const pos = player().position, up = upAt(pos);
+      const to = target.clone().sub(pos); to.addScaledVector(up, -to.dot(up));
+      const side = new (T().Vector3)().crossVectors(up, to).normalize().multiplyScalar(k % 2 ? -2 : 2);
+      await walkTo(pos.clone().add(side), 0.8, 4000);
     }
   }
 
@@ -744,16 +765,18 @@
   }
 
   // ---- water ---------------------------------------------------------------
-  function nearestWaterTile(radius = 14) {
+  // `shore`: only water with dry ground beside it (a hydro generator's cable goes there)
+  function nearestWaterTile(radius = 14, shore = false) {
     const p = P();
     const pos = player().position;
     let best = null, bd = 1e9;
     for (const t of tilesWithin(myTile(), radius)) {
-      if (!p.isTileLoaded(t) || (st.badWater || []).includes(t)) continue;
+      if (!p.isTileLoaded(t) || (st.badWater || []).includes(t) || badMachine(t)) continue;
       const top = p.topBlockOf(t);
       if (top !== B.WATER) continue;
       // a pond, not a puddle in a hole: water on two sides at least
       if (neighbors(t).filter(n => p.topBlockOf(n) === B.WATER).length < 2) continue;
+      if (shore && !neighbors(t).some(isDryTile)) continue;
       const tt = p.getTileByIndex(t);
       const d = tt.center.clone().add(p.center).distanceTo(pos);
       if (d < bd) { bd = d; best = t; }
@@ -980,8 +1003,30 @@
   // Fly the boarded rocket to body `id` and land on it. Returns 'landed',
   // 'crashed', 'fuel' (ran dry), 'gone' or 'timeout'.
   // `siteDir`: where on the body to land, as a unit direction from its centre
-  // (bodies don't spin); without one, the nearest ground straight below
+  // (bodies don't spin); without one, the nearest ground straight below.
+  // Each flight ends with a flight log line - the departure body, the target,
+  // the centre-to-centre gap between them at launch and at the end, the fuel
+  // units at both ends and the flight time - what rocket tuning is checked
+  // against (scripts/rocket-reach.ts PILOT_FACTOR).
   async function flyTo(id, siteDir = null, useChute = false) {
+    const r0 = rc();
+    const fromId = r0 && r0.closestPlanet ? r0.closestPlanet.id : null;
+    const gap = () => {
+      const a = fromId && bodyById(fromId), b = bodyById(id);
+      return a && b ? a.center.distanceTo(b.center).toFixed(0) : '?';
+    };
+    const fuel = () => (rc() ? rc().getFuelUnits().toFixed(0) : '?');
+    const gap0 = r0 ? gap() : '?', fuel0 = fuel(), t0 = performance.now();
+    let res = 'gone';
+    try {
+      res = await flyLeg(id, siteDir, useChute);
+      return res;
+    } finally {
+      say(`flight log: ${fromId}->${id} ${res}, gap ${gap0} m at launch, ${rc() ? gap() : '?'} m at the end, ` +
+        `fuel ${fuel0}->${fuel()} units, ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+    }
+  }
+  async function flyLeg(id, siteDir, useChute) {
     const V = T().Vector3;
     const t0 = performance.now();
     let last = performance.now(), lastCentre = null;
@@ -1168,8 +1213,10 @@
   function rocketPad() {
     const lp = bi().launchPadManager;
     let mySites = [];
-    try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
-    const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0 && !padUnderwater(p));
+    try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
+    // a rocket standing on the pad that may fly (its stack passes the rules)
+    const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
+    const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0 && !padUnderwater(p) && !away.has(p) && STACK_OK(p.rocketParts.map(q => q.itemType)));
     const pos = player().position;
     const d = (p) => padCentre(p).distanceTo(pos);
     const mine = pads.filter(p => [...p.hexes.keys()].some(t => mySites.includes(t)));
@@ -1235,10 +1282,17 @@
   }
   // The rocket to fly from here, as fuel / cargo / load / board steps
   const CRAFT_NEAR_M = 150;
-  function homeCraft() {
+  async function homeCraft() {
     // an upgraded (staged) rocket standing on our pad comes first
-    const up = padHere();
-    if (up && up.rocketParts.some(p => p.itemType === I.STAGE_SEPARATOR)) {
+    // the staged rocket with the most fuel aboard (don't fill a second one)
+    const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
+    let up = bi().launchPadManager.getLaunchPads()
+      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && isUpgraded(p.rocketParts.map(q => q.itemType)))
+      .sort((a, b) => (b.fuel ?? 0) - (a.fuel ?? 0))[0];
+    // only a rocket that can lift off where it stands (a vacuum engine can't off Earth)
+    const lifts = async (pad) => pad && await liftTWR(pad.rocketParts.map(q => q.itemType), bodyGravity(bodyId())) >= MIN_LIFT_TWR;
+    if (up && !(await lifts(up))) up = null;
+    if (up) {
       return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
     }
     const lr = nearestLanded();
@@ -1275,7 +1329,7 @@
       };
     }
     const pad = rocketPad();
-    if (!pad) return null;
+    if (!pad || !(await lifts(pad))) return null;
     return { pad, cargo: () => pad.cargo, fuel: () => fuelPad(pad), load: (items) => loadCargo(pad, items), board: () => boardPad(pad) };
   }
   // Move every stack of `items` from the inventory into the open storage panel showing `slots`
@@ -1303,7 +1357,12 @@
   async function dumpJunk(rocket, maxMs) {
     const keep = alwaysKeep();
     const t0 = performance.now();
-    const junk = () => inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined);
+    // one stack of building blocks stays: it is how the bot climbs out of a
+    // pit (pillarUpTo) - without it, it died in its own hole on the Moon
+    const placeable = inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined);
+    const pillarType = placeable.sort((a, b) => b.quantity - a.quantity)[0]?.itemType;
+    const junk = () => inv().getAllSlots().filter(x => x.itemType && x.quantity && !keep.has(x.itemType) && B[itemName(x.itemType)] !== undefined
+      && !(x.itemType === pillarType && count(pillarType) <= GENTLE.KEEP_BLOCKS));
     if (!junk().length) return;
     st.task = 'leaving the dug-up rock behind';
     let placed = 0;
@@ -1396,6 +1455,116 @@
     const b = (lrm.planets || []).find(p => p.id === id);
     return b ? b.center : null;
   }
+  // Pad sites are tile indices: each world keeps its own list (Earth's keys unchanged)
+  function padKey(name) { const b = bodyId(); return !b || b === 'earth' ? name : `${name}_${b}`; }
+
+  // ---- a launch site on the Moon ------------------------------------------
+  // Tier 2 (vacuum engine + large tank) can't lift off Earth but flies off the
+  // Moon: the bot ferries a pad kit there in a basic rocket's cargo hold (only
+  // the hold flies), lays the pad, raises the tower, builds the rocket and
+  // fuels it with rocket fuel made from Moon ice.
+  const MOON = 'moon';
+  const MOON_ROCKET = () => [I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE];
+  const MOON_TOWER = 4;   // segments: vacuum engine 1 + large tank 2 + command module 1
+  const MOON_KITS = () => ({
+    pad: [[I.LAUNCH_PAD_BLOCK, 7], [I.LAUNCH_PAD_SEGMENT, MOON_TOWER]],
+    tower: [[I.LAUNCH_PAD_SEGMENT, MOON_TOWER]],
+    rocket: MOON_ROCKET().map(t => [t, 1]),
+  });
+  function padsOn(body) { return bi().launchPadManager.getLaunchPads().filter(p => bi().padPlanetId(p) === body); }
+  function moonSiteState() {
+    const pads = padsOn(MOON).filter(p => p.isComplete);
+    if (!pads.length) return 'pad';
+    // the tower goes up on the same trip as the pad (the hold can't take it again with the rocket)
+    if (!pads.some(p => p.segmentCount >= MOON_TOWER)) return 'tower';
+    const built = pads.find(p => p.rocketParts.some(q => q.itemType === I.VACUUM_ENGINE) && STACK_OK(p.rocketParts.map(q => q.itemType)));
+    if (!built) return 'rocket';
+    return (built.fuel ?? 0) > 0 ? 'done' : 'fuel';
+  }
+  // Earth: gather the next kit and fly it out. Moon: unload it and build.
+  async function moonBase() {
+    const state = moonSiteState();
+    if (state === 'done') { st.moonBase = false; say('the Moon launch site is ready: pad, tower, vacuum rocket, fuel'); return; }
+    const here = bodyId();
+    if (here === 'earth') {
+      if (state === 'fuel') { st.moonBase = false; return; }   // the fuel is made on the Moon from its ice
+      const kit = MOON_KITS()[state];
+      for (const [t, n] of kit) {
+        if (count(t) < n) { st.task = `getting ${n} ${itemName(t)} for the Moon site`; say(`getting ${n} ${itemName(t)} for the Moon launch site (have ${count(t)})`); await obtain(t, n); return; }
+      }
+      // fly it out in the hold, with the fuel for the trip home
+      st.expedition = null;
+      st.moonKit = state;
+      try { localStorage.setItem('bot_moonKit', state); } catch {}
+      await visitBody(MOON, 'earth', kit.map(([t]) => t));
+      return;
+    }
+    if (here === MOON) {
+      if (breathLow()) { await restInCabin(); return; }
+      // the kit out of the hold first
+      if (await unloadKit()) return;
+      // no kit for this stage here (it waits on Earth): fly home for it
+      const kit = MOON_KITS()[state];
+      if (kit && (state === 'pad' ? count(I.LAUNCH_PAD_BLOCK) < 1 : state === 'tower' ? count(I.LAUNCH_PAD_SEGMENT) < 1 : kit.some(([t]) => count(t) < 1))) {
+        say(`the Moon site needs the ${state} kit from Earth - flying home for it`);
+        await visitBody(MOON);
+        return;
+      }
+      st.abortIf = breathLow;
+      try {
+        if (state === 'pad') { await PLAYBOOK.pad(); return; }
+        if (state === 'tower') {
+          const pad = padsOn(MOON).find(p => p.isComplete);
+          const ui = pad && await openPad(pad);
+          if (!ui) return;
+          while (pad.segmentCount < MOON_TOWER && count(I.LAUNCH_PAD_SEGMENT) > 0) {
+            const h = pad.segmentCount;
+            ui.handleSegmentSlotClick(h);
+            await sleep(300);
+            if (pad.segmentCount === h) break;
+          }
+          closeMenus();
+          say(`Moon launch tower: ${pad.segmentCount} segments`);
+          return;
+        }
+        if (state === 'rocket') {
+          const r = await upgradeRocket(MOON_ROCKET(), bodyGravity(MOON));
+          if (r === false) say('could not build the Moon rocket yet');
+          return;
+        }
+        if (state === 'fuel') {
+          const pad = padsOn(MOON).find(p => p.isComplete && p.rocketParts.length);
+          if (pad) await fuelPad(pad);
+          return;
+        }
+      } finally { st.abortIf = null; st.inAbort = false; }
+    }
+  }
+  // Take the kit (everything but the fuel for home) out of the parked rocket's hold
+  async function unloadKit() {
+    const lr = nearestLanded();
+    if (!lr || !(lr.cargo || []).length) return false;
+    const fuelItems = new Set((await fuelTable()).map(f => f.itemType).concat([I.BUCKET]));
+    if (!lr.cargo.some(x => x.itemType && x.quantity && !fuelItems.has(x.itemType))) return false;
+    const ui = await openLanded(lr);
+    if (!ui) return false;
+    ui.container.querySelector('.cargo-btn').click();
+    await sleep(500);
+    const sui = bi().storageUI;
+    let took = 0;
+    if (sui.isMenuOpen()) for (let i = 0; i < lr.cargo.length; i++) {
+      const x = lr.cargo[i];
+      if (x.itemType && x.quantity && !fuelItems.has(x.itemType)) { sui.handleShiftClick(i); took++; await sleep(80); }
+    }
+    closeMenus();
+    if (took) say(`unloaded ${took} stack(s) of the Moon site kit`);
+    return took > 0;
+  }
+  function bodyGravity(id) {
+    const b = (fm().getLandedRocketManager().planets || []).find(p => p.id === id);
+    return b ? b.gravityStrength : 1;
+  }
+
   // Where to land at home: beside the nearest launch pad (dry, flat, and
   // where the stash and the next rocket are), else where it took off from
   const HOME_SITE_OFFSET_M = 12, HOME_PAD_SEARCH_M = 400;
@@ -1421,7 +1590,8 @@
   const RETURN_FUEL = { moon: 60 };
   // A visit: fly to `target`, land, plant a survey beacon, gather what's
   // there, fly home and land
-  async function visitBody(target, home = 'earth') {
+  // `extra`: items to carry there in the cargo hold (only the hold flies)
+  async function visitBody(target, home = 'earth', extra = null) {
     const here = bodyId();
     const m = tracker().openMissions().find(x => x.visit === target);
     const prog = m ? tracker().progress(m) : [];
@@ -1441,14 +1611,33 @@
       if (beaconLeft && count(I.SURVEY_BEACON) < 1) { st.task = 'making a survey beacon'; await obtain(I.SURVEY_BEACON, 1); return; }
       // the craft: a rocket parked on this world near by (one that came back
       // lands beside its pad, not on it), else a rocket standing on a pad
-      const craft = homeCraft();
-      if (!craft) { say('no rocket to fly'); st.cannot = (st.cannot || []).concat([m ? m.id : target]); return; }
+      const craft = await homeCraft();
+      if (!craft) {
+        // none fit to fly. A trip for a resource can't wait for the better
+        // rocket that resource builds: put a basic one on an empty pad
+        if (st.expedition && padHere() && padHere().rocketParts.length === 0) {
+          say('no rocket to fly - building a basic one for the trip');
+          const r = await upgradeRocket([I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE]);
+          if (r !== false) return;
+        }
+        // none fit to fly (the pad rebuild runs from the loop): rest this trip, don't spin
+        say('no rocket to fly - building one first');
+        st.rest = st.rest || {}; st.rest[m ? m.id : target] = Date.now() + 5 * 60 * 1000;
+        delete st.rest.upgrade;
+        await sleep(2000);
+        return;
+      }
       if (!(await craft.fuel())) return;
       const need = RETURN_FUEL[target] || 100;
       const inHold = await cargoFuelUnits(craft.cargo());
       if (inHold < need) {
         if (!(await gatherFuel(need - inHold))) return;
         await craft.load((await fuelTable()).map(f => f.itemType));
+        return;
+      }
+      if (extra && extra.some(t => count(t) > 0 && !(craft.cargo() || []).some(x => x.itemType === t && x.quantity >= count(t)))) {
+        await craft.load(extra.filter(t => count(t) > 0));
+        if (extra.some(t => count(t) > 0)) { say('the cargo hold is full - the rest of the kit waits for the next trip'); }
         return;
       }
       say(`rocket fuelled, ${inHold.toFixed(0)} units of fuel in the hold - boarding`);
@@ -1531,26 +1720,32 @@
   // so the booster alone must lift the whole stack: two basic engines under
   // the vacuum stage (liftoff TWR 1.28, ~2965 m/s; one engine gives 0.8).
   const UPGRADE_STACKS = () => [
-    [I.ROCKET_ENGINE, I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE],
-    [I.ROCKET_ENGINE, I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE],
+    // one engine per stage, at its bottom: a Rocket Engine booster under a
+    // vacuum stage - when the frame mass lets it lift off (it didn't, 0.97)
+    [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
+    // the vacuum engine alone on a medium tank: a Moon-only stack now (TWR 0.96 off Earth full, so the TWR check skips it here)
+    [I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
   ];
-  const MIN_LIFT_TWR = 1.15;
-  async function liftTWR(stack) {
+  // a better rocket than the basic one: a valid stack with a vacuum engine
+  const isUpgraded = (types) => types.includes(I.VACUUM_ENGINE) && STACK_OK(types);
+  const MIN_LIFT_TWR = 1.05;
+  async function liftTWR(stack, gravity = 1) {
     const perf = await import(`${BASE}/rocket/RocketPerformance.ts`);
     const cfg = (await import(`${BASE}/config/RocketConfig.ts`)).ROCKET_CONFIG;
     const all = perf.computeRocketStats(stack);
     const wet = all.dryMass + all.fuelCapacity * cfg.FUEL_KG_PER_UNIT;
     const g0 = (await import(`${BASE}/config/PlayerConfig.ts`)).PlayerConfig.BASE_GRAVITY;
-    return perf.stagedStats(stack).stages[0].thrust / (wet * g0);
+    return perf.stagedStats(stack).stages[0].thrust / (wet * g0 * gravity);
   }
   // A pad of ours whose rocket stands on it (not flown off and parked elsewhere)
   function padHere() {
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
     let mySites = [];
-    try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+    try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
     const pos = player().position;
     const pads = bi().launchPadManager.getLaunchPads()
-      .filter(p => p.isComplete && !away.has(p) && p.rocketParts.length > 0 && !padUnderwater(p))
+      // a rocket standing on it, or an empty pad with a tower to build one on
+      .filter(p => p.isComplete && !away.has(p) && (p.rocketParts.length > 0 || p.segmentCount > 0) && !padUnderwater(p))
       .sort((a, b) => padCentre(a).distanceTo(pos) - padCentre(b).distanceTo(pos));
     // ours first, else the nearest (a player built one for the bots)
     return pads.find(p => [...p.hexes.keys()].some(t => mySites.includes(t))) || pads[0] || null;
@@ -1560,11 +1755,11 @@
     const p = P();
     return [...pad.placedTiles].some(t => p.getBlock(t, p.groundDepthOf(t) + 1) === B.WATER || p.getBlock(t, p.groundDepthOf(t) + 2) === B.WATER);
   }
-  async function upgradeRocket() {
+  async function upgradeRocket(only = null, gravity = 1) {
     const pad = padHere();
     if (!pad) { say('no pad of mine with its rocket on it to upgrade'); return false; }
     let target = null;
-    for (const st2 of UPGRADE_STACKS()) if (await liftTWR(st2) >= MIN_LIFT_TWR) { target = st2; break; }
+    for (const st2 of (only ? [only] : UPGRADE_STACKS())) if (await liftTWR(st2, gravity) >= MIN_LIFT_TWR) { target = st2; break; }
     if (!target) { say('no upgrade stack lifts off here'); return false; }
     const have = pad.rocketParts.map(p => p.itemType);
     let keep = 0;
@@ -1604,20 +1799,17 @@
       if (!ui) return false;
     }
     // take off the parts above what stays (the top one each click)
+    // through the pad editor's own stack operations (what dragging parts does)
     while (pad.rocketParts.length > keep) {
-      const n = pad.rocketParts.length;
-      ui.handleEngineSlotClick();
-      await sleep(300);
-      if (pad.rocketParts.length === n) { say('the pad would not give up its top part (cargo in the hold?)'); closeMenus(); return false; }
+      if (!(await ui.applyStackOp({ kind: 'remove', index: pad.rocketParts.length - 1 }))) { say('the pad would not give up its top part'); closeMenus(); return false; }
+      await sleep(200);
     }
     for (const t of target.slice(keep)) {
-      if (count(t) < 1 || !(await ui.onAddRocketPartCallback(pad, t))) { say(`the pad would not take the ${itemName(t)}`); closeMenus(); return false; }
-      inv().removeItem(t, 1);
-      try { ui.updateUI(); ui.notifyChanges(); } catch {}
-      await sleep(300);
+      if (count(t) < 1 || !(await ui.applyStackOp({ kind: 'addTop', itemType: t }))) { say(`the pad would not take the ${itemName(t)}`); closeMenus(); return false; }
+      await sleep(200);
     }
     closeMenus();
-    say(`upgraded the rocket: ${target.map(itemName).join(' / ')} (liftoff TWR ${(await liftTWR(target)).toFixed(2)})`);
+    say(`built the rocket: ${target.map(itemName).join(' / ')} (liftoff TWR ${(await liftTWR(target, gravity)).toFixed(2)} here)`);
     return true;
   }
 
@@ -1769,11 +1961,12 @@
       await toSurface();
       const lp = bi().launchPadManager;
       const padTiles = new Set(lp.getLaunchPads().flatMap(pad => [...pad.hexes.keys()]));
-      let site = st.padSite;
-      try { if (site == null) site = JSON.parse(localStorage.getItem('bot_padSite') || 'null'); } catch {}
+      st.padSiteBy = st.padSiteBy || {};
+      let site = st.padSiteBy[bodyId()];
+      try { if (site == null) site = JSON.parse(localStorage.getItem(padKey('bot_padSite')) || 'null'); } catch {}
       // a pad of ours left unfinished: finish it before starting another
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       if (site == null) {
         site = mySites.find(c => { const pad = lp.getLaunchPads().find(x => x.hexes.has(c)); return pad && !pad.isComplete; }) ?? null;
       }
@@ -1790,8 +1983,8 @@
           return nb.length === 6 && nb.every(t => free(t) && p.groundDepthOf(t) === g);
         });
         if (site === undefined) { say('no flat ground for a launch pad here - moving on'); await wander(); return; }
-        st.padSite = site;
-        try { localStorage.setItem('bot_padSite', JSON.stringify(site)); localStorage.setItem('bot_padSites', JSON.stringify([...mySites, site])); } catch {}
+        st.padSiteBy[bodyId()] = site;
+        try { localStorage.setItem(padKey('bot_padSite'), JSON.stringify(site)); localStorage.setItem(padKey('bot_padSites'), JSON.stringify([...mySites, site])); } catch {}
         say(`laying a launch pad round tile ${site}`);
       }
       const has = (t) => lp.getLaunchPads().some(pad => pad.hexes.has(t));
@@ -1804,8 +1997,8 @@
       const unlevel = neighbors(site).find(t => !has(t) && Math.abs(p.groundDepthOf(t) - sg) > 1);
       if (unlevel !== undefined) {
         say(`the ground round tile ${site} is no longer level - choosing another site`);
-        st.padSite = null;
-        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        st.padSiteBy[bodyId()] = null;
+        try { localStorage.removeItem(padKey('bot_padSite')); localStorage.setItem(padKey('bot_padSites'), JSON.stringify(mySites.filter(x => x !== site))); } catch {}
         st.badPlace = (st.badPlace || []).concat([site]);
         return;
       }
@@ -1850,8 +2043,8 @@
         st.padFails[t] = (st.padFails[t] || 0) + 1;
         if (st.padFails[t] < 4) { say(`pad block on tile ${t} would not go down - trying again`); await wander(); return; }
         say(`could not lay the pad at tile ${site} - choosing another site`);
-        st.padSite = null;
-        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        st.padSiteBy[bodyId()] = null;
+        try { localStorage.removeItem(padKey('bot_padSite')); localStorage.setItem(padKey('bot_padSites'), JSON.stringify(mySites.filter(x => x !== site))); } catch {}
         return;
       }
     },
@@ -1863,7 +2056,7 @@
       for (const it of parts) if (count(it) < 1 && !(await obtain(it, 1))) return;
       const lp = bi().launchPadManager;
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       const pos = player().position;
       const pad = lp.getLaunchPads()
         .filter(p => p.isComplete && p.rocketParts.length === 0 && [...p.hexes.keys()].some(t => mySites.includes(t)))
@@ -1891,11 +2084,8 @@
       }
       for (const it of parts) {
         if (pad.rocketParts.some(r => r.itemType === it) || count(it) < 1) continue;
-        if (await ui.onAddRocketPartCallback(pad, it)) {
-          inv().removeItem(it, 1);
-          try { ui.updateUI(); ui.notifyChanges(); } catch {}
-          say(`added ${itemName(it)} to the rocket`);
-        } else say(`the pad would not take the ${itemName(it)}`);
+        if (await ui.applyStackOp({ kind: 'addTop', itemType: it })) say(`added ${itemName(it)} to the rocket`);
+        else say(`the pad would not take the ${itemName(it)}`);
         await sleep(400);
       }
       closeMenus();
@@ -1910,7 +2100,7 @@
     launch: async () => {
       const lp = bi().launchPadManager;
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       const pad = lp.getLaunchPads().find(p => p.rocketParts.length > 0 && [...p.hexes.keys()].some(t => mySites.includes(t)));
       if (!pad) { say('no rocket of my own on a pad'); st.cannot = (st.cannot || []).concat(['launch']); return; }
       const centre = blockTop(pad.centerTileIndex, P().groundDepthOf(pad.centerTileIndex));
@@ -2011,6 +2201,8 @@
     await smelt(I.CLAY, need);
   }
   async function digForStone(n) {
+    // stone showing at the surface first; a pit only if there is none
+    if (await findAndDig([B.STONE], () => count(I.STONE) >= n) && count(I.STONE) >= n) return;
     const surface = surfaceDepth();
     await digDown(() => count(I.STONE) >= n);
     await pillarUpTo(surface - 1);
@@ -2026,14 +2218,17 @@
     const seaLevel = P().getSeaLevelDepth ? P().getSeaLevelDepth() : surface - 10;
     for (let round = 0; round < 8 && !done(); round++) {
       if (oreAround(6, wanted).length === 0) {
-        // deeper, a few blocks at a time
-        const target = feetDepth() - 4;
-        await digDown(() => feetDepth() <= target || oreAround(6, wanted).length > 0, 6);
-        if (feetDepth() <= 3) break;
+        // no digging on spec: the bot reads where ore is (the loaded world),
+        // walks over the nearest it knows of and only then digs down to it
+        const known = oreAround(GENTLE.ORE_SCAN_TILES, wanted, GENTLE.ORE_SCAN_DEPTH);
+        if (!known.length) break;
+        const o = known[0];
+        if (hdist(player().position, blockCenter(o.tile, o.depth)) > 3) { await approach(blockTop(o.tile, P().groundDepthOf(o.tile)), 1.5); continue; }
+        if (!(await tunnelToOreBlock(o.tile, o.depth))) st.badDig = (st.badDig || []).concat([`${o.tile}:${o.depth}`]);
         continue;
       }
       await tunnelToOre(wanted, 6);
-      await mineNearbyOres(2);
+      await mineNearbyOres(2, wanted);
     }
     if (feetDepth() < surface - 1) await pillarUpTo(surface - 1, 60);
     void seaLevel;
@@ -2104,10 +2299,21 @@
   function poweredEFurnace() {
     const pos = player().position;
     return bi().electricFurnaceManager.getPlacedElectricFurnaces()
-      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120)
+      .filter(f => f.isPowered && f.position.distanceTo(pos) < 120 && !badMachine(f.tileIndex))
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
   }
 
+  // Machines the bot could not open (walled in): passed over for another
+  function badMachine(tile) {
+    if (!st.badMachines) { try { st.badMachines = JSON.parse(localStorage.getItem('bot_badMachines') || '[]'); } catch { st.badMachines = []; } }
+    return st.badMachines.includes(tile);
+  }
+  function markBadMachine(tile) {
+    badMachine(tile);
+    st.badMachines.push(tile);
+    try { localStorage.setItem('bot_badMachines', JSON.stringify(st.badMachines)); } catch {}
+    say(`giving up on the machine at tile ${tile} - setting up another`);
+  }
   // Build (or finish) a small power plant by a pond; returns a powered electric furnace or null
   async function buildPowerPlant() {
     const done = poweredEFurnace();
@@ -2115,12 +2321,12 @@
     const b = bi(), p = P();
     st.task = 'building a power plant';
     // 1. an active hydro generator (ours, or a new one in the nearest pond)
-    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive)
+    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive && !badMachine(h.tileIndex))
       .sort((a, c) => a.position.distanceTo(player().position) - c.position.distanceTo(player().position))[0];
     if (!hydro || hydro.position.distanceTo(player().position) > 120) {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return null;
-      const w = nearestWaterTile(30);
-      if (w === null) { say('no pond for a hydro generator - exploring'); await wander(); return null; }
+      const w = nearestWaterTile(30, true);
+      if (w === null) { say('no pond shore for a hydro generator - exploring'); await wander(); return null; }
       // aim at the pond floor: the hydro generator stands on it, under the water
       if (!(await placeOnTile(I.HYDRO_GENERATOR, w, p.groundDepthOf(w)))) { st.badWater = (st.badWater || []).concat([w]); return null; }
       hydro = b.hydroGeneratorManager.getHydroGeneratorAtTile(w);
@@ -2132,15 +2338,15 @@
     let ct = neighbors(ht).find(t => cableTiles.includes(t));
     if (ct === undefined) {
       ct = neighbors(ht).find(isDryTile);
-      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); return null; }
+      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); markBadMachine(ht); return null; }
       if (!(await obtain(I.CABLE, 1))) return null;
       if (!(await placeOnTile(I.CABLE, ct))) return null;
     }
     // 3. the electric furnace beside the cable
-    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(Boolean);
+    let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(f => f && !badMachine(f.tileIndex));
     if (!ef) {
-      const et = neighbors(ct).find(t => t !== ht && isDryTile(t));
-      if (et === undefined) { say('no room for the electric furnace'); return null; }
+      const et = neighbors(ct).find(t => t !== ht && isDryTile(t) && !stationAt(t));
+      if (et === undefined) { say('no room for the electric furnace'); markBadMachine(ht); return null; }
       if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return null;
       if (!(await placeOnTile(I.ELECTRIC_FURNACE, et))) return null;
       ef = b.electricFurnaceManager.getElectricFurnaceAtTile(et);
@@ -2168,7 +2374,15 @@
     await click(2, 80);
     await sleep(500);
     const ui = bi().electricFurnaceUI;
-    if (!ui.isMenuOpen()) { say('could not open the electric furnace'); closeMenus(); return false; }
+    if (!ui.isMenuOpen()) {
+      // walled in or out of sight: after a few tries, use (or build) another one
+      st.openFails = st.openFails || {};
+      const k = ef.tileIndex, n = (st.openFails[k] || 0) + 1;
+      st.openFails[k] = n;
+      say(`could not open the electric furnace (${n}x)`);
+      if (n >= GENTLE.MACHINE_OPEN_TRIES) markBadMachine(k);
+      closeMenus(); return false;
+    }
     const slotOf = (it) => inv().getAllSlots().findIndex(x => x.itemType === it && x.quantity > 0);
     if (r.with) { const a = slotOf(r.with.itemType); if (a >= 0) ui.handleDropFromInventory(a, 'electric-furnace-additive'); }
     const s0 = slotOf(r.input); if (s0 >= 0) ui.handleDropFromInventory(s0, 'electric-furnace-input');
@@ -2192,7 +2406,7 @@
     const pos = player().position;
     // a powered one: an unpowered bench can't make anything
     return bi().electronicsWorkbenchManager.getPlacedElectronicsWorkbenches()
-      .filter(w => bi().nodePowered(w.tileIndex))
+      .filter(w => bi().nodePowered(w.tileIndex) && !badMachine(w.tileIndex))
       .sort((a, b) => a.position.distanceTo(pos) - b.position.distanceTo(pos))[0] || null;
   }
   // Craft `times` of recipe `idx` at a powered workbench
@@ -2216,7 +2430,15 @@
     await click(2, 80);
     await sleep(600);
     const ui = bi().electronicsWorkbenchUI;
-    if (!ui.isMenuOpen()) { say('could not open the workbench'); closeMenus(); st.badPlace = (st.badPlace || []).concat([wb.tileIndex]); return false; }
+    if (!ui.isMenuOpen()) {
+      st.openFails = st.openFails || {};
+      const n = (st.openFails[wb.tileIndex] || 0) + 1;
+      st.openFails[wb.tileIndex] = n;
+      say(`could not open the workbench (${n}x)`);
+      st.badPlace = (st.badPlace || []).concat([wb.tileIndex]);
+      if (n >= GENTLE.MACHINE_OPEN_TRIES) markBadMachine(wb.tileIndex);
+      closeMenus(); return false;
+    }
     if (!ui.isPowered) { say('the workbench has no power'); closeMenus(); return false; }
     ui.selectedRecipeIndex = idx;
     try { ui.updateUI(); } catch {}
@@ -2262,7 +2484,7 @@
   // Never stored away: rocket parts, the fuel and the gear for a flight, and
   // what a trip off-world is fetching (stored once, they were printed again)
   function alwaysKeep() {
-    const keep = new Set([I.ROCKET_FUEL, I.WATER_BUCKET, I.BUCKET, I.SURVEY_BEACON, I.LAUNCH_PAD_SEGMENT, I.PARACHUTE, I.INGOT_TITANIUM, I.ORE_TITANIUM]);
+    const keep = new Set([I.ROCKET_FUEL, I.WATER_BUCKET, I.BUCKET, I.SURVEY_BEACON, I.LAUNCH_PAD_SEGMENT, I.LAUNCH_PAD_BLOCK, I.PARACHUTE, I.INGOT_TITANIUM, I.ORE_TITANIUM, I.ICE]);
     for (const k of Object.keys(ITEM_DATA || {})) if (ITEM_DATA[k] && ITEM_DATA[k].rocketPart) keep.add(+k);
     if (st.expedition) keep.add(st.expedition.item);
     return keep;
@@ -2685,7 +2907,13 @@
           st.cannot = [];
         }
         if (away) st.lastBody = away;
-        if (away && away !== 'earth' && !tracker().openMissions().some(m => m.visit === away && PLAYBOOK[m.id])) { await visitBody(away); continue; }
+        const moonWork = away === MOON && doneIds().includes('vacuum') && !['done'].includes(moonSiteState());
+        if (away && away !== 'earth' && !moonWork && !tracker().openMissions().some(m => m.visit === away && PLAYBOOK[m.id])) { await visitBody(away); continue; }
+        // a launch site on the Moon, once the vacuum engine is known (owner: tier 2 flies from the Moon)
+        if (doneIds().includes('vacuum') && !resting('moonbase') && (away === 'earth' || away === MOON) && !st.expedition) {
+          const ms = moonSiteState();
+          if (ms !== 'done' && !(away === 'earth' && ms === 'fuel')) { st.goal = 'moonbase'; await moonBase(); continue; }
+        }
         if (st.expedition && away && away !== st.expedition.body) {
           if (count(st.expedition.item) >= st.expedition.n) st.expedition = null;
           else { await visitBody(st.expedition.body); continue; }
@@ -2695,8 +2923,10 @@
         if (away === 'earth' || !away) await ensureSpace();
         // after the vacuum engine: rebuild our rocket as a two-stage one, once
         if (doneIds().includes('vacuum') && !resting('upgrade') && (bodyId() === 'earth')) {
+          // once: when no rocket of ours has stages yet
+          const staged = bi().launchPadManager.getLaunchPads().some(p => isUpgraded(p.rocketParts.map(q => q.itemType)));
           const pad = padHere();
-          if (pad && !pad.rocketParts.some(p => p.itemType === I.STAGE_SEPARATOR)) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
+          if (!staged && pad) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
         }
         const id = pickMission();
         if (!id) { st.goal = 'nothing left it knows how to do'; say(st.goal); await wander(); await sleep(2000); continue; }

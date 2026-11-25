@@ -161,6 +161,8 @@ export class RocketController {
 
   // Input tracking
   private lastThrustToggle: boolean = false;
+  // starts held: the key that boarded (F is also Interact) must be let go first
+  private lastFuelInput: boolean = true;
 
   // Respawn tracking
   private lastBoardedPosition: THREE.Vector3 = new THREE.Vector3();
@@ -1068,10 +1070,12 @@ export class RocketController {
       this.exit();
     }
 
-    // Fuel request
-    if (input.fuel && stateInfo.canFuel) {
+    // Fuel request: a fresh press (the F that boarded doesn't count), and
+    // only standing on a body's ground - never in space
+    if (input.fuel && !this.lastFuelInput && stateInfo.canFuel) {
       this.refuel();
     }
+    this.lastFuelInput = input.fuel;
   }
 
   /**
@@ -1522,6 +1526,8 @@ export class RocketController {
    * Refuel the rocket from the fuel source
    */
   public refuel(): void {
+    // only standing on a body's ground (the key and the flight panel's button both come here)
+    if (this.getAltitude() > ROCKET_CONFIG.REFUEL_MAX_ALTITUDE_M) return;
     const have = this.getFuelUnits();
     const wanted = this.allFuelCapacity() - have;
     if (wanted <= 0) return;

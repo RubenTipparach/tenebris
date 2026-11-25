@@ -79,19 +79,17 @@ column meshers (one water mesher; the three water-wall copies are deleted):
   floor to the corner levels; with water on the cell, no top and full-height
   sides, so a fall reads as one column; a bottom only over air.
 
-### 7. Smoothing (S1-S4)
+### 7. Water-only remesh (was: smoothing S1-S4)
 
-The liquid records, for each cell a tick changed, what it was before. The
-main-thread chunk rebuild near the player meshes both states; every water
-vertex carries `liquidPrev` (vec4): the previous position and
-mode + 4 x tick stamp. `water.vert` mixes previous to current on
-`liquidT` (the fraction of the tick played): mode 1 smoothstep (levels
-ease), 2 linear (a new cell sweeps in from a thin sheet on its source side,
-or a fall grows down from the water above), 3 linear then hidden (a dried
-cell shrinks toward where it drained). A vertex built for an older tick is
-drawn at rest, so a chunk not rebuilt this tick never replays. The worker
-paths draw water at rest. Only the vertex position changes; the fragment
-shader and every colour stay as they are.
+The between-tick smoothing (S1-S4: `liquidPrev` per vertex, `liquidT` /
+`liquidTick` in `water.vert`) is removed. A live profile showed the cost was
+never the flow rule (3.7 ms over 45 s) but each water change marking the
+whole chunk dirty and rebuilding its terrain too (~35 ms a rebuild, the
+p99 frame). Terrain sees water as open (faces and sky light alike), so
+`Planet.updateLiquid` now remeshes only the water of each chunk a tick
+changed (`rebuildChunkWater`, through the same `meshLiquidColumn`), every
+tick, and the mesh simply shows the current water. Block edits keep the
+full chunk rebuild.
 
 ### 8. Under water
 

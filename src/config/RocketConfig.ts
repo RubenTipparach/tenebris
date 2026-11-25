@@ -111,6 +111,10 @@ export const ROCKET_CONFIG = {
   // === FUEL SYSTEM ===
   // Mass of one fuel unit. A medium tank holds 100 units = 450 kg of propellant
   FUEL_KG_PER_UNIT: 4.5,
+  // A taller stack needs a heavier frame: the k-th part from the bottom adds
+  // (k - 1) x this (kg). 3 parts: +45 kg; 6: +225; 8: +420 - a tall rocket
+  // loses thrust-to-weight fast (computeRocketStats / stackStructureKg)
+  STACK_LEVEL_KG: 15,
   // What refuelling burns, in the order it is drawn (from the rocket's cargo
   // hold first, then the player's hotbar + bag), and the fuel units each item
   // gives. `returns` goes back where the item came from (an emptied bucket).
@@ -127,6 +131,8 @@ export const ROCKET_CONFIG = {
   // written each time this many more units have burnt (and on any exit,
   // respawn or crash), so a relaunch from the pad starts with what is left
   PAD_FUEL_RECORD_STEP: 5,
+  // Refuelling (on board or a parked rocket's panel) works only this close to a body's ground (m)
+  REFUEL_MAX_ALTITUDE_M: 3,
   // Launch pads are built one Launch Pad Block (one hex) at a time. A rocket
   // and its tower need at least PAD_BLOCKS_PER_TOWER blocks laid as a middle
   // hex with the full ring around it; the rocket stands in the middle and
@@ -135,6 +141,12 @@ export const ROCKET_CONFIG = {
   // A block joins a pad when it touches it, at most this many blocks above
   // or below the pad's level (the ground is levelled / filled under it)
   PAD_MAX_STEP: 1,
+  // A pad block is set into the top of the ground (it doesn't sit on it): the
+  // slab's top is the ground's top, lifted this share of a block so the two
+  // faces don't fight. The player walks on the ground, so on the pad too.
+  PAD_TOP_LIFT: 0.02,
+  // The slab's thickness, as a share of a block (drawn into the ground block)
+  PAD_THICKNESS: 0.25,
   // "Start with a rocket": a full rocket, this much Rocket Fuel in its cargo
   // hold (a full refuel for the trip home) and empty buckets for the player
   STARTER_KIT: {
@@ -145,9 +157,11 @@ export const ROCKET_CONFIG = {
   // === THE TECH TREE: per-part stats ===
   // Tier 1 (Earth): Rocket Engine + Medium Fuel Tank + Command Module - an
   // Earth <-> Moon rocket and no more (space-exploration: the Moon is the
-  // root of the tree). Hand-flown, Earth -> Moon takes about four fifths of
-  // the tank (the careful simulated pilot: under a third); the trip home is a
-  // refuel on the Moon (ice there, or the starter kit's cargo fuel). What
+  // root of the tree). Hand-flown, Earth -> Moon lands with about 15% of the
+  // tank left (the careful simulated pilot uses 37%; a hand-flown trip is
+  // PILOT_FACTOR = 2.3x that, scripts/rocket-reach.ts) - the Rocket Engine's
+  // Isp is what sets it. The trip home is a refuel on the Moon (ice there,
+  // or the starter kit's cargo fuel). What
   // keeps every Earth-built stack near the Moon:
   //   - a heavy steel tank (200 kg dry for 450 kg of fuel): the rocket
   //     equation flattens out, so more tanks or engines add little (the best
@@ -160,15 +174,17 @@ export const ROCKET_CONFIG = {
   // scripts/rocket-reach.test.ts holds tier 1 to the Moon and each later
   // tier to its route's next hop; scripts/rocket-tech-report.ts prints it all.
   // Tier 2 (Moon titanium): the Vacuum Engine - efficient but weak, it can't
-  // lift off Earth (TWR < 1) but flies fine off the Moon and in space - and
-  // the Large Fuel Tank. Together they reach the other planets.
+  // lift off Earth (no stack it lifts, full, gets past TWR 0.96 there) but
+  // flies fine off the Moon (with a Large Tank: TWR 1.34) and in space - and
+  // the Large Fuel Tank. Together they reach the other planets. The way off
+  // Earth for a vacuum stage is a Rocket Engine booster under it.
   // Tier 3 (openspec industry-and-nuclear): the Nuclear Thermal Engine.
   // Tier 4: the Ion Drive, which needs a Reactor Core in the stack.
   // The derived numbers (delta-v, TWR, Earth->Moon cost) are printed by
   // scripts/rocket-tech-report.ts.
   PARTS: {
-    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 90, boosterOnly: true },
-    [ItemType.VACUUM_ENGINE]: { tier: 2, dryMass: 150, thrust: 26000, specificImpulse: 200 },
+    [ItemType.ROCKET_ENGINE]: { tier: 1, dryMass: 100, thrust: 39000, specificImpulse: 78, boosterOnly: true },
+    [ItemType.VACUUM_ENGINE]: { tier: 2, dryMass: 150, thrust: 20000, specificImpulse: 200 },
     [ItemType.MEDIUM_FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },
     [ItemType.FUEL_TANK]: { tier: 1, dryMass: 200, fuelCapacity: 100 },  // legacy tank (the Medium tank's numbers)
     [ItemType.LARGE_FUEL_TANK]: { tier: 2, dryMass: 120, fuelCapacity: 300 },
@@ -482,3 +498,12 @@ export const ROCKET_INPUTS = {
   STAGE: 'KeyN',                  // N - drop the spent stage (next stage)
   DRONE: 'KeyL',                  // L - launch a survey drone at the body below
 };
+
+/**
+ * The key a binding (a KeyboardEvent.code, e.g. ROCKET_INPUTS.STAGE) reads
+ * as on screen: 'KeyN' -> 'N', 'Digit1' -> '1', 'ArrowUp' -> 'Up', 'Space'
+ * stays. Prompts take the label from the binding, so a rebind updates them.
+ */
+export function inputKeyLabel(code: string): string {
+  return code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, '');
+}

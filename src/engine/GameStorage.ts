@@ -339,7 +339,7 @@ export class GameStorage {
   }> = new Map();
 
   private autoSaveInterval: number | null = null;
-  private onPlayerSave: (() => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } }) | null = null;
+  private onPlayerSave: (() => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } } | null) | null = null;
 
   constructor() {
     // Initialize planet data for every planet
@@ -349,7 +349,8 @@ export class GameStorage {
   }
 
   // Set callback to get current player data
-  public setPlayerSaveCallback(callback: () => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } }): void {
+  // The callback returns null when the pose must not be saved now (in flight)
+  public setPlayerSaveCallback(callback: () => { position: { x: number; y: number; z: number }; orientation: { x: number; y: number; z: number; w: number }; velocity: { x: number; y: number; z: number } } | null): void {
     this.onPlayerSave = callback;
   }
 
@@ -923,6 +924,7 @@ export class GameStorage {
   public savePlayerPosition(): void {
     if (this.onPlayerSave) {
       const posData = this.onPlayerSave();
+      if (!posData) return;
       this.playerData = {
         version: SAVE_VERSION,
         timestamp: Date.now(),

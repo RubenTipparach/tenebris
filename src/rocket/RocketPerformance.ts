@@ -107,6 +107,15 @@ export function engineModeLabel(mode: EngineMode): string {
  * fuel flow); mass, tanks, cargo and equipment are the whole rocket's either
  * way. `extraDryMass` is what the cargo hold carries (cargoMass).
  */
+/**
+ * The stack's frame (ROCKET_CONFIG.STACK_LEVEL_KG): the k-th part from the
+ * bottom adds (k - 1) levels of it, so a tall stack is much heavier than
+ * its parts alone - a short one barely changes.
+ */
+export function stackStructureKg(partCount: number): number {
+  return ROCKET_CONFIG.STACK_LEVEL_KG * partCount * (partCount - 1) / 2;
+}
+
 export function computeRocketStats(
   itemTypes: readonly ItemType[],
   extraDryMass = 0,
@@ -115,7 +124,8 @@ export function computeRocketStats(
 ): RocketStats {
   const firing = validEngineMode(itemTypes, mode);
   const g0 = ROCKET_CONFIG.PHYSICS.gravityConstant;
-  let dryMass = extraDryMass, fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
+  // a taller stack needs a heavier frame: each part carries the ones above it
+  let dryMass = extraDryMass + stackStructureKg(itemTypes.length), fuelCapacity = 0, thrust = 0, massFlow = 0, cargoSlots = 0, equipmentSlots = 0, tier = 0, batteryWh = 0, powerDrawW = 0, solarW = 0, chutes = 0;
   let keepHeat = 1, rtgW = 0, chuteBrake = 1, drones = 0;
   for (const slot of equipment ?? []) {
     const e = equipmentStats(slot.itemType);
@@ -201,6 +211,44 @@ export function stagesOf<T>(parts: readonly T[], typeOf: (p: T) => ItemType): T[
   return stages;
 }
 
+/** Which stage (1 = the bottom, the first to fire) the part at `index` of a stack is in */
+export function stageOfPart(types: readonly ItemType[], index: number): number {
+  let stage = 1;
+  for (let i = 0; i < index && i < types.length; i++) if (isSeparator(types[i])) stage++;
+  return stage;
+}
+
+const PART_KIND_LABEL: Record<RocketPartType, string> = {
+  [RocketPartType.ENGINE]: 'Engine',
+  [RocketPartType.FUEL_TANK]: 'Fuel tank',
+  [RocketPartType.CAPSULE]: 'Command module',
+  [RocketPartType.CARGO]: 'Cargo bay',
+  [RocketPartType.SEPARATOR]: 'Stage separator',
+};
+
+/**
+ * A rocket part's key numbers, one line each (ASCII), for its hover
+ * tooltip: kind and tier, mass, thrust and Isp (engines), fuel (tanks),
+ * cargo / equipment slots, charge, and how many stack slots it takes.
+ * Empty for an item that is not a rocket part.
+ */
+export function partTooltipLines(itemType: ItemType): string[] {
+  const part = ITEM_DATA[itemType]?.rocketPart;
+  const s = partStats(itemType);
+  if (!part || !s) return [];
+  const lines = [`${PART_KIND_LABEL[part.partType] ?? 'Part'} - tier ${s.tier}`, `Mass ${s.dryMass} kg`];
+  if (s.thrust) lines.push(`Thrust ${(s.thrust / 1000).toFixed(1)} kN, Isp ${s.specificImpulse ?? 0} s`);
+  if (s.boosterOnly) lines.push('Booster - bottom stage only');
+  if (s.requires?.length) lines.push(`Needs ${s.requires.map(t => ITEM_DATA[t]?.name ?? '?').join(', ')} in the stack`);
+  if (s.fuelCapacity) lines.push(`Fuel ${s.fuelCapacity} units (${Math.round(s.fuelCapacity * ROCKET_CONFIG.FUEL_KG_PER_UNIT)} kg)`);
+  if (s.cargoSlots) lines.push(`Cargo ${s.cargoSlots} slots`);
+  if (s.equipmentSlots) lines.push(`Equipment ${s.equipmentSlots} slots`);
+  if (s.batteryWh) lines.push(`Battery ${(s.batteryWh / 1000).toFixed(1)} kWh`);
+  if (part.partType === RocketPartType.SEPARATOR) lines.push('Splits the stack - drops with the stage below');
+  lines.push(`Takes ${part.heightUnits} stack slot${part.heightUnits === 1 ? '' : 's'}`);
+  return lines;
+}
+
 export interface StageStats {
   fuelCapacity: number;     // this stage's tanks
   thrust: number;           // its engines (in the engine mode)
@@ -224,6 +272,12 @@ export function stagedStats(
   const groups = stagesOf(itemTypes, t => t);
   const kg = ROCKET_CONFIG.FUEL_KG_PER_UNIT;
   const parts = groups.map(g => computeRocketStats(g, 0, mode));
+  // the frame's mass by each part's height in the whole stack (not in its own stage)
+  let below = 0;
+  groups.forEach((g, k) => {
+    parts[k].dryMass += stackStructureKg(below + g.length) - stackStructureKg(below) - stackStructureKg(g.length);
+    below += g.length;
+  });
   // the payload's fixed mass (cargo, equipment) sits on top
   const extras = computeRocketStats([], extraDryMass, null, equipment).dryMass;
   const stages: StageStats[] = [];
@@ -310,9 +364,17 @@ export function stackProblems(itemTypes: readonly ItemType[]): string[] {
     if (tanks.length < reqs.minFuelTanks) errors.push(`${ITEM_DATA[engine].name} requires at least ${reqs.minFuelTanks} fuel tank(s)`);
     if (reqs.requiresCommandModule && capsules.length === 0) errors.push(`${ITEM_DATA[engine].name} requires a Command Module`);
   }
+  // One engine per stage, as the stage's bottom part: an engine stacked on
+  // another (or on a tank) would fire into the part beneath it
+  const stages = stagesOf(itemTypes, t => t);
+  stages.forEach((stage, i) => {
+    const at = stage.map((t, k) => typeOf(t) === RocketPartType.ENGINE ? k : -1).filter(k => k >= 0);
+    const label = stages.length > 1 ? `Stage ${i + 1}` : 'The rocket';
+    if (at.length > 1) errors.push(`${label} has more than one engine: an engine can't fire into the part below it`);
+    else if (at.length === 1 && at[0] !== 0) errors.push(`${label}'s engine must be its bottom part`);
+  });
   // Staged: every stage needs an engine of its own, or dropping the stage
   // below leaves a rocket that cannot fly
-  const stages = stagesOf(itemTypes, t => t);
   if (stages.length > 1) {
     stages.forEach((stage, i) => {
       if (!stage.some(t => typeOf(t) === RocketPartType.ENGINE)) errors.push(`Stage ${i + 1} has no engine`);
