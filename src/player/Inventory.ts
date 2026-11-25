@@ -249,6 +249,18 @@ export enum ItemType {
   DEEP_SUBMARINE = 255,
   GAS_GIANT_DIVER = 256,
   DEEP_DIVER = 257,
+  // Art pieces (openspec friendship-npcs 4.4): one per inhabited world, given
+  // only by its elders; NpcConfig maps each world's art id to its item
+  ART_FERRUM = 258,
+  ART_SEQUOIA = 259,
+  ART_CINDER = 260,
+  ART_VESPER = 261,
+  ART_HALCYON = 262,
+  ART_TESSALY = 263,
+  ART_UMBRA = 264,
+  ART_VERDANCE = 265,
+  ART_MIREWOOD = 266,
+  ART_THALASSA = 267,
 }
 
 // Rocket part type for items that can be placed on the launch tower
@@ -512,6 +524,16 @@ export const ITEM_DATA: Record<ItemType, ItemData> = {
   [ItemType.DEEP_SUBMARINE]: { name: 'Deep-Hull Submarine', stackSize: 1, texture: '/textures/icons/deep_submarine.png', mineTime: 1.0 },
   [ItemType.GAS_GIANT_DIVER]: { name: 'Gas-Giant Diver', stackSize: 1, texture: '/textures/icons/gas_giant_diver.png', mineTime: 1.0 },
   [ItemType.DEEP_DIVER]: { name: 'Deep Diver', stackSize: 1, texture: '/textures/icons/deep_diver.png', mineTime: 1.0 },
+  [ItemType.ART_FERRUM]: { name: 'Circuit Mosaic', stackSize: 16, texture: '/textures/icons/art/art_ferrum.png', mineTime: 0.5 },
+  [ItemType.ART_SEQUOIA]: { name: 'Amber Totem', stackSize: 16, texture: '/textures/icons/art/art_sequoia.png', mineTime: 0.5 },
+  [ItemType.ART_CINDER]: { name: 'Obsidian Mask', stackSize: 16, texture: '/textures/icons/art/art_cinder.png', mineTime: 0.5 },
+  [ItemType.ART_VESPER]: { name: 'Glass Lantern', stackSize: 16, texture: '/textures/icons/art/art_vesper.png', mineTime: 0.5 },
+  [ItemType.ART_HALCYON]: { name: 'Prism Idol', stackSize: 16, texture: '/textures/icons/art/art_halcyon.png', mineTime: 0.5 },
+  [ItemType.ART_TESSALY]: { name: 'Frost Chime', stackSize: 16, texture: '/textures/icons/art/art_tessaly.png', mineTime: 0.5 },
+  [ItemType.ART_UMBRA]: { name: 'Glowcap Lamp', stackSize: 16, texture: '/textures/icons/art/art_umbra.png', mineTime: 0.5 },
+  [ItemType.ART_VERDANCE]: { name: 'Woven Fan', stackSize: 16, texture: '/textures/icons/art/art_verdance.png', mineTime: 0.5 },
+  [ItemType.ART_MIREWOOD]: { name: 'Peat Carving', stackSize: 16, texture: '/textures/icons/art/art_mirewood.png', mineTime: 0.5 },
+  [ItemType.ART_THALASSA]: { name: 'Pearl Crown', stackSize: 16, texture: '/textures/icons/art/art_thalassa.png', mineTime: 0.5 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)

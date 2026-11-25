@@ -269,6 +269,16 @@ var ItemType = /* @__PURE__ */ ((ItemType2) => {
   ItemType2[ItemType2["DEEP_SUBMARINE"] = 255] = "DEEP_SUBMARINE";
   ItemType2[ItemType2["GAS_GIANT_DIVER"] = 256] = "GAS_GIANT_DIVER";
   ItemType2[ItemType2["DEEP_DIVER"] = 257] = "DEEP_DIVER";
+  ItemType2[ItemType2["ART_FERRUM"] = 258] = "ART_FERRUM";
+  ItemType2[ItemType2["ART_SEQUOIA"] = 259] = "ART_SEQUOIA";
+  ItemType2[ItemType2["ART_CINDER"] = 260] = "ART_CINDER";
+  ItemType2[ItemType2["ART_VESPER"] = 261] = "ART_VESPER";
+  ItemType2[ItemType2["ART_HALCYON"] = 262] = "ART_HALCYON";
+  ItemType2[ItemType2["ART_TESSALY"] = 263] = "ART_TESSALY";
+  ItemType2[ItemType2["ART_UMBRA"] = 264] = "ART_UMBRA";
+  ItemType2[ItemType2["ART_VERDANCE"] = 265] = "ART_VERDANCE";
+  ItemType2[ItemType2["ART_MIREWOOD"] = 266] = "ART_MIREWOOD";
+  ItemType2[ItemType2["ART_THALASSA"] = 267] = "ART_THALASSA";
   return ItemType2;
 })(ItemType || {});
 var KIND_NAMES = { pickaxe: "Pickaxe", axe: "Axe", shovel: "Shovel", rod: "Rod" };
@@ -489,6 +499,16 @@ var ITEM_DATA = {
   [255 /* DEEP_SUBMARINE */]: { name: "Deep-Hull Submarine", stackSize: 1, texture: "/textures/icons/deep_submarine.png", mineTime: 1 },
   [256 /* GAS_GIANT_DIVER */]: { name: "Gas-Giant Diver", stackSize: 1, texture: "/textures/icons/gas_giant_diver.png", mineTime: 1 },
   [257 /* DEEP_DIVER */]: { name: "Deep Diver", stackSize: 1, texture: "/textures/icons/deep_diver.png", mineTime: 1 },
+  [258 /* ART_FERRUM */]: { name: "Circuit Mosaic", stackSize: 16, texture: "/textures/icons/art/art_ferrum.png", mineTime: 0.5 },
+  [259 /* ART_SEQUOIA */]: { name: "Amber Totem", stackSize: 16, texture: "/textures/icons/art/art_sequoia.png", mineTime: 0.5 },
+  [260 /* ART_CINDER */]: { name: "Obsidian Mask", stackSize: 16, texture: "/textures/icons/art/art_cinder.png", mineTime: 0.5 },
+  [261 /* ART_VESPER */]: { name: "Glass Lantern", stackSize: 16, texture: "/textures/icons/art/art_vesper.png", mineTime: 0.5 },
+  [262 /* ART_HALCYON */]: { name: "Prism Idol", stackSize: 16, texture: "/textures/icons/art/art_halcyon.png", mineTime: 0.5 },
+  [263 /* ART_TESSALY */]: { name: "Frost Chime", stackSize: 16, texture: "/textures/icons/art/art_tessaly.png", mineTime: 0.5 },
+  [264 /* ART_UMBRA */]: { name: "Glowcap Lamp", stackSize: 16, texture: "/textures/icons/art/art_umbra.png", mineTime: 0.5 },
+  [265 /* ART_VERDANCE */]: { name: "Woven Fan", stackSize: 16, texture: "/textures/icons/art/art_verdance.png", mineTime: 0.5 },
+  [266 /* ART_MIREWOOD */]: { name: "Peat Carving", stackSize: 16, texture: "/textures/icons/art/art_mirewood.png", mineTime: 0.5 },
+  [267 /* ART_THALASSA */]: { name: "Pearl Crown", stackSize: 16, texture: "/textures/icons/art/art_thalassa.png", mineTime: 0.5 },
   // ---- Industry and nuclear (openspec industry-and-nuclear) -------------
   // Raw resources (blocks drop these; icons from scripts/gen-item-icons.py,
   // the ores' icons are their block textures as the other ores' are)
@@ -891,7 +911,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Kor", "Dex", "Vas", "Tal", "Sen", "Ira", "Bel"], middle: ["o", "an", "i"], last: ["ix", "el", "en", "ock", "ar"] },
       look: { heightM: 1.7, widthM: 0.45, headScale: 0.9, arms: 1, skin: "#92a3b2", trim: "#3e3551", eyes: "#74effe", feature: "visor" }
     },
-    art: { id: "art_ferrum", name: "Circuit Mosaic" },
+    art: { id: "art_ferrum", name: "Circuit Mosaic", item: 258 /* ART_FERRUM */ },
     goods: [210 /* SALVAGE */],
     rewards: rewards("ferrum")
   },
@@ -906,7 +926,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Oru", "Thal", "Wen", "Bri", "Mos", "Ash"], middle: ["a", "wy", "el"], last: ["n", "th", "ra", "wick"] },
       look: { heightM: 2.1, widthM: 0.5, headScale: 0.8, arms: 1, skin: "#725244", trim: "#297537", eyes: "#fb902f", feature: "branches" }
     },
-    art: { id: "art_sequoia", name: "Amber Totem" },
+    art: { id: "art_sequoia", name: "Amber Totem", item: 259 /* ART_SEQUOIA */ },
     goods: [209 /* RESIN */, 196 /* FISH_SPRAT */],
     rewards: rewards("sequoia")
   },
@@ -921,7 +941,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Kra", "Vul", "Pyr", "Sco", "Ign"], middle: ["o", "ar"], last: ["k", "ax", "is", "um"] },
       look: { heightM: 1.3, widthM: 0.6, headScale: 1.1, arms: 1, skin: "#8d4526", trim: "#fa3a64", eyes: "#faaf5c", feature: "horns" }
     },
-    art: { id: "art_cinder", name: "Obsidian Mask" },
+    art: { id: "art_cinder", name: "Obsidian Mask", item: 260 /* ART_CINDER */ },
     goods: [79 /* ORE_URANIUM */],
     rewards: rewards("cinder")
   },
@@ -936,7 +956,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Sa", "Mir", "Ves", "Hal", "Zu"], middle: ["ri", "a", "ul"], last: ["n", "sh", "ra", "el"] },
       look: { heightM: 2.4, widthM: 0.35, headScale: 0.7, arms: 1, skin: "#ab8465", trim: "#5d778d", eyes: "#1f3b52", feature: "hood" }
     },
-    art: { id: "art_vesper", name: "Glass Lantern" },
+    art: { id: "art_vesper", name: "Glass Lantern", item: 261 /* ART_VESPER */ },
     goods: [215 /* SILICA */],
     rewards: rewards("vesper")
   },
@@ -951,7 +971,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Qui", "Lux", "Cry", "Pri", "Sel"], middle: ["a", "o"], last: ["ss", "ne", "ra", "zz"] },
       look: { heightM: 1.1, widthM: 0.5, headScale: 1.3, arms: 2, skin: "#69608b", trim: "#1096c3", eyes: "#fffefe", feature: "crystals" }
     },
-    art: { id: "art_halcyon", name: "Prism Idol" },
+    art: { id: "art_halcyon", name: "Prism Idol", item: 262 /* ART_HALCYON */ },
     goods: [217 /* CRYSTAL */],
     rewards: rewards("halcyon")
   },
@@ -966,7 +986,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Ny", "Bor", "Skel", "Ril", "Hje"], middle: ["a", "i", "ul"], last: ["d", "m", "ka", "vi"] },
       look: { heightM: 1.6, widthM: 0.7, headScale: 1, arms: 1, skin: "#bfcad7", trim: "#1096c3", eyes: "#1f3b52", feature: "fur" }
     },
-    art: { id: "art_tessaly", name: "Frost Chime" },
+    art: { id: "art_tessaly", name: "Frost Chime", item: 263 /* ART_TESSALY */ },
     goods: [219 /* CRYO_COOLANT */],
     rewards: rewards("tessaly")
   },
@@ -981,7 +1001,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Mu", "Pho", "Gla", "Umb", "Spo"], middle: ["o", "ri", "e"], last: ["l", "ra", "x", "mo"] },
       look: { heightM: 1, widthM: 0.55, headScale: 1.6, arms: 1, skin: "#7d4636", trim: "#559642", eyes: "#eab798", feature: "cap" }
     },
-    art: { id: "art_umbra", name: "Glowcap Lamp" },
+    art: { id: "art_umbra", name: "Glowcap Lamp", item: 264 /* ART_UMBRA */ },
     goods: [214 /* RADIOTROPHIC_FUNGUS */],
     rewards: rewards("umbra")
   },
@@ -996,7 +1016,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Fen", "Lio", "Ver", "Pal", "Cy"], middle: ["a", "iri", "o"], last: ["n", "th", "ma", "lis"] },
       look: { heightM: 1.4, widthM: 0.4, headScale: 0.9, arms: 2, skin: "#297537", trim: "#faaf5c", eyes: "#eab798", feature: "wings" }
     },
-    art: { id: "art_verdance", name: "Woven Fan" },
+    art: { id: "art_verdance", name: "Woven Fan", item: 265 /* ART_VERDANCE */ },
     goods: [190 /* FISH_TETRA */, 191 /* FISH_CATFISH */],
     rewards: rewards("verdance")
   },
@@ -1011,7 +1031,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Gub", "Mar", "Pea", "Tod", "Wil"], middle: ["o", "u", "ab"], last: ["g", "sh", "bo", "rel"] },
       look: { heightM: 1.8, widthM: 0.45, headScale: 0.8, arms: 1, skin: "#725244", trim: "#69608b", eyes: "#559642", feature: "stilts" }
     },
-    art: { id: "art_mirewood", name: "Peat Carving" },
+    art: { id: "art_mirewood", name: "Peat Carving", item: 266 /* ART_MIREWOOD */ },
     goods: [193 /* FISH_PEATEEL */, 194 /* FISH_GOURAMI */],
     rewards: rewards("mirewood")
   },
@@ -1026,7 +1046,7 @@ var INHABITED_WORLDS = [
       syllables: { first: ["Mar", "Cor", "Nai", "Thal", "Sha"], middle: ["i", "e", "ul"], last: ["s", "na", "ul", "ro"] },
       look: { heightM: 1.5, widthM: 0.5, headScale: 1, arms: 1, skin: "#1096c3", trim: "#fffefe", eyes: "#1f3b52", feature: "fins" }
     },
-    art: { id: "art_thalassa", name: "Pearl Crown" },
+    art: { id: "art_thalassa", name: "Pearl Crown", item: 267 /* ART_THALASSA */ },
     goods: [251 /* FISH_MULLET */, 252 /* FISH_KELPEEL */],
     rewards: rewards("thalassa")
   }
@@ -1058,8 +1078,26 @@ var NPC_CONFIG = {
     // and then this many rounds of CENTRE_TRIES over the whole globe (ocean worlds)
     HOME_TRIES: 24,
     // and for a home
-    HOME_MIN_GAP_M: 2.5
+    HOME_MIN_GAP_M: 2.5,
     // homes this far apart at least (when the ground allows)
+    // Structures (task 3.4) stand round the centre this far out, one per
+    // STRUCTURES entry, evenly spaced from a seeded starting angle
+    STRUCTURE_RING_M: 9,
+    FOUNDATION_DEPTH_M: 1.5
+    // a structure's footing reaches this far below the ground at its centre (slopes)
+  },
+  // The structures' materials (Sweaft-64 tones), drawn procedurally per stage (src/npc/NpcStructures.ts)
+  STRUCTURE_LOOK: {
+    brick: "#a8633e",
+    mortar: "#725244",
+    steel: "#5d778d",
+    glass: "#74effe",
+    concrete: "#92a3b2",
+    roof: "#3e3551",
+    stake: "#ab8465",
+    rope: "#eab798",
+    plinth: "#bfcad7",
+    gem: "#fa3a64"
   },
   // ---- the food store (meals)
   FOOD: {
@@ -1086,7 +1124,10 @@ var NPC_CONFIG = {
     COLLECT_AMOUNT: 1,
     // art pieces a collect request wants
     // Friendship a whole request gives (credited per item delivered, group 5)
-    FRIENDSHIP: { supply: 6, build: 10, collect: 20 }
+    FRIENDSHIP: { supply: 6, build: 10, collect: 20 },
+    // The elder's thanks for a completed request: pieces of the world's own
+    // art (only its elders give it; collect requests elsewhere want it)
+    ART_REWARD: { supply: 1, build: 2, collect: 0 }
   },
   // What villages build, in order; each stage is one build request
   STRUCTURES: [
@@ -1124,6 +1165,8 @@ var NPC_CONFIG = {
     },
     STAY_S: 1800,
     // seconds of the host world's time before moving on
+    CAMP_M: 6,
+    // a visiting trader camps this far from the first village's centre
     RESTOCK_S: 600,
     // offers refill this often during a stay
     OFFERS: 4,
@@ -1136,13 +1179,55 @@ var NPC_CONFIG = {
     WANTS: [100 /* STEEL_INGOT */, 38 /* GLASS */, 73 /* BRICK */, 82 /* COOKED_FISH */],
     TAKE: [4, 10],
     // items the player pays per trade (before friendship)
-    LEVEL_DISCOUNT: 0.1
-    // fraction off the price per friendship level (task 4.5)
+    LEVEL_DISCOUNT: 0.1,
+    // fraction off the price per friendship level (at least one item per level; task 4.5)
+    // Extra offers a trader keeps for friends: one per entry, shown from that
+    // friendship level with the village it is visiting
+    EXTRA_OFFER_LEVELS: [2, 4]
   },
   // ---- talking (task 4.1)
   TALK_RANGE_M: 3,
+  TALK_REFRESH_S: 2,
+  // a talker re-sends 'npcTalk' this often while the panel is open
+  TALK_HOLD_S: 6,
+  // the host lets an NPC go when it has not heard from the talker for this long
   // ---- drawing (task 3.2): instances per species' mesh (a world's whole population fits)
-  MAX_DRAWN_PER_SPECIES: 64
+  MAX_DRAWN_PER_SPECIES: 64,
+  // ---- motion (task 3.3): simulated by the planet's host, mirrored by everyone else
+  MOTION: {
+    WALK_MPS: 1.1,
+    // walking speed
+    WANDER_M: 10,
+    // a walk ends within this of home
+    IDLE_S: [3, 9],
+    // standing still between walks
+    WALK_MAX_S: 20,
+    // a walk that has not arrived by then gives up and idles
+    ARRIVE_M: 0.4,
+    // close enough to the target
+    STEP_LOOKAHEAD_M: 0.6,
+    // the ground this far ahead must be walkable, else the walk ends
+    TARGET_TRIES: 8,
+    // candidate targets tried for a walk on walkable ground
+    TURN_RATE: 4,
+    // facing eases towards the walk (1/s)
+    BLEND_RATE: 4,
+    // idle <-> walk <-> talk weights ease at this rate (1/s)
+    SETTLE_STEP_M: 2,
+    // an ungrounded home looks for ground in rings this far apart
+    SETTLE_MAX_M: 60,
+    // out to this distance
+    SETTLE_AZIMUTHS: 12,
+    // directions tried per ring
+    SNAPSHOT_HZ: 5,
+    // host snapshots per second (live channel 'npc')
+    FOLLOW_RATE: 8,
+    // a mirrored NPC eases to the latest snapshot (1/s)
+    DIR_DECIMALS: 5,
+    // decimals sent for unit directions (1e-5 rad ~ 0.01 m on a 1 km world)
+    WEIGHT_DECIMALS: 2
+    // and for blend weights
+  }
 };
 function inhabitedWorld(body) {
   return INHABITED_WORLDS.find((w) => w.body === body);
@@ -1413,6 +1498,12 @@ function deliver(ctx, input, reqId, n, t) {
   supplyIfLow(ctx, v, t);
   return { village: v, taken, completed: true };
 }
+function artReward(body, fam, completed) {
+  const n = R.ART_REWARD[fam];
+  const world = INHABITED_WORLDS.find((w) => w.body === body);
+  if (!completed || !world || !(n > 0)) return null;
+  return { item: world.art.item, count: n };
+}
 
 // src/shared/npc/traders.ts
 var T = NPC_CONFIG.TRADERS;
@@ -1429,6 +1520,7 @@ function drawOffers(worldSeed, traderIndex, visits, here, cameFrom) {
   const elsewhere = def.route.filter((b) => b !== here);
   const offers = [drawOffer(r, cameFrom, here)];
   while (offers.length < T.OFFERS) offers.push(drawOffer(r, pick(r, elsewhere), here));
+  for (const minLevel of T.EXTRA_OFFER_LEVELS) offers.push({ ...drawOffer(r, pick(r, elsewhere), here), minLevel });
   return offers;
 }
 function arrive(worldSeed, i, s, leg, cameFrom, clockOf) {
@@ -1470,6 +1562,20 @@ function advanceTradersOn(worldSeed, input, body, t1, clockOf) {
     if (moved) changed.push(i);
   });
   return { traders, changed };
+}
+function offerPrice(o, level) {
+  const step = Math.max(1, Math.round(o.take.n * T.LEVEL_DISCOUNT));
+  return Math.max(1, o.take.n - step * Math.max(0, level));
+}
+function offersFor(s, level) {
+  return s.offers.map((o, i) => (o.minLevel ?? 0) <= level ? i : -1).filter((i) => i >= 0);
+}
+function takeStock(s, i) {
+  const o = s.offers[i];
+  if (!o || o.stock <= 0) return null;
+  const next = JSON.parse(JSON.stringify(s));
+  next.offers[i].stock--;
+  return next;
 }
 
 // src/shared/worldTime.ts
@@ -1623,6 +1729,16 @@ var NpcWorld = class {
     return [...range(inhabitedWorld(body)?.villages ?? 0).map((i) => [NREC.VILLAGE, String(i)]), [NREC.CLOCK, NREC.CLOCK_KEY]];
   }
 };
+
+// src/shared/npc/friendship.ts
+function friendshipLevel(score) {
+  const L = NPC_CONFIG.FRIENDSHIP.LEVELS;
+  let level = 0;
+  while (level < L.length && score >= L[level]) level++;
+  const from = level === 0 ? 0 : L[level - 1];
+  const to = level < L.length ? L[level] : from;
+  return { level, into: score - from, span: to - from };
+}
 export {
   INHABITED_WORLDS,
   NPC_CONFIG,
@@ -1633,6 +1749,7 @@ export {
   advanceTradersOn,
   advanceVillage,
   angleBetween,
+  artReward,
   buildPopulation,
   catchUpPlanet,
   catchUpSeconds,
@@ -1645,15 +1762,19 @@ export {
   drawRequest,
   foodAt,
   foodLowMark,
+  friendshipLevel,
   hashParts,
   inhabitedBodies,
   inhabitedWorld,
   intIn,
   isInhabited,
   makeRng,
+  offerPrice,
+  offersFor,
   pick,
   pickWeighted,
   placePopulation,
   rngFor,
+  takeStock,
   worldTimeSubsystems
 };

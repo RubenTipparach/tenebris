@@ -7,7 +7,7 @@ import type { RocketFlightManager } from '../rocket/RocketFlightManager';
 import type { LandedRocket } from '../rocket/LandedRocket';
 import type { PlanetGravitySource } from '../rocket/RocketController';
 import { SUBMARINE, SUBMARINE_INPUTS, HullSpec, hullOf, depthBandAt } from '../config/DivingConfig';
-import { ROCKET_CONFIG, ROCKET_INPUTS } from '../config/RocketConfig';
+import { ROCKET_CONFIG, ROCKET_INPUTS, inputKeyLabel as keyName } from '../config/RocketConfig';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { getBodyConfig, bodyEnvironment } from '../config/SolarSystemConfig';
 import { gameStorage } from '../engine/GameStorage';
@@ -570,7 +570,6 @@ export function planetSea(bodyId: string, planet: Planet): FluidMedium {
     (l) => planet.getSurfaceHeightInDirection(dir.copy(l).normalize()));
 }
 
-const keyName = (code: string): string => code.replace(/^Key/, '').replace(/^Arrow/, '');
 
 /** A craft's procedural model: a submarine (capsule hull, sail, screw) or a diver (pressure sphere, window, ring) */
 export function buildCraftMesh(hull: HullSpec): THREE.Group {

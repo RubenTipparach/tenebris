@@ -31,6 +31,11 @@ export interface MissionSave {
   focus?: string | null;
   /** Branches whose unlock toast has been shown (MISSION_BRANCHES announcedBy) */
   announced?: string[];
+  /** NPCs this player has met (openspec friendship-npcs): ids, and the worlds they live on */
+  met?: string[];
+  metWorlds?: string[];
+  /** This player's friendship score per village (`body:village`) */
+  friendship?: Record<string, number>;
 }
 
 /** Saves made since every recipe (not only the ones a mission named) waits on a mission. */
@@ -61,6 +66,9 @@ export class MissionTracker implements RecipeGate {
   private legacy = new Set<number>();
   private focus: string | null = null;
   private announced = new Set<string>();
+  private met = new Set<string>();
+  private metWorlds = new Set<string>();
+  private friendship: Record<string, number> = {};
   public onComplete: ((mission: Mission) => void) | null = null;
   public onChange: (() => void) | null = null;
 
@@ -74,6 +82,9 @@ export class MissionTracker implements RecipeGate {
       for (const o of s.legacy ?? []) this.legacy.add(o);
       this.focus = typeof s.focus === 'string' ? s.focus : null;
       for (const b of s.announced ?? []) this.announced.add(b);
+      for (const id of s.met ?? []) if (typeof id === 'string') this.met.add(id);
+      for (const w of s.metWorlds ?? []) if (typeof w === 'string') this.metWorlds.add(w);
+      for (const [k, n] of Object.entries(s.friendship ?? {})) if (typeof n === 'number' && n > 0) this.friendship[k] = n;
     } else if (saved && Number.isInteger((saved as LinearSave).index)) {
       // the first version's line: everything before its index is done
       LINEAR_IDS.slice(0, (saved as LinearSave).index).forEach(id => this.done.add(id));
@@ -83,7 +94,47 @@ export class MissionTracker implements RecipeGate {
   }
 
   public save(): MissionSave {
-    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED, focus: this.focus, announced: [...this.announced] };
+    return { v: 2, done: [...this.done], prog: { ...this.prog }, low: { ...this.low }, seen: { ...this.seen }, legacy: [...this.legacy], rule: GATE_RULE_ALL_LOCKED, focus: this.focus, announced: [...this.announced],
+      met: [...this.met], metWorlds: [...this.metWorlds], friendship: { ...this.friendship } };
+  }
+
+  // ---- people (openspec friendship-npcs) -----------------------------------
+
+  /**
+   * This player opened an NPC's panel. Remembered per player (this save);
+   * says whether it was the first meeting with that NPC, with anyone on
+   * that world, and with anyone at all. A trader belongs to no world.
+   */
+  public meet(npcId: string, body: string | null): { first: boolean; firstOnWorld: boolean; firstEver: boolean } {
+    if (this.met.has(npcId)) return { first: false, firstOnWorld: false, firstEver: false };
+    const firstEver = this.met.size === 0;
+    this.met.add(npcId);
+    const firstOnWorld = !!body && !this.metWorlds.has(body);
+    if (body) this.metWorlds.add(body);
+    this.onChange?.();
+    return { first: true, firstOnWorld, firstEver };
+  }
+
+  public hasMet(npcId: string): boolean {
+    return this.met.has(npcId);
+  }
+
+  /** Has this player met anyone living on `body`? */
+  public metOn(body: string): boolean {
+    return this.metWorlds.has(body);
+  }
+
+  /** This player's friendship score with village `village` of `body`. */
+  public friendshipOf(body: string, village: number): number {
+    return this.friendship[`${body}:${village}`] ?? 0;
+  }
+
+  /** Credit friendship for a delivery that stood (never for a refused one: the caller credits on the server's yes). */
+  public creditFriendship(body: string, village: number, points: number): void {
+    if (!(points > 0)) return;
+    const k = `${body}:${village}`;
+    this.friendship[k] = (this.friendship[k] ?? 0) + points;
+    this.onChange?.();
   }
 
   // ---- the tree ----------------------------------------------------------

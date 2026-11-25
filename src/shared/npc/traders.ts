@@ -23,6 +23,7 @@ export interface TraderOffer {
   stock: number;         // trades left until the next restock
   max: number;
   from: string;          // the world the goods come from
+  minLevel?: number;     // a friend's offer: shown from this friendship level (task 4.5)
 }
 
 export interface TraderState {
@@ -61,6 +62,7 @@ export function drawOffers(worldSeed: number, traderIndex: number, visits: numbe
   const elsewhere = def.route.filter(b => b !== here);
   const offers = [drawOffer(r, cameFrom, here)];
   while (offers.length < T.OFFERS) offers.push(drawOffer(r, pick(r, elsewhere), here));
+  for (const minLevel of T.EXTRA_OFFER_LEVELS) offers.push({ ...drawOffer(r, pick(r, elsewhere), here), minLevel });
   return offers;
 }
 
@@ -111,4 +113,26 @@ export function advanceTradersOn(worldSeed: number, input: readonly TraderState[
     if (moved) changed.push(i);
   });
   return { traders, changed };
+}
+
+// ---- bartering (task 4.5) ---------------------------------------------------
+
+/** What an offer asks of a player at a friendship level: fewer items each level, never none. */
+export function offerPrice(o: TraderOffer, level: number): number {
+  const step = Math.max(1, Math.round(o.take.n * T.LEVEL_DISCOUNT));
+  return Math.max(1, o.take.n - step * Math.max(0, level));
+}
+
+/** The offers (by index into `offers`) a player at this friendship level is shown. */
+export function offersFor(s: TraderState, level: number): number[] {
+  return s.offers.map((o, i) => ((o.minLevel ?? 0) <= level ? i : -1)).filter(i => i >= 0);
+}
+
+/** One trade of offer `i` taken from the shared stock: the new state, or null when none is left (or it is not offered). */
+export function takeStock(s: TraderState, i: number): TraderState | null {
+  const o = s.offers[i];
+  if (!o || o.stock <= 0) return null;
+  const next: TraderState = JSON.parse(JSON.stringify(s));
+  next.offers[i].stock--;
+  return next;
 }

@@ -1,4 +1,5 @@
 import { ItemType } from '../player/Inventory';
+import { WALKER_INPUTS } from './WalkerInputs';
 
 /**
  * Deep resources (openspec space-exploration, submarines / ocean-world):
@@ -136,7 +137,7 @@ export function hullOf(item: ItemType): HullSpec | null {
 
 /** Piloting keys (KeyboardEvent.code) - Interact (F) boards, docks and climbs out */
 export const SUBMARINE_INPUTS = {
-  INTERACT: 'KeyF',             // F - board / climb out / dock the diver
+  INTERACT: WALKER_INPUTS.INTERACT, // F - board / climb out / dock the diver (the one on-foot Interact key)
   EXIT: 'KeyV',                 // V - climb out (as from a rocket)
   THROTTLE_UP: 'KeyW',          // W - more forward throttle
   THROTTLE_DOWN: 'KeyS',        // S - less (down to full astern)

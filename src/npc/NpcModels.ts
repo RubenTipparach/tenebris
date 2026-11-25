@@ -23,6 +23,11 @@ export function npcSpecies(): NpcSpecies[] {
   return [...INHABITED_WORLDS.map(w => w.species), NPC_CONFIG.TRADERS.SPECIES];
 }
 
+/** A species by id (a world's people or the traders). */
+export function npcSpeciesById(id: string): NpcSpecies | undefined {
+  return npcSpecies().find(s => s.id === id);
+}
+
 /** The anim file id of a species. */
 export const npcAnimId = (species: string): string => `npc_${species}`;
 

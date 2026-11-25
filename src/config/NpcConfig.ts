@@ -23,7 +23,7 @@ import { ItemType } from '../player/Inventory';
 export type RequestFamily = 'supply' | 'build' | 'collect';
 export const REQUEST_FAMILIES: readonly RequestFamily[] = ['supply', 'build', 'collect'];
 
-export type NpcRole = 'elder' | 'villager';
+export type NpcRole = 'elder' | 'villager' | 'trader';
 
 /**
  * A species' look: the parameters its procedural model is built from (task
@@ -53,13 +53,13 @@ export interface NpcSpecies {
 }
 
 /**
- * A world's art piece (collect requests). The ITEM and its icon land with
- * task 4.4; until then a piece is referenced by this string id everywhere
- * (village records, requests), and 4.4 maps id -> ItemType in one table.
+ * A world's art piece (collect requests). Records (villages, requests) refer
+ * to a piece by its string id; `item` is the one id -> ItemType table.
  */
 export interface ArtPiece {
   id: string;
   name: string;
+  item: ItemType;         // the item (its icon: scripts/gen-item-icons.py ART_ICONS)
 }
 
 /** What a friendship level with a village gives (filled in by group 5). */
@@ -99,7 +99,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Kor', 'Dex', 'Vas', 'Tal', 'Sen', 'Ira', 'Bel'], middle: ['o', 'an', 'i'], last: ['ix', 'el', 'en', 'ock', 'ar'] },
       look: { heightM: 1.7, widthM: 0.45, headScale: 0.9, arms: 1, skin: '#92a3b2', trim: '#3e3551', eyes: '#74effe', feature: 'visor' },
     },
-    art: { id: 'art_ferrum', name: 'Circuit Mosaic' },
+    art: { id: 'art_ferrum', name: 'Circuit Mosaic', item: ItemType.ART_FERRUM },
     goods: [ItemType.SALVAGE],
     rewards: rewards('ferrum'),
   },
@@ -111,7 +111,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Oru', 'Thal', 'Wen', 'Bri', 'Mos', 'Ash'], middle: ['a', 'wy', 'el'], last: ['n', 'th', 'ra', 'wick'] },
       look: { heightM: 2.1, widthM: 0.5, headScale: 0.8, arms: 1, skin: '#725244', trim: '#297537', eyes: '#fb902f', feature: 'branches' },
     },
-    art: { id: 'art_sequoia', name: 'Amber Totem' },
+    art: { id: 'art_sequoia', name: 'Amber Totem', item: ItemType.ART_SEQUOIA },
     goods: [ItemType.RESIN, ItemType.FISH_SPRAT],
     rewards: rewards('sequoia'),
   },
@@ -123,7 +123,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Kra', 'Vul', 'Pyr', 'Sco', 'Ign'], middle: ['o', 'ar'], last: ['k', 'ax', 'is', 'um'] },
       look: { heightM: 1.3, widthM: 0.6, headScale: 1.1, arms: 1, skin: '#8d4526', trim: '#fa3a64', eyes: '#faaf5c', feature: 'horns' },
     },
-    art: { id: 'art_cinder', name: 'Obsidian Mask' },
+    art: { id: 'art_cinder', name: 'Obsidian Mask', item: ItemType.ART_CINDER },
     goods: [ItemType.ORE_URANIUM],
     rewards: rewards('cinder'),
   },
@@ -135,7 +135,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Sa', 'Mir', 'Ves', 'Hal', 'Zu'], middle: ['ri', 'a', 'ul'], last: ['n', 'sh', 'ra', 'el'] },
       look: { heightM: 2.4, widthM: 0.35, headScale: 0.7, arms: 1, skin: '#ab8465', trim: '#5d778d', eyes: '#1f3b52', feature: 'hood' },
     },
-    art: { id: 'art_vesper', name: 'Glass Lantern' },
+    art: { id: 'art_vesper', name: 'Glass Lantern', item: ItemType.ART_VESPER },
     goods: [ItemType.SILICA],
     rewards: rewards('vesper'),
   },
@@ -147,7 +147,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Qui', 'Lux', 'Cry', 'Pri', 'Sel'], middle: ['a', 'o'], last: ['ss', 'ne', 'ra', 'zz'] },
       look: { heightM: 1.1, widthM: 0.5, headScale: 1.3, arms: 2, skin: '#69608b', trim: '#1096c3', eyes: '#fffefe', feature: 'crystals' },
     },
-    art: { id: 'art_halcyon', name: 'Prism Idol' },
+    art: { id: 'art_halcyon', name: 'Prism Idol', item: ItemType.ART_HALCYON },
     goods: [ItemType.CRYSTAL],
     rewards: rewards('halcyon'),
   },
@@ -159,7 +159,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Ny', 'Bor', 'Skel', 'Ril', 'Hje'], middle: ['a', 'i', 'ul'], last: ['d', 'm', 'ka', 'vi'] },
       look: { heightM: 1.6, widthM: 0.7, headScale: 1.0, arms: 1, skin: '#bfcad7', trim: '#1096c3', eyes: '#1f3b52', feature: 'fur' },
     },
-    art: { id: 'art_tessaly', name: 'Frost Chime' },
+    art: { id: 'art_tessaly', name: 'Frost Chime', item: ItemType.ART_TESSALY },
     goods: [ItemType.CRYO_COOLANT],
     rewards: rewards('tessaly'),
   },
@@ -171,7 +171,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Mu', 'Pho', 'Gla', 'Umb', 'Spo'], middle: ['o', 'ri', 'e'], last: ['l', 'ra', 'x', 'mo'] },
       look: { heightM: 1.0, widthM: 0.55, headScale: 1.6, arms: 1, skin: '#7d4636', trim: '#559642', eyes: '#eab798', feature: 'cap' },
     },
-    art: { id: 'art_umbra', name: 'Glowcap Lamp' },
+    art: { id: 'art_umbra', name: 'Glowcap Lamp', item: ItemType.ART_UMBRA },
     goods: [ItemType.RADIOTROPHIC_FUNGUS],
     rewards: rewards('umbra'),
   },
@@ -183,7 +183,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Fen', 'Lio', 'Ver', 'Pal', 'Cy'], middle: ['a', 'iri', 'o'], last: ['n', 'th', 'ma', 'lis'] },
       look: { heightM: 1.4, widthM: 0.4, headScale: 0.9, arms: 2, skin: '#297537', trim: '#faaf5c', eyes: '#eab798', feature: 'wings' },
     },
-    art: { id: 'art_verdance', name: 'Woven Fan' },
+    art: { id: 'art_verdance', name: 'Woven Fan', item: ItemType.ART_VERDANCE },
     goods: [ItemType.FISH_TETRA, ItemType.FISH_CATFISH],
     rewards: rewards('verdance'),
   },
@@ -195,7 +195,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Gub', 'Mar', 'Pea', 'Tod', 'Wil'], middle: ['o', 'u', 'ab'], last: ['g', 'sh', 'bo', 'rel'] },
       look: { heightM: 1.8, widthM: 0.45, headScale: 0.8, arms: 1, skin: '#725244', trim: '#69608b', eyes: '#559642', feature: 'stilts' },
     },
-    art: { id: 'art_mirewood', name: 'Peat Carving' },
+    art: { id: 'art_mirewood', name: 'Peat Carving', item: ItemType.ART_MIREWOOD },
     goods: [ItemType.FISH_PEATEEL, ItemType.FISH_GOURAMI],
     rewards: rewards('mirewood'),
   },
@@ -207,7 +207,7 @@ export const INHABITED_WORLDS: readonly InhabitedWorld[] = [
       syllables: { first: ['Mar', 'Cor', 'Nai', 'Thal', 'Sha'], middle: ['i', 'e', 'ul'], last: ['s', 'na', 'ul', 'ro'] },
       look: { heightM: 1.5, widthM: 0.5, headScale: 1.0, arms: 1, skin: '#1096c3', trim: '#fffefe', eyes: '#1f3b52', feature: 'fins' },
     },
-    art: { id: 'art_thalassa', name: 'Pearl Crown' },
+    art: { id: 'art_thalassa', name: 'Pearl Crown', item: ItemType.ART_THALASSA },
     goods: [ItemType.FISH_MULLET, ItemType.FISH_KELPEEL],
     rewards: rewards('thalassa'),
   },
@@ -250,6 +250,16 @@ export const NPC_CONFIG = {
     GLOBE_ROUNDS: 16,          // and then this many rounds of CENTRE_TRIES over the whole globe (ocean worlds)
     HOME_TRIES: 24,            // and for a home
     HOME_MIN_GAP_M: 2.5,       // homes this far apart at least (when the ground allows)
+    // Structures (task 3.4) stand round the centre this far out, one per
+    // STRUCTURES entry, evenly spaced from a seeded starting angle
+    STRUCTURE_RING_M: 9,
+    FOUNDATION_DEPTH_M: 1.5,   // a structure's footing reaches this far below the ground at its centre (slopes)
+  },
+
+  // The structures' materials (Sweaft-64 tones), drawn procedurally per stage (src/npc/NpcStructures.ts)
+  STRUCTURE_LOOK: {
+    brick: '#a8633e', mortar: '#725244', steel: '#5d778d', glass: '#74effe', concrete: '#92a3b2',
+    roof: '#3e3551', stake: '#ab8465', rope: '#eab798', plinth: '#bfcad7', gem: '#fa3a64',
   },
 
   // ---- the food store (meals)
@@ -275,6 +285,9 @@ export const NPC_CONFIG = {
     COLLECT_AMOUNT: 1,         // art pieces a collect request wants
     // Friendship a whole request gives (credited per item delivered, group 5)
     FRIENDSHIP: { supply: 6, build: 10, collect: 20 } as Record<RequestFamily, number>,
+    // The elder's thanks for a completed request: pieces of the world's own
+    // art (only its elders give it; collect requests elsewhere want it)
+    ART_REWARD: { supply: 1, build: 2, collect: 0 } as Record<RequestFamily, number>,
   },
   // What villages build, in order; each stage is one build request
   STRUCTURES: [
@@ -312,6 +325,7 @@ export const NPC_CONFIG = {
       look: { heightM: 1.9, widthM: 0.5, headScale: 0.9, arms: 1, skin: '#a8633e', trim: '#fb902f', eyes: '#fffefe', feature: 'pack' },
     } as NpcSpecies,
     STAY_S: 1800,              // seconds of the host world's time before moving on
+    CAMP_M: 6,                 // a visiting trader camps this far from the first village's centre
     RESTOCK_S: 600,            // offers refill this often during a stay
     OFFERS: 4,                 // offers per visit (at least one from the world it came from)
     STOCK: [2, 5] as const,    // trades per offer per restock
@@ -319,17 +333,47 @@ export const NPC_CONFIG = {
     // What a trader asks for, besides the visited world's own goods
     WANTS: [ItemType.STEEL_INGOT, ItemType.GLASS, ItemType.BRICK, ItemType.COOKED_FISH],
     TAKE: [4, 10] as const,    // items the player pays per trade (before friendship)
-    LEVEL_DISCOUNT: 0.1,       // fraction off the price per friendship level (task 4.5)
+    LEVEL_DISCOUNT: 0.1,       // fraction off the price per friendship level (at least one item per level; task 4.5)
+    // Extra offers a trader keeps for friends: one per entry, shown from that
+    // friendship level with the village it is visiting
+    EXTRA_OFFER_LEVELS: [2, 4] as readonly number[],
   },
 
   // ---- talking (task 4.1)
   TALK_RANGE_M: 3,
+  TALK_REFRESH_S: 2,           // a talker re-sends 'npcTalk' this often while the panel is open
+  TALK_HOLD_S: 6,              // the host lets an NPC go when it has not heard from the talker for this long
 
   // ---- drawing (task 3.2): instances per species' mesh (a world's whole population fits)
   MAX_DRAWN_PER_SPECIES: 64,
+
+  // ---- motion (task 3.3): simulated by the planet's host, mirrored by everyone else
+  MOTION: {
+    WALK_MPS: 1.1,             // walking speed
+    WANDER_M: 10,              // a walk ends within this of home
+    IDLE_S: [3, 9] as const,   // standing still between walks
+    WALK_MAX_S: 20,            // a walk that has not arrived by then gives up and idles
+    ARRIVE_M: 0.4,             // close enough to the target
+    STEP_LOOKAHEAD_M: 0.6,     // the ground this far ahead must be walkable, else the walk ends
+    TARGET_TRIES: 8,           // candidate targets tried for a walk on walkable ground
+    TURN_RATE: 4,              // facing eases towards the walk (1/s)
+    BLEND_RATE: 4,             // idle <-> walk <-> talk weights ease at this rate (1/s)
+    SETTLE_STEP_M: 2,          // an ungrounded home looks for ground in rings this far apart
+    SETTLE_MAX_M: 60,          // out to this distance
+    SETTLE_AZIMUTHS: 12,       // directions tried per ring
+    SNAPSHOT_HZ: 5,            // host snapshots per second (live channel 'npc')
+    FOLLOW_RATE: 8,            // a mirrored NPC eases to the latest snapshot (1/s)
+    DIR_DECIMALS: 5,           // decimals sent for unit directions (1e-5 rad ~ 0.01 m on a 1 km world)
+    WEIGHT_DECIMALS: 2,        // and for blend weights
+  },
 } as const;
 
 /** The world entry for a body, or undefined when nobody lives there. */
+/** The item an art piece id is (null: no such piece). */
+export function artItem(artId: string): ItemType | null {
+  return INHABITED_WORLDS.find(w => w.art.id === artId)?.art.item ?? null;
+}
+
 export function inhabitedWorld(body: string): InhabitedWorld | undefined {
   return INHABITED_WORLDS.find(w => w.body === body);
 }

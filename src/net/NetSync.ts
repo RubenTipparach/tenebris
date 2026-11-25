@@ -79,7 +79,14 @@ let known = new Set<string>();
 // Record versions as the server last confirmed them (address -> v; absent = 0)
 const versions = new Map<string, number>();
 // A write the server has not answered yet, and what waits behind it
-interface Pending { comp: ItemDelta | null; queued: { kind: string; planet: string; key: string; data: object | null; comp: ItemDelta | null } | null }
+/** Told whether a write stood (the server kept it) or was refused and rolled back. */
+export type Settled = (accepted: boolean) => void;
+interface Pending {
+  comp: ItemDelta | null;
+  settled: Settled[];
+  queued: { kind: string; planet: string; key: string; data: object | null; comp: ItemDelta | null; settled: Settled[] } | null;
+}
+const settle = (fns: Settled[] | undefined, accepted: boolean) => { for (const fn of fns ?? []) { try { fn(accepted); } catch (e) { console.error('[MP] settled callback failed', e); } } };
 const pending = new Map<string, Pending>();
 let ledger: TradeLedger | null = null;
 // Joining uploads objects made offline: no player action, no trade
@@ -155,12 +162,17 @@ export const netSync = {
     return myId;
   },
 
-  /** Publish an object's latest state (null = removed). No-op offline or while applying a remote record. */
-  record(kind: string, planet: string, key: string | number, data: object | null): void {
-    if (!transport || remoteDepth > 0) return;
+  /**
+   * Publish an object's latest state (null = removed). No-op offline or while
+   * applying a remote record. `settled` hears whether the write stood: true
+   * once the server keeps it (at once offline, where nothing can refuse it),
+   * false when it is refused and rolled back.
+   */
+  record(kind: string, planet: string, key: string | number, data: object | null, settled?: Settled): void {
+    if (!transport || remoteDepth > 0) { settled?.(true); return; }
     const addr = address(kind, planet, String(key));
     const json = JSON.stringify(data);
-    if (lastState.get(addr) === json) return;
+    if (lastState.get(addr) === json) { settled?.(true); return; }
     lastState.set(addr, json);
     if (data) known.add(addr);
     else known.delete(addr);
@@ -171,10 +183,10 @@ export const netSync = {
     const p = pending.get(addr);
     if (p) {
       // one write in flight per record: this one goes when that is answered
-      p.queued = { kind, planet, key: String(key), data, comp: addDelta(p.queued?.comp ?? null, comp) };
+      p.queued = { kind, planet, key: String(key), data, comp: addDelta(p.queued?.comp ?? null, comp), settled: [...(p.queued?.settled ?? []), ...(settled ? [settled] : [])] };
       return;
     }
-    pending.set(addr, { comp, queued: null });
+    pending.set(addr, { comp, settled: settled ? [settled] : [], queued: null });
     sendVersioned(kind, planet, String(key), data);
   },
 
@@ -280,6 +292,8 @@ export function attachTransport(t: Transport | null, id = 0, serverNow?: number,
   // a new connection starts from the welcome's versions; an unanswered write
   // from the last one is forgotten (the server may or may not have it)
   versions.clear();
+  // (whoever waits on one hears it did not stand: credit nothing for it)
+  for (const p of pending.values()) { settle(p.settled, false); settle(p.queued?.settled, false); }
   pending.clear();
   if (!t) { peers.clear(); peerPos.clear(); }
   if (t && worldId) loadKnown(worldId);
@@ -362,9 +376,10 @@ export function ackRecord(kind: string, planet: string, key: string, v: number):
   versions.set(addr, v);
   const p = pending.get(addr);
   if (!p) return;
+  settle(p.settled, true);
   if (!p.queued || !transport) { pending.delete(addr); return; }
   const q = p.queued;
-  pending.set(addr, { comp: q.comp, queued: null });
+  pending.set(addr, { comp: q.comp, settled: q.settled, queued: null });
   sendVersioned(q.kind, q.planet, q.key, q.data);
 }
 
@@ -383,6 +398,8 @@ export function nackRecord(kind: string, planet: string, key: string, v: number,
   else known.delete(addr);
   applyRecord(kind, planet, key, data);
   if (comp && Object.values(comp).some(n => n !== 0)) ledger?.refund(comp);
+  settle(p?.settled, false);
+  settle(p?.queued?.settled, false);
 }
 
 /** A chat line for the log (from the server, or a system line made here). */

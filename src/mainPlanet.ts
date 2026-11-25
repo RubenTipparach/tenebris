@@ -3,6 +3,11 @@ import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
 import { NpcClient } from './npc/NpcClient';
+import { NpcField } from './npc/NpcField';
+import { NpcTalk } from './npc/NpcTalk';
+import { NpcPanel } from './npc/NpcPanel';
+import { artItem } from './config/NpcConfig';
+import { artReward, buildPopulation } from './shared/npc';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
@@ -89,6 +94,10 @@ class PlanetGame {
   private engine: GameEngine;
   // NPC records and single-player NPC time (friendship-npcs, src/npc/NpcClient.ts)
   public readonly npcClient = new NpcClient();
+  /** The NPCs of the planet the player stands on (openspec friendship-npcs 3.3). */
+  public npcField: NpcField | null = null;
+  public npcTalk: NpcTalk | null = null;
+  public npcPanel: NpcPanel | null = null;
   private inputManager: InputManager;
   private planets: Map<string, Planet> = new Map();
   private earth: Planet; // Quick reference to starting planet
@@ -970,10 +979,15 @@ class PlanetGame {
       for (const planet of this.planets.values()) {
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
       }
+      const sun = calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition);
       profiler.begin('Fauna');
-      this.fauna.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+      this.fauna.update(deltaTime, pos, on, sun);
       profiler.end('Fauna');
+      // The people of that planet: the same 'who stands on what' as the fauna
+      profiler.begin('NPCs');
+      this.npcField ??= new NpcField(this.engine.scene, this.npcClient.store);
+      this.npcField.update(deltaTime, on, sun);
+      profiler.end('NPCs');
     }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
@@ -994,11 +1008,13 @@ class PlanetGame {
       profiler.begin('Rocket Flight');
       this.rocketFlightManager?.update(deltaTime);
       profiler.end('Rocket Flight');
-      // (keys pressed in flight are the rocket's, never a submarine's)
+      // (keys pressed in flight are the rocket's, never a submarine's or a talk)
       this.submarines?.update(deltaTime, false);
+      this.npcTalk?.update(deltaTime, false, this.npcField, this.engine.camera, this.player.position);
     } else if (this.submarines?.isPiloting()) {
       // Piloting a submarine or diver: it takes the keys and the camera
       this.submarines.update(deltaTime, true);
+      this.npcTalk?.update(deltaTime, false, this.npcField, this.engine.camera, this.player.position);
       this.engine.setUnderwater(this.submarines.cameraInFluid());
     } else {
       // Normal player mode
@@ -1023,8 +1039,32 @@ class PlanetGame {
         handledRocketInteraction = this.submarines.handleRightClick(!this.rightClickHeld);
       }
       this.rightClickHeld = input.rightClick;
-      // Interact (F) boards a parked submarine in view
-      this.submarines?.update(deltaTime, isGameActive);
+      // Interact (F): talk to the NPC in view (openspec friendship-npcs), else
+      // board a parked submarine in view - one key, the NPC first
+      if (!this.npcTalk) {
+        this.npcTalk = new NpcTalk();
+        const inv = this.blockInteraction.getInventory();
+        this.npcPanel = new NpcPanel(inv, this.npcClient, {
+          onInventoryChanged: () => this.blockInteraction.onInventoryChanged(),
+          artItem: (id) => artItem(id),
+          friendship: (body, village) => this.missions?.getTracker().friendshipOf(body, village) ?? 0,
+          credit: (body, village, points) => this.missions?.getTracker().creditFriendship(body, village, points),
+          onMet: (npc, body) => { this.missions?.getTracker().meet(npc.id, npc.role === 'trader' ? null : body); },
+          // a completed request: the village's elder gives pieces of its world's art
+          onDelivered: (body, village, fam, _taken, res) => {
+            const gift = artReward(body, fam, res.completed);
+            if (!gift) return;
+            inv.give(gift.item as ItemType, gift.count);
+            const elder = buildPopulation(PlayerConfig.TERRAIN_SEED, body)?.npcs.find(n => n.role === 'elder' && n.village === village);
+            showToast(`${elder?.name ?? 'The elder'} thanks you: ${gift.count} x ${ITEM_DATA[gift.item as ItemType]?.name ?? ''}`, { duration: 3000 });
+          },
+        });
+        this.npcTalk.setPanel(this.npcPanel);
+        // friendship credited (a delivery the server kept) redraws an open panel
+        this.missions?.addChangeListener(() => this.npcPanel?.refresh());
+      }
+      this.npcTalk.update(deltaTime, isGameActive, this.npcField, this.engine.camera, this.player.position);
+      this.submarines?.update(deltaTime, isGameActive && !this.npcTalk.targeting);
 
       // Fishing takes the mouse buttons while the rod is in hand
       // The rod in hand: a rod in the selected hotbar slot, or the toolbox rod taken out (0)

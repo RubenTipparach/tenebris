@@ -77,10 +77,11 @@ export class NpcRenderer {
   }
 
   /** The sun and the planet the NPCs stand on (the fauna's day / night shading). */
-  setLight(sunDirection: THREE.Vector3, planetCenter: THREE.Vector3): void {
+  setLight(sunDirection: THREE.Vector3, planetCenter: THREE.Vector3, skyLight?: THREE.Texture): void {
     for (const r of this.renders.values()) {
       r.material.uniforms.sunDirection.value.copy(sunDirection);
       r.material.uniforms.planetCenter.value.copy(planetCenter);
+      if (skyLight) r.material.uniforms.skyLight.value = skyLight;
     }
   }
 
