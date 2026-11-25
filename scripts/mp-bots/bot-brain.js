@@ -1465,7 +1465,14 @@
       // the craft: a rocket parked on this world near by (one that came back
       // lands beside its pad, not on it), else a rocket standing on a pad
       const craft = homeCraft();
-      if (!craft) { say('no rocket to fly'); st.cannot = (st.cannot || []).concat([m ? m.id : target]); return; }
+      if (!craft) {
+        // none fit to fly (the pad rebuild runs from the loop): rest this trip, don't spin
+        say('no rocket to fly - building one first');
+        st.rest = st.rest || {}; st.rest[m ? m.id : target] = Date.now() + 5 * 60 * 1000;
+        delete st.rest.upgrade;
+        await sleep(2000);
+        return;
+      }
       if (!(await craft.fuel())) return;
       const need = RETURN_FUEL[target] || 100;
       const inHold = await cargoFuelUnits(craft.cargo());
@@ -1575,7 +1582,8 @@
     try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
     const pos = player().position;
     const pads = bi().launchPadManager.getLaunchPads()
-      .filter(p => p.isComplete && !away.has(p) && p.rocketParts.length > 0 && !padUnderwater(p))
+      // a rocket standing on it, or an empty pad with a tower to build one on
+      .filter(p => p.isComplete && !away.has(p) && (p.rocketParts.length > 0 || p.segmentCount > 0) && !padUnderwater(p))
       .sort((a, b) => padCentre(a).distanceTo(pos) - padCentre(b).distanceTo(pos));
     // ours first, else the nearest (a player built one for the bots)
     return pads.find(p => [...p.hexes.keys()].some(t => mySites.includes(t))) || pads[0] || null;
