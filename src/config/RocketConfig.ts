@@ -494,3 +494,12 @@ export const ROCKET_INPUTS = {
   STAGE: 'KeyN',                  // N - drop the spent stage (next stage)
   DRONE: 'KeyL',                  // L - launch a survey drone at the body below
 };
+
+/**
+ * The key a binding (a KeyboardEvent.code, e.g. ROCKET_INPUTS.STAGE) reads
+ * as on screen: 'KeyN' -> 'N', 'Digit1' -> '1', 'ArrowUp' -> 'Up', 'Space'
+ * stays. Prompts take the label from the binding, so a rebind updates them.
+ */
+export function inputKeyLabel(code: string): string {
+  return code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Arrow/, '');
+}

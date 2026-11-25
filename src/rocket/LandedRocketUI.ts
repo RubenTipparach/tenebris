@@ -1,10 +1,13 @@
 import { LandedRocket } from './LandedRocket';
 import { MenuManager } from '../player/MenuManager';
-import { computeRocketStats, stackItemTypes, equipmentLabel, equipmentSummary } from './RocketPerformance';
+import { computeRocketStats, stackItemTypes, equipmentLabel, equipmentSummary, partTooltipLines, stageOfPart, stagesOf } from './RocketPerformance';
 import { ITEM_DATA, ItemType } from '../player/Inventory';
 import { getAssetPath } from '../utils/assetPath';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
 import type { RefitOp } from './Refit';
+
+// What the refit's part picker does with the part chosen
+type PickAction = { kind: 'addTop' } | { kind: 'swap'; index: number } | { kind: 'insert'; index: number };
 
 /**
  * Simple UI for interacting with a landed rocket
@@ -373,8 +376,11 @@ export class LandedRocketUI {
       .refit-section { margin-top: 8px; }
       .refit-section label { display: block; margin-bottom: 4px; }
       .refit-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
-      .refit-row span { flex: 1; font-size: 12px; }
-      .side-btn.small { padding: 3px 8px; font-size: 11px; }
+      .refit-row > span { flex: 1; font-size: 12px; }
+      .side-btn.small { padding: 3px 5px; font-size: 11px; }
+      /* A part's name and numbers on hover (the shared .item-tooltip, index.html) */
+      .refit-section .item-tooltip { left: 100%; bottom: auto; top: 0; transform: none; margin: 0 0 0 8px; z-index: 400; }
+      .refit-section .equip-cell:hover .item-tooltip { opacity: 1; }
       .refit-picker { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
       .refit-picker .equip-cell { cursor: pointer; }
       .refit-msg { color: #ff6666; font-size: 12px; min-height: 14px; margin-top: 4px; }
@@ -393,8 +399,9 @@ export class LandedRocketUI {
   private refitStack!: HTMLDivElement;
   private refitPicker!: HTMLDivElement;
   private refitMsg!: HTMLDivElement;
-  // What the open picker will do with the part chosen: add on top, or swap the part at an index
-  private pending: { kind: 'addTop' } | { kind: 'swap'; index: number } | null = null;
+  // What the open picker will do with the part chosen: add on top, swap the
+  // part at an index, or put it in under the part at an index
+  private pending: PickAction | null = null;
   private refit: {
     canDock(r: LandedRocket): boolean;
     dock(r: LandedRocket): Promise<string | null>;
@@ -417,8 +424,8 @@ export class LandedRocketUI {
     this.close();
   }
 
-  /** Open the part picker for an add or a swap */
-  private pick(action: { kind: 'addTop' } | { kind: 'swap'; index: number }): void {
+  /** Open the part picker for an add, a swap or an insert */
+  private pick(action: PickAction): void {
     this.pending = action;
     this.renderRefit();
   }
@@ -431,16 +438,33 @@ export class LandedRocketUI {
     this.updateDisplay();
   }
 
-  /** An item icon cell (the slot look the rest of the panel uses) */
-  private iconCell(t: ItemType, title: string): HTMLDivElement {
+  /**
+   * An item icon cell (the slot look the rest of the panel uses), with the
+   * shared .item-tooltip on hover: what clicking does, the part's name and
+   * key numbers, and any extra lines (its stage)
+   */
+  private iconCell(t: ItemType, action: string | null, extra: string[] = []): HTMLDivElement {
     const cell = document.createElement('div');
     cell.className = 'equip-cell';
-    cell.title = title;
     const img = document.createElement('img');
     img.src = getAssetPath(ITEM_DATA[t].texture);
     img.draggable = false;
     cell.appendChild(img);
+    const tip = document.createElement('span');
+    tip.className = 'item-tooltip';
+    tip.textContent = [action ?? ITEM_DATA[t].name, ...(action ? [ITEM_DATA[t].name] : []), ...partTooltipLines(t), ...extra].join('\n');
+    cell.appendChild(tip);
     return cell;
+  }
+
+  private smallButton(label: string, title: string, onClick: () => void, disabled = false): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'side-btn small';
+    b.textContent = label;
+    b.title = title;
+    b.disabled = disabled;
+    b.addEventListener('click', onClick);
+    return b;
   }
 
   /** The dock and refit buttons, and during a refit the stack and the part picker */
@@ -455,21 +479,25 @@ export class LandedRocketUI {
     this.refitSection.hidden = !active;
     if (!active) return;
     this.refitStack.innerHTML = '';
+    const types = r.parts.map(p => p.itemType);
+    const stages = stagesOf(types, t => t).length;
     r.parts.forEach((p, index) => {
       const row = document.createElement('div');
       row.className = 'refit-row';
-      row.appendChild(this.iconCell(p.itemType, ITEM_DATA[p.itemType].name));
+      row.appendChild(this.iconCell(p.itemType, null, stages > 1 ? [`Stage ${stageOfPart(types, index)} of ${stages}`] : []));
       const name = document.createElement('span');
       name.textContent = ITEM_DATA[p.itemType].name;
-      const swap = document.createElement('button');
-      swap.className = 'side-btn small';
-      swap.textContent = 'Swap';
-      swap.addEventListener('click', () => this.pick({ kind: 'swap', index }));
-      const remove = document.createElement('button');
-      remove.className = 'side-btn small';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', () => void this.applyOp({ kind: 'remove', index }));
-      row.append(name, swap, remove);
+      // The same stack ops as the launch pad's editor (Refit.ts): move a
+      // part, put one in under it, swap it, take it off
+      const last = r.parts.length - 1;
+      row.append(
+        name,
+        this.smallButton('Up', 'Move this part up one', () => void this.applyOp({ kind: 'move', from: index, to: index + 1 }), index >= last),
+        this.smallButton('Down', 'Move this part down one', () => void this.applyOp({ kind: 'move', from: index, to: index - 1 }), index <= 0),
+        this.smallButton('Insert', 'Put a part in under this one', () => this.pick({ kind: 'insert', index })),
+        this.smallButton('Swap', 'Put another part in its place', () => this.pick({ kind: 'swap', index })),
+        this.smallButton('Remove', 'Take this part off (into the cargo hold, else your inventory)', () => void this.applyOp({ kind: 'remove', index })),
+      );
       this.refitStack.appendChild(row);
     });
     // The picker: rocket parts in the cargo hold and the player's inventory, as icons
@@ -478,10 +506,11 @@ export class LandedRocketUI {
     if (this.pending) {
       const parts = this.refit.available(r);
       if (parts.length === 0) this.refitPicker.textContent = 'No rocket parts in the cargo hold or your inventory';
+      const verb = { addTop: 'Click to add on top', swap: 'Click to swap in', insert: 'Click to put in' }[this.pending.kind];
       for (const t of parts) {
-        const cell = this.iconCell(t, `${this.pending.kind === 'addTop' ? 'Add' : 'Swap in'} ${ITEM_DATA[t].name}`);
+        const cell = this.iconCell(t, verb);
         const action = this.pending;
-        cell.addEventListener('click', () => void this.applyOp(action.kind === 'addTop' ? { kind: 'addTop', itemType: t } : { kind: 'swap', index: action.index, itemType: t }));
+        cell.addEventListener('click', () => void this.applyOp(action.kind === 'addTop' ? { kind: 'addTop', itemType: t } : { ...action, itemType: t }));
         this.refitPicker.appendChild(cell);
       }
     }

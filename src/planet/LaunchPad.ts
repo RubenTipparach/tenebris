@@ -5,7 +5,7 @@ import { getAssetPath } from '../utils/assetPath';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { ItemType, ITEM_DATA, RocketPartType, InventorySlot } from '../player/Inventory';
 import { ROCKET_CONFIG } from '../config/RocketConfig';
-import { cargoSlotsFor, equipmentSlotsFor, compactCargo, computeRocketStats } from '../rocket/RocketPerformance';
+import { cargoSlotsFor, equipmentSlotsFor, fitSlots, computeRocketStats, validEngineMode } from '../rocket/RocketPerformance';
 import { RocketPart } from './RocketPart';
 import { emptyStash, stashUsed } from '../rocket/CarryRules';
 import techVert from '../shaders/tech/tech.vert';
@@ -96,19 +96,27 @@ export const ROCKET_SEGMENT_HEIGHT = 2.0;
 
 /**
  * Each part's height up a stack (bottom to top): where its model's origin
- * sits above the stack's base - its bottom at the heights of the parts below
- * it, plus half its own height and its model's offset. The pad stacks parts
- * with it and a refit rebuilds a parked rocket with it (rocket-refit).
+ * sits above the stack's base. The pad stacks parts with it and a refit
+ * rebuilds a parked rocket with it (rocket-refit).
+ *
+ * Every part model is authored with its origin at its BASE (y = 0 up to one
+ * segment height; a two-unit part stretches it with modelScale.y), and the
+ * stack's PlayerConfig.ROCKET_STACK_OFFSET_Y lowers every part by half a
+ * segment. So the origin goes half a segment above the part's bottom - the
+ * model's base then lands exactly on the top of the part below, whatever
+ * its height. (Placing it at the part's middle, bottom + h / 2, was right
+ * only for one-unit parts: a two-unit tank rose a whole metre - a gap under
+ * it, and its top metre inside the part above, the two hulls' coplanar side
+ * walls z-fighting.)
  */
 export function stackPartHeights(itemTypes: readonly ItemType[], segmentHeight: number): number[] {
   let bottom = 0;
   return itemTypes.map(t => {
     const part = ITEM_DATA[t]?.rocketPart;
     if (!part) return bottom;
-    const h = part.heightUnits * segmentHeight;
-    const centre = bottom + h / 2 + (part.modelYOffset ?? 0);
-    bottom += h;
-    return centre;
+    const origin = bottom + segmentHeight / 2 + (part.modelYOffset ?? 0);
+    bottom += part.heightUnits * segmentHeight;
+    return origin;
   });
 }
 
@@ -1110,34 +1118,46 @@ export class LaunchPadManager {
   }
 
   /**
-   * Remove the top rocket part from the launch pad stack
+   * Make the pad's stack `types` (bottom to top) - the stack editor's one way
+   * to remove, insert or move a part anywhere. The parts that stay the same
+   * from the bottom keep their meshes; everything above the first change is
+   * stacked again at its new height. The cargo hold, equipment and fuel come
+   * through the rebuild (the hold arrays keep their identity - a flying or
+   * landed rocket shares them). Returns why it can't, or null when done.
    */
-  public removeRocketPart(launchPad: PlacedLaunchPad): PlacedRocketPart | null {
-    if (launchPad.rocketParts.length === 0) {
-      return null;
+  public async setRocketStack(launchPad: PlacedLaunchPad, types: readonly ItemType[]): Promise<string | null> {
+    if (!launchPad.isComplete || launchPad.segmentCount < 1) return 'The rocket needs a complete pad and a tower';
+    const holdProblem = this.stackHoldProblem(launchPad, types);
+    if (holdProblem) return holdProblem;
+    const old = launchPad.rocketParts.map(p => p.itemType);
+    let keep = 0;
+    while (keep < old.length && keep < types.length && old[keep] === types[keep]) keep++;
+    if (keep === old.length && keep === types.length) return null;
+    // Snapshot what the rebuild would otherwise shrink away mid-way
+    const copy = (slots: InventorySlot[]) => slots.map(sl => ({ itemType: sl.itemType, quantity: sl.quantity }));
+    const cargo = copy(launchPad.cargo), equipment = copy(launchPad.equipment);
+    const fuel = launchPad.fuel;
+    while (launchPad.rocketParts.length > keep) {
+      const part = launchPad.rocketParts.pop()!;
+      launchPad.mesh.remove(part.mesh);
+      part.dispose();
     }
-
-    // The hold and the equipment slots shrink with the part: their items
-    // must fit in what is left
-    if (this.topPartHoldsCargo(launchPad)) return null;
-    const rest = launchPad.rocketParts.slice(0, -1).map(p => p.itemType);
-    compactCargo(launchPad.cargo, cargoSlotsFor(rest));
-    compactCargo(launchPad.equipment, equipmentSlotsFor(rest));
-
-    const removedPart = launchPad.rocketParts.pop()!;
-    launchPad.mesh.remove(removedPart.mesh);
-    this.syncRocketHold(launchPad);
-
-    // Update legacy flags
-    const hasEngine = launchPad.rocketParts.some(
-      p => ITEM_DATA[p.itemType].rocketPart?.partType === RocketPartType.ENGINE
-    );
+    for (let i = keep; i < types.length; i++) await this.addRocketPart(launchPad, types[i]);
+    // The holds: the same slots when they still fit, else packed to the front
+    for (const [into, from] of [[launchPad.cargo, cargo], [launchPad.equipment, equipment]] as const) {
+      const size = into.length;
+      into.length = 0;
+      into.push(...from);
+      if (from.length > size) fitSlots(into, size);
+      while (into.length < size) into.push({ itemType: ItemType.NONE, quantity: 0 });
+    }
+    const cap = computeRocketStats(types).fuelCapacity;
+    launchPad.fuel = fuel === null ? null : Math.min(fuel, cap);
+    launchPad.engineMode = validEngineMode(launchPad.rocketParts.map(p => p.itemType), launchPad.engineMode ?? null);
+    const hasEngine = launchPad.rocketParts.some(p => ITEM_DATA[p.itemType].rocketPart?.partType === RocketPartType.ENGINE);
     launchPad.hasRocketEngine = hasEngine;
-    if (!hasEngine) {
-      launchPad.rocketEngineMesh = null;
-    }
-
-    return removedPart;
+    if (!hasEngine) launchPad.rocketEngineMesh = null;
+    return null;
   }
 
   /**
@@ -1157,13 +1177,14 @@ export class LaunchPadManager {
   }
 
   /**
-   * Would removing the top part spill cargo or equipment that can't fit in
-   * what the rest of the stack gives?
+   * Would the stack `types` spill cargo or equipment the pad's rocket holds
+   * now (it gives fewer slots than are in use)? The reason, or null.
    */
-  public topPartHoldsCargo(launchPad: PlacedLaunchPad): boolean {
-    const rest = launchPad.rocketParts.slice(0, -1).map(p => p.itemType);
-    const used = (slots: InventorySlot[]) => slots.filter(s => s.itemType !== ItemType.NONE).length;
-    return used(launchPad.cargo) > cargoSlotsFor(rest) || used(launchPad.equipment) > equipmentSlotsFor(rest);
+  public stackHoldProblem(launchPad: PlacedLaunchPad, types: readonly ItemType[]): string | null {
+    const used = (slots: InventorySlot[]) => slots.filter(s => s.itemType !== ItemType.NONE && s.quantity > 0).length;
+    if (used(launchPad.cargo) > cargoSlotsFor(types)) return 'Empty the cargo hold first - the new stack has less room';
+    if (used(launchPad.equipment) > equipmentSlotsFor(types)) return 'Take out the equipment first - the new stack has fewer slots';
+    return null;
   }
 
   /**

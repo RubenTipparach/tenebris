@@ -1,7 +1,7 @@
 import { RocketController } from './RocketController';
 import { RocketState, STATE_INFO } from './RocketState';
 import { engineModeLabel } from './RocketPerformance';
-import { ROCKET_CONFIG, ROCKET_INPUTS } from '../config/RocketConfig';
+import { ROCKET_CONFIG, ROCKET_INPUTS, inputKeyLabel } from '../config/RocketConfig';
 
 /**
  * Flight HUD for rocket control
@@ -35,6 +35,7 @@ export class RocketFlightUI {
   private stateEl: HTMLElement | null = null;
   private thrustIndicatorEl: HTMLElement | null = null;
   private engineModeEl: HTMLElement | null = null;
+  private stagePromptEl: HTMLElement | null = null;
   private landingStatusEl: HTMLElement | null = null;
 
   // Buttons
@@ -66,6 +67,7 @@ export class RocketFlightUI {
         <div class="flight-state" id="flight-state">DOCKED</div>
         <div class="thrust-indicator" id="thrust-indicator">THRUST OFF</div>
         <div class="engine-mode" id="engine-mode" hidden></div>
+        <div class="stage-prompt" id="stage-prompt" hidden></div>
       </div>
 
       <div class="flight-ui-main">
@@ -160,11 +162,11 @@ export class RocketFlightUI {
       <div class="flight-ui-controls">
         <button class="flight-btn" id="flight-fuel-btn">FUEL</button>
         <button class="flight-btn launch-btn" id="flight-launch-btn">THRUST</button>
-        <button class="flight-btn" id="flight-exit-btn">EXIT [V]</button>
+        <button class="flight-btn" id="flight-exit-btn">EXIT [${inputKeyLabel(ROCKET_INPUTS.EXIT_ROCKET)}]</button>
       </div>
 
       <div class="flight-ui-hints">
-        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}: Chute | ${ROCKET_INPUTS.STAGE.replace('Key', '')}: Stage | ${ROCKET_INPUTS.DRONE.replace('Key', '')}: Drone | Hold ${ROCKET_INPUTS.SELF_DESTRUCT.replace('Key', '')}: Self destruct</span>
+        <span>WASD: Rotate | Q/E: Roll | Arrows: Strafe | Space: Thrust | C: Descend | Z/X: Throttle | ${inputKeyLabel(ROCKET_INPUTS.PARACHUTE)}: Chute | ${inputKeyLabel(ROCKET_INPUTS.STAGE)}: Stage | ${inputKeyLabel(ROCKET_INPUTS.DRONE)}: Drone | Hold ${inputKeyLabel(ROCKET_INPUTS.SELF_DESTRUCT)}: Self destruct</span>
       </div>
 
       <div class="crash-overlay" id="crash-overlay" style="display: none;">
@@ -182,6 +184,7 @@ export class RocketFlightUI {
     this.stateEl = document.getElementById('flight-state');
     this.thrustIndicatorEl = document.getElementById('thrust-indicator');
     this.engineModeEl = document.getElementById('engine-mode');
+    this.stagePromptEl = document.getElementById('stage-prompt');
     this.altitudeEl = document.getElementById('flight-altitude');
     this.velocityEl = document.getElementById('flight-velocity');
     this.verticalVelEl = document.getElementById('flight-vertical');
@@ -292,6 +295,20 @@ export class RocketFlightUI {
         font-size: 12px;
         color: #8fd3ff;
         letter-spacing: 1px;
+      }
+      .stage-prompt {
+        font-size: 12px;
+        color: #8a8a8a;
+        letter-spacing: 1px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid #444;
+      }
+      .stage-prompt.ready {
+        color: #ffec27;
+        border-color: #ffa300;
+        background: rgba(255, 163, 0, 0.18);
+        text-shadow: 0 0 6px rgba(255, 236, 39, 0.6);
       }
       .thrust-indicator {
         font-size: 12px;
@@ -719,7 +736,7 @@ export class RocketFlightUI {
       const modes = rocket.getEngineModes();
       this.engineModeEl.hidden = modes.length < 2;
       if (modes.length > 1) {
-        this.engineModeEl.textContent = `[${ROCKET_INPUTS.ENGINE_MODE.replace('Key', '')}] ${engineModeLabel(rocket.getEngineMode()).toUpperCase()}`;
+        this.engineModeEl.textContent = `[${inputKeyLabel(ROCKET_INPUTS.ENGINE_MODE)}] ${engineModeLabel(rocket.getEngineMode()).toUpperCase()}`;
       }
     }
 
@@ -767,6 +784,17 @@ export class RocketFlightUI {
       this.fuelPercentEl.textContent = staged ? `${fuelPercent.toFixed(0)}% (${stage.count} stg)` : `${fuelPercent.toFixed(0)}%`;
     }
 
+    // Staging (rocket-staging): with stages left to drop, how many and the
+    // key that drops the active one - lit up once the active stage is dry
+    if (this.stagePromptEl) {
+      this.stagePromptEl.hidden = !staged;
+      if (staged) {
+        const dry = stage.activeFuel <= 0;
+        this.stagePromptEl.textContent = `${stage.count} STAGES - ACTIVE ${fuelPercent.toFixed(0)}%  [${inputKeyLabel(ROCKET_INPUTS.STAGE)}] ${dry ? 'STAGE NOW' : 'STAGE'}`;
+        this.stagePromptEl.classList.toggle('ready', dry);
+      }
+    }
+
     // Battery (openspec wool-air-and-reentry, design 2): charge share and
     // the flight time it has left
     const powerPercent = rocket.getChargePercent();
@@ -794,7 +822,7 @@ export class RocketFlightUI {
       const lands = rocket.getChuteLandingSpeed();
       const landsAt = Number.isFinite(lands) ? ` - LANDS ${lands.toFixed(1)} m/s` : '';
       this.chuteEl.textContent = rocket.isChuteOpen() ? `CHUTE OPEN${landsAt}`
-        : `CHUTES ${chutes} [${ROCKET_INPUTS.PARACHUTE.replace('Key', '')}]${landsAt}`;
+        : `CHUTES ${chutes} [${inputKeyLabel(ROCKET_INPUTS.PARACHUTE)}]${landsAt}`;
       // Heat shields fitted, and how worn the one in use is
       const shield = rocket.getHeatShield();
       if (shield.fitted > 0) this.chuteEl.textContent += `  SHIELDS ${shield.fitted} (${Math.round((1 - shield.wear) * 100)}%)`;
