@@ -1259,7 +1259,7 @@
     // the staged rocket with the most fuel aboard (don't fill a second one)
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
     const up = bi().launchPadManager.getLaunchPads()
-      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR) && STACK_OK(p.rocketParts.map(q => q.itemType)))
+      .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && isUpgraded(p.rocketParts.map(q => q.itemType)))
       .sort((a, b) => (b.fuel ?? 0) - (a.fuel ?? 0))[0];
     if (up) {
       return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
@@ -1562,10 +1562,13 @@
   // the vacuum stage (liftoff TWR 1.28, ~2965 m/s; one engine gives 0.8).
   const UPGRADE_STACKS = () => [
     // one engine per stage, at its bottom: a Rocket Engine booster under a
-    // vacuum stage (liftoff TWR ~1.10, ~1430 m/s; with a large upper tank it
-    // can't lift off Earth)
+    // vacuum stage - when the frame mass lets it lift off (it didn't, 0.97)
     [I.ROCKET_ENGINE, I.MEDIUM_FUEL_TANK, I.STAGE_SEPARATOR, I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
+    // the vacuum engine alone on a medium tank: TWR 1.24 off Earth, ~1100 m/s (twice the basic rocket)
+    [I.VACUUM_ENGINE, I.MEDIUM_FUEL_TANK, I.COMMAND_MODULE],
   ];
+  // a better rocket than the basic one: a valid stack with a vacuum engine
+  const isUpgraded = (types) => types.includes(I.VACUUM_ENGINE) && STACK_OK(types);
   const MIN_LIFT_TWR = 1.05;
   async function liftTWR(stack) {
     const perf = await import(`${BASE}/rocket/RocketPerformance.ts`);
@@ -2728,7 +2731,7 @@
         // after the vacuum engine: rebuild our rocket as a two-stage one, once
         if (doneIds().includes('vacuum') && !resting('upgrade') && (bodyId() === 'earth')) {
           // once: when no rocket of ours has stages yet
-          const staged = bi().launchPadManager.getLaunchPads().some(p => p.rocketParts.some(q => q.itemType === I.STAGE_SEPARATOR) && STACK_OK(p.rocketParts.map(q => q.itemType)));
+          const staged = bi().launchPadManager.getLaunchPads().some(p => isUpgraded(p.rocketParts.map(q => q.itemType)));
           const pad = padHere();
           if (!staged && pad) { st.goal = 'upgrade'; await PLAYBOOK.upgrade(); continue; }
         }
