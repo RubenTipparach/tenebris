@@ -53,6 +53,10 @@ export const NAVIGATION_CONFIG = {
   VISITED_RING_COLOR: '#3ee0ff',
   VISITED_RING_W: 1.5,        // px
   VISITED_RING_GAP: 2.5,      // px outside the body's disc
+  // A met trader (openspec friendship-npcs): a diamond under the world it is visiting, with its name
+  TRADER_MARKER_COLOR: '#ffa300',
+  TRADER_MARKER_PX: 4,
+  TRADER_MARKER_GAP: 8,       // px below the body's disc, then one more step per trader there
   // Moons' and asteroids' names are drawn from this on-screen spacing (px)
   // from their parent; planets and the Sun are always named
   SYSTEM_MOON_LABEL_PX: 18,

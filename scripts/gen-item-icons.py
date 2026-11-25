@@ -23,6 +23,7 @@ Writes, under public/textures/:
   rocket_parts/parachute_face (an item icon: the parachute, solar array and
   battery pack are rocket equipment, not stack parts, so they have no part
   texture)
+  art pieces: icons/art/art_<world>.png, one per inhabited world (Sweaft-64)
   ocean life: fish/ (the jungle moons' tetra, catfish, leaf pike, peat eel,
   gourami, violet gar; Sequoia's glimmer sprat, underwater-life)
   technology/sack.png: the overflow sack a full inventory drops (Sweaft-64)
@@ -1083,6 +1084,222 @@ def campfire_atlas():
                 px[16 + y][16 + x] = fl[ch]
     return _checked(px)
 
+
+
+# ---- Art pieces (openspec friendship-npcs 4.4) -----------------------------
+# One per inhabited world, given only by that world's elders. Drawn pixel by
+# pixel the Pale Blue Dot way: Sweaft-64 only (checked), lit from the top
+# left, outlined in each piece's darkest tone.
+ART_ICONS = {
+    # Ferrum: a circuit mosaic tile - traces and gold pads on a dark board
+    "art_ferrum": ({"o": "#010e1a", "w": "#92a3b2", "l": "#5d778d", "m": "#3e586e", "d": "#011c34",
+                    "t": "#74effe", "g": "#faaf5c"}, [
+        "................",
+        ".oooooooooooooo.",
+        ".owwwwwwwwwwwlo.",
+        ".owddddddddddmo.",
+        ".owdttttdggddmo.",
+        ".owdtddtdggddmo.",
+        ".owdtddttttddmo.",
+        ".owdtddddddtdmo.",
+        ".owdgdtttddtdmo.",
+        ".owdgdtdtttddmo.",
+        ".owdddtdddddgmo.",
+        ".owdttttttdddmo.",
+        ".owddddddddddmo.",
+        ".olmmmmmmmmmmmo.",
+        ".oooooooooooooo.",
+        "................",
+    ]),
+    # Sequoia: an amber totem - an amber drop on two carved faces
+    "art_sequoia": ({"o": "#2e0d06", "d": "#522b2f", "m": "#7d4636", "l": "#a8633e", "h": "#cfaa81",
+                     "a": "#fb902f", "y": "#faaf5c", "e": "#010000"}, [
+        "......oooo......",
+        ".....oyyaao.....",
+        ".....oyaaado....",
+        "......oado......",
+        "....oooooooo....",
+        "....ohllllmo....",
+        "....oleelemo....",
+        "....ollllmdo....",
+        "....olmoomdo....",
+        "...oohllllmoo...",
+        "...ohlleelemo...",
+        "....ollllmdo....",
+        "....olmoomdo....",
+        "....ohllllmo....",
+        "...oommmmmddo...",
+        "...oooooooooo...",
+    ]),
+    # Cinder: an obsidian mask with ember eyes
+    "art_cinder": ({"o": "#010000", "d": "#161612", "m": "#2c2c25", "l": "#434137", "h": "#a09f91",
+                    "r": "#d4462b", "y": "#fb902f"}, [
+        "................",
+        "....oooooooo....",
+        "...ohhlllllmo...",
+        "..ohllllllllmo..",
+        "..ohlllllllmmo..",
+        "..olrrylmrrymo..",
+        "..olroolmroomo..",
+        "..ollllmlllmmo..",
+        "..olllllmllmdo..",
+        "...ollllmllmo...",
+        "...olmoooomdo...",
+        "....olmmmmdo....",
+        "....olmmmmdo....",
+        ".....olmmdo.....",
+        "......oooo......",
+        "................",
+    ]),
+    # Vesper: a glass lantern - a cage of clay round a lit glass pane
+    "art_vesper": ({"o": "#2e0d06", "c": "#725244", "k": "#ab8465", "g": "#c1f1d8", "b": "#84e3b5",
+                    "s": "#53998b", "y": "#faaf5c", "w": "#fffefe"}, [
+        "......oooo......",
+        ".......kc.......",
+        "......oooo......",
+        ".....okkkco.....",
+        "....okkkkkco....",
+        "....okggbbco....",
+        "....okgwybco....",
+        "....okgyybso....",
+        "....okgyybso....",
+        "....okbbbsso....",
+        "....okbbsssco...",
+        "....okkkkkcco...",
+        "...okkkkkkcco...",
+        "...ooooooooo....",
+        "................",
+        "................",
+    ]),
+    # Halcyon: a prism idol - a cut crystal on a stone foot
+    "art_halcyon": ({"o": "#191954", "d": "#4f1d83", "m": "#7d2dbd", "l": "#9e3ba2", "c": "#74effe",
+                     "w": "#d2f8ff", "s": "#3e3551", "t": "#69608b"}, [
+        ".......oo.......",
+        "......owco......",
+        ".....owwcmo.....",
+        ".....owclmo.....",
+        "....owcclmdo....",
+        "....owcllmdo....",
+        "...owcclmmddo...",
+        "...owcllmmddo...",
+        "...oclllmmddo...",
+        "....ollmmddo....",
+        ".....olmmdo.....",
+        "......oddo......",
+        ".....otttso.....",
+        "....otttttso....",
+        "....oooooooo....",
+        "................",
+    ]),
+    # Tessaly: a frost chime - icicle rods hung from a bar
+    "art_tessaly": ({"o": "#011c34", "b": "#3e586e", "l": "#92a3b2", "i": "#d2f8ff", "c": "#74effe",
+                     "m": "#1096c3"}, [
+        "......oo........",
+        "......ob........",
+        "..oooooooooooo..",
+        "..olllllllllbo..",
+        "..oooooooooooo..",
+        "...o..o..o..o...",
+        "..oio.oio.oio.o.",
+        "..oico.ic.oic.o.",
+        "..oico.icooic.c.",
+        "..oico.icmoicmo.",
+        "..oicmoicmoicmo.",
+        "...omo.icmooco..",
+        "...oo..icmo.oo..",
+        ".......omo......",
+        ".......oo.......",
+        "................",
+    ]),
+    # Umbra: a glowcap lamp - a glowing mushroom cap on a dark stalk
+    "art_umbra": ({"o": "#170916", "d": "#2f1525", "s": "#522b2f", "k": "#7d4636", "g": "#53998b",
+                   "c": "#84e3b5", "w": "#c1f1d8", "p": "#297537"}, [
+        "................",
+        ".....oooooo.....",
+        "...oowwccccoo...",
+        "..owwcccccccgo..",
+        ".owccccccccggpo.",
+        ".occcwcccccggpo.",
+        ".ooggggggggppoo.",
+        "...oooookdooo...",
+        "......oksdo.....",
+        "......oksdo.....",
+        "......oksdo.....",
+        ".....okksddo....",
+        "....okkksdddo...",
+        "....oooooooo....",
+        "................",
+        "................",
+    ]),
+    # Verdance: a woven fan - leaf strips spread from a handle
+    "art_verdance": ({"o": "#003227", "d": "#05582d", "m": "#297537", "l": "#559642", "h": "#9bb675",
+                      "k": "#725244", "b": "#ab8465"}, [
+        "................",
+        "....oooooooo....",
+        "..oohlhlhlhmoo..",
+        ".ohlhlhlhlmlmdo.",
+        ".olhlhlhlmlmdmo.",
+        "..olhlhlmlmdmo..",
+        "..ohlhlmlmdmdo..",
+        "...olhlmlmdmo...",
+        "...ohlmlmdmdo...",
+        "....olmlmdmo....",
+        ".....olmdmo.....",
+        "......obko......",
+        "......obko......",
+        "......obko......",
+        "......oooo......",
+        "................",
+    ]),
+    # Mirewood: a peat carving - a squat figure cut from dark peat
+    "art_mirewood": ({"o": "#161612", "d": "#2c2c25", "m": "#41322c", "l": "#725244", "h": "#ab8465",
+                      "e": "#559642"}, [
+        "................",
+        ".....oooooo.....",
+        "....ohlllllo....",
+        "....oleelemo....",
+        "....ollllmmo....",
+        "....olmoomdo....",
+        "...oohllllmoo...",
+        "..ohllolllmmdo..",
+        "..olllollmmmdo..",
+        "..olmlollmmddo..",
+        "...oolllmmdoo...",
+        "....olllmmdo....",
+        "....ollmo.mdo...",
+        "....ohlmo.mdo...",
+        "...ooooo.oooo...",
+        "................",
+    ]),
+    # Thalassa: a pearl crown - a coral band set with pearls
+    "art_thalassa": ({"o": "#0c2f44", "d": "#204f63", "m": "#15578a", "l": "#1096c3", "p": "#bfcad7",
+                      "w": "#fffefe", "c": "#dd576d", "r": "#c34988"}, [
+        "................",
+        "................",
+        "...o...oo...o...",
+        "..owo.owpo.owo..",
+        "..opo.oppo.opo..",
+        "..olo.olmo.olo..",
+        "..olo.olmo.olmo.",
+        "..ollolllmolmmo.",
+        "..olllllllmmmdo.",
+        "..owcwpwcwpwcdo.",
+        "..orccrccrccrdo.",
+        "..ollllllllmmdo.",
+        "..ooooooooooooo.",
+        "................",
+        "................",
+        "................",
+    ]),
+}
+
+
+def art_icon(art_id):
+    key, rows = ART_ICONS[art_id]
+    clear = (0, 0, 0, 0)
+    tone = {ch: _sw(h)[0] for ch, h in key.items()}
+    return _checked([[clear if ch == "." else tone[ch] for ch in row] for row in rows])
+
 def write(rel, px):
     out = os.path.join(ROOT, "public", "textures", rel)
     write_png(out, px)
@@ -1147,6 +1364,8 @@ if __name__ == "__main__":
     write("technology/campfire.png", campfire_atlas())
     # Overflow sack: what a full inventory drops on the ground
     write("technology/sack.png", sack())
+    for art_id in ART_ICONS:
+        write(f"icons/art/{art_id}.png", art_icon(art_id))
     # Batteries: one tier mark per tier (I, II, III)
     write("technology/battery_lead_acid_face.png", battery("dgrey", "red", [(8, 7), (9, 7), (10, 7)]))
     write("technology/battery_lithium_face.png", battery("lgrey", "blue", [(8, 6), (9, 6), (10, 6), (8, 8), (9, 8), (10, 8)]))

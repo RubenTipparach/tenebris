@@ -2,6 +2,12 @@ import { ChatUI } from './net/ChatUI';
 import { setUnderwaterLook } from './planet/UnderwaterLook';
 import { setMachineLight } from './planet/MachineLight';
 import * as THREE from 'three';
+import { NpcClient } from './npc/NpcClient';
+import { NpcField } from './npc/NpcField';
+import { NpcTalk } from './npc/NpcTalk';
+import { NpcPanel } from './npc/NpcPanel';
+import { NPC_CONFIG, artItem } from './config/NpcConfig';
+import { artReward, buildPopulation } from './shared/npc';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
 import { Planet } from './planet/Planet';
@@ -86,6 +92,12 @@ const PLAYERS_TAB_REFRESH_MS = 1000;
 
 class PlanetGame {
   private engine: GameEngine;
+  // NPC records and single-player NPC time (friendship-npcs, src/npc/NpcClient.ts)
+  public readonly npcClient = new NpcClient();
+  /** The NPCs of the planet the player stands on (openspec friendship-npcs 3.3). */
+  public npcField: NpcField | null = null;
+  public npcTalk: NpcTalk | null = null;
+  public npcPanel: NpcPanel | null = null;
   private inputManager: InputManager;
   private planets: Map<string, Planet> = new Map();
   private earth: Planet; // Quick reference to starting planet
@@ -155,6 +167,9 @@ class PlanetGame {
 
     // Disable browser context menu on right-click
     container.addEventListener('contextmenu', (e) => e.preventDefault());
+    // A closing tab puts the player's planet to sleep now (single player), so
+    // the next load catches up from this moment (friendship-npcs)
+    window.addEventListener('pagehide', () => this.npcClient.shutdown());
 
     // Initialize core systems
     this.engine = new GameEngine(container);
@@ -864,6 +879,11 @@ class PlanetGame {
   private update(deltaTime: number): void {
     if (!this.isReady) return;
 
+    // NPCs (friendship-npcs): single player wakes / ticks / sleeps the
+    // player's planet; online the server does and this only follows
+    this.npcClient.setPlanet(this.presencePlanet());
+    this.npcClient.update();
+
     // Live orbits: advance the clock, keep the player's body fixed, move
     // the rest of the system round it
     profiler.begin('Orbits');
@@ -915,6 +935,11 @@ class PlanetGame {
         },
         remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
         visited: (bodyId) => this.missions?.visited(bodyId) ?? false,
+        // the traders this player has met, where each is now (friendship-npcs)
+        traders: () => NPC_CONFIG.TRADERS.BAND.flatMap((t, i) => {
+          const at = this.npcClient.trader(i)?.at;
+          return at && this.missions?.getTracker().hasMet(`trader:${i}`) ? [{ name: t.name, body: at }] : [];
+        }),
       }, this.blockInteraction.getCraftingSystem());
     }
     this.navigation.update();
@@ -959,10 +984,15 @@ class PlanetGame {
       for (const planet of this.planets.values()) {
         if (pos.distanceTo(planet.center) < planet.radius * 1.2) { on = planet; break; }
       }
+      const sun = calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition);
       profiler.begin('Fauna');
-      this.fauna.update(deltaTime, pos, on,
-        calculateSunDirectionForPlanet((on ?? this.earth).center, this.sunPosition));
+      this.fauna.update(deltaTime, pos, on, sun);
       profiler.end('Fauna');
+      // The people of that planet: the same 'who stands on what' as the fauna
+      profiler.begin('NPCs');
+      this.npcField ??= new NpcField(this.engine.scene, this.npcClient.store);
+      this.npcField.update(deltaTime, on, sun);
+      profiler.end('NPCs');
     }
     if (this.solarSystemMockup) {
       const cam = this.engine.camera.position;
@@ -983,11 +1013,13 @@ class PlanetGame {
       profiler.begin('Rocket Flight');
       this.rocketFlightManager?.update(deltaTime);
       profiler.end('Rocket Flight');
-      // (keys pressed in flight are the rocket's, never a submarine's)
+      // (keys pressed in flight are the rocket's, never a submarine's or a talk)
       this.submarines?.update(deltaTime, false);
+      this.npcTalk?.update(deltaTime, false, this.npcField, this.engine.camera, this.player.position);
     } else if (this.submarines?.isPiloting()) {
       // Piloting a submarine or diver: it takes the keys and the camera
       this.submarines.update(deltaTime, true);
+      this.npcTalk?.update(deltaTime, false, this.npcField, this.engine.camera, this.player.position);
       this.engine.setUnderwater(this.submarines.cameraInFluid());
     } else {
       // Normal player mode
@@ -1012,8 +1044,34 @@ class PlanetGame {
         handledRocketInteraction = this.submarines.handleRightClick(!this.rightClickHeld);
       }
       this.rightClickHeld = input.rightClick;
-      // Interact (F) boards a parked submarine in view
-      this.submarines?.update(deltaTime, isGameActive);
+      // Interact (F): talk to the NPC in view (openspec friendship-npcs), else
+      // board a parked submarine in view - one key, the NPC first
+      if (!this.npcTalk) {
+        this.npcTalk = new NpcTalk();
+        const inv = this.blockInteraction.getInventory();
+        this.npcPanel = new NpcPanel(inv, this.npcClient, {
+          onInventoryChanged: () => this.blockInteraction.onInventoryChanged(),
+          artItem: (id) => artItem(id),
+          friendship: (body, village) => this.missions?.getTracker().friendshipOf(body, village) ?? 0,
+          credit: (body, village, points) => this.missions?.getTracker().creditFriendship(body, village, points),
+          onMet: (npc, body) => { this.missions?.getTracker().meet(npc.id, npc.role === 'trader' ? null : body); },
+          // a completed request: the village's elder gives pieces of its world's art
+          onDelivered: (body, village, fam, _taken, res) => {
+            const gift = artReward(body, fam, res.completed);
+            if (!gift) return;
+            inv.give(gift.item as ItemType, gift.count);
+            const elder = buildPopulation(PlayerConfig.TERRAIN_SEED, body)?.npcs.find(n => n.role === 'elder' && n.village === village);
+            showToast(`${elder?.name ?? 'The elder'} thanks you: ${gift.count} x ${ITEM_DATA[gift.item as ItemType]?.name ?? ''}`, { duration: 3000 });
+          },
+        });
+        this.npcTalk.setPanel(this.npcPanel);
+        // friendship credited (a delivery the server kept) redraws an open panel
+        this.missions?.addChangeListener(() => this.npcPanel?.refresh());
+      }
+      this.npcTalk.update(deltaTime, isGameActive, this.npcField, this.engine.camera, this.player.position);
+      // an open NPC panel follows the inventory (it redraws only when what it shows changed)
+      this.npcPanel?.refresh();
+      this.submarines?.update(deltaTime, isGameActive && !this.npcTalk.targeting);
 
       // Fishing takes the mouse buttons while the rod is in hand
       // The rod in hand: a rod in the selected hotbar slot, or the toolbox rod taken out (0)
@@ -1787,7 +1845,7 @@ class PlanetGame {
     this.multiplayer = new Multiplayer(this.engine.scene, this.planets, () => {
       const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
       const p = flying ? flying.getPosition() : this.player.position;
-      const planet = this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
+      const planet = this.presencePlanet();
       const o = this.player.exportForSave().orientation;
       // The walker's camera looks along orientation +Z (PlanetPlayer
       // updateCamera: -localForward), but an avatar's frame looks down -Z
@@ -1815,6 +1873,17 @@ class PlanetGame {
   }
 
   /** The id of the planet whose surface is nearest `p` */
+  /**
+   * The planet this player is on, as the world sees it: their pose's planet
+   * online (the server's NPC presence counts from it), and the planet whose
+   * NPCs single player wakes (src/npc/NpcClient.ts) - one rule for both.
+   */
+  private presencePlanet(): string {
+    const flying = this.rocketFlightManager?.isInFlight() ? this.rocketFlightManager.getRocketController() : null;
+    const p = flying ? flying.getPosition() : this.player.position;
+    return this.player.getCurrentPlanet()?.getName() ?? this.nearestPlanetId(p);
+  }
+
   private nearestPlanetId(p: THREE.Vector3): string {
     let planet = 'earth';
     let best = Infinity;

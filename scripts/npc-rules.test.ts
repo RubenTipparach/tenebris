@@ -196,7 +196,7 @@ const rate = (v: VillageState) => F.USE_PER_RESIDENT_PER_HOUR * v.pop / 3600;
   ok(m.at === route[(t0.leg + 1) % route.length] && moved.changed.includes(0), 'after its stay a trader moves to the next world on its route');
   ok(m.leaveT === 500 + NPC_CONFIG.TRADERS.STAY_S, "its new stay is timed on the new world's clock");
   ok(m.offers[0].from === body && inhabitedWorld(body)!.goods.includes(m.offers[0].give.item), 'its first offer there is goods from the world it came from');
-  ok(m.offers.length === NPC_CONFIG.TRADERS.OFFERS && m.offers.every(o => o.give.item !== o.take.item && o.stock > 0), 'a few barters with stock, never an item for itself');
+  ok(m.offers.length === NPC_CONFIG.TRADERS.OFFERS + NPC_CONFIG.TRADERS.EXTRA_OFFER_LEVELS.length && m.offers.filter(o => o.minLevel === undefined).length === NPC_CONFIG.TRADERS.OFFERS && m.offers.every(o => o.give.item !== o.take.item && o.stock > 0), 'a few barters with stock, never an item for itself');
 }
 
 // ============================================================ 1.4 world time

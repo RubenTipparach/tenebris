@@ -807,6 +807,46 @@
   "257": {
    "name": "Deep Diver",
    "icon": "/textures/icons/deep_diver.png"
+  },
+  "258": {
+   "name": "Circuit Mosaic",
+   "icon": "/textures/icons/art/art_ferrum.png"
+  },
+  "259": {
+   "name": "Amber Totem",
+   "icon": "/textures/icons/art/art_sequoia.png"
+  },
+  "260": {
+   "name": "Obsidian Mask",
+   "icon": "/textures/icons/art/art_cinder.png"
+  },
+  "261": {
+   "name": "Glass Lantern",
+   "icon": "/textures/icons/art/art_vesper.png"
+  },
+  "262": {
+   "name": "Prism Idol",
+   "icon": "/textures/icons/art/art_halcyon.png"
+  },
+  "263": {
+   "name": "Frost Chime",
+   "icon": "/textures/icons/art/art_tessaly.png"
+  },
+  "264": {
+   "name": "Glowcap Lamp",
+   "icon": "/textures/icons/art/art_umbra.png"
+  },
+  "265": {
+   "name": "Woven Fan",
+   "icon": "/textures/icons/art/art_verdance.png"
+  },
+  "266": {
+   "name": "Peat Carving",
+   "icon": "/textures/icons/art/art_mirewood.png"
+  },
+  "267": {
+   "name": "Pearl Crown",
+   "icon": "/textures/icons/art/art_thalassa.png"
   }
  },
  "slots": {

@@ -73,6 +73,9 @@ import { RanchState, newRanchState, isShorn, shear as shearRule, hit as hitRule,
 const CLIP_IDLE = 0;
 const CLIP_MOVE = 1;
 const CLIP_NAMES = ['idle', 'move'];
+// A third, optional clip: the NPCs' talk (src/npc/NpcRenderer.ts), layered
+// over idle / move by its own per-instance weight (aTalk). Fauna have none.
+const CLIP_TALK = 'talk';
 const SITE_SALT = 0x5f3759df; // decorrelates herd sites from clutter placement
 const SPECIES_MUL = 0x27d4eb2d; // and these the species pick from both
 const SPECIES_SALT = 0x165667b1;
@@ -93,16 +96,22 @@ export interface AnimalPick { uid: number; species: FaunaSpeciesId; distance: nu
 export type FaunaReward = (kind: 'wool' | 'leather', count: number) => void;
 interface FaunaSnapshot { planet: string; animals: SnapCreature[] }
 
-interface AnimFile {
+export interface AnimFile {
   species: string;
   frames: number;
   clips: Record<string, { duration: number; tracks: Record<string, number[][]> }>;
 }
 
-/** A species' draw state: its mesh, material and clip timing. */
-class SpeciesRender {
+/**
+ * A species' draw state: its mesh, material and clip timing. Shared by the
+ * fauna and the NPCs (src/npc/NpcRenderer.ts): one instanced, clip-driven
+ * creature renderer.
+ */
+export class SpeciesRender<Cfg extends { glow: number; ranch?: FaunaSpecies['ranch'] } = FaunaSpecies> {
   readonly mesh: THREE.InstancedMesh;
   readonly anim: THREE.InstancedBufferAttribute;
+  /** Per-instance talk weight and phase, for a species with a talk clip (else null). */
+  readonly talk: THREE.InstancedBufferAttribute | null;
   readonly material: THREE.ShaderMaterial;
   readonly durations: number[];
   /** Per-instance fleece size, for a species with a 'fleece' part (else null). */
@@ -111,12 +120,13 @@ class SpeciesRender {
   readonly bounds: THREE.Sphere;
   count = 0;
 
-  constructor(readonly id: FaunaSpeciesId, readonly cfg: FaunaSpecies, model: FaunaModel, file: AnimFile, scene: THREE.Scene) {
+  constructor(readonly id: FaunaSpeciesId, readonly cfg: Cfg, model: FaunaModel, file: AnimFile, scene: THREE.Scene, readonly max: number = C.maxPerSpecies) {
     const P = model.parts.length;
     const F = file.frames;
-    const keys = new Float32Array(CLIP_NAMES.length * F * P * 4);
-    this.durations = CLIP_NAMES.map(() => 1);
-    CLIP_NAMES.forEach((clipName, ci) => {
+    const clips = file.clips[CLIP_TALK] ? [...CLIP_NAMES, CLIP_TALK] : CLIP_NAMES;
+    const keys = new Float32Array(clips.length * F * P * 4);
+    this.durations = clips.map(() => 1);
+    clips.forEach((clipName, ci) => {
       const clip = file.clips[clipName];
       if (!clip) { console.error(`[Fauna] ${id}: no '${clipName}' clip`); return; }
       this.durations[ci] = clip.duration;
@@ -136,21 +146,27 @@ class SpeciesRender {
     });
     const fleecePart = model.parts.findIndex(pt => pt.name === 'fleece');
     if (cfg.ranch === 'wool' && fleecePart < 0) console.error(`[Fauna] ${id}: a wool species needs a 'fleece' part`);
-    this.material = makeMaterial(F, P, keys, pivot, axis, parent, cfg.glow, fleecePart);
+    this.material = makeMaterial(F, P, keys, pivot, axis, parent, cfg.glow, fleecePart, clips.length);
     const geometry = model.geometry;
     this.bounds = geometry.boundingSphere?.clone() ?? new THREE.Sphere(new THREE.Vector3(), 1);
-    this.anim = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies * 3), 3);
+    this.anim = new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3);
     this.anim.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('aAnim', this.anim);
+    this.talk = null;
+    if (clips.length > CLIP_NAMES.length) {
+      this.talk = new THREE.InstancedBufferAttribute(new Float32Array(max * 2), 2);
+      this.talk.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('aTalk', this.talk);
+    }
     this.fleece = null;
     if (fleecePart >= 0) {
-      this.fleece = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies).fill(1), 1);
+      this.fleece = new THREE.InstancedBufferAttribute(new Float32Array(max).fill(1), 1);
       this.fleece.setUsage(THREE.DynamicDrawUsage);
       geometry.setAttribute('aFleece', this.fleece);
     }
-    this.mesh = new THREE.InstancedMesh(geometry, this.material, C.maxPerSpecies);
+    this.mesh = new THREE.InstancedMesh(geometry, this.material, max);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(C.maxPerSpecies * 3), 3);
+    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(max * 3), 3);
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
     this.mesh.visible = false;
@@ -978,7 +994,7 @@ function randomTangent(up: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
 }
 
 function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Array, axis: Float32Array,
-  parent: Float32Array, glow: number, fleecePart: number): THREE.ShaderMaterial {
+  parent: Float32Array, glow: number, fleecePart: number, clipCount: number = CLIP_NAMES.length): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       uKeys: { value: keys },
@@ -995,7 +1011,7 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       ...torchLightUniforms(),
       ...underwaterLookUniforms(),
     },
-    defines: { FRAMES: F, PARTS: P, CLIPS: CLIP_NAMES.length, FLEECE_PART: fleecePart },
+    defines: { FRAMES: F, PARTS: P, CLIPS: clipCount, FLEECE_PART: fleecePart },
     vertexShader: `
       uniform vec4 uKeys[CLIPS * FRAMES * PARTS];
       uniform vec3 uPivot[PARTS];
@@ -1005,6 +1021,9 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
       attribute float aGlow;
       attribute float aPart;
       attribute vec3 aAnim; // move weight, idle phase, move phase
+      #if CLIPS > 2
+        attribute vec2 aTalk; // talk weight, talk phase (the NPCs)
+      #endif
       #if FLEECE_PART >= 0
         attribute float aFleece; // fleece size: 1 = full, shorn = smaller / gone
       #endif
@@ -1034,6 +1053,9 @@ function makeMaterial(F: number, P: number, keys: Float32Array, pivot: Float32Ar
         for (int i = 0; i < PARTS; i++) {
           if (p < 0) break;
           vec4 k = mix(keyAt(0, aAnim.y, p), keyAt(1, aAnim.z, p), aAnim.x);
+          #if CLIPS > 2
+            k = mix(k, keyAt(2, aTalk.y, p), aTalk.x);
+          #endif
           pos = rotAxis(pos - uPivot[p], uAxis[p], k.x) + uPivot[p] + k.yzw;
           nrm = rotAxis(nrm, uAxis[p], k.x);
           p = int(floor(uParent[p] + 0.5));

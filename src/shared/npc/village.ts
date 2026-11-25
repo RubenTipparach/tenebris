@@ -214,3 +214,15 @@ export function deliver(ctx: VillageCtx, input: VillageState, reqId: number, n: 
   supplyIfLow(ctx, v, t);
   return { village: v, taken, completed: true };
 }
+
+/**
+ * The elder's reward for a completed request on `body`: pieces of that
+ * world's own art (never another world's), or null when the family gives
+ * none or the request is not complete.
+ */
+export function artReward(body: string, fam: RequestFamily, completed: boolean): { item: number; count: number } | null {
+  const n = R.ART_REWARD[fam];
+  const world = INHABITED_WORLDS.find(w => w.body === body);
+  if (!completed || !world || !(n > 0)) return null;
+  return { item: world.art.item, count: n };
+}

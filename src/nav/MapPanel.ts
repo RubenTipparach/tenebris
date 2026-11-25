@@ -26,6 +26,8 @@ export interface NavContext {
   remotes(): Array<{ name: string; planet: string; position: THREE.Vector3 }>;
   /** Bodies the player has visited (space exploration): ringed on the system map */
   visited?(bodyId: string): boolean;
+  /** Traders the player has met and the world each is visiting now: marked on the system map */
+  traders?(): Array<{ name: string; body: string }>;
   waypoints: Waypoints;
 }
 
@@ -501,6 +503,24 @@ export class MapPanel {
       // side by side above their body
       const k = this.nav.waypoints.indexOf(wp.id);
       drawWaypoint(ctx, q.x + (k - 1.5) * C.WAYPOINT_MARKER_PX * 2.2, q.y - C.WAYPOINT_MARKER_PX * 2.5, k);
+    }
+    // met traders, under the world each is visiting
+    const under = new Map<string, number>();
+    for (const tr of this.nav.traders?.() ?? []) {
+      const p = pos.get(tr.body);
+      const hit = hits.find(h => h.id === tr.body);
+      if (!p || !hit) continue;
+      const k = under.get(tr.body) ?? 0;
+      under.set(tr.body, k + 1);
+      const x = hit.x, y = hit.y + hit.r + C.TRADER_MARKER_GAP * (k + 1);
+      const m = C.TRADER_MARKER_PX;
+      ctx.fillStyle = C.TRADER_MARKER_COLOR;
+      ctx.beginPath();
+      ctx.moveTo(x, y - m); ctx.lineTo(x + m, y); ctx.lineTo(x, y + m); ctx.lineTo(x - m, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.font = '10px monospace';
+      ctx.fillText(tr.name, x + m + 3, y + 3);
     }
     // players: their body's live position plus their offset from it
     const live = (planetId: string | null, world: THREE.Vector3) => {
