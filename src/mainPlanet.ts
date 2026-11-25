@@ -6,7 +6,7 @@ import { NpcClient } from './npc/NpcClient';
 import { NpcField } from './npc/NpcField';
 import { NpcTalk } from './npc/NpcTalk';
 import { NpcPanel } from './npc/NpcPanel';
-import { artItem } from './config/NpcConfig';
+import { NPC_CONFIG, artItem } from './config/NpcConfig';
 import { artReward, buildPopulation } from './shared/npc';
 import { GameEngine } from './engine/GameEngine';
 import { InputManager, lockPointer } from './engine/InputManager';
@@ -935,6 +935,11 @@ class PlanetGame {
         },
         remotes: () => this.multiplayer?.getRemotePlayers() ?? [],
         visited: (bodyId) => this.missions?.visited(bodyId) ?? false,
+        // the traders this player has met, where each is now (friendship-npcs)
+        traders: () => NPC_CONFIG.TRADERS.BAND.flatMap((t, i) => {
+          const at = this.npcClient.trader(i)?.at;
+          return at && this.missions?.getTracker().hasMet(`trader:${i}`) ? [{ name: t.name, body: at }] : [];
+        }),
       }, this.blockInteraction.getCraftingSystem());
     }
     this.navigation.update();
