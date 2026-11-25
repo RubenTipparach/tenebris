@@ -1191,7 +1191,7 @@
   function rocketPad() {
     const lp = bi().launchPadManager;
     let mySites = [];
-    try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+    try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
     // a rocket standing on the pad that may fly (its stack passes the rules)
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
     const pads = lp.getLaunchPads().filter(p => p.isComplete && p.rocketParts.length > 0 && !padUnderwater(p) && !away.has(p) && STACK_OK(p.rocketParts.map(q => q.itemType)));
@@ -1260,13 +1260,16 @@
   }
   // The rocket to fly from here, as fuel / cargo / load / board steps
   const CRAFT_NEAR_M = 150;
-  function homeCraft() {
+  async function homeCraft() {
     // an upgraded (staged) rocket standing on our pad comes first
     // the staged rocket with the most fuel aboard (don't fill a second one)
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
-    const up = bi().launchPadManager.getLaunchPads()
+    let up = bi().launchPadManager.getLaunchPads()
       .filter(p => p.isComplete && !away.has(p) && !padUnderwater(p) && isUpgraded(p.rocketParts.map(q => q.itemType)))
       .sort((a, b) => (b.fuel ?? 0) - (a.fuel ?? 0))[0];
+    // only a rocket that can lift off where it stands (a vacuum engine can't off Earth)
+    const lifts = async (pad) => pad && await liftTWR(pad.rocketParts.map(q => q.itemType), bodyGravity(bodyId())) >= MIN_LIFT_TWR;
+    if (up && !(await lifts(up))) up = null;
     if (up) {
       return { pad: up, cargo: () => up.cargo, fuel: () => fuelPad(up), load: (items) => loadCargo(up, items), board: () => boardPad(up) };
     }
@@ -1304,7 +1307,7 @@
       };
     }
     const pad = rocketPad();
-    if (!pad) return null;
+    if (!pad || !(await lifts(pad))) return null;
     return { pad, cargo: () => pad.cargo, fuel: () => fuelPad(pad), load: (items) => loadCargo(pad, items), board: () => boardPad(pad) };
   }
   // Move every stack of `items` from the inventory into the open storage panel showing `slots`
@@ -1430,6 +1433,116 @@
     const b = (lrm.planets || []).find(p => p.id === id);
     return b ? b.center : null;
   }
+  // Pad sites are tile indices: each world keeps its own list (Earth's keys unchanged)
+  function padKey(name) { const b = bodyId(); return !b || b === 'earth' ? name : `${name}_${b}`; }
+
+  // ---- a launch site on the Moon ------------------------------------------
+  // Tier 2 (vacuum engine + large tank) can't lift off Earth but flies off the
+  // Moon: the bot ferries a pad kit there in a basic rocket's cargo hold (only
+  // the hold flies), lays the pad, raises the tower, builds the rocket and
+  // fuels it with rocket fuel made from Moon ice.
+  const MOON = 'moon';
+  const MOON_ROCKET = () => [I.VACUUM_ENGINE, I.LARGE_FUEL_TANK, I.COMMAND_MODULE];
+  const MOON_TOWER = 4;   // segments: vacuum engine 1 + large tank 2 + command module 1
+  const MOON_KITS = () => ({
+    pad: [[I.LAUNCH_PAD_BLOCK, 7], [I.LAUNCH_PAD_SEGMENT, MOON_TOWER]],
+    tower: [[I.LAUNCH_PAD_SEGMENT, MOON_TOWER]],
+    rocket: MOON_ROCKET().map(t => [t, 1]),
+  });
+  function padsOn(body) { return bi().launchPadManager.getLaunchPads().filter(p => bi().padPlanetId(p) === body); }
+  function moonSiteState() {
+    const pads = padsOn(MOON).filter(p => p.isComplete);
+    if (!pads.length) return 'pad';
+    // the tower goes up on the same trip as the pad (the hold can't take it again with the rocket)
+    if (!pads.some(p => p.segmentCount >= MOON_TOWER)) return 'tower';
+    const built = pads.find(p => p.rocketParts.some(q => q.itemType === I.VACUUM_ENGINE) && STACK_OK(p.rocketParts.map(q => q.itemType)));
+    if (!built) return 'rocket';
+    return (built.fuel ?? 0) > 0 ? 'done' : 'fuel';
+  }
+  // Earth: gather the next kit and fly it out. Moon: unload it and build.
+  async function moonBase() {
+    const state = moonSiteState();
+    if (state === 'done') { st.moonBase = false; say('the Moon launch site is ready: pad, tower, vacuum rocket, fuel'); return; }
+    const here = bodyId();
+    if (here === 'earth') {
+      if (state === 'fuel') { st.moonBase = false; return; }   // the fuel is made on the Moon from its ice
+      const kit = MOON_KITS()[state];
+      for (const [t, n] of kit) {
+        if (count(t) < n) { st.task = `getting ${n} ${itemName(t)} for the Moon site`; say(`getting ${n} ${itemName(t)} for the Moon launch site (have ${count(t)})`); await obtain(t, n); return; }
+      }
+      // fly it out in the hold, with the fuel for the trip home
+      st.expedition = null;
+      st.moonKit = state;
+      try { localStorage.setItem('bot_moonKit', state); } catch {}
+      await visitBody(MOON, 'earth', kit.map(([t]) => t));
+      return;
+    }
+    if (here === MOON) {
+      if (breathLow()) { await restInCabin(); return; }
+      // the kit out of the hold first
+      if (await unloadKit()) return;
+      // no kit for this stage here (it waits on Earth): fly home for it
+      const kit = MOON_KITS()[state];
+      if (kit && (state === 'pad' ? count(I.LAUNCH_PAD_BLOCK) < 1 : state === 'tower' ? count(I.LAUNCH_PAD_SEGMENT) < 1 : kit.some(([t]) => count(t) < 1))) {
+        say(`the Moon site needs the ${state} kit from Earth - flying home for it`);
+        await visitBody(MOON);
+        return;
+      }
+      st.abortIf = breathLow;
+      try {
+        if (state === 'pad') { await PLAYBOOK.pad(); return; }
+        if (state === 'tower') {
+          const pad = padsOn(MOON).find(p => p.isComplete);
+          const ui = pad && await openPad(pad);
+          if (!ui) return;
+          while (pad.segmentCount < MOON_TOWER && count(I.LAUNCH_PAD_SEGMENT) > 0) {
+            const h = pad.segmentCount;
+            ui.handleSegmentSlotClick(h);
+            await sleep(300);
+            if (pad.segmentCount === h) break;
+          }
+          closeMenus();
+          say(`Moon launch tower: ${pad.segmentCount} segments`);
+          return;
+        }
+        if (state === 'rocket') {
+          const r = await upgradeRocket(MOON_ROCKET(), bodyGravity(MOON));
+          if (r === false) say('could not build the Moon rocket yet');
+          return;
+        }
+        if (state === 'fuel') {
+          const pad = padsOn(MOON).find(p => p.isComplete && p.rocketParts.length);
+          if (pad) await fuelPad(pad);
+          return;
+        }
+      } finally { st.abortIf = null; st.inAbort = false; }
+    }
+  }
+  // Take the kit (everything but the fuel for home) out of the parked rocket's hold
+  async function unloadKit() {
+    const lr = nearestLanded();
+    if (!lr || !(lr.cargo || []).length) return false;
+    const fuelItems = new Set((await fuelTable()).map(f => f.itemType).concat([I.BUCKET]));
+    if (!lr.cargo.some(x => x.itemType && x.quantity && !fuelItems.has(x.itemType))) return false;
+    const ui = await openLanded(lr);
+    if (!ui) return false;
+    ui.container.querySelector('.cargo-btn').click();
+    await sleep(500);
+    const sui = bi().storageUI;
+    let took = 0;
+    if (sui.isMenuOpen()) for (let i = 0; i < lr.cargo.length; i++) {
+      const x = lr.cargo[i];
+      if (x.itemType && x.quantity && !fuelItems.has(x.itemType)) { sui.handleShiftClick(i); took++; await sleep(80); }
+    }
+    closeMenus();
+    if (took) say(`unloaded ${took} stack(s) of the Moon site kit`);
+    return took > 0;
+  }
+  function bodyGravity(id) {
+    const b = (fm().getLandedRocketManager().planets || []).find(p => p.id === id);
+    return b ? b.gravityStrength : 1;
+  }
+
   // Where to land at home: beside the nearest launch pad (dry, flat, and
   // where the stash and the next rocket are), else where it took off from
   const HOME_SITE_OFFSET_M = 12, HOME_PAD_SEARCH_M = 400;
@@ -1455,7 +1568,8 @@
   const RETURN_FUEL = { moon: 60 };
   // A visit: fly to `target`, land, plant a survey beacon, gather what's
   // there, fly home and land
-  async function visitBody(target, home = 'earth') {
+  // `extra`: items to carry there in the cargo hold (only the hold flies)
+  async function visitBody(target, home = 'earth', extra = null) {
     const here = bodyId();
     const m = tracker().openMissions().find(x => x.visit === target);
     const prog = m ? tracker().progress(m) : [];
@@ -1475,7 +1589,7 @@
       if (beaconLeft && count(I.SURVEY_BEACON) < 1) { st.task = 'making a survey beacon'; await obtain(I.SURVEY_BEACON, 1); return; }
       // the craft: a rocket parked on this world near by (one that came back
       // lands beside its pad, not on it), else a rocket standing on a pad
-      const craft = homeCraft();
+      const craft = await homeCraft();
       if (!craft) {
         // none fit to fly. A trip for a resource can't wait for the better
         // rocket that resource builds: put a basic one on an empty pad
@@ -1497,6 +1611,11 @@
       if (inHold < need) {
         if (!(await gatherFuel(need - inHold))) return;
         await craft.load((await fuelTable()).map(f => f.itemType));
+        return;
+      }
+      if (extra && extra.some(t => count(t) > 0 && !(craft.cargo() || []).some(x => x.itemType === t && x.quantity >= count(t)))) {
+        await craft.load(extra.filter(t => count(t) > 0));
+        if (extra.some(t => count(t) > 0)) { say('the cargo hold is full - the rest of the kit waits for the next trip'); }
         return;
       }
       say(`rocket fuelled, ${inHold.toFixed(0)} units of fuel in the hold - boarding`);
@@ -1588,19 +1707,19 @@
   // a better rocket than the basic one: a valid stack with a vacuum engine
   const isUpgraded = (types) => types.includes(I.VACUUM_ENGINE) && STACK_OK(types);
   const MIN_LIFT_TWR = 1.05;
-  async function liftTWR(stack) {
+  async function liftTWR(stack, gravity = 1) {
     const perf = await import(`${BASE}/rocket/RocketPerformance.ts`);
     const cfg = (await import(`${BASE}/config/RocketConfig.ts`)).ROCKET_CONFIG;
     const all = perf.computeRocketStats(stack);
     const wet = all.dryMass + all.fuelCapacity * cfg.FUEL_KG_PER_UNIT;
     const g0 = (await import(`${BASE}/config/PlayerConfig.ts`)).PlayerConfig.BASE_GRAVITY;
-    return perf.stagedStats(stack).stages[0].thrust / (wet * g0);
+    return perf.stagedStats(stack).stages[0].thrust / (wet * g0 * gravity);
   }
   // A pad of ours whose rocket stands on it (not flown off and parked elsewhere)
   function padHere() {
     const away = new Set(fm().getLandedRocketManager().getAllLandedRockets().map(r => r.pad).filter(Boolean));
     let mySites = [];
-    try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+    try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
     const pos = player().position;
     const pads = bi().launchPadManager.getLaunchPads()
       // a rocket standing on it, or an empty pad with a tower to build one on
@@ -1614,11 +1733,11 @@
     const p = P();
     return [...pad.placedTiles].some(t => p.getBlock(t, p.groundDepthOf(t) + 1) === B.WATER || p.getBlock(t, p.groundDepthOf(t) + 2) === B.WATER);
   }
-  async function upgradeRocket(only = null) {
+  async function upgradeRocket(only = null, gravity = 1) {
     const pad = padHere();
     if (!pad) { say('no pad of mine with its rocket on it to upgrade'); return false; }
     let target = null;
-    for (const st2 of (only ? [only] : UPGRADE_STACKS())) if (await liftTWR(st2) >= MIN_LIFT_TWR) { target = st2; break; }
+    for (const st2 of (only ? [only] : UPGRADE_STACKS())) if (await liftTWR(st2, gravity) >= MIN_LIFT_TWR) { target = st2; break; }
     if (!target) { say('no upgrade stack lifts off here'); return false; }
     const have = pad.rocketParts.map(p => p.itemType);
     let keep = 0;
@@ -1668,7 +1787,7 @@
       await sleep(200);
     }
     closeMenus();
-    say(`upgraded the rocket: ${target.map(itemName).join(' / ')} (liftoff TWR ${(await liftTWR(target)).toFixed(2)})`);
+    say(`built the rocket: ${target.map(itemName).join(' / ')} (liftoff TWR ${(await liftTWR(target, gravity)).toFixed(2)} here)`);
     return true;
   }
 
@@ -1820,11 +1939,12 @@
       await toSurface();
       const lp = bi().launchPadManager;
       const padTiles = new Set(lp.getLaunchPads().flatMap(pad => [...pad.hexes.keys()]));
-      let site = st.padSite;
-      try { if (site == null) site = JSON.parse(localStorage.getItem('bot_padSite') || 'null'); } catch {}
+      st.padSiteBy = st.padSiteBy || {};
+      let site = st.padSiteBy[bodyId()];
+      try { if (site == null) site = JSON.parse(localStorage.getItem(padKey('bot_padSite')) || 'null'); } catch {}
       // a pad of ours left unfinished: finish it before starting another
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       if (site == null) {
         site = mySites.find(c => { const pad = lp.getLaunchPads().find(x => x.hexes.has(c)); return pad && !pad.isComplete; }) ?? null;
       }
@@ -1841,8 +1961,8 @@
           return nb.length === 6 && nb.every(t => free(t) && p.groundDepthOf(t) === g);
         });
         if (site === undefined) { say('no flat ground for a launch pad here - moving on'); await wander(); return; }
-        st.padSite = site;
-        try { localStorage.setItem('bot_padSite', JSON.stringify(site)); localStorage.setItem('bot_padSites', JSON.stringify([...mySites, site])); } catch {}
+        st.padSiteBy[bodyId()] = site;
+        try { localStorage.setItem(padKey('bot_padSite'), JSON.stringify(site)); localStorage.setItem(padKey('bot_padSites'), JSON.stringify([...mySites, site])); } catch {}
         say(`laying a launch pad round tile ${site}`);
       }
       const has = (t) => lp.getLaunchPads().some(pad => pad.hexes.has(t));
@@ -1855,8 +1975,8 @@
       const unlevel = neighbors(site).find(t => !has(t) && Math.abs(p.groundDepthOf(t) - sg) > 1);
       if (unlevel !== undefined) {
         say(`the ground round tile ${site} is no longer level - choosing another site`);
-        st.padSite = null;
-        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        st.padSiteBy[bodyId()] = null;
+        try { localStorage.removeItem(padKey('bot_padSite')); localStorage.setItem(padKey('bot_padSites'), JSON.stringify(mySites.filter(x => x !== site))); } catch {}
         st.badPlace = (st.badPlace || []).concat([site]);
         return;
       }
@@ -1901,8 +2021,8 @@
         st.padFails[t] = (st.padFails[t] || 0) + 1;
         if (st.padFails[t] < 4) { say(`pad block on tile ${t} would not go down - trying again`); await wander(); return; }
         say(`could not lay the pad at tile ${site} - choosing another site`);
-        st.padSite = null;
-        try { localStorage.removeItem('bot_padSite'); localStorage.setItem('bot_padSites', JSON.stringify(mySites.filter(x => x !== site))); } catch {}
+        st.padSiteBy[bodyId()] = null;
+        try { localStorage.removeItem(padKey('bot_padSite')); localStorage.setItem(padKey('bot_padSites'), JSON.stringify(mySites.filter(x => x !== site))); } catch {}
         return;
       }
     },
@@ -1914,7 +2034,7 @@
       for (const it of parts) if (count(it) < 1 && !(await obtain(it, 1))) return;
       const lp = bi().launchPadManager;
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       const pos = player().position;
       const pad = lp.getLaunchPads()
         .filter(p => p.isComplete && p.rocketParts.length === 0 && [...p.hexes.keys()].some(t => mySites.includes(t)))
@@ -1958,7 +2078,7 @@
     launch: async () => {
       const lp = bi().launchPadManager;
       let mySites = [];
-      try { mySites = JSON.parse(localStorage.getItem('bot_padSites') || '[]'); } catch {}
+      try { mySites = JSON.parse(localStorage.getItem(padKey('bot_padSites')) || '[]'); } catch {}
       const pad = lp.getLaunchPads().find(p => p.rocketParts.length > 0 && [...p.hexes.keys()].some(t => mySites.includes(t)));
       if (!pad) { say('no rocket of my own on a pad'); st.cannot = (st.cannot || []).concat(['launch']); return; }
       const centre = blockTop(pad.centerTileIndex, P().groundDepthOf(pad.centerTileIndex));
@@ -2342,7 +2462,7 @@
   // Never stored away: rocket parts, the fuel and the gear for a flight, and
   // what a trip off-world is fetching (stored once, they were printed again)
   function alwaysKeep() {
-    const keep = new Set([I.ROCKET_FUEL, I.WATER_BUCKET, I.BUCKET, I.SURVEY_BEACON, I.LAUNCH_PAD_SEGMENT, I.PARACHUTE, I.INGOT_TITANIUM, I.ORE_TITANIUM]);
+    const keep = new Set([I.ROCKET_FUEL, I.WATER_BUCKET, I.BUCKET, I.SURVEY_BEACON, I.LAUNCH_PAD_SEGMENT, I.LAUNCH_PAD_BLOCK, I.PARACHUTE, I.INGOT_TITANIUM, I.ORE_TITANIUM, I.ICE]);
     for (const k of Object.keys(ITEM_DATA || {})) if (ITEM_DATA[k] && ITEM_DATA[k].rocketPart) keep.add(+k);
     if (st.expedition) keep.add(st.expedition.item);
     return keep;
@@ -2765,7 +2885,13 @@
           st.cannot = [];
         }
         if (away) st.lastBody = away;
-        if (away && away !== 'earth' && !tracker().openMissions().some(m => m.visit === away && PLAYBOOK[m.id])) { await visitBody(away); continue; }
+        const moonWork = away === MOON && doneIds().includes('vacuum') && !['done'].includes(moonSiteState());
+        if (away && away !== 'earth' && !moonWork && !tracker().openMissions().some(m => m.visit === away && PLAYBOOK[m.id])) { await visitBody(away); continue; }
+        // a launch site on the Moon, once the vacuum engine is known (owner: tier 2 flies from the Moon)
+        if (doneIds().includes('vacuum') && !resting('moonbase') && (away === 'earth' || away === MOON) && !st.expedition) {
+          const ms = moonSiteState();
+          if (ms !== 'done' && !(away === 'earth' && ms === 'fuel')) { st.goal = 'moonbase'; await moonBase(); continue; }
+        }
         if (st.expedition && away && away !== st.expedition.body) {
           if (count(st.expedition.item) >= st.expedition.n) st.expedition = null;
           else { await visitBody(st.expedition.body); continue; }
