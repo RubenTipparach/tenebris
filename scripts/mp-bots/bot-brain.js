@@ -2177,7 +2177,7 @@
     const b = bi(), p = P();
     st.task = 'building a power plant';
     // 1. an active hydro generator (ours, or a new one in the nearest pond)
-    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive)
+    let hydro = b.hydroGeneratorManager.getPlacedHydroGenerators().filter(h => h.isActive && !badMachine(h.tileIndex))
       .sort((a, c) => a.position.distanceTo(player().position) - c.position.distanceTo(player().position))[0];
     if (!hydro || hydro.position.distanceTo(player().position) > 120) {
       if (!(await obtain(I.HYDRO_GENERATOR, 1))) return null;
@@ -2194,7 +2194,7 @@
     let ct = neighbors(ht).find(t => cableTiles.includes(t));
     if (ct === undefined) {
       ct = neighbors(ht).find(isDryTile);
-      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); return null; }
+      if (ct === undefined) { say('no dry ground beside the hydro generator'); st.badWater = (st.badWater || []).concat([ht]); markBadMachine(ht); return null; }
       if (!(await obtain(I.CABLE, 1))) return null;
       if (!(await placeOnTile(I.CABLE, ct))) return null;
     }
