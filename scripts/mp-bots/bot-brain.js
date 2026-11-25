@@ -2346,7 +2346,7 @@
     let ef = neighbors(ct).map(t => b.electricFurnaceManager.getElectricFurnaceAtTile(t)).find(f => f && !badMachine(f.tileIndex));
     if (!ef) {
       const et = neighbors(ct).find(t => t !== ht && isDryTile(t) && !stationAt(t));
-      if (et === undefined) { say('no room for the electric furnace'); return null; }
+      if (et === undefined) { say('no room for the electric furnace'); markBadMachine(ht); return null; }
       if (!(await obtain(I.ELECTRIC_FURNACE, 1))) return null;
       if (!(await placeOnTile(I.ELECTRIC_FURNACE, et))) return null;
       ef = b.electricFurnaceManager.getElectricFurnaceAtTile(et);
