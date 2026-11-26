@@ -6,6 +6,7 @@ import { baseTerrainType } from '../shared/blockTypes';
 import { PlayerConfig } from '../config/PlayerConfig';
 import { WalkerLook, newWalkerLook, transportUp, turnLook, lookAlong, lookQuaternion } from './WalkerLook';
 import { AudioManager } from '../engine/AudioManager';
+import { stepEase, stepHeight } from './AutoStep';
 import {
   AUDIO_SETTINGS,
   SurfaceType,
@@ -161,6 +162,10 @@ export class PlanetPlayer {
   private transitionTimer: number = 0; // Counts down during transition
 
   private isGrounded: boolean = false;
+  // the eye's lag behind a step climbed (AutoStep), and what it is worked from
+  private stepLag = 0;
+  private lastEyeRadius: number | null = null;
+  private lastDeltaTime = 0;
   private isJetpacking: boolean = false;
   private isInWater: boolean = false;       // True when eyes are underwater (for fog)
   private feetInWater: boolean = false;     // True when feet are underwater (for swimming physics)
@@ -427,7 +432,7 @@ export class PlanetPlayer {
 
       // Check if neighbor floor is significantly higher (would block player)
       const heightDiff = neighborFloorRadius - currentFloorRadius;
-      if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) continue; // Can step up, no problem
+      if (heightDiff <= this.stepHeight()) continue; // Can step up, no problem
 
       // Calculate distance to neighbor tile center (on surface)
       const neighborCenter = new THREE.Vector3(
@@ -576,6 +581,7 @@ export class PlanetPlayer {
   }
 
   public update(deltaTime: number): void {
+    this.lastDeltaTime = deltaTime;
     useColumnsOf(this.currentPlanet);
     // Clear block column cache at start of each frame
     clearBlockCache();
@@ -1630,7 +1636,7 @@ export class PlanetPlayer {
 
         // Can step down any amount (gravity handles falling)
         // Can only step UP within AUTO_STEP_HEIGHT
-        if (radiusDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+        if (radiusDiff <= this.stepHeight()) {
           hasReachableFloor = true;
           break; // Found a reachable floor, no need to keep searching
         }
@@ -1703,7 +1709,7 @@ export class PlanetPlayer {
             const heightDiff = groundRadius - currentGroundRadius;
 
             // Can we step to this level? (within step height up, or any distance down)
-            if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+            if (heightDiff <= this.stepHeight()) {
               // Pick the closest ground to current level
               if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
                 bestDestGroundDepth = d;
@@ -1785,7 +1791,7 @@ export class PlanetPlayer {
       }
     }
     // Add step height tolerance - blocks within auto-step range are not walls
-    const wallThresholdRadius = Math.max(currentGroundRadius, playerBottomRadius) + PlayerConfig.AUTO_STEP_HEIGHT;
+    const wallThresholdRadius = Math.max(currentGroundRadius, playerBottomRadius) + this.stepHeight();
 
     // Check all tiles for collision
     for (const tileIdx of tilesToCheck) {
@@ -1901,7 +1907,7 @@ export class PlanetPlayer {
         const heightDiff = groundRadius - currentGroundRadius;
 
         // Can we step to this level?
-        if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+        if (heightDiff <= this.stepHeight()) {
           if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
             destGroundDepth = d;
             bestHeightDiff = heightDiff;
@@ -2303,7 +2309,7 @@ export class PlanetPlayer {
             const heightDiff = floorRadius - groundRadius;
 
             // Can we step/fall to this level? (within AUTO_STEP_HEIGHT up, or any amount down)
-            if (heightDiff <= PlayerConfig.AUTO_STEP_HEIGHT) {
+            if (heightDiff <= this.stepHeight()) {
               if (Math.abs(heightDiff) < Math.abs(bestHeightDiff)) {
                 newGroundDepth = d;
                 bestHeightDiff = heightDiff;
@@ -2319,7 +2325,7 @@ export class PlanetPlayer {
       // Check if this would be stepping UP (blocked by AUTO_STEP_HEIGHT)
       // But when underwater, disable step blocking - player should swim freely over terrain
       const heightDiff = newGroundRadius - groundRadius;
-      const wouldStepUp = !this.isInWater && heightDiff > PlayerConfig.AUTO_STEP_HEIGHT;
+      const wouldStepUp = !this.isInWater && heightDiff > this.stepHeight();
 
       // Check if we would go below ground
       if (newGroundDepth >= 0 && newDist <= newTargetRadius) {
@@ -2439,6 +2445,11 @@ export class PlanetPlayer {
     }
   }
 
+  /** The tallest rise walked up without a jump (auto step: one block). */
+  private stepHeight(): number {
+    return stepHeight(this.currentPlanet?.getBlockHeight() ?? 1);
+  }
+
   private updateCamera(): void {
     // Position is at feet level, so add EYE_HEIGHT to get eye position
     // Calculate radial direction directly from position (planet surface normal)
@@ -2447,7 +2458,14 @@ export class PlanetPlayer {
       : this.localUp.clone();
 
     const eyePos = this.position.clone();
-    const eyeOffset = planetUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT);
+    // A step climbed is eased on the eye, not snapped (AutoStep.stepEase)
+    const radius = this.currentPlanet ? this.position.distanceTo(this.currentPlanet.center) : 0;
+    if (this.currentPlanet && this.lastEyeRadius !== null) {
+      this.stepLag = stepEase(this.stepLag, radius - this.lastEyeRadius, this.isGrounded, this.lastDeltaTime);
+    }
+    this.lastEyeRadius = this.currentPlanet ? radius : null;
+    if (!this.isGrounded || this.isInSpace) this.stepLag = 0;
+    const eyeOffset = planetUp.clone().multiplyScalar(PlayerConfig.PLAYER_EYE_HEIGHT - this.stepLag);
     eyePos.add(eyeOffset);
     this.camera.position.copy(eyePos);
 
