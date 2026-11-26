@@ -36,7 +36,8 @@ function audit(minTap) {
     return false;
   };
   const name = (el) => (el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '')) + (el.textContent ? ` "${el.textContent.trim().slice(0, 24)}"` : '');
-  for (const el of document.querySelectorAll('button, .inventory-slot, input, select, .inv-tab, .mt-card, [role=button], a')) {
+  // (mission cards are not here: that tree pans by dragging, so cards off the view are reachable)
+  for (const el of document.querySelectorAll('button, .inventory-slot, input, select, .inv-tab, [role=button], a')) {
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1 || !shown(el)) continue;
     const off = r.right > vw + 1 || r.bottom > vh + 1 || r.left < -1 || r.top < -1;

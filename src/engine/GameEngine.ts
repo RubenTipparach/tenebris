@@ -1,6 +1,7 @@
 import { showToast } from '../utils/toast';
 import * as THREE from 'three';
 import { PlayerConfig } from '../config/PlayerConfig';
+import { graphics, onGraphicsChange, renderPixelRatio } from '../config/GraphicsConfig';
 import skyboxVert from '../shaders/skybox/skybox.vert';
 import skyboxFrag from '../shaders/skybox/skybox.frag';
 import { profiler } from './Profiler';
@@ -92,10 +93,15 @@ export class GameEngine {
     this.farScene.add(this.farRoot);
 
     // Renderer setup (preserveDrawingBuffer enables screenshots)
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    // Graphics quality (GraphicsConfig): antialiasing is fixed when the
+    // renderer is made; the pixel ratio follows the setting live
+    this.renderer = new THREE.WebGLRenderer({ antialias: graphics().antialias, preserveDrawingBuffer: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.setPixelRatio(renderPixelRatio());
+    onGraphicsChange(() => { this.renderer.setPixelRatio(renderPixelRatio()); this.onWindowResize(); });
+    // Nothing on a planet casts a shadow (only the old flat-world chunks did):
+    // the shadow pass is pure cost, so it runs only on the prettiest setting
+    this.renderer.shadowMap.enabled = graphics().antialias;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(this.renderer.domElement);
 

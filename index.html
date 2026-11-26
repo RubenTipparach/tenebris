@@ -995,7 +995,8 @@
       position: fixed;
       top: calc(20px + env(safe-area-inset-top, 0px));
       left: calc(80px + env(safe-area-inset-left, 0px));
-      z-index: 10000;
+      /* over the touch controls and the start menu, under every open panel */
+      z-index: 250;
       pointer-events: auto;
       background: rgba(41, 173, 255, 0.3);
       border-color: rgba(41, 173, 255, 0.7);
@@ -1433,6 +1434,28 @@
 
     /* Mobile-specific adjustments */
     @media (max-width: 768px), (pointer: coarse) {
+      /* Panels fit a phone screen: never taller or wider than it, scrolling
+         inside instead of hanging off an edge (phone UI audit,
+         scripts/mp-e2e/phone-ui-audit.cjs) */
+      #inventory-menu {
+        max-height: calc(100dvh - 8px);
+        max-width: calc(100vw - 8px);
+        overflow: auto;
+        padding: 8px;
+        box-sizing: border-box;
+      }
+      #inventory-menu .inventory-container {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 12px;
+      }
+      #inventory-menu .inv-tabs { margin: 0 0 8px; }
+      .inv-panel { width: calc(100vw - 32px); height: calc(100dvh - 80px); }
+      .inv-tab { min-height: 36px; }
+      .modal-menu { max-height: calc(100dvh - 8px) !important; max-width: calc(100vw - 8px) !important; padding: 10px !important; }
+      .modal-menu-close { min-width: 40px; min-height: 40px; }
+      .map-body, .map-system, .mt-btn { min-height: 36px; min-width: 36px; }
+
       #hotbar {
         bottom: 10px;
         transform: translateX(-50%) scale(0.8);
@@ -1532,6 +1555,17 @@
 
     <!-- Settings (Options) Tab -->
     <div class="tab-content active" id="tab-settings">
+      <div class="settings-row">
+        <label for="graphics-preset">Graphics</label>
+        <select id="graphics-preset" class="teleport-select"></select>
+      </div>
+      <div class="settings-row">
+        <label for="graphics-resolution">Resolution</label>
+        <div class="volume-slider">
+          <input type="range" id="graphics-resolution">
+          <span class="volume-value" id="graphics-resolution-value"></span>
+        </div>
+      </div>
       <div class="settings-row">
         <label for="toggle-invert-y">Invert Y Axis</label>
         <div class="toggle-switch">

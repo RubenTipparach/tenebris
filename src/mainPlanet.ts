@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { NpcClient } from './npc/NpcClient';
 import { NpcField } from './npc/NpcField';
 import { NpcTalk } from './npc/NpcTalk';
+import { GRAPHICS, GraphicsPreset, graphics, graphicsChosen, graphicsSettings, setGraphics } from './config/GraphicsConfig';
 import { NpcPanel } from './npc/NpcPanel';
 import { NPC_CONFIG, artItem } from './config/NpcConfig';
 import { artReward, buildPopulation } from './shared/npc';
@@ -1414,6 +1415,49 @@ class PlanetGame {
     });
   }
 
+  /**
+   * Options > Graphics and Resolution (GraphicsConfig). A preset also sets
+   * the atmosphere and clouds through their own toggles (one path); a first
+   * run on a phone starts on Fast, with both off.
+   */
+  private setupGraphicsSettings(atmosphereToggle: HTMLInputElement, cloudsToggle: HTMLInputElement): void {
+    const presetSel = document.getElementById('graphics-preset') as HTMLSelectElement | null;
+    const res = document.getElementById('graphics-resolution') as HTMLInputElement | null;
+    const resValue = document.getElementById('graphics-resolution-value');
+    if (!presetSel || !res) return;
+    const setToggle = (t: HTMLInputElement, on: boolean) => {
+      if (t.checked === on) return;
+      t.checked = on;
+      t.dispatchEvent(new Event('change'));
+    };
+    const applyLooks = () => {
+      const g = graphics();
+      setToggle(atmosphereToggle, g.atmosphere);
+      setToggle(cloudsToggle, g.clouds);
+    };
+    for (const [id, p] of Object.entries(GRAPHICS.PRESETS)) {
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = p.label;
+      presetSel.appendChild(o);
+    }
+    presetSel.value = graphicsSettings().preset;
+    res.min = String(GRAPHICS.RESOLUTION_MIN);
+    res.max = String(GRAPHICS.RESOLUTION_MAX);
+    res.step = String(GRAPHICS.RESOLUTION_STEP);
+    res.value = String(graphicsSettings().resolution);
+    const showRes = () => { if (resValue) resValue.textContent = `${res.value}%`; };
+    showRes();
+    if (!graphicsChosen()) applyLooks();
+    presetSel.addEventListener('change', () => {
+      const before = graphics().antialias;
+      setGraphics({ preset: presetSel.value as GraphicsPreset });
+      applyLooks();
+      if (graphics().antialias !== before) showToast('Smoothing (antialiasing) changes after a reload', { duration: 3000 });
+    });
+    res.addEventListener('input', () => { showRes(); setGraphics({ resolution: Number(res.value) }); });
+  }
+
   private setupSettingsMenu(): void {
     const atmosphereToggle = document.getElementById('toggle-atmosphere') as HTMLInputElement;
     const cloudsToggle = document.getElementById('toggle-clouds') as HTMLInputElement;
@@ -1489,6 +1533,8 @@ class PlanetGame {
     cloudsToggle.addEventListener('change', () => {
       this.earthClouds.setVisible(cloudsToggle.checked);
     });
+
+    this.setupGraphicsSettings(atmosphereToggle, cloudsToggle);
 
     // Handle music toggle
     const musicToggle = document.getElementById('toggle-music') as HTMLInputElement;
