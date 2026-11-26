@@ -26,6 +26,8 @@ import { edgeNeighbors } from '../shared/voxelLight';
 import { WaterConfig } from '../config/WaterConfig';
 import { surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_CRATER, VOLCANO_RIM } from '../shared/terrainShape';
 import { objectFloorTop } from './ObjectFloors';
+import { graphics } from '../config/GraphicsConfig';
+import { registerFlatShading } from './FlatShading';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -1698,7 +1700,7 @@ export class Planet {
     // Get initial set of nearby tiles around spawn
     // Use chunk-based selection to match LOD chunk boundaries (no gaps)
     // Use per-planet config if set, otherwise fall back to PlayerConfig default
-    const renderDistance = this.config.detailRenderDistance ?? PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE;
+    const renderDistance = Math.max(1, Math.round((this.config.detailRenderDistance ?? PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE) * graphics().terrainDistanceScale));
     const initialChunks = this.getChunksInRange(spawnTile.index, renderDistance);
     const initialTiles = this.getTilesFromChunks(initialChunks);
 
@@ -2458,6 +2460,7 @@ export class Planet {
       });
       // Set default attribute value for torchLight to prevent undefined behavior
       (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
+      registerFlatShading(material); // graphics: Fast drops the noise relief and glints
 
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(this.center);
@@ -2698,6 +2701,7 @@ export class Planet {
     });
     // Set default attribute value for torchLight to prevent undefined behavior
     (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
+    registerFlatShading(material);
 
     // Create mesh and add to group
     const mesh = new THREE.Mesh(geometry, material);
@@ -4547,8 +4551,10 @@ export class Planet {
 
     const altitudeRatio = Math.min(1, Math.max(0, altitude / 100));
     // Use per-planet config if set, otherwise fall back to PlayerConfig defaults
-    const minDist = this.config.detailRenderDistance ?? PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE;
-    const maxDist = Math.max(minDist, PlayerConfig.TERRAIN_MAX_RENDER_DISTANCE);
+    // (scaled by the graphics setting: a phone on Fast streams a smaller ring of chunks)
+    const k = graphics().terrainDistanceScale;
+    const minDist = Math.max(1, Math.round((this.config.detailRenderDistance ?? PlayerConfig.TERRAIN_MIN_RENDER_DISTANCE) * k));
+    const maxDist = Math.max(minDist, Math.round(PlayerConfig.TERRAIN_MAX_RENDER_DISTANCE * k));
     const renderDistance = Math.floor(minDist + altitudeRatio * (maxDist - minDist));
 
     profiler.begin('Planet.getTile');

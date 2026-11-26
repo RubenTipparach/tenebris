@@ -11,6 +11,7 @@ import { WaterConfig } from '../config/WaterConfig';
 import waterFrag from '../shaders/water/water.frag';
 import terrainVert from '../shaders/terrain/terrain.vert';
 import terrainFrag from '../shaders/terrain/terrain.frag';
+import { registerFlatShading } from './FlatShading';
 import { airlessSkyLight, skyLightUniforms } from './SkyLightTexture';
 import iceVert from '../shaders/ice/ice.vert';
 import iceFrag from '../shaders/ice/ice.frag';
@@ -380,6 +381,7 @@ export class HexBlockMeshBuilder {
         fragmentShader: terrainFrag,
       });
       this.terrainMaterials.push(mat);
+      registerFlatShading(mat); // graphics: Fast lights the block per face
       return mat;
     };
 
@@ -634,6 +636,7 @@ export class HexBlockMeshBuilder {
       mat.polygonOffsetFactor = lodOffsetFactor;
       mat.polygonOffsetUnits = lodOffsetUnits;
       this.terrainMaterials.push(mat);
+      registerFlatShading(mat);
       return mat;
     };
 

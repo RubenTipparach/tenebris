@@ -9,6 +9,7 @@ import { SEQUOIA_TILESET } from '../config/SolarSystemConfig';
 import { forEachSurfaceTile, tileHash } from '../planet/SurfaceTiles';
 import type { CelestialBodyConfig } from '../config/SolarSystemConfig';
 import { NEAR_PLAYER_SCATTER } from '../config/SeaFloraConfig';
+import { graphics } from '../config/GraphicsConfig';
 import { SeaFlora } from './SeaFlora';
 
 /**
@@ -153,7 +154,9 @@ export class GroundClutter {
     const scale = new THREE.Vector3();
     const col = new THREE.Color();
     this.sea.begin(planet, this.seaBody);
-    forEachSurfaceTile(planet, player, RADIUS, (tile, dir, top, block, ground) => {
+    // the graphics setting thins the scatter and pulls it in (fewer instances, fewer tiles visited)
+    const g = graphics();
+    forEachSurfaceTile(planet, player, RADIUS * g.clutterRadiusScale, (tile, dir, top, block, ground) => {
       const ti = tile.index;
       if (top < 0 || (top + 1 < maxDepth && planet.getBlock(ti, top + 1) !== HexBlockType.AIR)) return;
       if (block === HexBlockType.WATER) { this.sea.addTile(tile, dir); return; }
@@ -172,7 +175,7 @@ export class GroundClutter {
         yaw.setFromAxisAngle(Y, rnd() * Math.PI * 2);
         return q.clone().multiply(yaw);
       };
-      const tufts = Math.floor(plan.tufts + rnd() * plan.tuftsRand);
+      const tufts = Math.floor((plan.tufts + rnd() * plan.tuftsRand) * g.clutterDensity);
       for (let i = 0; i < tufts && nTufts < MAX_TUFTS; i++) {
         const rot = place();
         const s = 0.7 + rnd() * 0.6;
@@ -192,7 +195,7 @@ export class GroundClutter {
         this.tufts.setColorAt(nTufts, col);
         nTufts++;
       }
-      const rocks = rnd() < plan.rockChance ? 1 + Math.floor(rnd() * plan.rocks) : 0;
+      const rocks = rnd() < plan.rockChance * g.clutterDensity ? 1 + Math.floor(rnd() * plan.rocks) : 0;
       for (let i = 0; i < rocks && nRocks < MAX_ROCKS; i++) {
         const rot = place();
         const big = rnd() < 0.25;

@@ -105,15 +105,16 @@ export class StorageUI {
 
       .storage-grid {
         display: grid;
-        grid-template-columns: repeat(9, 40px);
-        grid-template-rows: repeat(3, 40px);
+        grid-template-columns: repeat(9, var(--small-slot, 40px));
+        grid-template-rows: repeat(3, var(--small-slot, 40px));
         gap: 4px;
         margin-bottom: 10px;
       }
 
       .storage-slot {
-        width: 40px;
-        height: 40px;
+        width: var(--small-slot, 40px);
+        height: var(--small-slot, 40px);
+        box-sizing: border-box;
         background: rgba(139, 69, 19, 0.3);
         border: 2px solid #8B4513;
         border-radius: 4px;
@@ -144,8 +145,8 @@ export class StorageUI {
       }
 
       .storage-slot img {
-        width: 32px;
-        height: 32px;
+        width: calc(var(--small-slot, 40px) * 0.8);
+        height: calc(var(--small-slot, 40px) * 0.8);
         image-rendering: pixelated;
         pointer-events: none;
       }
