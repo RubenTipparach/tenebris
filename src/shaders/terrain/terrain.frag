@@ -73,14 +73,11 @@ varying float vBlockLight; // Light from emitting blocks
 varying float vWaterDepth; // How far below water surface
 varying float vDistanceFromCamera;
 
-#ifdef FLAT_SHADE
-// Flat shading (graphics: Fast): the block's average colour, lit per face
-uniform vec4 flatColor;
-#endif
-
 void main() {
 #ifdef FLAT_SHADE
-  vec4 texColor = flatColor;
+  // Flat shading (graphics: Fast): the block's pixel art, lit per face - one
+  // texture read, no per-pixel relief (its five extra reads and derivatives)
+  vec4 texColor = texture2D(terrainTexture, vUv);
   vec3 N = normalize(vNormal);
   float height = 1.0;
   float hexTone = 1.0;

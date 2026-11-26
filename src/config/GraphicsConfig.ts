@@ -19,7 +19,7 @@ export interface GraphicsLevel {
   terrainDistanceScale: number;// times the terrain's detail render distance (PlayerConfig TERRAIN_*_RENDER_DISTANCE)
   clutterRadiusScale: number;  // times the grass / rock scatter radius round the player
   clutterDensity: number;      // fraction of the grass tufts and rocks each tile would get
-  flatShading: boolean;        // planet surfaces as flat, face-lit colour (src/planet/FlatShading.ts)
+  flatShading: boolean;        // planet surfaces lit per face, textures kept (src/planet/FlatShading.ts)
   atmosphere: boolean;         // the atmosphere shell and clouds, applied through their own toggles
   clouds: boolean;
 }

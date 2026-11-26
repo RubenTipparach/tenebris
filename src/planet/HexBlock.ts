@@ -381,7 +381,7 @@ export class HexBlockMeshBuilder {
         fragmentShader: terrainFrag,
       });
       this.terrainMaterials.push(mat);
-      registerFlatShading(mat, texture); // graphics: Fast draws the block as its average colour
+      registerFlatShading(mat); // graphics: Fast lights the block per face
       return mat;
     };
 
@@ -636,7 +636,7 @@ export class HexBlockMeshBuilder {
       mat.polygonOffsetFactor = lodOffsetFactor;
       mat.polygonOffsetUnits = lodOffsetUnits;
       this.terrainMaterials.push(mat);
-      registerFlatShading(mat, lodTexture);
+      registerFlatShading(mat);
       return mat;
     };
 
