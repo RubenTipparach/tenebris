@@ -146,6 +146,7 @@ function limb(from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number, si
 function addFoliage(
   parts: THREE.BufferGeometry[], rng: SeededRandom, centre: THREE.Vector3, radius: number,
   stretchY: number, low: THREE.Color, high: THREE.Color, yLow: number, yHigh: number, salt: number,
+  cell = TEX_LEAVES,
 ): void {
   const lumps = 4 + Math.floor(rng.next() * 3);
   for (let i = 0; i < lumps; i++) {
@@ -182,7 +183,7 @@ function addFoliage(
       colors[v * 3] = col.r; colors[v * 3 + 1] = col.g; colors[v * 3 + 2] = col.b;
     }
     flat.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    setTexCell(flat, TEX_LEAVES);
+    setTexCell(flat, cell);
     parts.push(flat);
   }
 }
@@ -194,6 +195,13 @@ function shade(base: THREE.Color, k: number): THREE.Color {
 // Cells of the tree detail atlas (public/textures/trees.png, baked by
 // scripts/gen-tree-textures.py): which pixel pattern a part wears
 const TEX_BARK = 0, TEX_LEAVES = 1, TEX_NEEDLES = 2, TEX_SMOOTH = 3;
+// Full-colour pixel art for the Earth trees (scripts/gen-tree-textures.py):
+// shown as drawn, under the tree's baked light - their parts are painted in
+// neutral greys (NEUTRAL), so the vertex colour carries only light and shade
+const TEX_OAK_BARK = 4, TEX_PINE_BARK = 5, TEX_BIRCH_BARK = 6, TEX_OAK_LEAVES = 7, TEX_BIRCH_LEAVES = 8, TEX_PINE_NEEDLES = 9;
+const TREE_ATLAS_CELLS = 10;
+const FIRST_COLOUR_CELL = TEX_OAK_BARK;
+const NEUTRAL = new THREE.Color(1, 1, 1);
 
 // Every part also carries `glow` (0 = lit only by the sun, as every Earth
 // and Sequoia tree; >0 = that share of its colour shines on its own, for the
@@ -309,13 +317,13 @@ export const EARTH_TREE_SPECIES: readonly EarthTreeSpecies[] = ['pine', 'oak', '
 /** Spruce: a tapered trunk under 5-7 drooping, star-edged tiers. */
 function buildPine(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
   const trunkH = 2.2 * size * tall;
-  const bark = new THREE.Color(0x5a3a22);
   addPart(parts, limb(new THREE.Vector3(), new THREE.Vector3(0, trunkH + 1.5 * size, 0), 0.26 * size, 0.08 * size, 6),
-    (c) => shade(bark, 0.7 + 0.3 * Math.min(1, c.y / trunkH) + (hash3(c.x, c.y, c.z, 3) - 0.5) * 0.15));
+    (c) => shade(NEUTRAL, 0.7 + 0.3 * Math.min(1, c.y / trunkH) + (hash3(c.x, c.y, c.z, 3) - 0.5) * 0.15), TEX_PINE_BARK);
 
   const tiers = 5 + Math.floor(rng.next() * 3);
-  const dark = new THREE.Color(0x2c6236);
-  const light = new THREE.Color(0x74b04e);
+  // light and shade only: the needles' colour is the texture's
+  const dark = new THREE.Color(0.55, 0.55, 0.55);
+  const light = new THREE.Color(1, 1, 1);
   const base = 0.9 * size * Math.min(tall, 1.1);
   let y = base;
   const top = trunkH + 2.6 * size;
@@ -346,21 +354,20 @@ function buildPine(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numbe
       const local = Math.min(1, Math.max(0, (c.y - y) / h));      // tier bottom -> tip
       const col = dark.clone().lerp(light, 0.25 * tierLight + 0.5 * local);
       return shade(col, 0.9 + (hash3(c.x, c.y, c.z, 5) - 0.5) * 0.18);
-    }, TEX_NEEDLES);
+    }, TEX_PINE_NEEDLES);
     y += step;
   }
 }
 
 /** Oak: a thick, flared trunk forking into 2-3 limbs under lumpy leaf clusters. */
 function buildOak(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
-  const bark = new THREE.Color(0x6b4a2e);
   const trunkTop = new THREE.Vector3((rng.next() - 0.5) * 0.3 * size, 1.9 * size * tall, (rng.next() - 0.5) * 0.3 * size);
   const trunk = limb(new THREE.Vector3(), trunkTop, 0.48 * size, 0.3 * size, 7, 2);
   // flare the root
   const tp = trunk.getAttribute('position');
   for (let v = 0; v < tp.count; v++) if (tp.getY(v) < 0.01) tp.setXYZ(v, tp.getX(v) * 1.35, tp.getY(v), tp.getZ(v) * 1.35);
-  const barkPaint: FacePaint = (c) => shade(bark, 0.62 + 0.3 * Math.min(1, c.y / (3 * size)) + (hash3(c.x, c.y, c.z, 11) - 0.5) * 0.2);
-  addPart(parts, trunk, barkPaint);
+  const barkPaint: FacePaint = (c) => shade(NEUTRAL, 0.62 + 0.3 * Math.min(1, c.y / (3 * size)) + (hash3(c.x, c.y, c.z, 11) - 0.5) * 0.2);
+  addPart(parts, trunk, barkPaint, TEX_OAK_BARK);
 
   const branches = 2 + Math.floor(rng.next() * 2);
   const tips: THREE.Vector3[] = [];
@@ -369,12 +376,13 @@ function buildOak(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number
     const a = spin + (i / branches) * Math.PI * 2 + (rng.next() - 0.5) * 0.6;
     const out = (1.2 + rng.next() * 0.6) * size;
     const tip = trunkTop.clone().add(new THREE.Vector3(Math.cos(a) * out, (1.1 + rng.next() * 0.7) * size * tall, Math.sin(a) * out));
-    addPart(parts, limb(trunkTop.clone().addScaledVector(new THREE.Vector3(0, -1, 0), 0.15 * size), tip, 0.24 * size, 0.1 * size, 5), barkPaint);
+    addPart(parts, limb(trunkTop.clone().addScaledVector(new THREE.Vector3(0, -1, 0), 0.15 * size), tip, 0.24 * size, 0.1 * size, 5), barkPaint, TEX_OAK_BARK);
     tips.push(tip);
   }
 
-  const canopyLow = new THREE.Color(0x2d6e2c);
-  const canopyHigh = new THREE.Color(0x8cc44c);
+  // light and shade only: the leaves' colour is the texture's
+  const canopyLow = new THREE.Color(0.5, 0.5, 0.5);
+  const canopyHigh = new THREE.Color(1, 1, 1);
   const centre = trunkTop.clone().add(new THREE.Vector3(0, 1.6 * size * tall, 0));
   const clusters: { at: THREE.Vector3; r: number; detail: number }[] = [{ at: centre, r: 1.55 * size, detail: 1 }];
   for (const tip of tips) clusters.push({ at: tip.clone().add(new THREE.Vector3(0, 0.3 * size, 0)), r: (1.0 + rng.next() * 0.35) * size, detail: 0 });
@@ -384,37 +392,25 @@ function buildOak(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number
     clusters.push({ at: centre.clone().add(new THREE.Vector3(Math.cos(a) * 1.1 * size, (rng.next() - 0.2) * 0.9 * size, Math.sin(a) * 1.1 * size)), r: (0.8 + rng.next() * 0.3) * size, detail: 0 });
   }
   const yLow = trunkTop.y, yHigh = centre.y + 1.6 * size;
-  clusters.forEach((cl, idx) => addFoliage(parts, rng, cl.at, cl.r, 0.8, canopyLow, canopyHigh, yLow, yHigh, 31 + idx * 13));
+  clusters.forEach((cl, idx) => addFoliage(parts, rng, cl.at, cl.r, 0.8, canopyLow, canopyHigh, yLow, yHigh, 31 + idx * 13, TEX_OAK_LEAVES));
 }
 
 /** Birch: a slender white trunk banded in black under tall yellow-green clusters. */
 function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: number, tall: number): void {
   const height = 4.6 * size * tall;
-  const white = new THREE.Color(0xe9e4d6);
-  const band = new THREE.Color(0x4a443e);
   const lean = new THREE.Vector3((rng.next() - 0.5) * 0.5 * size, height, (rng.next() - 0.5) * 0.5 * size);
-  const salt = rng.next() * 100;
-  // short dark lenticels round the bark, not whole black faces
-  // (painted per quad: 10 round, 36 up; a mark is one quad, some run into
-  // the next quad round as a short horizontal dash)
-  const SIDES = 10, ROWS = 36, step = (Math.PI * 2) / SIDES;
-  const axis = lean.clone().normalize();
-  const mark = (row: number, col: number) => hash3(row, 0, ((col % SIDES) + SIDES) % SIDES, salt) > 0.84;
-  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, SIDES, ROWS), (c) => {
-    const row = Math.floor((c.dot(axis) / lean.length()) * ROWS);
-    const col = Math.floor((Math.atan2(c.x, c.z) + Math.PI) / step);
-    const dash = mark(row, col) || (mark(row, col - 1) && hash3(row, 1, col, salt) > 0.5);
-    return dash ? band.clone() : shade(white, 0.8 + 0.2 * Math.min(1, c.y / height));
-  });
+  // white bark and its dark lenticels are the texture's; here only light and shade
+  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, 8, 16),
+    (c) => shade(NEUTRAL, 0.82 + 0.18 * Math.min(1, c.y / height)), TEX_BIRCH_BARK);
   // two little side twigs
   for (let i = 0; i < 2; i++) {
     const at = lean.clone().multiplyScalar(0.55 + 0.15 * i);
     const a = rng.next() * Math.PI * 2;
     addPart(parts, limb(at, at.clone().add(new THREE.Vector3(Math.cos(a) * 0.8 * size, 0.6 * size, Math.sin(a) * 0.8 * size)), 0.06 * size, 0.03 * size, 4),
-      () => shade(white, 0.85));
+      () => shade(NEUTRAL, 0.85), TEX_BIRCH_BARK);
   }
-  const low = new THREE.Color(0x5f8a26);
-  const high = new THREE.Color(0xc4d84a);
+  const low = new THREE.Color(0.55, 0.55, 0.55);
+  const high = new THREE.Color(1, 1, 1);
   const n = 3 + Math.floor(rng.next() * 3);
   for (let i = 0; i < n; i++) {
     const t = 0.45 + 0.55 * (i / (n - 1));
@@ -422,7 +418,7 @@ function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numb
     const a = rng.next() * Math.PI * 2;
     at.add(new THREE.Vector3(Math.cos(a) * 0.45 * size, 0.2 * size, Math.sin(a) * 0.45 * size));
     const r = (0.95 - 0.35 * (i / n)) * size * (0.9 + rng.next() * 0.25);
-    addFoliage(parts, rng, at, r, 1.35, low, high, height * 0.4, height + r, 51 + i * 13);
+    addFoliage(parts, rng, at, r, 1.35, low, high, height * 0.4, height + r, 51 + i * 13, TEX_BIRCH_LEAVES);
   }
 }
 
@@ -1545,6 +1541,14 @@ class TreeBatcher {
       const up = new THREE.Vector3(0, 1, 0).transformDirection(tree.matrixWorld);
       bakeTreeLight(treeGeoms, base, up);
       if (improvedTreeShading) bakeTreeTint(base, treeGeoms);
+      // the tree's own up: the frame its textures are projected in (bark
+      // grain up the trunk wherever on the sphere it stands)
+      for (const g of treeGeoms) {
+        const n = g.getAttribute('position').count;
+        const a = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) { a[i * 3] = up.x; a[i * 3 + 1] = up.y; a[i * 3 + 2] = up.z; }
+        g.setAttribute('treeUp', new THREE.BufferAttribute(a, 3));
+      }
       geometries.push(...treeGeoms);
     }
     if (geometries.length === 0) return;
@@ -1668,6 +1672,9 @@ function bakeTreeTint(base: THREE.Vector3, geoms: THREE.BufferGeometry[]): void 
 // Atlas repeats (32 texels each) per world unit: 0.5 = 16 texels a unit,
 // close to the terrain's pixel size
 const TREE_TEXELS_PER_UNIT = 0.5;
+// The Earth trees' colour cells repeat this much more often: bark and leaves
+// as fine as the pixel art is drawn (a trunk shows its furrows and lenticels)
+const TREE_COLOUR_DENSITY = 2;
 
 let atlasTexture: THREE.Texture | null = null;
 function treeAtlas(): THREE.Texture {
@@ -1702,8 +1709,11 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       varying vec3 vWorldPosition;
       attribute vec3 shadeNormal;
       varying vec3 vShadeNormal;
+      attribute vec3 treeUp;
+      varying vec3 vTreeUp;
 
       void main() {
+        vTreeUp = normalize(mat3(modelMatrix) * treeUp);
         vColor = color;
         vShadeNormal = normalize(mat3(modelMatrix) * shadeNormal);
         vTexCell = texCell;
@@ -1729,6 +1739,7 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
       varying vec3 vNormal;
       varying vec3 vShadeNormal;
       varying vec3 vWorldPosition;
+      varying vec3 vTreeUp;
 
       void main() {
         vec3 surfaceNormal = normalize(vWorldPosition - planetCenter);
@@ -1751,12 +1762,23 @@ function createBatchedTreeMaterial(sunDirection: THREE.Vector3, doubleSided: boo
         // Pixel detail from the tree atlas, projected along the face's
         // dominant axis (planet-local so it stays precise far from origin),
         // at the terrain's texel size; grey 200 = no change
-        vec3 lp = (vWorldPosition - planetCenter) * ${TREE_TEXELS_PER_UNIT.toFixed(3)};
-        vec3 an = abs(n);
-        vec2 tuv = an.x > an.y && an.x > an.z ? lp.zy : (an.y > an.z ? lp.xz : lp.xy);
-        vec2 auv = vec2((fract(tuv.x) + floor(vTexCell + 0.5)) * 0.25, fract(tuv.y));
-        vec3 detail = texture2D(treeAtlas, auv).rgb * (255.0 / 200.0);
-        vec3 tinted = vColor * detail;
+        // in the tree's own frame (its up, fixed per tree), so bark grain
+        // runs up the trunk wherever on the sphere the tree stands
+        vec3 rel = vWorldPosition - planetCenter;
+        vec3 up = normalize(vTreeUp);
+        vec3 tx = normalize(cross(up, abs(up.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+        vec3 tz = cross(tx, up);
+        float cell = floor(vTexCell + 0.5);
+        float density = cell < ${FIRST_COLOUR_CELL.toFixed(1)} ? 1.0 : ${TREE_COLOUR_DENSITY.toFixed(1)};
+        vec3 lp = vec3(dot(rel, tx), dot(rel, up), dot(rel, tz)) * ${TREE_TEXELS_PER_UNIT.toFixed(3)} * density;
+        vec3 an = abs(vec3(dot(n, tx), dot(n, up), dot(n, tz)));
+        // a side face shows the texture upright (v up the trunk); a top face lies flat
+        vec2 tuv = an.x > an.y && an.x > an.z ? vec2(lp.z, lp.y) : (an.y > an.z ? lp.xz : vec2(lp.x, lp.y));
+        vec2 auv = vec2((fract(tuv.x) + cell) / ${TREE_ATLAS_CELLS.toFixed(1)}, fract(tuv.y));
+        vec3 tex = texture2D(treeAtlas, auv).rgb;
+        // grey detail cells tint the part's own colour (alien species); the
+        // colour cells are the bark / leaves themselves (Earth trees)
+        vec3 tinted = vColor * (cell < ${FIRST_COLOUR_CELL.toFixed(1)} ? tex * (255.0 / 200.0) : tex);
         // Sun and fill exactly as the terrain's, so trees sit in the same light
         vec3 finalColor = tinted * (fill + directional);
         // Glowing parts (alien species) shine with their own colour, day
