@@ -88,6 +88,7 @@ export class InputManager {
     this.setupEventListeners();
     if (this.isMobile) {
       this.setupMobileControls();
+      this.setupFullscreenButton();
     }
   }
 
@@ -210,6 +211,48 @@ export class InputManager {
     } else if ((elem as any).webkitRequestFullscreen) {
       (elem as any).webkitRequestFullscreen();
     }
+  }
+
+  private isFullscreen(): boolean {
+    return !!(document.fullscreenElement ?? (document as any).webkitFullscreenElement);
+  }
+
+  private exitFullscreen(): void {
+    if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    else (document as any).webkitExitFullscreen?.();
+  }
+
+  /**
+   * Phones: a full screen toggle in the top-left corner (beside pause), shown
+   * from the start menu on, so the browser's bars can be hidden at any time -
+   * also after the phone dropped full screen (rotating, a notification, the
+   * back gesture). Mobile-only scaffolding: desktop has F11. Left out where
+   * the browser has no element full screen at all (Safari on iPhone).
+   */
+  private setupFullscreenButton(): void {
+    const elem = document.documentElement as any;
+    if (!elem.requestFullscreen && !elem.webkitRequestFullscreen) return;
+    const btn = document.createElement('button');
+    btn.id = 'btn-fullscreen';
+    btn.className = 'action-btn fullscreen';
+    btn.setAttribute('aria-label', 'Toggle full screen');
+    const label = () => { btn.textContent = this.isFullscreen() ? 'EXIT' : 'FULL'; };
+    label();
+    // a click (not touchstart): browsers only grant full screen on a finished tap
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.isFullscreen()) this.exitFullscreen();
+      else this.requestFullscreen();
+      // the change event can come late (or not at all on some phones): read the state again once it settles
+      for (const ms of [100, 500, 1000]) window.setTimeout(label, ms);
+    });
+    window.addEventListener('resize', label);
+    // the game's own touch handlers must not see this tap as a look / break
+    btn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    document.addEventListener('fullscreenchange', label);
+    document.addEventListener('webkitfullscreenchange', label);
+    document.body.appendChild(btn);
   }
 
   // Setup mobile controls UI and touch handlers

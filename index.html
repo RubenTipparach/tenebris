@@ -989,6 +989,22 @@
       background: rgba(150, 150, 150, 0.5);
     }
 
+    /* Full screen toggle (phones): top left, beside the pause button, above
+       the start menu too */
+    .action-btn.fullscreen {
+      position: fixed;
+      top: calc(20px + env(safe-area-inset-top, 0px));
+      left: calc(80px + env(safe-area-inset-left, 0px));
+      z-index: 10000;
+      pointer-events: auto;
+      background: rgba(41, 173, 255, 0.3);
+      border-color: rgba(41, 173, 255, 0.7);
+    }
+
+    .action-btn.fullscreen:active {
+      background: rgba(41, 173, 255, 0.55);
+    }
+
     /* Top corner buttons */
     .action-btn.top-left {
       position: fixed;
