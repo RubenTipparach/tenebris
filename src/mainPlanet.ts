@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { NpcClient } from './npc/NpcClient';
 import { NpcField } from './npc/NpcField';
 import { NpcTalk } from './npc/NpcTalk';
+import { autoStepEnabled, setAutoStep } from './player/AutoStep';
 import { GRAPHICS, GraphicsPreset, graphics, graphicsChosen, graphicsSettings, setGraphics } from './config/GraphicsConfig';
 import { NpcPanel } from './npc/NpcPanel';
 import { NPC_CONFIG, artItem } from './config/NpcConfig';
@@ -1535,6 +1536,13 @@ class PlanetGame {
     });
 
     this.setupGraphicsSettings(atmosphereToggle, cloudsToggle);
+
+    // Auto step: walk up a block without jumping (on by default on phones)
+    const autoStepToggle = document.getElementById('toggle-auto-step') as HTMLInputElement | null;
+    if (autoStepToggle) {
+      autoStepToggle.checked = autoStepEnabled();
+      autoStepToggle.addEventListener('change', () => setAutoStep(autoStepToggle.checked));
+    }
 
     // Handle music toggle
     const musicToggle = document.getElementById('toggle-music') as HTMLInputElement;

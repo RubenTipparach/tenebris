@@ -26,6 +26,16 @@ export const PlayerConfig = {
   // still need a jump; low slabs - a launch pad's top, ROCKET_CONFIG
   // PAD_TOP_LIFT of a block - are walked onto like a kerb
   AUTO_STEP_HEIGHT: 0.3,
+  // Auto step (Options; src/player/AutoStep.ts, Pale Blue Dot's walker): on,
+  // a grounded walker walks up one block; the eye eases up the rise
+  AUTO_STEP: {
+    SKIN_M: 0.05,          // over a block's height: the step height with auto step on
+    EASE_MIN_M: 0.12,      // a grounded rise this size or more in one frame is a step, eased on the eye
+    EASE_MAX_M: 1.6,       // (bigger is a teleport or a landing, not eased)
+    EASE_S: 0.06,          // the eye's lag falls by e every this many seconds
+    EASE_DONE_M: 0.005,    // a lag under this is gone
+    STORAGE_KEY: 'tenebris_auto_step',
+  },
 
   // Gravity field (as multiplier of planet radius)
   GRAVITY_FULL_RADIUS: 1.4, // 100% gravity within this radius (1.4 = 40% above surface)
