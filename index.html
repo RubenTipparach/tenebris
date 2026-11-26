@@ -1261,13 +1261,14 @@
 
     .inventory-grid {
       display: grid;
-      grid-template-columns: repeat(9, 50px);
+      grid-template-columns: repeat(9, var(--slot, 50px));
       gap: 4px;
     }
 
     .inventory-slot {
-      width: 50px;
-      height: 50px;
+      width: var(--slot, 50px);
+      height: var(--slot, 50px);
+      box-sizing: border-box;
       background: rgba(0, 0, 0, 0.6);
       border: 2px solid #444;
       display: flex;
@@ -1288,8 +1289,8 @@
     }
 
     .inventory-slot img {
-      width: 40px;
-      height: 40px;
+      width: calc(var(--slot, 50px) * 0.8);
+      height: calc(var(--slot, 50px) * 0.8);
       image-rendering: pixelated;
     }
 
@@ -1454,6 +1455,8 @@
       .inv-tab { min-height: 36px; }
       .modal-menu { max-height: calc(100dvh - 8px) !important; max-width: calc(100vw - 8px) !important; padding: 10px !important; }
       .modal-menu-close { min-width: 40px; min-height: 40px; }
+      /* a row of nine slots always fits across a narrow screen (the panel's padding and gaps taken off) */
+      :root { --slot: min(50px, calc((100vw - 72px) / 9)); --small-slot: min(40px, calc((100vw - 110px) / 9)); }
       .map-body, .map-system, .mt-btn { min-height: 36px; min-width: 36px; }
 
       #hotbar {

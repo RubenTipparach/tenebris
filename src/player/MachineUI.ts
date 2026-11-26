@@ -223,7 +223,7 @@ export class MachineUI extends BaseModalMenu {
 
   private grid(slots: InventorySlot[], onClick: (i: number) => void): HTMLElement {
     const g = document.createElement('div');
-    g.style.cssText = 'display:grid;grid-template-columns:repeat(9,50px);gap:4px;margin-bottom:6px;';
+    g.style.cssText = 'display:grid;grid-template-columns:repeat(9,var(--slot,50px));gap:4px;margin-bottom:6px;';
     slots.forEach((s, i) => {
       const cell = this.slot(s, () => onClick(i));
       if (this.machine && s.itemType !== ItemType.NONE && acceptsInput(this.machine.kind, s.itemType)) cell.style.borderColor = '#4CAF50';

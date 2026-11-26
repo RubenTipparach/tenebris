@@ -1,7 +1,8 @@
 // Phone UI audit: every panel on a phone, landscape and portrait. For each
 // view it takes a screenshot and lists the controls a player could not reach:
 // a button, slot, tab or input partly off the screen (and not inside
-// something that scrolls), or a tap target smaller than MIN_TAP_PX.
+// something that scrolls), a slot in a panel only reached by scrolling
+// sideways, or a tap target smaller than MIN_TAP_PX.
 // Writes <outDir>/phone-<orientation>-<view>.png and phone-audit.json.
 //
 //   npx vite build && npx vite preview --port 4179 &
@@ -37,11 +38,14 @@ function audit(minTap) {
   };
   const name = (el) => (el.id ? '#' + el.id : el.tagName.toLowerCase() + (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).join('.') : '')) + (el.textContent ? ` "${el.textContent.trim().slice(0, 24)}"` : '');
   // (mission cards are not here: that tree pans by dragging, so cards off the view are reachable)
-  for (const el of document.querySelectorAll('button, .inventory-slot, input, select, .inv-tab, [role=button], a')) {
+  for (const el of document.querySelectorAll('button, .inventory-slot, .storage-slot, input, select, .inv-tab, [role=button], a')) {
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1 || !shown(el)) continue;
     const off = r.right > vw + 1 || r.bottom > vh + 1 || r.left < -1 || r.top < -1;
-    if (off && !inScroller(el)) out.push({ el: name(el), why: 'off screen', r: [r.left, r.top, r.right, r.bottom].map(Math.round) });
+    // scrolling down a panel is fine on a phone; scrolling sideways to reach a slot is not
+    const sideways = r.right > vw + 1 || r.left < -1;
+    if (sideways && el.closest('.inventory-container, .modal-menu, #inventory-menu')) out.push({ el: name(el), why: 'needs sideways scroll', r: [r.left, r.top, r.right, r.bottom].map(Math.round) });
+    else if (off && !inScroller(el)) out.push({ el: name(el), why: 'off screen', r: [r.left, r.top, r.right, r.bottom].map(Math.round) });
     else if (!off && (r.width < minTap || r.height < minTap) && el.tagName !== 'A' && !(el.type === 'range' || el.type === 'checkbox')) out.push({ el: name(el), why: `small ${Math.round(r.width)}x${Math.round(r.height)}` });
   }
   return { vw, vh, problems: out };

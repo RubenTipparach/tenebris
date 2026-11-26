@@ -256,7 +256,7 @@ export class NpcPanel extends BaseModalMenu implements NpcPanelHost {
 
   private grid(slots: InventorySlot[], v: VillageState | null): HTMLElement {
     const g = document.createElement('div');
-    g.style.cssText = 'display:grid;grid-template-columns:repeat(9,50px);gap:4px;margin-bottom:6px;';
+    g.style.cssText = 'display:grid;grid-template-columns:repeat(9,var(--slot,50px));gap:4px;margin-bottom:6px;';
     for (const s of slots) {
       const q = v?.requests.find(r => r.item !== undefined && r.item === s.itemType && s.quantity > 0);
       const cell = this.slot(s, q ? () => this.deliverTo(q.id) : undefined);
