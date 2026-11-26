@@ -79,6 +79,11 @@ void main() {
 
   // A smooth lighting normal: the hex facets bend toward the sphere (the
   // gas giants' smooth limb), then rock relief on land
+#ifdef FLAT_SHADE
+  // Flat shading (graphics: Fast): each facet its colour, lit by its own normal
+  vec3 N = normalize(vNormal);
+  vec3 base = vColor;
+#else
   vec3 N = normalize(mix(normalize(vNormal), radial, water ? 1.0 : farSmooth));
   vec3 base = vColor;
   vec3 face = normalize(cross(dFdx(vWorldPosition), dFdy(vWorldPosition)));
@@ -96,6 +101,7 @@ void main() {
   // Mottling: broad patches of lighter and darker ground or water
   float m = rNoise(local * farMottleScale) * 0.6 + rNoise(local * farMottleScale * 2.3) * 0.4;
   base *= 1.0 + farMottle * (m - 0.5) * (water ? 0.5 : 1.0);
+#endif
 
   // Light: a soft terminator, the sky light table's colour
   float diff = max(0.0, dot(N, L)) * smoothstep(-0.08, 0.12, ndlSphere);
@@ -104,7 +110,11 @@ void main() {
   vec3 lit = base * (fill * ambientIntensity * mix(farNight, 1.0, smoothstep(-0.2, 0.2, ndlSphere)) + sunLight * diff * directionalIntensity);
 
   float facing = max(0.0, dot(radial, V));
+#ifdef FLAT_SHADE
+  if (false) {
+#else
   if (water) {
+#endif
     // Pretty water: deep and shelf patches, waves catching a moving glint,
     // a sheen round it, the sea brightening toward the limb
     float shelf = smoothstep(0.35, 0.75, rNoise(local * 3.0 + 11.0) * 0.6 + rNoise(local * 7.0) * 0.4);

@@ -19,15 +19,16 @@ export interface GraphicsLevel {
   terrainDistanceScale: number;// times the terrain's detail render distance (PlayerConfig TERRAIN_*_RENDER_DISTANCE)
   clutterRadiusScale: number;  // times the grass / rock scatter radius round the player
   clutterDensity: number;      // fraction of the grass tufts and rocks each tile would get
+  flatShading: boolean;        // planet surfaces as flat, face-lit colour (src/planet/FlatShading.ts)
   atmosphere: boolean;         // the atmosphere shell and clouds, applied through their own toggles
   clouds: boolean;
 }
 
 export const GRAPHICS: { PRESETS: Record<GraphicsPreset, GraphicsLevel>; RESOLUTION_MIN: number; RESOLUTION_MAX: number; RESOLUTION_STEP: number; MOBILE_DEFAULT: GraphicsPreset; DESKTOP_DEFAULT: GraphicsPreset; STORAGE_KEY: string } = {
   PRESETS: {
-    fast: { label: 'Fast', pixelRatioCap: 1, antialias: false, terrainDistanceScale: 0.6, clutterRadiusScale: 0.5, clutterDensity: 0.4, atmosphere: false, clouds: false },
-    balanced: { label: 'Balanced', pixelRatioCap: 1.5, antialias: false, terrainDistanceScale: 0.8, clutterRadiusScale: 0.75, clutterDensity: 0.7, atmosphere: true, clouds: false },
-    pretty: { label: 'Pretty', pixelRatioCap: 2, antialias: true, terrainDistanceScale: 1, clutterRadiusScale: 1, clutterDensity: 1, atmosphere: true, clouds: true },
+    fast: { label: 'Fast', pixelRatioCap: 1, antialias: false, terrainDistanceScale: 0.6, clutterRadiusScale: 0.5, clutterDensity: 0.4, flatShading: true, atmosphere: false, clouds: false },
+    balanced: { label: 'Balanced', pixelRatioCap: 1.5, antialias: false, terrainDistanceScale: 0.8, clutterRadiusScale: 0.75, clutterDensity: 0.7, flatShading: false, atmosphere: true, clouds: false },
+    pretty: { label: 'Pretty', pixelRatioCap: 2, antialias: true, terrainDistanceScale: 1, clutterRadiusScale: 1, clutterDensity: 1, flatShading: false, atmosphere: true, clouds: true },
   },
   // Resolution: a percentage of the preset's pixel ratio (the pixel art stays crisp - textures are nearest-filtered)
   RESOLUTION_MIN: 50,

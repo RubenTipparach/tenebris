@@ -27,6 +27,7 @@ import { WaterConfig } from '../config/WaterConfig';
 import { surfaceDepthAt, volcanoAt, ShapeParams, VOLCANO_CRATER, VOLCANO_RIM } from '../shared/terrainShape';
 import { objectFloorTop } from './ObjectFloors';
 import { graphics } from '../config/GraphicsConfig';
+import { registerFlatShading } from './FlatShading';
 
 export interface PlanetConfig {
   name?: string;  // Planet name for debug logging
@@ -2459,6 +2460,7 @@ export class Planet {
       });
       // Set default attribute value for torchLight to prevent undefined behavior
       (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
+      registerFlatShading(material); // graphics: Fast drops the noise relief and glints
 
       const mesh = new THREE.Mesh(geometry, material);
       mesh.position.copy(this.center);
@@ -2699,6 +2701,7 @@ export class Planet {
     });
     // Set default attribute value for torchLight to prevent undefined behavior
     (material.defaultAttributeValues as Record<string, unknown>)['torchLight'] = 0;
+    registerFlatShading(material);
 
     // Create mesh and add to group
     const mesh = new THREE.Mesh(geometry, material);

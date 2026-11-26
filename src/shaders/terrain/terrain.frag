@@ -73,7 +73,19 @@ varying float vBlockLight; // Light from emitting blocks
 varying float vWaterDepth; // How far below water surface
 varying float vDistanceFromCamera;
 
+#ifdef FLAT_SHADE
+// Flat shading (graphics: Fast): the block's average colour, lit per face
+uniform vec4 flatColor;
+#endif
+
 void main() {
+#ifdef FLAT_SHADE
+  vec4 texColor = flatColor;
+  vec3 N = normalize(vNormal);
+  float height = 1.0;
+  float hexTone = 1.0;
+  float cavity = 1.0;
+#else
   // Sample the texture
   vec4 texColor = texture2D(terrainTexture, vUv);
 
@@ -83,6 +95,7 @@ void main() {
   vec3 N = reliefNormal(normalize(vNormal), vWorldPosition, vUv, height);
   // Each hex its own lean and tone (its seed; none on meshes without one)
   float hexTone = 1.0;
+  float cavity = 1.0 - reliefCavity * (1.0 - smoothstep(0.15, 0.6, height)) * step(0.001, reliefStrength);
   if (reliefStrength > 0.0 && dot(vHexSeed, vHexSeed) > 1e-6 && dot(vHexSeed, vec3(1.0)) < 2.999) {
     vec3 n0 = normalize(vNormal);
     vec3 a = normalize(cross(n0, abs(n0.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
@@ -91,9 +104,9 @@ void main() {
     N = normalize(N + k * ((vHexSeed.g * 2.0 - 1.0) * a + (vHexSeed.b * 2.0 - 1.0) * b));
     hexTone = 1.0 + reliefHexTone * (vHexSeed.r * 2.0 - 1.0);
   }
+#endif
   float faceLit = smoothstep(-0.05, 0.15, dot(vNormal, sunDirection));
   float meshDiffuse = max(0.0, dot(N, sunDirection)) * faceLit;
-  float cavity = 1.0 - reliefCavity * (1.0 - smoothstep(0.15, 0.6, height)) * step(0.001, reliefStrength);
 
   // The sky light table at this spot's sun height
   vec3 sunLight = skySun(vSunHeight);

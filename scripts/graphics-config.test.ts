@@ -44,3 +44,14 @@ test('presets get cheaper from Pretty to Fast', () => {
   }
   assert.equal(P.fast.antialias, false);
 });
+
+test('flat shading: on for Fast only; a texture flattens to its average colour', async () => {
+  const P = G.GRAPHICS.PRESETS;
+  assert.deepEqual([P.fast.flatShading, P.balanced.flatShading, P.pretty.flatShading], [true, false, false]);
+  const THREE = await import('three');
+  const { averageColour } = await import('../src/planet/FlatShading');
+  // a 2x1 texture: pure red and pure blue -> purple
+  const t = new THREE.DataTexture(new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]), 2, 1);
+  const c = averageColour(t);
+  assert.deepEqual([c.x, c.y, c.z, c.w].map(v => +v.toFixed(3)), [0.5, 0, 0.5, 1]);
+});
