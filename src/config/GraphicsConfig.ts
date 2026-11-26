@@ -26,7 +26,7 @@ export interface GraphicsLevel {
 
 export const GRAPHICS: { PRESETS: Record<GraphicsPreset, GraphicsLevel>; RESOLUTION_MIN: number; RESOLUTION_MAX: number; RESOLUTION_STEP: number; MOBILE_DEFAULT: GraphicsPreset; DESKTOP_DEFAULT: GraphicsPreset; STORAGE_KEY: string } = {
   PRESETS: {
-    fast: { label: 'Fast', pixelRatioCap: 1, antialias: false, terrainDistanceScale: 0.6, clutterRadiusScale: 0.5, clutterDensity: 0.4, flatShading: true, atmosphere: false, clouds: false },
+    fast: { label: 'Fast', pixelRatioCap: 1, antialias: false, terrainDistanceScale: 0.6, clutterRadiusScale: 0.5, clutterDensity: 0.4, flatShading: true, atmosphere: true, clouds: false },
     balanced: { label: 'Balanced', pixelRatioCap: 1.5, antialias: false, terrainDistanceScale: 0.8, clutterRadiusScale: 0.75, clutterDensity: 0.7, flatShading: false, atmosphere: true, clouds: false },
     pretty: { label: 'Pretty', pixelRatioCap: 2, antialias: true, terrainDistanceScale: 1, clutterRadiusScale: 1, clutterDensity: 1, flatShading: false, atmosphere: true, clouds: true },
   },
