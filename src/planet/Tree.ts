@@ -61,8 +61,16 @@ function seedFromPosition(p: THREE.Vector3): number {
   return Math.floor(hash3(p.x, p.y, p.z, 7) * 0x7ffffff) + 1;
 }
 
+// How many leading triangles of a part are cylinder-side quads (two per
+// quad, in order), so they are painted as whole quads: a hash of one
+// triangle's centre gave the two halves of a quad different colours - the
+// birch's black triangles
+const QUAD_TRIS = 'quadTris';
+
 function prepPart(g: THREE.BufferGeometry): THREE.BufferGeometry {
+  const cyl = g instanceof THREE.CylinderGeometry ? g.parameters : null;
   const out = g.index ? g.toNonIndexed() : g;
+  if (cyl) out.userData[QUAD_TRIS] = cyl.radialSegments * cyl.heightSegments * 2;
   if (out !== g) g.dispose();
   out.deleteAttribute('uv');
   out.computeVertexNormals();
@@ -74,11 +82,22 @@ function paintFaces(g: THREE.BufferGeometry, paint: FacePaint): void {
   const colors = new Float32Array(pos.count * 3);
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
   const centroid = new THREE.Vector3(), normal = new THREE.Vector3();
+  const quadTris = (g.userData[QUAD_TRIS] as number | undefined) ?? 0;
+  const d = new THREE.Vector3(), e = new THREE.Vector3(), f = new THREE.Vector3();
   for (let i = 0; i < pos.count; i += 3) {
     a.fromBufferAttribute(pos, i);
     b.fromBufferAttribute(pos, i + 1);
     c.fromBufferAttribute(pos, i + 2);
     centroid.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+    const tri = i / 3;
+    if (tri < quadTris) {
+      // a side quad: both its triangles are painted from the quad's centre
+      const first = tri - (tri % 2);
+      d.fromBufferAttribute(pos, first * 3); e.fromBufferAttribute(pos, first * 3 + 1); f.fromBufferAttribute(pos, first * 3 + 2);
+      centroid.copy(d).add(e).add(f);
+      d.fromBufferAttribute(pos, first * 3 + 3); e.fromBufferAttribute(pos, first * 3 + 4); f.fromBufferAttribute(pos, first * 3 + 5);
+      centroid.add(d).add(e).add(f).multiplyScalar(1 / 6);
+    }
     normal.subVectors(c, b).cross(b.clone().sub(a)).normalize().negate();
     const col = paint(centroid, normal);
     for (let k = 0; k < 3; k++) {
@@ -376,9 +395,16 @@ function buildBirch(parts: THREE.BufferGeometry[], rng: SeededRandom, size: numb
   const lean = new THREE.Vector3((rng.next() - 0.5) * 0.5 * size, height, (rng.next() - 0.5) * 0.5 * size);
   const salt = rng.next() * 100;
   // short dark lenticels round the bark, not whole black faces
-  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, 8, 16), (c) => {
-    const bandy = hash3(Math.round(c.y * 6), 0, Math.round(Math.atan2(c.z, c.x) * 3), salt) > 0.8;
-    return bandy ? band.clone() : shade(white, 0.8 + 0.2 * Math.min(1, c.y / height));
+  // (painted per quad: 10 round, 36 up; a mark is one quad, some run into
+  // the next quad round as a short horizontal dash)
+  const SIDES = 10, ROWS = 36, step = (Math.PI * 2) / SIDES;
+  const axis = lean.clone().normalize();
+  const mark = (row: number, col: number) => hash3(row, 0, ((col % SIDES) + SIDES) % SIDES, salt) > 0.84;
+  addPart(parts, limb(new THREE.Vector3(), lean, 0.17 * size, 0.07 * size, SIDES, ROWS), (c) => {
+    const row = Math.floor((c.dot(axis) / lean.length()) * ROWS);
+    const col = Math.floor((Math.atan2(c.x, c.z) + Math.PI) / step);
+    const dash = mark(row, col) || (mark(row, col - 1) && hash3(row, 1, col, salt) > 0.5);
+    return dash ? band.clone() : shade(white, 0.8 + 0.2 * Math.min(1, c.y / height));
   });
   // two little side twigs
   for (let i = 0; i < 2; i++) {
