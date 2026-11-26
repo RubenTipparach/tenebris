@@ -49,3 +49,7 @@ test('flat shading: on for Fast only', () => {
   const P = G.GRAPHICS.PRESETS;
   assert.deepEqual([P.fast.flatShading, P.balanced.flatShading, P.pretty.flatShading], [true, false, false]);
 });
+
+test('every preset keeps the sky (the atmosphere is the sky on a planet; only clouds may go)', () => {
+  for (const [id, p] of Object.entries(G.GRAPHICS.PRESETS)) assert.equal(p.atmosphere, true, id);
+});
